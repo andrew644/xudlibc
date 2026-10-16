@@ -23,6 +23,8 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 | `bin/`, `build/` | Build output | Gitignored, never committed |
 | `todo.md` | Project progress tracker | Update every session, dated one-liners |
 
+**Present today (after S1)**: `src/xud/` = `xud.h` + `xud_core.h` + `xud_core.c`; `tests/` = `xud_test.c`; `examples/` = `hello_context.c`; `reference/raylib/`; `build/` (gitignored CMake output, plus `build-san/` when sanitizers are wanted). **Not created yet**: `shaders/`, `third_party/`, `bin/`.
+
 ## Toolchain (verified on this machine — use exactly these)
 
 | Thing | Value |
@@ -51,13 +53,13 @@ There is **no** `glfwDestroyVulkanSurface` in 3.5 — destroy the surface with `
 
 | Task | Command |
 | --- | --- |
-| Configure | `cmake -B build -G ninja` |
+| Configure | `cmake -B build -G Ninja` (capital **N** — cmake 4.4.3 rejects `-G ninja`) |
 | Build everything | `ninja -C build` |
 | Build one example | `ninja -C build <target>` |
 | Syntax/lint check (fast, no codegen) | `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror -I src/xud src/xud/*.c` |
 | Unit tests (headless) | `./build/xud_test` |
 | GPU tests | `XUD_GPU_TESTS=1 ./build/xud_test` |
-| Sanitizer build | add `-fsanitizer=address,undefined` to the test target |
+| Sanitizer build | `cmake -B build-san -G Ninja -DXUD_SANITIZERS=ON` then `./build-san/xud_test` (adds `-fsanitize=address,undefined`) |
 | Compile a shader | `glslangValidator -V -o shaders/solid.spv shaders/solid.vert` (and `-G` for geometry/comp) |
 | Validate SPIR-V | `spirv-val shaders/solid.spv` |
 
@@ -90,7 +92,8 @@ Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers a
 - No global mutable state except the single library context pointer; multiple windows must work.
 - `#include` guard `XUD_<FILE>_H_`; file-top comment stating what the file owns and which layer it belongs to.
 - Doc comments: `///` Doxygen-style above public declarations only (no Doxygen build required yet).
-- Compile flags in dev: `-std=c11 -Wall -Wextra -Wpedantic -Werror -Ddefault=lib` plus `-fsanitizer` for tests. Release: `-O2`.
+- Compile flags in dev: `-std=c11 -Wall -Wextra -Wpedantic -Werror` plus `-fsanitize=address,undefined` for tests. Release: `-O2`. The CMakeLists adds these itself (`-Wall -Wextra -Wpedantic -Werror` always, `-g -DXUD_DEBUG=1` by default, `-O2` under `-DXUD_DEBUG=OFF`, sanitizers under `-DXUD_SANITIZERS=ON`).
+- **Never add `-Ddefault=lib`** to a compile line here: with gcc 16.2.1 and clang 22.1.8 it is a preprocessor define of a macro named `default`, which rewrites every `default:` label in every `switch` and breaks the build (verified: both compilers fail a two-case switch under it).
 
 ## Vulkan rules (best practices — these are the point of the repo)
 

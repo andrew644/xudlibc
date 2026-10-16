@@ -1,6 +1,7 @@
 # Build output
-bin/
 build/
+build-san/
+bin/
 
 # Third-party reference material (read-only, never part of the library)
 reference/
