@@ -17,6 +17,7 @@
 #define XUD_XUD_LOADER_H_
 
 #include "xud.h"
+#include <stdbool.h>
 #include <stdint.h>
 #include <vulkan/vulkan.h> /* Required for: PFN_vk* types, VkResult, VK_NULL_HANDLE - declarations only, never linked */
 
@@ -48,7 +49,8 @@ typedef struct XudLoader {
     PFN_vkEnumerateInstanceLayerProperties enumerateInstanceLayerProperties;
     PFN_vkEnumerateInstanceExtensionProperties enumerateInstanceExtensionProperties;
 
-    /* Instance level: NULL until step S3 has an instance to resolve through. */
+    /* Instance level: NULL until the instance layer (xud_instance.c) has a live VkInstance
+       to resolve through - vkGetInstanceProcAddr answers NULL for these without one. */
     PFN_vkCreateInstance createInstance;
     PFN_vkDestroyInstance destroyInstance;
     PFN_vkEnumeratePhysicalDevices enumeratePhysicalDevices;
@@ -57,13 +59,14 @@ typedef struct XudLoader {
     PFN_vkGetPhysicalDeviceQueueFamilyProperties2 getPhysicalDeviceQueueFamilyProperties2;
     PFN_vkEnumerateDeviceExtensionProperties enumerateDeviceExtensionProperties;
 
-    /* Device level: NULL until step S6 has a device to resolve through. */
+    /* Device level: NULL until the device layer has a live VkDevice to resolve through. */
     PFN_vkCreateDevice createDevice;
     PFN_vkDestroyDevice destroyDevice;
     PFN_vkGetDeviceQueue getDeviceQueue;
     PFN_vkDeviceWaitIdle deviceWaitIdle;
 
-    /* Device-level swapchain/surface teardown: NULL until step S7. */
+    /* Swapchain/surface teardown: NULL until the swapchain/surface layers create those
+       objects (they are created through GLFW's own entry points, see xud_core.c). */
     PFN_vkCreateSwapchainKHR createSwapchainKHR;
     PFN_vkGetSwapchainImagesKHR getSwapchainImagesKHR;
     PFN_vkDestroySwapchainKHR destroySwapchainKHR;
@@ -82,10 +85,31 @@ XudResult xud_loader_open(XudLoader **outLoader);
 /// Closes the loader: dlclose the handle, zero the table, free it, set the pointer NULL.
 XudResult xud_loader_close(XudLoader **loader);
 
-/// Resolves one entry point through the seed. `instance` is VK_NULL_HANDLE for global-level
-/// names (the ICD loader answers for nothing else at that level); later steps pass the
-/// instance they created. XUD_UNSUPPORTED when the seed slot is NULL - a nil PFN is
-/// reported, never called - or when the loader does not know `name`.
-XudResult xud_loader_resolve(const XudLoader *loader, VkInstance instance, const char *name, XudPfnBits *outFunction);
+/// The open invariant, for the layers above: true when the loader handle is loaded and the
+/// seed entry point is resolved, which is what every call through the table needs. A layer
+/// that finds this false reports XUD_INVALID_ARG and never calls through a NULL PFN slot.
+bool xud_loader_is_open(const XudLoader *loader);
+
+/// Resolves one entry point through the seed. `handle` selects the level: VK_NULL_HANDLE
+/// for the global-level names the ICD loader answers before any instance exists, the
+/// instance/device handle this layer created for the lower-level ones (vkGetInstanceProcAddr
+/// answers NULL for those without a live handle). It is `void *` because the Vulkan C
+/// headers type that parameter as VkInstance and nothing else - passing a VkPhysicalDevice
+/// or VkDevice into a VkInstance slot would be an incompatible-pointer argument - so the
+/// call casts it back, which is legal because every handle is a pointer here
+/// (VK_USE_64_BIT_PTR_DEFINES == 1, static_assert-ed in xud_loader.c).
+/// XUD_UNSUPPORTED when the seed slot is NULL (a nil PFN is reported, never called) or when
+/// the loader does not know `name`; XUD_INVALID_ARG on a NULL loader/name/out-function.
+/// `outFunction` is filled only on XUD_OK.
+XudResult xud_loader_resolve(const XudLoader *loader, const void *handle, const char *name, XudPfnBits *outFunction);
+
+/// Resolves one entry point and stores it into a slot of the loader's table, bumping
+/// resolvedCount only the first time that slot goes from empty to filled - so resolvedCount
+/// is a property of the table, not of the calls, and re-binding a live name is a no-op.
+/// `dstSlot` is the address of the slot (`&loader->vkX`); it must be pointer-sized, which
+/// every layer static_asserts for the PFN types it binds (xud_loader.c checks the global
+/// ones). The address moves by copy, never by cast - ISO C forbids converting between
+/// object and function pointers and -Wpedantic -Werror says so.
+XudResult xud_loader_bind(XudLoader *loader, const void *handle, const char *name, void *dstSlot);
 
 #endif /* XUD_XUD_LOADER_H_ */

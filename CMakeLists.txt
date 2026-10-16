@@ -38,9 +38,14 @@ endif()
 
 # xud_loader.c dlopens the Vulkan ICD loader: dlopen/dlsym/dlclose come from libc, so
 # there is still no -lvulkan and no -ldl on any link line (verified with ldd + nm -u).
+# xud_vulkan.c and xud_instance.c are the two layers above it: shared VkResult/name
+# vocabulary, and vkCreateInstance/vkDestroyInstance reached only through the loader's
+# function-pointer table. Still no Vulkan symbol at link time.
 add_library(xud STATIC
     src/xud/xud_core.c
     src/xud/xud_loader.c
+    src/xud/xud_vulkan.c
+    src/xud/xud_instance.c
 )
 
 target_include_directories(xud PUBLIC

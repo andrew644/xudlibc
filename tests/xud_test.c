@@ -3,13 +3,14 @@
  *   xud_test.c - assert-based test harness
  *
  *   Owns : the test runner and the checks for every public function in xud.h plus the
- *          loader layer below it. Headless by default: this run must stay green on a
- *          machine with no Vulkan driver present - the loader checks degrade to a note
- *          when dlopen fails, they never fail because of a missing driver.
- *          GPU checks are opt-in via XUD_GPU_TESTS=1 (none exist before bring-up step S3).
+ *          loader layer, the shared Vulkan vocabulary and the instance layer below it. Headless
+ *          by default: this run must stay green on a machine with no Vulkan driver present -
+ *          the loader checks degrade to a note when dlopen fails, they never fail because of a
+ *          missing driver. GPU checks are opt-in via XUD_GPU_TESTS=1 and they exist now: the
+ *          instance layer is the first one that needs a device.
  *   Layer: tests. Sees xud.h and the internal module headers of the layers under the public
- *          API (xud_loader.h) so the layers can be unit-tested on their own; user code
- *          includes xud.h only. xud_core.h stays private to the library.
+ *          API (xud_loader.h, xud_vulkan.h, xud_instance.h) so the layers can be unit-tested on
+ *          their own; user code includes xud.h only. xud_core.h stays private to the library.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -23,6 +24,8 @@
 
 #include "xud.h"
 #include "xud_loader.h"
+#include "xud_vulkan.h"
+#include "xud_instance.h"
 
 static int xudChecks = 0;
 static int xudFailures = 0;
@@ -75,6 +78,60 @@ static void xud_test_result_names(void)
     }
 }
 
+/* The shared Vulkan vocabulary: VkResult -> XudResult, and the fixed-buffer name helpers.
+   Pure, so the headless run covers them completely. */
+static void xud_test_result_mapping(void)
+{
+    xud_check(xud_result_from_vk(VK_SUCCESS) == XUD_OK, "vk/ok", "VK_SUCCESS must map to XUD_OK");
+    xud_check(xud_result_from_vk(VK_ERROR_DEVICE_LOST) == XUD_LOST, "vk/lost", "device lost must map to XUD_LOST");
+    xud_check(xud_result_from_vk(VK_ERROR_OUT_OF_HOST_MEMORY) == XUD_OUT_OF_MEMORY, "vk/host-memory", "host OOM must map to XUD_OUT_OF_MEMORY");
+    xud_check(xud_result_from_vk(VK_ERROR_OUT_OF_DEVICE_MEMORY) == XUD_OUT_OF_RESOURCES, "vk/device-memory", "device OOM must map to XUD_OUT_OF_RESOURCES");
+    xud_check(xud_result_from_vk(VK_ERROR_TOO_MANY_OBJECTS) == XUD_OUT_OF_RESOURCES, "vk/too-many-objects", "object exhaustion must map to XUD_OUT_OF_RESOURCES");
+    xud_check(xud_result_from_vk(VK_ERROR_INCOMPATIBLE_DRIVER) == XUD_UNSUPPORTED, "vk/incompatible-driver", "an incompatible driver must map to XUD_UNSUPPORTED");
+    xud_check(xud_result_from_vk(VK_ERROR_LAYER_NOT_PRESENT) == XUD_UNSUPPORTED, "vk/layer-not-present", "a missing layer must map to XUD_UNSUPPORTED");
+    xud_check(xud_result_from_vk(VK_ERROR_EXTENSION_NOT_PRESENT) == XUD_UNSUPPORTED, "vk/extension-not-present", "a missing extension must map to XUD_UNSUPPORTED");
+    xud_check(xud_result_from_vk(VK_ERROR_FEATURE_NOT_PRESENT) == XUD_UNSUPPORTED, "vk/feature-not-present", "a missing feature must map to XUD_UNSUPPORTED");
+    /* Everything else is a Vulkan failure this library cannot classify: one code for all of it. */
+    xud_check(xud_result_from_vk(VK_ERROR_INITIALIZATION_FAILED) == XUD_VULKAN_ERROR, "vk/init-failed", "init failure must map to XUD_VULKAN_ERROR");
+    xud_check(xud_result_from_vk(VK_ERROR_MEMORY_MAP_FAILED) == XUD_VULKAN_ERROR, "vk/map-failed", "a map failure must map to XUD_VULKAN_ERROR");
+    xud_check(xud_result_from_vk(VK_ERROR_FORMAT_NOT_SUPPORTED) == XUD_VULKAN_ERROR, "vk/format-unsupported", "an unsupported format must map to XUD_VULKAN_ERROR");
+    xud_check(xud_result_from_vk(VK_ERROR_NOT_PERMITTED) == XUD_VULKAN_ERROR, "vk/not-permitted", "not-permitted must map to XUD_VULKAN_ERROR");
+    /* VK_INCOMPLETE is not an error in Vulkan, but it means the list was truncated: a caller
+       that wants the whole list grows its array and calls again before it maps anything. */
+    xud_check(xud_result_from_vk(VK_INCOMPLETE) == XUD_VULKAN_ERROR, "vk/incomplete", "a truncated list must not map to XUD_OK");
+    xud_check(xud_result_from_vk(VK_NOT_READY) == XUD_VULKAN_ERROR, "vk/not-ready", "not-ready must map to XUD_VULKAN_ERROR");
+    xud_check(xud_result_from_vk(VK_TIMEOUT) == XUD_VULKAN_ERROR, "vk/timeout", "timeout must map to XUD_VULKAN_ERROR");
+    xud_check(xud_result_from_vk(VK_EVENT_SET) == XUD_VULKAN_ERROR, "vk/event-set", "event-set must map to XUD_VULKAN_ERROR");
+    xud_check(xud_result_from_vk(VK_EVENT_RESET) == XUD_VULKAN_ERROR, "vk/event-reset", "event-reset must map to XUD_VULKAN_ERROR");
+    xud_check(xud_result_from_vk(-4242) == XUD_VULKAN_ERROR, "vk/unknown-code", "a code outside the enum must map to XUD_VULKAN_ERROR");
+}
+
+static void xud_test_name_helpers(void)
+{
+    char buffer[VK_MAX_EXTENSION_NAME_SIZE];
+
+    memset(buffer, 0, sizeof(buffer));
+    xud_check(xud_name_copy(buffer, sizeof(buffer), VK_KHR_SURFACE_EXTENSION_NAME) == XUD_OK, "name/copy-fits", "a name that fits must be copied");
+    xud_check(xud_name_equal(buffer, VK_KHR_SURFACE_EXTENSION_NAME) == true, "name/copy-roundtrip", "the copy must be readable");
+
+    /* The boundary: a name that fills the buffer exactly (size-1 characters plus NUL) fits. */
+    xud_check(xud_name_copy(buffer, 3u, "ab") == XUD_OK, "name/copy-exact-fit", "a name that fills the buffer exactly must be accepted");
+    xud_check(xud_name_equal(buffer, "ab") == true, "name/copy-exact-roundtrip", "the exact fit must round-trip");
+
+    /* One character too many is rejected, not truncated: the buffer still holds "ab". */
+    xud_check(xud_name_copy(buffer, 3u, "abc") == XUD_INVALID_ARG, "name/copy-too-long", "a name that does not fit must be rejected, not truncated");
+    xud_check(xud_name_equal(buffer, "abc") == false, "name/no-truncate", "a rejected copy must not have written the name");
+
+    xud_check(xud_name_copy(NULL, sizeof(buffer), "x") == XUD_INVALID_ARG, "name/copy-null-destination", "a null destination must be rejected");
+    xud_check(xud_name_copy(buffer, 0u, "x") == XUD_INVALID_ARG, "name/copy-zero-size", "a zero-size buffer must be rejected");
+    xud_check(xud_name_copy(buffer, sizeof(buffer), NULL) == XUD_INVALID_ARG, "name/copy-null-source", "a null source must be rejected");
+
+    xud_check(xud_name_equal(NULL, NULL) == true, "name/equal-both-null", "two absent names are equal");
+    xud_check(xud_name_equal(NULL, "x") == false, "name/equal-one-null", "an absent name is not equal to a present one");
+    xud_check(xud_name_equal("x", NULL) == false, "name/equal-other-side-null", "the rule is symmetric");
+    xud_check(xud_name_equal("VK_KHR_surface", VK_KHR_SURFACE_EXTENSION_NAME) == true, "name/equal-literal", "a literal matches the header macro");
+}
+
 static void xud_test_init_arg_validation(void)
 {
     XudContext *context = NULL;
@@ -109,6 +166,7 @@ static void xud_test_loader_table(void)
     xud_check(opened == XUD_OK, "loader/open-ok", "loader open must succeed or say unsupported");
     xud_check(loader != NULL, "loader/non-null-out", "loader out-param must be set");
     xud_check(loader->library != NULL, "loader/handle-owned", "the dlopen handle must be owned");
+    xud_check(xud_loader_is_open(loader) == true, "loader/is-open", "an opened loader is open");
     xud_check(loader->resolvedCount == XUD_LOADER_GLOBAL_SLOT_COUNT, "loader/table-populated",
               "the populated-slot count must be the global-level count at step S2");
 
@@ -118,15 +176,17 @@ static void xud_test_loader_table(void)
     xud_check(loader->enumerateInstanceExtensionProperties != NULL, "loader/global-slot",
               "instance-extension PFN must be resolved");
 
-    /* Slots above step S2 must still be NULL: the table may not claim what was not resolved. */
-    xud_check(loader->createInstance == NULL, "loader/later-slot-null",
-              "instance-level slot must stay NULL at step S2");
-    xud_check(loader->createDevice == NULL, "loader/later-slot-null",
-              "device-level slot must stay NULL at step S2");
-    xud_check(loader->createSwapchainKHR == NULL, "loader/later-slot-null",
-              "swapchain slot must stay NULL at step S2");
-    xud_check(loader->destroySurfaceKHR == NULL, "loader/later-slot-null",
-              "surface teardown slot must stay NULL at step S2");
+    /* Slots the later layers have not reached must still be NULL: opening the loader may not
+       claim what was not resolved. The instance layer binds createInstance/destroyInstance
+       later, when it creates an instance, not when the loader opens. */
+    xud_check(loader->createInstance == NULL, "loader/slot-null-at-open",
+              "instance-level slot must stay NULL at loader open");
+    xud_check(loader->createDevice == NULL, "loader/slot-null-at-open",
+              "device-level slot must stay NULL at loader open");
+    xud_check(loader->createSwapchainKHR == NULL, "loader/slot-null-at-open",
+              "swapchain slot must stay NULL at loader open");
+    xud_check(loader->destroySurfaceKHR == NULL, "loader/slot-null-at-open",
+              "surface teardown slot must stay NULL at loader open");
 
     /* An unknown entry point is reported, not guessed, and the out-param stays NULL. */
     {
@@ -157,8 +217,10 @@ static void xud_test_loader_nil_guard(void)
     memset(&loader, 0, sizeof(loader)); /* a loader whose seed never resolved */
     bits.function = NULL;
 
-    xud_check(xud_loader_resolve(&loader, VK_NULL_HANDLE, "vkEnumerateInstanceLayerProperties", &bits)
-              == XUD_UNSUPPORTED, "loader/nil-pfn-guard", "a nil PFN must be reported, never called");
+    xud_check(xud_loader_is_open(NULL) == false, "loader/is-open-null", "a null loader is not open");
+    xud_check(xud_loader_is_open(&loader) == false, "loader/is-open-zeroed", "a table whose seed never resolved is not open");
+    xud_check(xud_loader_resolve(&loader, VK_NULL_HANDLE, "vkX", &bits) == XUD_UNSUPPORTED,
+              "loader/nil-pfn-guard", "a nil PFN must be reported, never called");
     xud_check(bits.function == NULL, "loader/nil-pfn-out-null", "out-param must stay NULL");
 
     xud_check(xud_loader_resolve(NULL, VK_NULL_HANDLE, "vkX", &bits) == XUD_INVALID_ARG,
@@ -182,6 +244,85 @@ static void xud_test_loader_nil_guard(void)
     }
 }
 
+/* The instance layer's pure parts: application info, extension selection, create-info
+   assembly. No driver call, so the headless run covers them completely. */
+static void xud_test_instance_pure(void)
+{
+    VkInstanceCreateInfo createInfo;
+    const char *nameSlots[XUD_MAX_INSTANCE_EXTENSIONS];
+    VkExtensionProperties advertised[4];
+    XudInstance instance;
+    XudResult result;
+
+    memset(&instance, 0, sizeof(instance));
+    memset(advertised, 0, sizeof(advertised));
+
+    /* Filled into the instance's own slot, which is what the create-info later points at. */
+    result = xud_instance_fill_application_info(&instance.applicationInfo);
+    xud_check(result == XUD_OK, "instance/app-info-ok", "fill must succeed");
+    xud_check(instance.applicationInfo.sType == VK_STRUCTURE_TYPE_APPLICATION_INFO, "instance/app-info-s-type", "sType must be the application-info struct type");
+    xud_check(instance.applicationInfo.pNext == NULL, "instance/app-info-p-next-null", "nothing is chained onto the application info");
+    xud_check(xud_name_equal(instance.applicationInfo.pApplicationName, XUD_INSTANCE_NAME) == true, "instance/app-info-name", "the application name must be the library name");
+    xud_check(xud_name_equal(instance.applicationInfo.pEngineName, XUD_INSTANCE_NAME) == true, "instance/app-info-engine-name", "this library is the engine");
+    xud_check(instance.applicationInfo.applicationVersion == VK_MAKE_API_VERSION(0u, XUD_VERSION_MAJOR, XUD_VERSION_MINOR, XUD_VERSION_PATCH), "instance/app-version", "the version must be the library version");
+    xud_check(instance.applicationInfo.engineVersion == instance.applicationInfo.applicationVersion, "instance/engine-version", "both version slots must agree");
+    xud_check(instance.applicationInfo.apiVersion == XUD_INSTANCE_API_FLOOR, "instance/api-floor", "the floor must be VK_API_VERSION_1_0");
+    xud_check(xud_instance_fill_application_info(NULL) == XUD_INVALID_ARG, "instance/app-info-null-out", "a null out-param must be rejected");
+
+    /* Two of the three wanted extensions, one extension the library does not want at this
+       level (VK_KHR_swapchain is device-level), and the wanted pair in the reverse of wanted
+       order: the selection must follow wanted order and ignore what is not wanted. */
+    strcpy(advertised[0].extensionName, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+    strcpy(advertised[1].extensionName, VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+    strcpy(advertised[2].extensionName, VK_KHR_SURFACE_EXTENSION_NAME);
+
+    result = xud_instance_select_extensions(&instance, advertised, 3u);
+    xud_check(result == XUD_OK, "instance/select-ok", "selection must succeed");
+    xud_check(instance.enabledExtensionCount == 2u, "instance/select-count", "only wanted-and-advertised names are enabled");
+    xud_check(xud_name_equal(instance.enabledExtensionNameStorage[0], VK_KHR_SURFACE_EXTENSION_NAME) == true, "instance/select-order", "wanted order, not advertised order");
+    xud_check(xud_name_equal(instance.enabledExtensionNameStorage[1], VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == true, "instance/select-second", "the second wanted-and-advertised name");
+    xud_check(xud_name_equal(instance.enabledExtensionNameStorage[2], "") == true, "instance/select-tail-untouched", "nothing beyond the count is written");
+
+    /* The selection is rewritten on every call: a reused struct cannot keep a stale list. */
+    result = xud_instance_select_extensions(&instance, NULL, 0u);
+    xud_check(result == XUD_OK, "instance/select-none-ok", "an empty advertised list is not an error");
+    xud_check(instance.enabledExtensionCount == 0u, "instance/select-none-count", "the previous list must not survive");
+    xud_check(xud_instance_select_extensions(NULL, advertised, 3u) == XUD_INVALID_ARG, "instance/select-null-out", "a null out-param must be rejected");
+    xud_check(xud_instance_select_extensions(&instance, NULL, 3u) == XUD_INVALID_ARG, "instance/select-null-advertised", "a null advertised array with a non-zero count must be rejected");
+
+    /* Re-select, then assemble: the create-info must point at the caller's nameSlots array,
+       which is what keeps it alive across the vkCreateInstance call. */
+    result = xud_instance_select_extensions(&instance, advertised, 3u);
+    xud_check(result == XUD_OK, "instance/select-again-ok", "selection must be repeatable");
+    result = xud_instance_fill_create_info(&instance, nameSlots, &createInfo);
+    xud_check(result == XUD_OK, "instance/create-info-ok", "assembly must succeed");
+    xud_check(createInfo.sType == VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, "instance/create-info-s-type", "sType must be the instance-create struct type");
+    xud_check(createInfo.pNext == NULL, "instance/create-info-p-next-null", "nothing is chained yet - validation is the diagnostics step");
+    xud_check(createInfo.flags == 0, "instance/create-info-flags", "the portability flag is deliberately not set");
+    xud_check(createInfo.pApplicationInfo == &instance.applicationInfo, "instance/create-info-app-info", "the create-info carries the application info");
+    xud_check(createInfo.pApplicationInfo->apiVersion == XUD_INSTANCE_API_FLOOR, "instance/create-info-floor", "the floor travels with it");
+    xud_check(createInfo.enabledLayerCount == 0u, "instance/create-info-no-layers", "validation layers are the diagnostics step's job");
+    xud_check(createInfo.ppEnabledLayerNames == NULL, "instance/create-info-no-layer-names", "no layer names without a count");
+    xud_check(createInfo.enabledExtensionCount == 2u, "instance/create-info-extension-count", "the selected count travels");
+    xud_check(createInfo.ppEnabledExtensionNames != NULL, "instance/create-info-extension-names", "a non-zero count must carry names");
+    xud_check(nameSlots[0] == createInfo.ppEnabledExtensionNames[0], "instance/create-info-aliases-caller-array", "the create-info points at the caller's array, not a copy");
+    xud_check(xud_name_equal(createInfo.ppEnabledExtensionNames[0], VK_KHR_SURFACE_EXTENSION_NAME) == true, "instance/create-info-first-name", "wanted order reaches the driver");
+    xud_check(xud_name_equal(createInfo.ppEnabledExtensionNames[1], VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == true, "instance/create-info-second-name", "wanted order reaches the driver");
+    xud_check(nameSlots[2] == NULL, "instance/create-info-name-tail-null", "the tail of the caller's array is NULLed so no stale pointer survives");
+    xud_check(xud_instance_fill_create_info(NULL, nameSlots, &createInfo) == XUD_INVALID_ARG, "instance/create-info-null-instance", "a null instance must be rejected");
+    xud_check(xud_instance_fill_create_info(&instance, NULL, &createInfo) == XUD_INVALID_ARG, "instance/create-info-null-name-slots", "a null name-slot array must be rejected");
+    xud_check(xud_instance_fill_create_info(&instance, nameSlots, NULL) == XUD_INVALID_ARG, "instance/create-info-null-out", "a null out-param must be rejected");
+
+    /* The driver half refuses a loader it was not given open - checked before any dlopen. */
+    {
+        XudInstance *refused = NULL;
+        xud_check(xud_instance_create(&refused, NULL) == XUD_INVALID_ARG, "instance/create-null-loader", "a null loader must be rejected");
+        xud_check(refused == NULL, "instance/create-null-loader-out-untouched", "a rejected create must leave the out-param alone");
+        xud_check(xud_instance_destroy(&refused, NULL) == XUD_INVALID_ARG, "instance/destroy-null-loader", "a null loader must be rejected");
+        xud_check(refused == NULL, "instance/destroy-null-loader-out-untouched", "a rejected destroy must leave the pointer alone");
+    }
+}
+
 /* The public runtime query: it must answer ok or unsupported, never another code, and it
    must not cache - the answer is recomputed from a fresh dlopen each call. */
 static void xud_test_vulkan_supported(void)
@@ -195,16 +336,16 @@ static void xud_test_vulkan_supported(void)
     printf("note: xud_vulkan_supported() -> %s\n", xud_result_name(first));
 }
 
-/* Step S2 boundary: the loader opens and its table is filled, but instance / device / queue
-   / surface do not exist yet - so a valid request must still report XUD_UNSUPPORTED rather
-   than hand back a context that cannot draw. */
+/* Bring-up boundary: the loader and the instance layer exist now, but the layers below the
+   instance (device, queue, surface, swapchain) do not - so a valid request must still report
+   XUD_UNSUPPORTED rather than hand back a context that owns an instance and no way to use it. */
 static void xud_test_init_bringup_boundary(void)
 {
     XudContext *context = NULL;
     const XudResult result = xud_init_context(&context, 640, 480);
 
     xud_check(result == XUD_UNSUPPORTED, "init/bringup-incomplete",
-              "valid args must yield XUD_UNSUPPORTED until bring-up step S3 lands");
+              "valid args must yield XUD_UNSUPPORTED until the layers below the instance land");
     xud_check(context == NULL, "init/no-context-on-unsupported",
               "an incomplete bring-up must not return a context");
 
@@ -229,9 +370,10 @@ static void xud_test_close(void)
 }
 
 /* Every rejected and every incomplete init must free what it allocated - including the
-   loader handle it opened before reporting the bring-up incomplete. The verdict is the
-   sanitizer/valgrind report over these 1000 iterations (each one a dlopen/dlsym/dlclose
-   cycle), not an assertion here. */
+   instance and the loader handle it opened before reporting the bring-up incomplete. The
+   verdict is the sanitizer/valgrind report over these 1000 iterations (each one a dlopen/dlsym
+   plus a vkCreateInstance/vkDestroyInstance cycle where a driver is present), not an assertion
+   here. */
 static void xud_test_no_leak(void)
 {
     for (int i = 0; i < 1000; i++) {
@@ -240,6 +382,67 @@ static void xud_test_no_leak(void)
         (void)xud_close_context(&context);
     }
     xud_check(1, "no-leak/ran", "1000 init+close iterations completed");
+}
+
+/* GPU-gated: the instance layer against the real driver. This is the first test that needs
+   a device, and the run must be validation-clean, not just crash-free. */
+static void xud_test_gpu_instance(void)
+{
+    XudLoader *loader = NULL;
+    XudInstance *instance = NULL;
+    XudPfnBits bits;
+    XudResult result;
+
+    result = xud_loader_open(&loader);
+    xud_check(result == XUD_OK, "gpu/loader-open", "the GPU run needs an open loader");
+    if (loader == NULL) return;
+
+    /* vkDestroyInstance is instance-level: no handle in hand means no answer, which is why
+       the instance layer cannot pre-bind it at loader time (see xud_instance.c). */
+    bits.function = NULL;
+    xud_check(xud_loader_resolve(loader, VK_NULL_HANDLE, "vkDestroyInstance", &bits) == XUD_UNSUPPORTED, "gpu/destroy-not-global", "instance-level commands are not resolvable without a handle");
+    xud_check(bits.function == NULL, "gpu/destroy-out-null", "a failed resolve must leave the out-param NULL");
+    xud_check(loader->destroyInstance == NULL, "gpu/destroy-slot-null", "the slot must stay NULL before the instance exists");
+
+    result = xud_instance_create(&instance, loader);
+    xud_check(result == XUD_OK, "gpu/instance-create", "vkCreateInstance at the floor must succeed on this machine");
+    if (instance == NULL) { (void)xud_loader_close(&loader); return; }
+    xud_check(instance->instance != VK_NULL_HANDLE, "gpu/instance-handle", "the handle must be live");
+    xud_check(instance->applicationInfo.apiVersion == XUD_INSTANCE_API_FLOOR, "gpu/instance-floor", "the floor travels to the driver");
+    /* lavvk advertises all three wanted extensions here (verified 2026-10-16), so all three
+       are enabled in wanted order; a driver that advertises fewer would enable fewer. */
+    xud_check(instance->enabledExtensionCount == 3u, "gpu/instance-extension-count", "all three wanted extensions are advertised here");
+    xud_check(xud_name_equal(instance->enabledExtensionNameStorage[0], VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME) == true, "gpu/name-first", "wanted order reaches the driver");
+    xud_check(xud_name_equal(instance->enabledExtensionNameStorage[1], VK_KHR_SURFACE_EXTENSION_NAME) == true, "gpu/name-second", "wanted order reaches the driver");
+    xud_check(xud_name_equal(instance->enabledExtensionNameStorage[2], VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) == true, "gpu/name-third", "wanted order reaches the driver");
+    xud_check(loader->createInstance != NULL, "gpu/create-slot-bound", "the create slot is bound into the table");
+
+    result = xud_instance_destroy(&instance, loader);
+    xud_check(result == XUD_OK, "gpu/instance-destroy", "the instance must be destroyed through the live handle");
+    xud_check(instance == NULL, "gpu/destroy-nulls-out", "destroy must clear the out-param");
+    xud_check(loader->destroyInstance != NULL, "gpu/destroy-slot-bound", "destroy resolved the instance-level command and cached it");
+
+    xud_check(xud_instance_destroy(&instance, loader) == XUD_ALREADY, "gpu/destroy-twice", "a second destroy is XUD_ALREADY, not a double free");
+
+    /* A second create/destroy pair on the same table: the binding is reusable and nothing
+       accumulates in the loader. */
+    result = xud_instance_create(&instance, loader);
+    xud_check(result == XUD_OK, "gpu/instance-create-second", "a second instance must create as cleanly as the first");
+    xud_check(instance != NULL, "gpu/instance-second-non-null", "the out-param must be set");
+    xud_check(xud_instance_destroy(&instance, loader) == XUD_OK, "gpu/instance-destroy-second", "and tear down");
+    xud_check(instance == NULL, "gpu/instance-second-null", "destroy must clear it");
+
+    /* Teardown of an instance that never got a handle: no driver call, struct freed. */
+    instance = calloc(1, sizeof(XudInstance));
+    xud_check(instance != NULL, "gpu/synthetic-instance-alloc", "the synthetic struct must allocate");
+    if (instance != NULL) {
+        instance->instance = VK_NULL_HANDLE;
+        xud_check(xud_instance_destroy(&instance, loader) == XUD_OK, "gpu/destroy-handleless", "no driver call, the struct is freed");
+        xud_check(instance == NULL, "gpu/destroy-handleless-null", "and the out-param cleared");
+    }
+
+    xud_check(xud_loader_close(&loader) == XUD_OK, "gpu/loader-close", "the loader must close");
+    xud_check(loader == NULL, "gpu/loader-close-null", "and be cleared");
 }
 
 int main(void)
@@ -251,18 +454,19 @@ int main(void)
 
     xud_test_version();
     xud_test_result_names();
+    xud_test_result_mapping();
+    xud_test_name_helpers();
     xud_test_loader_nil_guard();
     xud_test_loader_table();
+    xud_test_instance_pure();
     xud_test_vulkan_supported();
     xud_test_init_arg_validation();
     xud_test_init_bringup_boundary();
     xud_test_close();
     xud_test_no_leak();
 
-    /* GPU-gated section: still empty at step S2 - the first GPU check arrives when step
-       S3 creates an instance. The loader itself is not GPU-gated: dlopen needs no device,
-       so the default headless run already exercises it. */
-    if (gpu) printf("gpu checks: none yet (bring-up step S3 is the first)\n");
+    /* GPU-gated section: the instance layer is the first thing that needs a device. */
+    if (gpu) xud_test_gpu_instance();
     else     printf("gpu checks: skipped (set XUD_GPU_TESTS=1 to run them)\n");
 
     printf("run complete: %d checks, %d failures\n", xudChecks, xudFailures);

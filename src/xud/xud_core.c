@@ -3,11 +3,12 @@
  *   xud_core.c - XudContext lifecycle
  *
  *   Owns : argument validation, the context shell allocation, the error-code names, the
- *          runtime Vulkan query, and teardown. The loader layer is reached from here (step
- *          S2), and only through xud_loader.h: nothing in this file calls a Vulkan entry
- *          point directly, and a machine with no driver only ever gets XUD_UNSUPPORTED,
- *          which is what keeps the headless test run green.
- *   Layer: core (bottom of the public API). Sees xud.h, xud_core.h and the loader layer.
+ *          runtime Vulkan query, and teardown. The loader layer and the instance layer are
+ *          reached from here, and only through xud_loader.h / xud_instance.h: nothing in this
+ *          file calls a Vulkan entry point directly, and a machine with no driver only ever
+ *          gets XUD_UNSUPPORTED, which is what keeps the headless test run green.
+ *   Layer: core (bottom of the public API). Sees xud.h, xud_core.h and the layers below it
+ *          (loader, instance).
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -16,6 +17,7 @@
 #include "xud.h"
 #include "xud_core.h"
 #include "xud_loader.h"
+#include "xud_instance.h"
 
 #include <stdlib.h>
 
@@ -86,19 +88,26 @@ XudResult xud_init_context(XudContext **outContext, uint32_t width, uint32_t hei
     result = xud_context_create(&context, width, height);
     if (result != XUD_OK) return result;
 
-    /* S2: the loader opens, dlsyms the seed entry point, and fills the global-level slots
-       of the PFN table. XUD_UNSUPPORTED here means "no Vulkan loader on this machine" -
-       still XUD_UNSUPPORTED overall, but a different reason, and worth telling apart. */
+    /* Loader bring-up: opens, dlsyms the seed entry point, and fills the global-level slots
+       of the PFN table. XUD_UNSUPPORTED here means "no Vulkan loader on this machine". */
     result = xud_loader_open(&context->loader);
     if (result != XUD_OK) goto fail;
 
-    /* Bring-up steps S3..S7 slot in here, in order:
-         S3 vkCreateInstance (VK_API_VERSION_1_0 floor, advertised extensions only)
-         S5 vkEnumeratePhysicalDevices + caps recorded before any extension is enabled
-         S6 vkCreateDevice + one queue family (graphics + present)
-         S7 glfwCreateWindowSurface -> VkSurfaceKHR
-       None of them exist yet, so the loader is all there is to own: report that rather
-       than hand back a context that cannot draw anything. */
+    /* The instance layer: vkCreateInstance at the VK_API_VERSION_1_0 floor, with only the
+       advertised extensions enabled. XUD_UNSUPPORTED here means the loader is present but
+       refuses to create an instance - a different reason from "no loader", and worth telling
+       apart (see the test that distinguishes the two). */
+    result = xud_instance_create(&context->instance, context->loader);
+    if (result != XUD_OK) goto fail;
+
+    /* The layers below this one do not exist yet, in order:
+         physical device   vkEnumeratePhysicalDevices + caps recorded before any extension is enabled
+         device + queues   vkCreateDevice + one queue family (graphics + present)
+         swapchain         VkSwapchainKHR from the GLFW surface
+         surface           glfwCreateWindowSurface -> VkSurfaceKHR
+       None of them is there, so the context cannot draw anything: report that rather than
+       hand back something that owns an instance and no way to use it. The instance and the
+       loader are still torn down below - a partial bring-up must leak nothing. */
     result = XUD_UNSUPPORTED;
     goto fail;
 
@@ -117,9 +126,11 @@ XudResult xud_close_context(XudContext **context)
 
     victim = *context;
 
-    /* Destroy order is the reverse of creation. Steps S3..S8 add the Vulkan teardown
-       calls here (swapchain -> surface -> device -> instance) before the loader is closed;
-       at step S2 the loader is the only sub-object that exists. */
+    /* Destroy order is the reverse of creation: instance before loader, and the layers that
+       come later (swapchain -> surface -> device) slot in before the instance. xud_instance
+       _destroy() clears the handle before freeing the struct, so a context that is torn down
+       twice cannot double-free. */
+    (void)xud_instance_destroy(&victim->instance, victim->loader);
     (void)xud_loader_close(&victim->loader);
 
     free(victim);
