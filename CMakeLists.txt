@@ -36,8 +36,11 @@ endif()
 # Library: one static archive, one public header, one TU per module
 #-------------------------------------------------------------------------------------
 
+# xud_loader.c dlopens the Vulkan ICD loader: dlopen/dlsym/dlclose come from libc, so
+# there is still no -lvulkan and no -ldl on any link line (verified with ldd + nm -u).
 add_library(xud STATIC
     src/xud/xud_core.c
+    src/xud/xud_loader.c
 )
 
 target_include_directories(xud PUBLIC

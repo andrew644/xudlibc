@@ -5,9 +5,10 @@
  *   Owns : the public API surface and nothing else - version macros, build-time config
  *          switches (XUD_VALIDATE / XUD_GPU_TESTS), the runtime environment-variable names
  *          the library reads, the XudResult error enum, the opaque XudContext owner type,
- *          and the xud_init_context()/xud_close_context() lifecycle pair.
- *   Layer: top of the stack (public API). Everything below it is internal: xud_core.h/.c
- *          and the Vulkan bring-up steps S2..S8 tracked in todo.md.
+ *          the xud_init_context()/xud_close_context() lifecycle pair, and the runtime
+ *          Vulkan query xud_vulkan_supported().
+ *   Layer: top of the stack (public API). Everything below it is internal: xud_core.h/.c,
+ *          xud_loader.h/.c, and the Vulkan bring-up steps S3..S8 tracked in todo.md.
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -99,11 +100,17 @@ const char *xud_result_name(XudResult result);
 
 typedef struct XudContext XudContext;
 
+/// True runtime query, not a build-time constant and not cached: dlopen the Vulkan loader
+/// and resolve its seed entry point. XUD_OK if the loader answers, XUD_UNSUPPORTED if the
+/// driver is absent or does not. Safe with no device present and no window open.
+XudResult xud_vulkan_supported(void);
+
 /// Create the library context for a width x height window: resolve the Vulkan loader,
 /// create instance / physical device / device + queues / swapchain surface, and build the
 /// renderer. On entry *outContext must be NULL; it is NULL on every failure path.
-/// At step S1 nothing below the context shell exists yet, so a valid call returns
-/// XUD_UNSUPPORTED and leaves *outContext NULL, having leaked nothing.
+/// At step S2 the loader opens and its entry-point table is filled, but instance / device
+/// / surface are still pending, so a valid call returns XUD_UNSUPPORTED and leaves
+/// *outContext NULL, having opened and closed the loader without leaking it.
 XudResult xud_init_context(XudContext **outContext, uint32_t width, uint32_t height);
 
 /// Tear the context down (device -> surface -> instance -> loader) and free it.

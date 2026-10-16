@@ -2,11 +2,12 @@
  *
  *   xud_core.c - XudContext lifecycle
  *
- *   Owns : argument validation, the context shell allocation, the error-code names, and
- *          teardown. No Vulkan entry point is reached from this file at step S1: the
- *          loader is not dlopen()ed yet (that is step S2), so nothing here can depend on
- *          a driver being present, which is what keeps the headless test run green.
- *   Layer: core (bottom of the public API). Sees only xud.h and xud_core.h.
+ *   Owns : argument validation, the context shell allocation, the error-code names, the
+ *          runtime Vulkan query, and teardown. The loader layer is reached from here (step
+ *          S2), and only through xud_loader.h: nothing in this file calls a Vulkan entry
+ *          point directly, and a machine with no driver only ever gets XUD_UNSUPPORTED,
+ *          which is what keeps the headless test run green.
+ *   Layer: core (bottom of the public API). Sees xud.h, xud_core.h and the loader layer.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -14,6 +15,7 @@
 
 #include "xud.h"
 #include "xud_core.h"
+#include "xud_loader.h"
 
 #include <stdlib.h>
 
@@ -55,6 +57,25 @@ const char *xud_result_name(XudResult result)
     return "XUD_OUT_OF_RANGE";
 }
 
+XudResult xud_vulkan_supported(void)
+{
+    XudLoader *loader = NULL;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t resolved = 0u;
+
+    result = xud_loader_open(&loader);
+    if (result != XUD_OK)
+    {
+        if (loader != NULL) (void)xud_loader_close(&loader);
+        return result;
+    }
+
+    resolved = loader->resolvedCount;
+    (void)xud_loader_close(&loader);
+
+    return (resolved >= XUD_LOADER_GLOBAL_SLOT_COUNT) ? XUD_OK : XUD_UNSUPPORTED;
+}
+
 XudResult xud_init_context(XudContext **outContext, uint32_t width, uint32_t height)
 {
     XudContext *context = NULL;
@@ -65,14 +86,19 @@ XudResult xud_init_context(XudContext **outContext, uint32_t width, uint32_t hei
     result = xud_context_create(&context, width, height);
     if (result != XUD_OK) return result;
 
-    /* Bring-up steps S2..S7 slot in here, in order:
-         S2 dlopen("libvulkan.so.1") + vkGetInstanceProcAddr into the PFN table
+    /* S2: the loader opens, dlsyms the seed entry point, and fills the global-level slots
+       of the PFN table. XUD_UNSUPPORTED here means "no Vulkan loader on this machine" -
+       still XUD_UNSUPPORTED overall, but a different reason, and worth telling apart. */
+    result = xud_loader_open(&context->loader);
+    if (result != XUD_OK) goto fail;
+
+    /* Bring-up steps S3..S7 slot in here, in order:
          S3 vkCreateInstance (VK_API_VERSION_1_0 floor, advertised extensions only)
          S5 vkEnumeratePhysicalDevices + caps recorded before any extension is enabled
          S6 vkCreateDevice + one queue family (graphics + present)
          S7 glfwCreateWindowSurface -> VkSurfaceKHR
-       None of them exist yet, so there is nothing to own: report that rather than hand
-       back a context that cannot draw anything. */
+       None of them exist yet, so the loader is all there is to own: report that rather
+       than hand back a context that cannot draw anything. */
     result = XUD_UNSUPPORTED;
     goto fail;
 
@@ -92,7 +118,9 @@ XudResult xud_close_context(XudContext **context)
     victim = *context;
 
     /* Destroy order is the reverse of creation. Steps S3..S8 add the Vulkan teardown
-       calls here (device -> surface -> instance -> loader) before the shell is freed. */
+       calls here (swapchain -> surface -> device -> instance) before the loader is closed;
+       at step S2 the loader is the only sub-object that exists. */
+    (void)xud_loader_close(&victim->loader);
 
     free(victim);
     *context = NULL;

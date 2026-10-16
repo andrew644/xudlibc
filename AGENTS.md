@@ -23,7 +23,7 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 | `bin/`, `build/` | Build output | Gitignored, never committed |
 | `todo.md` | Project progress tracker | Update every session, dated one-liners |
 
-**Present today (after S1)**: `src/xud/` = `xud.h` + `xud_core.h` + `xud_core.c`; `tests/` = `xud_test.c`; `examples/` = `hello_context.c`; `reference/raylib/`; `build/` (gitignored CMake output, plus `build-san/` when sanitizers are wanted). **Not created yet**: `shaders/`, `third_party/`, `bin/`.
+**Present today (after S2)**: `src/xud/` = `xud.h` + `xud_core.h` + `xud_core.c` + `xud_loader.h` + `xud_loader.c`; `tests/` = `xud_test.c`; `examples/` = `hello_context.c`; `reference/raylib/`; `build/` (gitignored CMake output, plus `build-san/` when sanitizers are wanted). **Not created yet**: `shaders/`, `third_party/`, `bin/`.
 
 ## Toolchain (verified on this machine — use exactly these)
 
@@ -46,6 +46,12 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 `glfwGetPhysicalDevicePresentationSupport(VkInstance, VkPhysicalDevice, uint32_t queuefamily)`,
 `glfwCreateWindowSurface(VkInstance, GLFWwindow *, const VkAllocationCallbacks *, VkSurfaceKHR *)`, `glfwInitVulkanLoader(PFN_vkGetInstanceProcAddr)`.
 There is **no** `glfwDestroyVulkanSurface` in 3.5 — destroy the surface with `vkDestroySurfaceKHR`.
+
+**Verified loader bring-up (step S2, 2026-10-16)** — the shape `src/xud/xud_loader.c` uses:
+- `dlopen("libvulkan.so.1", RTLD_NOW|RTLD_GLOBAL)` succeeds (resolves to `libvulkan.so.1.4.357`); `dlsym(handle, "vkGetInstanceProcAddr")` resolves; the seed then resolves `vkEnumerateInstanceLayerProperties` (**3 layers advertised** here) and `vkEnumerateInstanceExtensionProperties`. `dlopen`/`dlsym`/`dlclose` come from **libc** — there is no `-ldl` and no `-lvulkan` anywhere: `ldd build/xud_test` lists neither, `nm -u build/xud_test` lists no `vk*` symbol.
+- The PFN typedefs (`PFN_vkGetInstanceProcAddr`, `PFN_vkEnumerateInstanceLayerProperties`, …) **are** in `/usr/include/vulkan/vulkan_core.h` (guarded by `VK_API_VERSION_1_0`), so the loader's table is typed with them and the header includes `<vulkan/vulkan.h>` for `VK_API_VERSION_1_0` / `VK_NULL_HANDLE` only — headers are compile-time, they create no link dependency. `VK_NULL_HANDLE` is `0U` here, so it passes cleanly into the `VkInstance` parameter of a resolve call.
+- **Strict-mode cast rule**: casting the `void*` that `dlsym` returns to a function-pointer type (or a function pointer back to `void*`) is a hard error under `-std=c11 -Wall -Wextra -Wpedantic -Werror` (`ISO C forbids conversion of object pointer to function pointer type`, and `the address of 'vkX' will always evaluate as 'true'`). `xud_loader.c` copies the bits instead: a `XudPfnBits { void *object; void (*function)(void); }` union + `memcpy` into the slot — verified to compile with gcc and clang under the project flags.
+- **`static_assert` rule**: it needs `<assert.h>`, and the **message-less form is rejected by clang 22** under `-std=c11 -Wall -Wextra -Wpedantic -Werror` (`'_Static_assert' with no message is a C23 extension`). Always write `static_assert(cond, "why").`
 
 **Verified header gap:** `VkPhysicalDeviceValidationFeatures` / `VK_VALIDATE_*` are **not in Vulkan-Headers at all** (SDK-only). The only validation-feature struct available here is `VkValidationFeaturesEXT` (a `pNext` chain on `VkInstanceCreateInfo`), plus `VK_VALIDATION_FEATURE_ENABLE_*` / `VK_VALIDATION_FEATURE_DISABLE_*` enums from `vulkan_ext` headers. Confirm with a grep before using any of these names.
 
@@ -94,6 +100,7 @@ Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers a
 - Doc comments: `///` Doxygen-style above public declarations only (no Doxygen build required yet).
 - Compile flags in dev: `-std=c11 -Wall -Wextra -Wpedantic -Werror` plus `-fsanitize=address,undefined` for tests. Release: `-O2`. The CMakeLists adds these itself (`-Wall -Wextra -Wpedantic -Werror` always, `-g -DXUD_DEBUG=1` by default, `-O2` under `-DXUD_DEBUG=OFF`, sanitizers under `-DXUD_SANITIZERS=ON`).
 - **Never add `-Ddefault=lib`** to a compile line here: with gcc 16.2.1 and clang 22.1.8 it is a preprocessor define of a macro named `default`, which rewrites every `default:` label in every `switch` and breaks the build (verified: both compilers fail a two-case switch under it).
+- Under these flags, `dlsym` → function-pointer casts and message-less `static_assert` are **errors, not warnings** — see *Verified loader bring-up* for the union+`memcpy` idiom and the `static_assert(cond, "why")` form.
 
 ## Vulkan rules (best practices — these are the point of the repo)
 
