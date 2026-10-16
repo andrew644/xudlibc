@@ -1,0 +1,197 @@
+# xudlibc — agent guidance
+
+Read this before touching anything here. **Work only inside `/home/andrew/repos/xudlibc`** — never edit sibling repos under `~/repos`
+
+## What xudlibc is
+
+- A **C11** library modelled on raylib's public API, but rendered with **Vulkan instead of OpenGL**.
+- Same shape as raylib: window/surface creation, `BeginDrawing`/`EndDrawing`, draw calls (`DrawCube`, `DrawMesh`, `DrawTriangle3D`, …), camera + transform math, textures, fonts, models, audio, input — implemented on explicit Vulkan pipelines.
+- **No OpenGL, no EGL, no fixed-function, no state machine.** If a raylib feature only makes sense in fixed-function GL, re-express it as a pipeline + a batch, or drop it.
+- raylib is a **reference for API shape only** (names, semantics, module split). Never link it, never `#include` it.
+  The headers are **already here**: `reference/raylib/raylib.h` (raylib **6.2**, `6.2-5-gc757c743`) — see *Reference material* below for the exact file list.
+
+## Repo layout
+
+| Path | What | Rules |
+| --- | --- | --- |
+| `src/xud/` | Library sources (`xud.h` public header + one `.c`/`.h` per module) | Where all library code lives |
+| `tests/` | Unit tests | Headless by default; GPU tests gated by `XUD_GPU_TESTS=1` |
+| `examples/` | Runnable demos | Small, one concern each |
+| `shaders/` | GLSL sources + built `.spv` | Compiled at build time, never at runtime |
+| `third_party/` | Vendored single-header deps | Only with an explicit decision (see Open decisions) |
+| `reference/raylib/` | raylib **6.2** headers (present today, 560 KB) | **NEVER EDIT** — gitignored, never `#include`d, never built against |
+| `bin/`, `build/` | Build output | Gitignored, never committed |
+| `todo.md` | Project progress tracker | Update every session, dated one-liners |
+
+## Toolchain (verified on this machine — use exactly these)
+
+| Thing | Value |
+| --- | --- |
+| OS | Arch Linux, `x86_64`, 8 cores |
+| Compilers | `gcc` **16.2.1**, `clang` **22.1.8** |
+| Build | `cmake` + `ninja` (also `meson`, `make`, `ccache`, `pkg-config` present) |
+| Vulkan headers | `/usr/include/vulkan/vulkan.h`, `vulkan-headers` **1.4.357** (`VK_HEADER_VERSION 357`, newest core macro = `VK_API_VERSION_1_4`) |
+| Vulkan loader | `libvulkan.so.1` → `libvulkan.so.1.4.357` (ICD loader, present) |
+| Validation layer | `VK_LAYER_KHRONOS_validation` present (`/usr/share/vulkan/explicit_layer.d`, `api_version 1.4.357`) |
+| ICDs | `intel_icd`, `intel_hasvk_icd`, `nouveau_icd`, `radeon_icd` |
+| GPU | Intel **TigerLake-LP GT2 (Iris Xe)** → `vulkan_intel` (lavvk); `/dev/dri/renderD128` present |
+| Window/input | system **GLFW 3.5.1** (`pkg-config glfw3`, `/usr/include/GLFW/glfw3.h`, `libglfw.so.3.5`) |
+| Shader tools | `glslangValidator` (glslang 11:16.4.0, GLSL 4.60 / ESSL 3.20), `glslc` 2026.3, `spirv-val`, `spirv-opt`, `spirv-as` |
+| **Not installed** | No Vulkan SDK, no Volk, no VMA, no miniaudio, no cgltf, no stb, no `cglm` — anything like that must be vendored by hand, and that needs a decision first |
+
+**Verified GLFW 3.5.1 Vulkan surface**:
+`glfwVulkanSupported()`, `glfwGetRequiredInstanceExtensions(uint32_t *count)`, `glfwGetInstanceProcAddress(VkInstance, const char *)`,
+`glfwGetPhysicalDevicePresentationSupport(VkInstance, VkPhysicalDevice, uint32_t queuefamily)`,
+`glfwCreateWindowSurface(VkInstance, GLFWwindow *, const VkAllocationCallbacks *, VkSurfaceKHR *)`, `glfwInitVulkanLoader(PFN_vkGetInstanceProcAddr)`.
+There is **no** `glfwDestroyVulkanSurface` in 3.5 — destroy the surface with `vkDestroySurfaceKHR`.
+
+**Verified header gap:** `VkPhysicalDeviceValidationFeatures` / `VK_VALIDATE_*` are **not in Vulkan-Headers at all** (SDK-only). The only validation-feature struct available here is `VkValidationFeaturesEXT` (a `pNext` chain on `VkInstanceCreateInfo`), plus `VK_VALIDATION_FEATURE_ENABLE_*` / `VK_VALIDATION_FEATURE_DISABLE_*` enums from `vulkan_ext` headers. Confirm with a grep before using any of these names.
+
+## Commands
+
+| Task | Command |
+| --- | --- |
+| Configure | `cmake -B build -G ninja` |
+| Build everything | `ninja -C build` |
+| Build one example | `ninja -C build <target>` |
+| Syntax/lint check (fast, no codegen) | `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror -I src/xud src/xud/*.c` |
+| Unit tests (headless) | `./build/xud_test` |
+| GPU tests | `XUD_GPU_TESTS=1 ./build/xud_test` |
+| Sanitizer build | add `-fsanitizer=address,undefined` to the test target |
+| Compile a shader | `glslangValidator -V -o shaders/solid.spv shaders/solid.vert` (and `-G` for geometry/comp) |
+| Validate SPIR-V | `spirv-val shaders/solid.spv` |
+
+Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers all three). Never commit generated `.spv` blobs unless a test needs a checked-in SPIR-V fixture — say why.
+
+## Reference material (what is actually here)
+
+`reference/raylib/` — **raylib 6.2 headers**, copied 2026-10-16 from `~/repos/xudlib/reference/raylib/src/` (git `6.2-5-gc757c743`, i.e. 6.2 + 5 commits past the tag). Read-only, gitignored, 560 KB total. `reference/raylib/PROVENANCE.md` records the source and per-file contents.
+
+| File | Use it for |
+| --- | --- |
+| `reference/raylib/raylib.h` | The whole public API surface — every function, type, enum, struct. This is the shape `xud.h` mirrors. |
+| `reference/raylib/raymath.h` | Matrix/vector math (header-only, column-major `Matrix` = 16 floats) — model of `xudmath.h` |
+| `reference/raylib/rcamera.h` | Camera 3D/2D + camera modes / freecam movement |
+| `reference/raylib/rgestures.h` | Touch gesture types |
+| `reference/raylib/rlgl.h` | raylib's GL abstraction layer — the immediate-mode→draw-batch structure that our Vulkan `xudrl` layer replaces |
+| `reference/raylib/config.h` | raylib's build/config switches |
+| `reference/raylib/LICENSE` | raylib license text, must stay with the material |
+
+**Not copied**: the `.c` module sources (`rcore.c`, `rshapes.c`, `rtext.c`, `rtextures.c`, `rmodels.c`, `raudio.c`, `rglfw.c`) and `src/external/` (cgltf, miniaudio, stb, glfw, …). Ask before pulling either in — `src/external/` in particular is a vendoring decision, not a reference read.
+
+## C house style
+
+- **C11**, one public header (`xud.h`) plus `xud*.h`/`xud*.c` module headers/sources. No C++ anywhere.
+- Names: `xudPascalCaseOrNot` — concretely: **functions `xudSnakeCase`** (`xud_init_window`, `xud_draw_cube`), **types `PascalCase`** (`XudWindow`, `XudCamera3D`), **macros/constants `XUD_SNAKE_UPPER`** (`XUD_MAX_LIGHTS`). No Hungarian prefixes.
+- Every public function returns an error code (`XudResult`) or fills an out-param; **nothing is silently ignored**.
+- One `XudContext` owns instance/device/swapchain/allocator. Callers never hold a `VkDevice`, `VkSwapchainKHR`, or raw `VkBuffer`.
+- Opaque handles = `{ uint32_t index; uint32_t generation; }` validated against a slot array. Stale handles must be caught, not UB.
+- Cleanup idiom: `goto fail;` ladder in init paths, one `xud_close_*()` teardown; every partial-failure path must leak nothing.
+- No global mutable state except the single library context pointer; multiple windows must work.
+- `#include` guard `XUD_<FILE>_H_`; file-top comment stating what the file owns and which layer it belongs to.
+- Doc comments: `///` Doxygen-style above public declarations only (no Doxygen build required yet).
+- Compile flags in dev: `-std=c11 -Wall -Wextra -Wpedantic -Werror -Ddefault=lib` plus `-fsanitizer` for tests. Release: `-O2`.
+
+## Vulkan rules (best practices — these are the point of the repo)
+
+- **No Vulkan symbols linked at build time.** Load `libvulkan.so` with `dlopen` + `vkGetInstanceProcAddr` (Volk-style), resolve entry points into a small internal function table. Rationale: the library must build and run on a machine with no driver, and `xud_vulkan_supported()` must be a real runtime query. Do **not** add `-lvulkan` to the link line.
+- **Never hardcode a layer name.** Enumerate with `vkEnumerateInstanceLayerProperties`, request everything advertised, and re-create the instance with `ppEnabledLayerNames`. Validation is gated: `XUD_VALIDATE` on in debug builds, off in release, always overridable by env (`VK_INSTANCE_LAYERS`) or config.
+- **Check before you use.** Every extension and feature is queried (`vkEnumerateDeviceExtensionProperties`, `vkGetPhysicalDeviceFeatures2`) and recorded in a `XudDeviceCaps` struct; `VkDeviceCreateInfo` carries **only** what was verified. Anything unverified stays off and the feature that needed it returns `XUD_UNSUPPORTED`.
+- **Explicit pipelines, created once at init.** A small fixed set of variants (see Design sketch), never created per draw, never rebuilt per frame.
+- **Allocate once, suballocate always.** One GPU-memory allocator owns all buffers/images; static geometry is a one-time allocation, per-frame data comes from a ring/transient allocation. **No `vkCreateBuffer` inside a frame.**
+- **Staging via transfer ops only**: `vkCmdCopyBuffer` / `vkCmdCopyImage` / `vkCmdCopyBufferToImage` from a staging ring. No `vkMapMemory` per frame without a matching `vkUnmapMemory` + `VkBufferInvalidateRangeInfo` (or a `vkCmdPipelineBarrier` with the right scope), and prefer the copy path over mapped writes for anything transient.
+- **Synchronization is classic**: acquire/present semaphores for frame boundaries, one `VkFence` per swapchain image, `vkCmdPipelineBarrier` and explicit subpass dependencies inside a command buffer. **No `VK_KHR_vulkan_memory_model`**, no `vkmm*` sync — it is not in the vendored headers here and it makes the correctness argument untestable headlessly.
+- **Descriptor discipline**: one per-frame set (set 0, updated once per frame), one per-material set (set 1), push constants for the model matrix + material/texture indices. Query `maxPushConstantsSize` (guaranteed floor is 128 bytes) and `static_assert` our struct fits.
+- **Shaders are SPIR-V shipped as bytes**, compiled offline (`glslangValidator`/`glslc`) and validated in CI (`spirv-val`). No runtime GLSL compilation path.
+- **Swapchain is owned by the context**; on window resize recreate it (and recreate the framebuffers/pipelines that depend on extent), never leak the old one.
+- **Subpass discipline inside one render pass**: declare dependencies, don't rely on implicit ordering; blending is done with explicit pipeline variants (opaque = blend disabled, transparent = blend enabled + sorted), which is how raylib's painter's-algorithm semantics map over.
+- **Headless-testable by construction**: pure logic (math, handle bookkeeping, create-info assembly, batch flushing decisions, `VkResult`→`XudResult` mapping) lives in functions that take structs and never call the driver, so `tests/` can run with no device present.
+
+## Design sketch
+
+Layers, bottom to top (each layer only sees the one below it):
+
+```
+GLFW window (extent, input, framebuffer-size)
+   └─ Vulkan loader (dlopen libvulkan.so, PFN table)
+       └─ instance (+advertised validation layers, debug-gated)
+           └─ physical device (caps recorded: exts, features, limits)
+               └─ device + queues (graphics+present, one queue family checked)
+                   └─ swapchain (VkSurfaceKHR from GLFW, recreate on resize)
+                       └─ xudrl renderer (passes, pipelines, batches, buffers)
+                           └─ feature modules (shapes, text, textures, models, audio, camera)
+                               └─ xud.h public API (raylib-shaped)
+```
+
+Frame loop (`BeginDrawing` → `EndDrawing`):
+
+```
+BeginDrawing: acquire image (semaphore) → begin cmd → begin render pass → clear color+depth
+  draw calls: append vertices/indices into the dynamic VB/IB; flush on pipeline/material change
+EndDrawing: end pass → end cmd → submit (graphics) → present (queue) → signal fence (per-image)
+```
+
+Pipeline set (created once, all GLSL→SPIR-V at build time):
+
+| Axis | Variants | Why |
+| --- | --- | --- |
+| Shader | untextured-solid, textured, line, point/glyph | raylib's four primitive families |
+| Blend | opaque (blend off, depth write) / transparent (blend on, depth test, sorted) | raylib draws in call order |
+
+Descriptor layout:
+
+| Slot | Contents | Updated |
+| --- | --- | --- |
+| set 0 | VP matrix, camera pos, time, fog, ambient, light count + fixed-size light array | once per frame, one `vkCmdCopyBuffer` from the staging ring |
+| set 1 | combined image sampler array (partially bound, descriptor-indexed) | once per material change; textures suballocated in one atlas-friendly pool |
+| push constants | model matrix (64 B) + material idx + texture idx + flags (≤128 B total) | per draw |
+
+Vertex format (36 B, aligned): `pos float3` (12) + `uv float2` (8) + `color ubyte4 normalized` (4) + `normal float3` (12).
+Matches raylib's `Vertex{pos, texcoords, color}` plus a normal so the default material can light it.
+
+## Testing rules
+
+- Every public function gets at least one test in `tests/`.
+- Split pure logic from GPU code so the default test run passes **with no device present**.
+- GPU tests are gated by `XUD_GPU_TESTS=1`; the default run must stay green on a machine with no driver.
+- Tests must be deterministic — seed any RNG from a fixed test seed.
+- A failing test blocks the commit. Run the test binary (and the `-fsanitizer` build) before committing — see the *Commit rule* below for the full bar.
+- Validation-layer output is a test signal: a GPU test run in debug must be validation-clean, not just "didn't crash".
+
+## Working rules
+
+- Update `todo.md` when starting or finishing work: move the item, add a one-line note with the date.
+- **Commit rule: commit as soon as the step is bug-free and stable — do not wait for the feature to be finished.** A step counts as *stable* only when all four hold:
+  1. the step's item in `todo.md` is ticked or moved to the next section, with a dated one-line note;
+  2. `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` is clean and the test binary passes headless (plus `XUD_GPU_TESTS=1` runs where the step touches the driver, and the `-fsanitizer` build where it touches memory);
+  3. no known bug, leak, or unimplemented path is being papered over — a workaround belongs in a code comment, never in a commit message;
+  4. `AGENTS.md`, `todo.md` and the file-top comments describe exactly what is in the tree, nothing more and nothing less.
+  Meet the bar, then commit immediately, even mid-subsystem. Never batch several steps into one commit at the end of a session, and never commit a state you are unsure about — if the bar is not met, keep working or write the blocker into `todo.md` instead.
+- Commit messages: short imperative mood, ≤ 50 chars, no trailing period (`Add Vulkan instance`, `Fix swapchain resize`).
+- No new dependencies (Volk, VMA, miniaudio, cgltf, stb, …) without asking first — none of them are packaged here, so "add a dep" always means "vendor a header".
+- Ask before: changing the public API surface, adding a subsystem, picking a Vulkan extension, or choosing a 2D/3D scope.
+- Never commit `bin/`, `build/`, `reference/`, or third-party material. Never edit `reference/` (including `reference/raylib/`, which is gitignored — it still must not be edited even though it is untracked).
+
+## Settled decisions (2026-10-16)
+
+- **Language/standard: C11**, gcc 16.2.1 primary, clang 22.1.8 as a second opinion in CI.
+- **Build: CMake + ninja**, plus a documented raw-`gcc` one-liner for the single-TU/stb-style include path.
+- **Window/input backend: system GLFW 3.5.1** (`pkg-config glfw3`). Chosen because 3.5 exposes `glfwCreateWindowSurface` + `glfwGetPhysicalDevicePresentationSupport` + `glfwGetRequiredInstanceExtensions`, so GLFW hands us the `VkSurfaceKHR` and the instance extensions it needs; the swapchain itself is still ours. No X11/Wayland path, no RGFW.
+- **Vulkan access: `dlopen` the loader, no `-lvulkan` link dependency** (Volk-style, hand-rolled until Volk is explicitly approved for vendoring).
+- **Validation layers on in debug**, requested by enumerating advertised layers (never by name). `VK_VALIDATE_*` core features are unavailable here (SDK-only) — use `VkValidationFeaturesEXT` on the `pNext` chain and/or `DebugUtilsMessengerCreateInfoEXT` for the log side, and the `VK_INSTANCE_LAYERS` env as the user-facing override.
+- **Synchronization: classic** (semaphores + per-image fences + pipeline barriers + explicit subpass deps). No `VK_KHR_vulkan_memory_model`.
+- **Shaders: offline SPIR-V only** (`glslangValidator` at build time, `spirv-val` in CI). No runtime GLSL.
+- **Minimum core version: `VK_API_VERSION_1_0` floor at instance creation + `VK_KHR_SWAPCHAIN`**, everything above that gated on recorded caps. Rationale: raylib's baseline portability feel; lavvk here reports 1.4.357 so the higher paths are exercised in tests, but the library must still work at the floor. Revisit if the dynamic-rendering path wins (see Open decisions).
+- **GPU memory: suballocated, one allocator, ring for transient** — the "no `vkCreateBuffer` per frame" rule above. Whether the allocator is VMA (vendored) or ours is still open; the discipline is not.
+
+## Open design decisions (ask, don't assume)
+
+- **2D vs 3D scope** — raylib has both; the Odin sibling is 3D-only. Which one does `xudlibc` ship? (Decides whether there is an ortho 2D pass and a sprite batch.)
+- **Render pass style**: explicit `VkRenderPass` + `VkFramebuffer` (works at the 1.0 floor) vs `VK_KHR_dynamic_rendering` (core in 1.3, extension below) — or both paths gated on caps.
+- **GPU allocator**: vendor VMA vs write our own block allocator.
+- **Loader**: hand-rolled `dlopen` table vs vendor Volk (single header, MIT).
+- **Model format**: glTF 2.0 via vendored cgltf (raylib does exactly this) vs a minimal `.glb` reader of our own.
+- **Audio backend**: vendor miniaudio (raylib's `raudio` does) vs no audio yet.
+- **Text/font**: bitmap-font atlas of our own vs vendored `stb_truetype`/fontstash.
+- **Handles vs pointers** for the public API (raylib hands out `Texture*`-style pointers; Vulkan wants index+generation handles).
+- **Data layout**: AoS vertex (sketched above) vs SoA/GPU-driven; ECS or plain structs.
