@@ -7,8 +7,10 @@
  *          the library reads, the XudResult error enum, the opaque XudContext owner type,
  *          the xud_init_context()/xud_close_context() lifecycle pair, and the runtime
  *          Vulkan query xud_vulkan_supported().
- *   Layer: top of the stack (public API). Everything below it is internal: xud_core.h/.c,
- *          xud_loader.h/.c, and the Vulkan bring-up steps S3..S8 tracked in todo.md.
+ *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c,
+ *          xud_loader.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c - and user
+ *          code includes this header only; tests may include the internal ones. The Vulkan bring-up
+ *          steps past the instance (S5..S8) are tracked in todo.md and do not exist yet.
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -105,17 +107,20 @@ typedef struct XudContext XudContext;
 /// driver is absent or does not. Safe with no device present and no window open.
 XudResult xud_vulkan_supported(void);
 
-/// Create the library context for a width x height window: resolve the Vulkan loader,
-/// create instance / physical device / device + queues / swapchain surface, and build the
-/// renderer. On entry *outContext must be NULL; it is NULL on every failure path.
-/// At step S2 the loader opens and its entry-point table is filled, but instance / device
-/// / surface are still pending, so a valid call returns XUD_UNSUPPORTED and leaves
-/// *outContext NULL, having opened and closed the loader without leaking it.
+/// Create the library context for a width x height window: resolve the Vulkan loader, open the
+/// diagnostics layer when XUD_VALIDATE asked for it, create the VkInstance, and install the
+/// debug messenger. On entry *outContext must be NULL; it is NULL on every failure path.
+/// The layers below the instance (physical device / device + queues / swapchain / surface) do
+/// not exist yet, so a valid call still returns XUD_UNSUPPORTED and leaves *outContext NULL,
+/// having torn down everything it created without leaking it.
 XudResult xud_init_context(XudContext **outContext, uint32_t width, uint32_t height);
 
-/// Tear the context down (device -> surface -> instance -> loader) and free it.
-/// Returns XUD_ALREADY if *context was already NULL, XUD_INVALID_ARG if context itself
-/// is NULL. Always sets *context to NULL when it is not NULL.
+/// Tear the context down (instance -> diagnostics -> loader, and the layers that will come
+/// later slot in before the instance) and free it. The diagnostics struct is destroyed after
+/// the instance because its messenger belongs to that VkInstance and xud_instance_destroy()
+/// tears the messenger down first, while the instance is still alive. Returns XUD_ALREADY if
+/// *context was already NULL, XUD_INVALID_ARG if context itself is NULL. Always sets *context
+/// to NULL when it is not NULL.
 XudResult xud_close_context(XudContext **context);
 
 #ifdef __cplusplus

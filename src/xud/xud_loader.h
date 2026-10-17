@@ -31,6 +31,14 @@
 #define XUD_LOADER_GLOBAL_SLOT_COUNT 3u
 #define XUD_LOADER_SLOT_COUNT 18u
 
+/* Not slotted: the two VK_EXT_debug_utils messenger entry points the diagnostics layer needs
+   (vkCreateDebugUtilsMessengerEXT / vkDestroyDebugUtilsMessengerEXT) are instance-level like
+   the ones below, and vkGetInstanceProcAddr answers NULL for them unless VK_EXT_debug_utils is
+   enabled on the instance in hand. A resolve cached across an instance recreation would be a
+   stale pointer into a layer that is gone, so the diagnostics layer resolves them one at a time,
+   immediately before using one, through xud_loader_resolve() - never into a slot of this table.
+   XUD_LOADER_SLOT_COUNT counts the slots that do exist (grep -c, keep exact). */
+
 /* Addresses move between the object world (dlsym) and the function world (the PFN_vk*
    slots) by copy, never by cast: ISO C forbids converting between object and function
    pointers, and -Wpedantic -Werror says so. Verified clean under gcc 16.2.1 and clang

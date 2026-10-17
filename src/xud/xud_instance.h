@@ -4,7 +4,9 @@
  *
  *   Owns : the XudInstance type (the handle plus the create-info that produced it), the pure
  *          parts of instance bring-up (application info, extension selection, create-info
- *          assembly), and the two driver calls that create/destroy the instance.
+ *          assembly), and the two driver calls that create/destroy the instance. It borrows the
+ *          diagnostics layer's answer (xud_diagnostics.h) for the validation layers, the
+ *          validation-feature request and the pNext chain - it does not own those.
  *   Layer: above the loader - every Vulkan call here goes through a PFN slot of XudLoader -
  *          and below the physical device (which resolves through the instance this layer
  *          fills) and the swapchain. Sees <vulkan/vulkan.h> for declarations only; no Vulkan
@@ -20,6 +22,7 @@
 #include <assert.h>
 #include "xud.h"
 #include "xud_loader.h"
+#include "xud_diagnostics.h"
 #include "xud_vulkan.h"
 #include <vulkan/vulkan.h>
 
@@ -39,6 +42,21 @@
 #define XUD_INSTANCE_QUERY_MIN_CAPACITY 16u
 #define XUD_INSTANCE_QUERY_MAX_CAPACITY 512u
 
+/* The diagnostics layer's wanted instance-level extensions have exactly one mechanism here:
+   xud_diagnostics_wanted_extensions() (xud_diagnostics.h), which xud_instance_create() asks
+   before selecting - the accessor, not an array declared here. An `extern const char *const
+   XUD_INSTANCE_DIAGNOSTICS_WANTED_EXTENSIONS[]` for the same list was deleted rather than left
+   unused: a declaration nothing defines is not a compile error, it is an undefined symbol at
+   link time, and reading it here would have been that trap. One owner per wanted list (this
+   layer's own list is in xud_instance.c, the diagnostics layer's in xud_diagnostics.c), one
+   place that decides what goes into VkInstanceCreateInfo.
+   There is deliberately no second macro for the size of that list: the bound of the accessor's
+   out-array is the diagnostics layer's own cap, XUD_DIAGNOSTICS_WANTED_MAX, which this header
+   sees through the include above. Two macros for one number could drift apart silently and
+   leave the arrays below one slot too small or too large; one macro cannot, and xud_instance.c
+   asserts at compile time that this layer's wanted list plus the diagnostics one still fits
+   XUD_MAX_INSTANCE_EXTENSIONS. */
+
 typedef struct XudInstance {
     VkInstance instance;                                                 /* VK_NULL_HANDLE until xud_instance_create() fills it */
     VkApplicationInfo applicationInfo;                                   /* what was asked for: names, versions, apiVersion floor */
@@ -54,48 +72,71 @@ XudResult xud_instance_fill_application_info(VkApplicationInfo *outApplicationIn
 
 /// Choose which of the advertised instance-level extensions to enable: the ones xudlibc
 /// wants that the driver actually advertised, in wanted order (the wanted list itself lives
-/// in xud_instance.c, documented there). Nothing is required - an extension that was not
+/// in xud_instance.c, documented there), then the ones `extraNames`/`extraCount` ask for
+/// on top - the diagnostics layer's list (VK_EXT_debug_utils, VK_EXT_validation_features),
+/// documented in xud_diagnostics.c. Nothing is required - an extension that was not
 /// advertised simply stays out of the list, and the feature that needed it fails later with
-/// XUD_UNSUPPORTED.
-/// Pure: `advertised` is just an array, so tests feed a synthetic one and the selection is
-/// covered with no device present. Rewrites enabledExtensionCount/Storage on every call,
-/// including when nothing matches. XUD_INVALID_ARG when `advertised` is NULL while
-/// advertisedCount is not 0.
-XudResult xud_instance_select_extensions(XudInstance *outInstance, const VkExtensionProperties *advertised, uint32_t advertisedCount);
+/// XUD_UNSUPPORTED. A name already in the first list is not added twice.
+/// Pure: `advertised` is just an array and `extraNames` just an array of names, so tests feed
+/// synthetic ones and the selection is covered with no device present. Rewrites enabledExt
+/// ensionCount/Storage on every call, including when nothing matches. XUD_INVALID_ARG when
+/// `advertised` is NULL while advertisedCount is not 0, or `extraNames` is NULL while
+/// extraCount is not 0.
+XudResult xud_instance_select_extensions(XudInstance *outInstance, const VkExtensionProperties *advertised, uint32_t advertisedCount, const char *const extraNames[XUD_DIAGNOSTICS_WANTED_MAX], uint32_t extraCount);
 
-/// Assemble the VkInstanceCreateInfo for an XudInstance: sType, pNext NULL, flags 0
+/// Assemble the VkInstanceCreateInfo for an XudInstance: sType, pNext NULL when `diagnostics` is
+/// NULL, -> &diagnostics->validationFeatures when it is not **and every extension the
+/// diagnostics layer asked for is in instance->enabledExtensionNameStorage** (the VkValidation
+/// FeaturesEXT piece of the chain - the validation layer reads it, and a pNext chain may carry a
+/// struct for an enabled extension and for nothing else, which is why the gate is there: this
+/// driver does not advertise VK_EXT_validation_features, so the chain stays empty and the layer
+/// runs on its own defaults, see xud_instance_all_names_enabled in xud_instance.c), flags 0
 /// (VK_INSTANCE_CREATE_FLAG_PORTABILITY_BIT is not set here - the extension is requested
 /// explicitly and the flag only changes what a driver is allowed to *hide*, see the comment
-/// in xud_instance.c), pApplicationInfo -> &instance->applicationInfo, zero enabled layers
-/// (the validation layers are added there by the diagnostics step), and the selected
-/// extension names.
+/// in xud_instance.c), pApplicationInfo -> &instance->applicationInfo, the diagnostics layer's
+/// selected layers in enabledLayerCount/ppEnabledLayerNames (0/NULL when there is no diagnostics
+/// struct: a release build asks for no layer at all), and the selected extension names.
 /// `nameSlots` is a caller-provided array of XUD_MAX_INSTANCE_EXTENSIONS slots: it is filled
-/// with pointers into instance->enabledExtensionNameStorage and outCreateInfo->ppEnabledExtensionNames
-/// points at it, so both must outlive the vkCreateInstance call.
-/// Pure. XUD_INVALID_ARG on a NULL instance, NULL nameSlots array, or NULL out-param.
-XudResult xud_instance_fill_create_info(const XudInstance *instance, const char *nameSlots[XUD_MAX_INSTANCE_EXTENSIONS], VkInstanceCreateInfo *outCreateInfo);
+/// with pointers into instance->enabledExtensionNameStorage and outCreateInfo->ppEnabledExtension
+/// Names points at it, so both must outlive the vkCreateInstance call.
+/// Pure. XUD_INVALID_ARG on a NULL instance, NULL nameSlots array, NULL out-param, or a
+/// diagnostics struct whose layer count does not fit its own storage; the accessor's own
+/// XUD_INVALID_ARG (NULL out-params) can only come from a bug in this file, and is passed through.
+XudResult xud_instance_fill_create_info(const XudInstance *instance, const char *nameSlots[XUD_MAX_INSTANCE_EXTENSIONS], const XudDiagnostics *diagnostics, VkInstanceCreateInfo *outCreateInfo);
 
 /// Create the instance. `loader` must be open (xud_loader_open filled the global-level slots
-/// this needs). On XUD_OK `outInstance` owns a live VkInstance plus the create-info that
-/// produced it; on any error it stays NULL and everything created so far is destroyed, in
-/// reverse creation order. XUD_INVALID_ARG on a NULL out-pointer, an out-pointer that already
-/// owns an instance (nothing is created twice into the same slot), or a missing/unopen loader.
-/// Driver calls, in order: vkEnumerateInstanceExtensionProperties (twice at least - pCount is
-/// input/output, see xud_instance_query_extensions), vkCreateInstance through the slot the
-/// loader table binds here. vkDestroyInstance is *not* resolved here: it is an instance-level
-/// command, vkGetInstanceProcAddr answers NULL for it without a live handle (verified here),
-/// and a failure to resolve it after a successful create would leave an instance nothing could
-/// free - so it is resolved by xud_instance_destroy(), through the instance it frees.
-XudResult xud_instance_create(XudInstance **outInstance, XudLoader *loader);
+/// this needs). `diagnostics` is the diagnostics layer's answer (see xud_diagnostics.h) or NULL:
+/// when present its selected layers go into enabledLayerCount/ppEnabledLayerNames, its wanted
+/// extensions (VK_EXT_debug_utils, VK_EXT_validation_features - asked for through
+/// xud_diagnostics_wanted_extensions(), the accessor, not an array declared here) are added to
+/// the extension list, and its VkValidationFeaturesEXT goes on the pNext chain **only when that
+/// list was fully enabled** - all of it still checked against what the driver advertised, nothing
+/// forced on. On XUD_OK `outInstance` owns a live VkInstance plus the create-info that produced it;
+/// on any error it stays NULL and everything created so far is destroyed, in reverse creation order.
+/// XUD_INVALID_ARG on a NULL out-pointer, an out-pointer that already owns an instance (nothing is
+/// created twice into the same slot), or a missing/unopen loader. Driver calls, in order: vkEnumerate
+/// InstanceExtensionProperties (twice at least - pCount is input/output, see xud_instance_query_exten
+/// sions), vkCreateInstance through the slot the loader table binds here. vkDestroyInstance is *not*
+/// resolved here: it is an instance-level command, vkGetInstanceProcAddr answers NULL for it without
+/// a live handle (verified here), and a failure to resolve it after a successful create would leave an
+/// instance nothing could free - so it is resolved by xud_instance_destroy(), through the instance it
+/// frees.
+XudResult xud_instance_create(XudInstance **outInstance, XudLoader *loader, XudDiagnostics *diagnostics);
 
 /// Destroy the instance and clear the out pointer. The arguments are checked before the state:
 /// XUD_INVALID_ARG when the pointer itself is NULL or the loader is missing/not open, and
 /// XUD_ALREADY only when those are sound and the instance they point at is already NULL - a
-/// second destroy is reported, never a double free.
-/// vkDestroyInstance is resolved on demand through the live instance and cached in the
-/// loader's table, so a context that never draws still tears down without ever having
-/// resolved it at create time. If the loader cannot resolve it, the instance leaks and the
-/// failure is returned - that is a broken loader, not something this layer papers over.
-XudResult xud_instance_destroy(XudInstance **instance, XudLoader *loader);
+/// second destroy is reported, never a double free. `diagnostics` is the diagnostics layer's
+/// struct (or NULL): when it holds a messenger it is destroyed first, through the instance that
+/// is about to go away, because vkDestroyDebugUtilsMessengerEXT takes the owning VkInstance and
+/// the extension says that instance must still be alive; the struct's own messenger/instance hand
+/// les are then cleared, so xud_close_context() frees the struct itself through xud_diagnostics_c
+/// lose() after this returns - this layer only holds a copy of that pointer, so freeing it here
+/// would leave the caller holding a dangling one. A messenger that belongs to a different VkInst
+/// ance than the one being destroyed is XUD_INVALID_ARG, checked before anything is torn down. If
+/// the loader cannot resolve vkDestroyDebugUtilsMessengerEXT or vkDestroyInstance, what it owns
+/// leaks and the failure is returned - that is a broken loader, not something this layer papers
+/// over.
+XudResult xud_instance_destroy(XudInstance **instance, XudLoader *loader, XudDiagnostics *diagnostics);
 
 #endif /* XUD_XUD_INSTANCE_H_ */

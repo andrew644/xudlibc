@@ -5,8 +5,9 @@
  *   Owns : the struct definition that completes the opaque `typedef struct XudContext`
  *          declared in xud.h, and nothing else. Internal module header: user code includes
  *          xud.h only, and never sees these fields.
- *   Layer: core (bottom of the public API). The loader field is owned from bring-up on and
- *          the instance field from the instance layer on; the physical device, device, queue,
+ *   Layer: core (bottom of the public API). The loader field is owned from bring-up on, the
+ *          diagnostics field from the diagnostics step on (NULL in a release build), and the
+ *          instance field from the instance layer on; the physical device, device, queue,
  *          surface, swapchain and allocator fields are still sentinels, filled by the bring-up
  *          steps after this one (see todo.md).
  *
@@ -18,12 +19,17 @@
 #define XUD_XUD_CORE_H_
 
 #include <stdint.h>
-#include "xud_loader.h"    /* Required for: XudLoader, the loader the context owns from bring-up on */
-#include "xud_instance.h"  /* Required for: XudInstance, the VkInstance the context owns from the instance layer on */
+#include "xud_loader.h"      /* Required for: XudLoader, the loader the context owns from bring-up on */
+#include "xud_diagnostics.h" /* Required for: XudDiagnostics, the diagnostics struct the context owns once validation is on */
+#include "xud_instance.h"    /* Required for: XudInstance, the VkInstance the context owns from the instance layer on */
 
 /* Completed here; xud.h keeps callers to an opaque handle. Every Vulkan field is a
    sentinel (NULL / 0) until the layer named beside it fills it, and is destroyed in the
-   reverse order of creation: swapchain -> surface -> device -> instance -> loader. */
+   reverse order of creation: swapchain -> surface -> device -> instance -> diagnostics -> loader.
+   The diagnostics entry sits where it does because its messenger must die before the VkInstance
+   it belongs to (vkDestroyDebugUtilsMessengerEXT takes the owning instance, and the extension
+   says that instance must still be alive) - xud_instance_destroy() does that teardown, and
+   xud_diagnostics_close() only frees the struct once the messenger is gone. */
 struct XudContext {
     /* Created and validated at repo skeleton step S1. */
     uint32_t width;            /* window extent, pixels, as requested                        */
@@ -32,6 +38,13 @@ struct XudContext {
 
     /* Owned from loader bring-up on: opened by xud_init_context(), closed by xud_close_context(). */
     XudLoader *loader;         /* dlopen handle for libvulkan.so.1 + the PFN table           */
+
+    /* Owned from the diagnostics step on, and only when `validate` asked for validation: NULL in
+       a release build, which is the "no layer requested, no validation request, no messenger"
+       state. Opened before the instance (its layer list and validation-feature struct are what
+       the instance create-info carries), freed after the instance is destroyed. */
+    XudDiagnostics *diagnostics;   /* advertised layers + VkValidationFeaturesEXT + the VK_EXT_debug_utils messenger */
+
     XudInstance *instance;     /* the VkInstance plus the create-info that produced it       */
 
     /* Pending: filled by the bring-up layers below, NULL/0 until then. */

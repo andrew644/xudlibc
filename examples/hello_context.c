@@ -3,11 +3,13 @@
  *   hello_context.c - the smallest program that touches the xudlibc public API
  *
  *   Owns : nothing but a call to xud_vulkan_supported() and to xud_init_context() plus its
- *          teardown. One concern: what the library can do today. At bring-up step S3 the
- *          Vulkan loader is resolved and an instance is created at the VK_API_VERSION_1_0
- *          floor (then destroyed, because a context that owns an instance and no way to use
- *          it is not a context) - but device / queue / surface are not, so the honest answer
- *          for a context is still XUD_UNSUPPORTED.
+ *          teardown. One concern: what the library can do today. At bring-up step S4 the
+ *          Vulkan loader is resolved, the diagnostics layer is opened when XUD_VALIDATE asked
+ *          for it (validation layers advertised by the loader, VK_EXT_debug_utils messenger), and
+ *          an instance is created at the VK_API_VERSION_1_0 floor with that handed over (then
+ *          destroyed, because a context that owns an instance and no way to use it is not a
+ *          context) - but device / queue / surface are not, so the honest answer for a context
+ *          is still XUD_UNSUPPORTED.
  *   Layer: examples. Public API only (xud.h).
  *
  *   Copyright (c) 2026 xudlibc authors.
