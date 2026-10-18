@@ -11,20 +11,12 @@ step, just move it, so the active tracker stays short and the log stays complete
       Broken into S5.1–S5.8 today (2026-10-18) — one commit per sub-step, each meets the four-point
       commit bar on its own. Header facts below were grepped out of `/usr/include/vulkan/vulkan_core.h`
       (Vulkan-Headers 1.4.357) today; the driver numbers are probed when the step that needs them runs.
-      **S5.1 is done and moved out to `todo_completed.md`** (its slot is in the table, `XUD_LOADER_SLOT_COUNT`
-      is 19 — see *Completed* below); S5.2–S5.8 are the open half.
+      **S5.1 and S5.2 are done and moved out to `todo_completed.md`** (S5.1's slot is in the table, `XUD_LOADER_SLOT_COUNT`
+      is 19; S5.2's `src/xud/xud_physical.h` is in the tree as declarations-only, its `.c` is S5.3's/S5.4's — see
+      *Completed* below for both); S5.3–S5.8 are the open half. The two greps S5.2 settled (`VK_QUEUE_PRESENT_BIT`
+      absent, `VkPhysicalDeviceArchitectureInfo` absent) are written into the S5.3/S5.7 items below so nobody chases
+      a name that is not in these headers.
 
-      - [ ] S5.2 `src/xud/xud_physical.h` — the layer's own header (name it `xud_physical`, not `xud_device`:
-        S6 owns `VkDevice` and the two would collide — say so before renaming). `XudPhysicalDevice` = the
-        `VkPhysicalDevice` handle (a handle: **never destroyed**, the one rung of the teardown ladder that is
-        free-only with no driver call) plus an embedded `XudDeviceCaps` (the name AGENTS.md's Vulkan rules already
-        fix): `VkPhysicalDeviceProperties2` and `VkPhysicalDeviceFeatures2` and `VkPhysicalDeviceMemoryProperties2`
-        copied in (all three are in these headers, verified at 5809/5803/5843), the advertised **device**-extension
-        list as a heap array from the doubling-capacity query (`vkEnumerateDeviceExtensionProperties` has the same
-        input/output `pCount` shape as the instance query — verified signature at 4544, and it takes a
-        `pLayerName` we pass NULL to for the driver's own list), the chosen queue-family index plus its
-        `VkQueueFamilyProperties2` (queried **here**, used by S6 — record once, never re-query), and the `apiVersion`
-        read back. Plus the caps-storage macros and their `static_assert`s. Declarations only.
       - [ ] S5.3 The pure half — no driver call, so the headless run covers it completely: `xud_physical_select`
         (given the enumerated handles and their `VkPhysicalDeviceProperties`, pick one; policy stays "first" for now,
         and the reason a better policy is a decision rather than code is that the architecture-id chained struct is
@@ -33,8 +25,11 @@ step, just move it, so the active tracker stays short and the log stays complete
         /`INTEGRATED_GPU`/`VIRTUAL_GPU`/`CPU`, verified at 2233–2238) plus `vendorID`/`deviceName`/`pipelineCacheUUID`);
         `xud_physical_record_features` (wanted ∩ the driver's `VkPhysicalDeviceFeatures2.features`, an unverified
         feature stays 0 and is never forced on — this is the struct S6 puts into `VkDeviceCreateInfo`);
-        `xud_physical_select_queue_family` (a family carrying **both** `VK_QUEUE_GRAPHICS_BIT` and
-        `VK_QUEUE_PRESENT_BIT` — AGENTS.md's one-queue-family rule, so a graphics-only family must not be chosen);
+        `xud_physical_select_queue_family` (a family carrying **`VK_QUEUE_GRAPHICS_BIT`** — the plan's
+        "both graphics and present" wording is corrected by the S5.2 grep: `VK_QUEUE_PRESENT_BIT` does not exist
+        in these headers, so the present half of AGENTS.md's one-family rule is GLFW's `glfwGetPhysicalDevicePresentationSupport`
+        check at S7, and a graphics-only family is chosen here and refused there; transfer/compute/granularity
+        recorded not required, record once and never re-query);
         `xud_physical_record_api_version` (read `properties.apiVersion` back, compare with `XUD_INSTANCE_API_FLOOR`,
         answer which of the *2 paths are core at that version and which are extension-at-the-floor — the whole point
         of the floor decision).
@@ -64,10 +59,12 @@ step, just move it, so the active tracker stays short and the log stays complete
       - [ ] S5.7 `tests/xud_test.c`: `xud_test_physical_pure`, headless and synthetic-everything (a fake enumerated list
         + fake `VkPhysicalDeviceProperties` → selection incl. a list whose `deviceType` differs; a fake features struct
         → the ∩ rule incl. a wanted feature the driver lacks staying off; fake queue families incl. a graphics-but-not-present
-        one that must **not** be chosen; `apiVersion` at exactly the floor and one below it; caps-storage overflow →
+        one that must **not** be chosen (there is no present bit to set in a fake family — see the S5.2 grep, the
+        present half of the rule is GLFW's check at S7); `apiVersion` at exactly the floor and one below it; caps-storage overflow →
         `XUD_OUT_OF_RESOURCES`) and `xud_test_gpu_physical` (enumerate → pick → record on lavvk: device count, real
-        `apiVersion` ≥ floor, `VK_KHR_SWAPCHAIN` among the advertised **device** extensions, a graphics+present family
-        found — that last query is the one S6 will use, which is why testing it here is the point). Bar: headless green
+        `apiVersion` ≥ floor, `VK_KHR_SWAPCHAIN` among the advertised **device** extensions, a graphics family
+        found (the present half is GLFW's check at S7, there is no present bit to find — see the S5.2 grep) —
+        that last query is the one S6 will use, which is why testing it here is the point). Bar: headless green
         with no device present, `XUD_GPU_TESTS=1` green, `-DXUD_SANITIZERS=ON` green.
       - [ ] S5.8 Docs: AGENTS.md gains a *Verified physical device bring-up* block with the probed numbers (devices
         enumerated, `apiVersion`, device-extension count and whether `VK_KHR_swapchain` is among them, which wanted
@@ -127,6 +124,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 ## Completed
 
 See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-step notes (the long
-"Done as" detail), the S5.1 note, and the dated log entries (the "Bar met" / "Honest boundary" records).
-Newest entry: **2026-10-18 — loader table grows by the physical layer's `*2` slot (S5.1)**. Nothing
-is finished after that date.
+"Done as" detail), the S5.1 note, the S5.2 note, and the dated log entries (the "Bar met" / "Honest
+boundary" records). Newest entry: **2026-10-18 — the physical layer's header, declarations only (S5.2)**.
+Nothing is finished after that date.
