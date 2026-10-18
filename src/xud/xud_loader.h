@@ -29,7 +29,7 @@
    XUD_LOADER_GLOBAL_SLOT_COUNT are resolvable with no handle in hand (global level,
    vkGetInstanceProcAddr(NULL, name)) and are the only ones filled at bring-up step S2. */
 #define XUD_LOADER_GLOBAL_SLOT_COUNT 3u
-#define XUD_LOADER_SLOT_COUNT 18u
+#define XUD_LOADER_SLOT_COUNT 19u
 
 /* Not slotted: the two VK_EXT_debug_utils messenger entry points the diagnostics layer needs
    (vkCreateDebugUtilsMessengerEXT / vkDestroyDebugUtilsMessengerEXT) are instance-level like
@@ -37,7 +37,20 @@
    enabled on the instance in hand. A resolve cached across an instance recreation would be a
    stale pointer into a layer that is gone, so the diagnostics layer resolves them one at a time,
    immediately before using one, through xud_loader_resolve() - never into a slot of this table.
-   XUD_LOADER_SLOT_COUNT counts the slots that do exist (grep -c, keep exact). */
+   The *2 physical-device queries are slotted, and they do not belong to that pair: probed here
+   2026-10-18 (dlopen only, no link dependency) through a bare instance - apiVersion 1.0, no
+   extension, no layer - and through the instance xud_instance.c creates, vkGetInstanceProcAddr
+   answers every physical-layer name below (vkEnumeratePhysicalDevices, the two
+   getPhysicalDeviceProperties forms, vkGetPhysicalDeviceFeatures2,
+   vkGetPhysicalDeviceQueueFamilyProperties2, vkEnumerateDeviceExtensionProperties) through
+   either handle, and answers NULL for all of them with VK_NULL_HANDLE in hand - which is why
+   they are instance-level slots and not global ones. They name the driver's own code, not a
+   layer instantiated per instance, so a cached slot stays valid across an instance recreation
+   the way a cached messenger pointer would not; a driver that hides the *2 forms behind an
+   extension it did not enable answers NULL for them instead, and the layer that binds such a
+   slot reports the nil slot rather than calling through it (the same check xud_instance.c
+   applies to createInstance). XUD_LOADER_SLOT_COUNT counts the slots that do exist (grep -c,
+   keep exact). */
 
 /* Addresses move between the object world (dlsym) and the function world (the PFN_vk*
    slots) by copy, never by cast: ISO C forbids converting between object and function
@@ -57,12 +70,17 @@ typedef struct XudLoader {
     PFN_vkEnumerateInstanceLayerProperties enumerateInstanceLayerProperties;
     PFN_vkEnumerateInstanceExtensionProperties enumerateInstanceExtensionProperties;
 
-    /* Instance level: NULL until the instance layer (xud_instance.c) has a live VkInstance
-       to resolve through - vkGetInstanceProcAddr answers NULL for these without one. */
+    /* Instance level: NULL until a live VkInstance exists to resolve through - vkGetInstanceProcAddr
+       answers NULL for these without one (verified 2026-10-18: every physical-layer name below
+       answers NULL with VK_NULL_HANDLE in hand, and answers non-NULL through any live instance,
+       a bare one at apiVersion 1.0 with no extension and no layer as much as xud_instance.c's).
+       The instance layer binds the ones it needs; the rest stay NULL until the layer that needs
+       them has that instance in hand. */
     PFN_vkCreateInstance createInstance;
     PFN_vkDestroyInstance destroyInstance;
     PFN_vkEnumeratePhysicalDevices enumeratePhysicalDevices;
-    PFN_vkGetPhysicalDeviceProperties getPhysicalDeviceProperties;
+    PFN_vkGetPhysicalDeviceProperties getPhysicalDeviceProperties;      /* 1.0-core form: needs no extension */
+    PFN_vkGetPhysicalDeviceProperties2 getPhysicalDeviceProperties2;    /* *2 form: core in 1.1, extension-gated at the floor */
     PFN_vkGetPhysicalDeviceFeatures2 getPhysicalDeviceFeatures2;
     PFN_vkGetPhysicalDeviceQueueFamilyProperties2 getPhysicalDeviceQueueFamilyProperties2;
     PFN_vkEnumerateDeviceExtensionProperties enumerateDeviceExtensionProperties;

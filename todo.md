@@ -11,18 +11,9 @@ step, just move it, so the active tracker stays short and the log stays complete
       Broken into S5.1–S5.8 today (2026-10-18) — one commit per sub-step, each meets the four-point
       commit bar on its own. Header facts below were grepped out of `/usr/include/vulkan/vulkan_core.h`
       (Vulkan-Headers 1.4.357) today; the driver numbers are probed when the step that needs them runs.
+      **S5.1 is done and moved out to `todo_completed.md`** (its slot is in the table, `XUD_LOADER_SLOT_COUNT`
+      is 19 — see *Completed* below); S5.2–S5.8 are the open half.
 
-      - [ ] S5.1 Loader table grows by the **one** slot the physical layer needs: `vkEnumeratePhysicalDevices`,
-        `getPhysicalDeviceProperties` (the non-2 form), `getPhysicalDeviceFeatures2`, `getPhysicalDeviceQueueFamilyProperties2`
-        and `enumerateDeviceExtensionProperties` are already slots of the instance-level tier; only
-        `PFN_vkGetPhysicalDeviceProperties2` is missing (verified: declared at vulkan_core.h:6179, with a
-        `...KHR` twin at 10361 that is what `VK_KHR_get_physical_device_properties2` — already enabled on the
-        instance by `xud_instance.c` — makes callable at the 1.0 floor). Add that one field, bump
-        `XUD_LOADER_SLOT_COUNT` 18 → 19, and keep the "grep -c, keep exact" comment honest. Do **not** resolve
-        the *2 queries on demand like the messenger pair: those two are unslotted because they are gated on an
-        enabled extension and go stale across an instance recreation, which is not true of these.
-        Bar: `xud_loader.h` and every TU that includes it compile clean under the project flags, and
-        `XUD_LOADER_SLOT_COUNT` equals the field count.
       - [ ] S5.2 `src/xud/xud_physical.h` — the layer's own header (name it `xud_physical`, not `xud_device`:
         S6 owns `VkDevice` and the two would collide — say so before renaming). `XudPhysicalDevice` = the
         `VkPhysicalDevice` handle (a handle: **never destroyed**, the one rung of the teardown ladder that is
@@ -136,5 +127,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 ## Completed
 
 See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-step notes (the long
-"Done as" detail) and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
-2026-10-16 — diagnostics layer (S4). Nothing is finished after that date.
+"Done as" detail), the S5.1 note, and the dated log entries (the "Bar met" / "Honest boundary" records).
+Newest entry: **2026-10-18 — loader table grows by the physical layer's `*2` slot (S5.1)**. Nothing
+is finished after that date.
