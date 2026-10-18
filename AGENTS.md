@@ -21,7 +21,8 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 | `third_party/` | Vendored single-header deps | Only with an explicit decision (see Open decisions) |
 | `reference/raylib/` | raylib **6.2** headers (present today, 560 KB) | **NEVER EDIT** — gitignored, never `#include`d, never built against |
 | `bin/`, `build/` | Build output | Gitignored, never committed |
-| `todo.md` | Project progress tracker | Update every session, dated one-liners |
+| `todo.md` | Project progress tracker (open work only) | Update every session, dated one-liners |
+| `todo_completed.md` | Finished-step log, newest first | Where completed items and their long notes move to — never delete a finished step |
 
 **Present today (after the diagnostics + instance layers)**: `src/xud/` = `xud.h` + `xud_core.h`/`xud_core.c` (context shell + teardown) + `xud_loader.h`/`xud_loader.c` (the `dlopen` table) + `xud_vulkan.h`/`xud_vulkan.c` (shared vocabulary: `VkResult`→`XudResult` funnel + fixed-buffer name helpers, no driver call) + `xud_diagnostics.h`/`xud_diagnostics.c` (the diagnostics layer: advertised layer selection, `VkValidationFeaturesEXT`, the `VK_EXT_debug_utils` messenger + log callback) + `xud_instance.h`/`xud_instance.c` (the `VkInstance` layer: application info, extension selection, create-info assembly, create/destroy); `tests/` = `xud_test.c`; `examples/` = `hello_context.c`; `reference/raylib/`; `build/` (gitignored CMake output, plus `build-san/` when sanitizers are wanted). **Not created yet**: `shaders/`, `third_party/`, `bin/`. Nothing below the instance exists yet — no physical device, device, queue, surface, swapchain, allocator.
 
@@ -183,12 +184,12 @@ Matches raylib's `Vertex{pos, texcoords, color}` plus a normal so the default ma
 
 ## Working rules
 
-- Update `todo.md` when starting or finishing work: move the item, add a one-line note with the date.
+- Update `todo.md` when starting or finishing work: move the item, add a one-line note with the date. Once a step is done and committed, move the item **and** its long note out of `todo.md` into `todo_completed.md` (newest first) — `todo.md` stays the open-work tracker, the log stays complete, nothing finished is ever deleted.
 - **Commit rule: commit as soon as the step is bug-free and stable — do not wait for the feature to be finished.** A step counts as *stable* only when all four hold:
-  1. the step's item in `todo.md` is ticked or moved to the next section, with a dated one-line note;
+  1. the step's item in `todo.md` is ticked or moved to the next section (or on to `todo_completed.md`), with a dated one-line note;
   2. `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` is clean and the test binary passes headless (plus `XUD_GPU_TESTS=1` runs where the step touches the driver, and the `-fsanitizer` build where it touches memory);
   3. no known bug, leak, or unimplemented path is being papered over — a workaround belongs in a code comment, never in a commit message;
-  4. `AGENTS.md`, `todo.md` and the file-top comments describe exactly what is in the tree, nothing more and nothing less.
+  4. `AGENTS.md`, `todo.md`, `todo_completed.md` and the file-top comments describe exactly what is in the tree, nothing more and nothing less.
   Meet the bar, then commit immediately, even mid-subsystem. Never batch several steps into one commit at the end of a session, and never commit a state you are unsure about — if the bar is not met, keep working or write the blocker into `todo.md` instead.
 - Commit messages: short imperative mood, ≤ 50 chars, no trailing period (`Add Vulkan instance`, `Fix swapchain resize`).
 - No new dependencies (Volk, VMA, miniaudio, cgltf, stb, …) without asking first — none of them are packaged here, so "add a dep" always means "vendor a header".
