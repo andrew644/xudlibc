@@ -3,13 +3,13 @@
  *   xud_core.c - XudContext lifecycle
  *
  *   Owns : argument validation, the context shell allocation, the error-code names, the
- *          runtime Vulkan query, and teardown. The loader layer, the diagnostics layer and the
- *          instance layer are reached from here, and only through xud_loader.h /
- *          xud_diagnostics.h / xud_instance.h: nothing in this file calls a Vulkan entry point
- *          directly, and a machine with no driver only ever gets XUD_UNSUPPORTED, which is what
- *          keeps the headless test run green.
+ *          runtime Vulkan query, and teardown. The loader layer, the diagnostics layer, the
+ *          instance layer and the physical layer are reached from here, and only through xud_
+ *          loader.h / xud_diagnostics.h / xud_instance.h / xud_physical.h: nothing in this file
+ *          calls a Vulkan entry point directly, and a machine with no driver only ever gets XU
+ *          D_UNSUPPORTED, which is what keeps the headless test run green.
  *   Layer: core (bottom of the public API). Sees xud.h, xud_core.h and the layers below it
- *          (loader, diagnostics, instance). The diagnostics struct is opened only when XUD_VALIDATE
+ *          (loader, diagnostics, instance, physical). The diagnostics struct is opened only when XUD_VALIDATE
  *          asked for validation, and it sits between the loader and the instance in both the open
  *          order and the teardown order for the reason the extension gives it: its messenger is
  *          destroyed through the VkInstance that owns it, which must still be alive at that call.
@@ -23,6 +23,7 @@
 #include "xud_loader.h"
 #include "xud_diagnostics.h"
 #include "xud_instance.h"
+#include "xud_physical.h"
 
 #include <stdlib.h>
 
@@ -135,14 +136,27 @@ XudResult xud_init_context(XudContext **outContext, uint32_t width, uint32_t hei
         if (result != XUD_OK) goto fail;
     }
 
+    /* The physical layer, after the instance and before anything that needs a device: it binds
+       this layer's slots through the live instance, enumerates the devices, ranks one and recor
+       ds its caps - properties, features, memory, the advertised device extensions, the chosen
+       queue family, apiVersion read back. XUD_UNSUPPORTED here means the loader is open and an
+       instance exists but the driver has no device this layer can take: no device enumerated, no
+       graphics queue family, or a driver below the instance floor. That is a third reason to tel
+       l apart from "no loader" and "no instance", and it is why a machine with no driver and a d
+       river that cannot be driven both stay off the GPU-test path. The handle is a query result,
+       so the teardown below frees memory and calls no driver function: Vulkan has no vkDestroyP
+       hysicalDevice (grepped in these headers, the name does not exist).
+     */
+    result = xud_physical_open(&context->physicalDevice, context->loader, context->instance->instance);
+    if (result != XUD_OK) goto fail;
+
     /* The layers below this one do not exist yet, in order:
-         physical device   vkEnumeratePhysicalDevices + caps recorded before any extension is enabled
-         device + queues   vkCreateDevice + one queue family (graphics + present)
+         device + queues   vkCreateDevice + the queue family this layer just recorded (graphics)
          swapchain         VkSwapchainKHR from the GLFW surface
          surface           glfwCreateWindowSurface -> VkSurfaceKHR
-       None of them is there, so the context cannot draw anything: report that rather than
-       hand back something that owns an instance and no way to use it. The instance and the
-       loader are still torn down below - a partial bring-up must leak nothing. */
+       None of them is there, so the context cannot draw anything: report that rather than hand
+       back something that owns an instance and a device and no way to use it. Everything above
+       is still torn down below - a partial bring-up must leak nothing. */
     result = XUD_UNSUPPORTED;
     goto fail;
 
@@ -161,16 +175,22 @@ XudResult xud_close_context(XudContext **context)
 
     victim = *context;
 
-    /* Destroy order is the reverse of creation: instance before loader, and the layers that
-       come later (swapchain -> surface -> device) slot in before the instance. The diagnostics
-       struct is the one entry that is not strictly in that slot - its messenger belongs to the
-       VkInstance, and vkDestroyDebugUtilsMessengerEXT takes that instance while it is still
-       alive, so xud_instance_destroy() tears the messenger down first, through the instance it
-       is about to free, and xud_diagnostics_close() runs after it and only frees the struct
-       (it finds the messenger already VK_NULL_HANDLE there, and the borrowed instance handle
-       cleared, so nothing is called through a dying instance). Both destroy calls clear their
-       out handle before freeing the struct, so a context that is torn down twice cannot
-       double-free, and both are XUD_ALREADY on the second pass rather than a silent no-op. */
+    /* Destroy order is the reverse of creation: physical before instance before loader, and the
+       layers that come later (swapchain -> surface -> device) slot in before the physical one. T
+       he diagnostics struct is the one entry that is not strictly in that slot - its messenger
+       belongs to the VkInstance, and vkDestroyDebugUtilsMessengerEXT takes that instance while it
+       is still alive, so xud_instance_destroy() tears the messenger down first, through the inst
+       ance it is about to free, and xud_diagnostics_close() runs after it and only frees the stru
+       ct (it finds the messenger already VK_NULL_HANDLE there, and the borrowed instance handle c
+       leared, so nothing is called through a dying instance). The physical rung is the free-only
+       one: a VkPhysicalDevice is a query result, not an object the driver allocated for us, so x
+       ud_physical_close() frees the caps' extension array and the struct and calls no driver fun
+       ction at all - which is why it can run before the instance goes away without owing the inst
+       ance anything. Both destroy calls clear their out handle before freeing the struct, so a co
+       ntext that is torn down twice cannot double-free, and both are XUD_ALREADY on the second pa
+       ss rather than a silent no-op.
+     */
+    (void)xud_physical_close(&victim->physicalDevice);
     (void)xud_instance_destroy(&victim->instance, victim->loader, victim->diagnostics);
     (void)xud_diagnostics_close(&victim->diagnostics, victim->loader);
     (void)xud_loader_close(&victim->loader);

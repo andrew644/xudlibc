@@ -6,8 +6,11 @@
  *   Owns : XudPhysicalDevice (the handle plus an embedded XudDeviceCaps) and the contract of
  *          the physical layer - device selection, caps recording (properties, features, memory,
  *          advertised device extensions, the chosen queue family), apiVersion read-back.
- *          Declarations only today: xud_physical.c lands with the pure half (S5.3) and the
- *          driver half (S5.4), and joins the archive at S5.6 - see todo.md.
+ *          This header is declarations only; xud_physical.c is in the tree with **both** halves
+ *          now - the pure half landed at S5.3, the driver half (xud_physical_query_devices() and
+ *          xud_physical_open()) at S5.4 - and it joined the archive with them (add_library(xud S
+ *          TATIC ...) in CMakeLists.txt lists six objects, xud_physical.c.o among them), so the
+ *          test binary links the archive rather than compiling that TU specially - see todo.md.
  *   Layer: above the instance, below the device. Every Vulkan call the .c makes goes through a
  *          PFN slot of XudLoader (xud_loader.h) resolved through the live VkInstance handed in;
  *          nothing here names a vk* function directly, and no Vulkan symbol is linked (AGENTS.md:
@@ -17,8 +20,14 @@
  *          no vkDestroyPhysicalDevice (grepped in these headers - the name does not exist), a
  *          VkPhysicalDevice is a query result and not an object the driver allocated for us, so
  *          xud_physical_close() frees memory and calls no driver function at all.
- *   Header facts verified against Vulkan-Headers 1.4.357 here (2026-10-18, grepped, no driver
- *          involved): VkPhysicalDeviceProperties2 at vulkan_core.h:5809, VkPhysicalDeviceFeatures
+ *   Loader fact probed here (2026-10-18, through a live VkInstance, dlopen only, no link
+ *          dependency): vkGetPhysicalDeviceMemoryProperties2 is the **one** physical-layer name
+ *          the loader's PFN table did not already have, so xud_loader.h grew a slot for it and
+ *          XUD_LOADER_SLOT_COUNT went 19 -> 20; all seven physical names resolve non-NULL through
+ *          a live VkInstance and NULL with VK_NULL_HANDLE in hand, which is why all seven sit in
+ *          the instance-level tier. Header facts verified against Vulkan-Headers 1.4.363 here
+ *          (2026-10-18, grepped, no driver involved): VkPhysicalDeviceProperties2 at vulkan_core
+ *          h:5809, VkPhysicalDeviceFeatures
  *          Features2 at :5803, VkPhysicalDeviceMemoryProperties2 at :5843, and the queue-family
  *          wrapper at :5837 is named VkQueueFamilyProperties2 - no PhysicalDevice prefix, the
  *          naming trap this comment exists to record. The device-level names are PFN_vkEnumerate
@@ -154,12 +163,18 @@ typedef struct XudPhysicalDevice {
 /// verified there). On XUD_OK *outCandidates is that array - the caller owns it and frees it
 /// with free(), xud_physical_open() is the only caller and frees it on every path - and *out
 /// Count how many handles the driver wrote; both are NULL on every failure path. XUD_INVALID
-/// _ARG on a NULL out pair or a NULL instance/VK_NULL_HANDLE; XUD_UNSUPPORTED when the loader
-/// is closed or its vkEnumeratePhysicalDevices slot is nil (a driver that does not know the
-/// name, reported not guessed at); XUD_VULKAN_ERROR when the driver refuses or cuts the list
-/// at the cap (VK_INCOMPLETE is not an error in Vulkan, but a truncated device list is unusable
-/// here - the same mapping xud_result_from_vk applies).
-XudResult xud_physical_query_devices(VkPhysicalDevice **outCandidates, uint32_t *outCount, VkInstance instance);
+/// _ARG on a NULL loader/out pair or a NULL instance/VK_NULL_HANDLE; XUD_UNSUPPORTED when the
+/// loader is closed or its vkEnumeratePhysicalDevices slot is nil (a driver that does not know
+/// the name, reported not guessed at); XUD_VULKAN_ERROR when the driver refuses or cuts the lis
+/// t at the cap (VK_INCOMPLETE is not an error in Vulkan, but a truncated device list is unusab
+/// le here - the same mapping xud_result_from_vk applies).
+/// The loader parameter is part of the contract, not an afterthought: this query calls the drive
+/// r through a slot of the loader's table, and there is no library-wide loader to reach (AGENTS.m
+/// d: no global mutable state except the single context pointer), so a query that names the drive
+/// r must be handed the table it goes through. xud_physical.h declared it without one at S5.2; th
+/// e doc comment above already described the slot rule, and S5.4, the step that implements this qu
+/// ery, is where that lands.
+XudResult xud_physical_query_devices(const XudLoader *loader, VkPhysicalDevice **outCandidates, uint32_t *outCount, VkInstance instance);
 
 /// Pure: choose one of the enumerated handles, given what each one reported. The policy today
 /// is "first in driver order" (the plan's note: first for now, a ranking later) - so the answer
@@ -224,33 +239,44 @@ XudResult xud_physical_select_queue_family(uint32_t *outIndex, VkQueueFamilyProp
 /// a device it cannot drive. XUD_INVALID_ARG on a NULL caps.
 XudResult xud_physical_record_api_version(XudDeviceCaps *caps);
 
-/// Driver: bring the physical layer up - allocate the struct, bind the slots this layer needs
-/// through the live instance (xud_loader_bind, the same helper xud_instance.c uses: these names
-/// are instance-level, they resolve through a VkInstance and are cached in the table), enumer-
-/// ate the devices, select one, copy VkPhysicalDeviceProperties2 / VkPhysicalDeviceFeatures2 /
-/// VkPhysicalDeviceMemoryProperties2 into the caps, query the driver's own device-level extens
-/// ions (pLayerName NULL) into the caps' heap array, query the queue families and record the cho
-/// sen one plus its index, and read the apiVersion back. Every slot is checked before the call
-/// that needs it (xud_loader_is_open plus a nil-slot check -> XUD_UNSUPPORTED, the same check x
-/// ud_instance.c applies to createInstance): a name the loader does not know is reported, never
-/// called through. **The four caps getters return void in these headers** (PFN_vkGetPhysicalDev
-/// iceFeatures2 :6178, PFN_vkGetPhysicalDeviceProperties2 :6179, PFN_vkGetPhysicalDeviceMemoryPr
-/// operties2 :6183, PFN_vkGetPhysicalDeviceQueueFamilyProperties2 :6182 - grepped), so there is
-/// no VkResult for xud_result_from_vk to map and the only failure signal those four can give is
-/// "the struct still says nothing": every caps field must be at a valid zero state **before** th
-/// e call that fills it (zero the struct, then call), which is why the caps are zeroed as part of
-/// the one allocation and why a driver that answers nothing leaves apiVersion 0, which xud_phys
-/// ical_record_api_version then rejects. The two that do return a VkResult are vkEnumeratePhysic
-/// alDevices (:4534) and vkEnumerateDeviceExtensionProperties (:4544). On XUD_OK *outPhysicalDe
-/// vice owns a live handle plus the caps recorded from it; on any error it stays NULL and every
-/// thing allocated so far is freed, in reverse creation order, and nothing is destroyed - there
-/// is nothing to destroy at this layer. XUD_INVALID_ARG on a NULL out-pointer or one that alrea
+/// Driver: bring the physical layer up - allocate the struct, bind the **six** slots this layer
+/// calls through the live instance (xud_loader_bind, the same helper xud_instance.c uses: these
+/// names are instance-level, they resolve through a VkInstance and are cached in the table). The
+/// loader parameter is not const for exactly that reason: xud_loader_bind takes XudLoader * and a
+/// dstSlot of void *, so a const XudLoader * is rejected twice over by both compilers here - the
+/// argument discards const, and the address of a const member discards it again (verified with a
+/// scratch TU under the project flags, gcc -Werror=discarded-qualifiers and clang
+/// -Wincompatible-pointer-types-discards-qualifiers). The seventh physical name the table holds,
+/// the non-2 vkGetPhysicalDeviceProperties form, is slotted for a ranking policy that has to work
+/// with no extension in hand; this layer calls the *2 forms only. Then enumerate the devices, sel
+/// ect one, copy VkPhysicalDeviceProperties2 / VkPhysicalDeviceFeatures2 / VkPhysicalDeviceMemor
+/// yProperties2 into the caps, query the driver's own device-level extensions (pLayerName NULL) i
+/// nto the caps' heap array, query the queue families and record the chosen one plus its index, a
+/// nd read the apiVersion back. Every slot is checked before the call that needs it (xud_loader_i
+/// s_open plus a nil-slot check -> XUD_UNSUPPORTED, the same check xud_instance.c applies to crea
+/// teInstance): a name the loader does not know is reported, never called through. **The four cap
+/// s getters return void in these headers** (PFN_vkGetPhysicalDeviceFeatures2 :6178, PFN_vkGetPhy
+/// sicalDeviceProperties2 :6179, PFN_vkGetPhysicalDeviceMemoryProperties2 :6183, PFN_vkGetPhysic
+/// alDeviceQueueFamilyProperties2 :6182 - grepped), so there is no VkResult for xud_result_from_
+/// vk to map and the only failure signal those four can give is "the struct still says nothing":
+/// every caps field is at a valid state **before** the call that fills it - the struct is calloc
+/// ed, so the core payloads are zero and a driver that answers nothing leaves apiVersion 0, which
+/// xud_physical_record_api_version then rejects, and each *2 wrapper's own sType is stamped befor
+/// e the call because lavvk leaves the wrapper untouched (probed here: sType 0 in, 0 out) and an
+/// unstamped caps row would claim nothing. The two that do return a VkResult are vkEnumeratePhysi
+/// calDevices (the typedef at :4532) and vkEnumerateDeviceExtensionProperties (:4544). On XUD_OK
+/// *outPhysicalDevice owns a live handle plus the caps recorded from it; on any error it stays NU
+/// LL and everything allocated so far is freed, in reverse creation order, and nothing is destroy
+/// ed - there is nothing to destroy at this layer. The three *2 caps structs' pNext is checked, n
+/// ot assumed: this layer provided no chained struct, so a driver that wrote one is a driver this
+/// layer cannot hand a caps struct from. XUD_INVALID_ARG on a NULL out-pointer or one that alrea
 /// dy owns a device (nothing is created twice into the same slot), a NULL loader or a NULL instan
 /// ce/VK_NULL_HANDLE; XUD_UNSUPPORTED when the loader is closed, a slot this layer needs is nil,
-/// or no device/no graphics family was found; XUD_OUT_OF_MEMORY/XUD_OUT_OF_RESOURCES when an all
-/// ocation or a query at the cap cannot be satisfied; XUD_VULKAN_ERROR when the driver refuses a
-/// query that does answer with a VkResult.
-XudResult xud_physical_open(XudPhysicalDevice **outPhysicalDevice, const XudLoader *loader, VkInstance instance);
+/// no device was enumerable, no graphics family was found, or the driver is below the instance fl
+/// oor; XUD_OUT_OF_MEMORY/XUD_OUT_OF_RESOURCES when an allocation or a query at the cap cannot be
+/// satisfied; XUD_VULKAN_ERROR when the driver refuses a query that does answer with a VkResult,
+/// or chained a struct into a *2 pNext this layer never asked for.
+XudResult xud_physical_open(XudPhysicalDevice **outPhysicalDevice, XudLoader *loader, VkInstance instance);
 
 /// The free-only rung of the teardown ladder: Vulkan has no vkDestroyPhysicalDevice (grepped in
 /// these headers, the name does not exist) because a VkPhysicalDevice is a query result, not an

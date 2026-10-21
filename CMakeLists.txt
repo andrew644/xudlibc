@@ -38,18 +38,20 @@ endif()
 
 # xud_loader.c dlopens the Vulkan ICD loader: dlopen/dlsym/dlclose come from libc, so
 # there is still no -lvulkan and no -ldl on any link line (verified with ldd + nm -u).
-# xud_vulkan.c, xud_instance.c and xud_diagnostics.c are the layers above it: shared VkResult/name
-# vocabulary, vkCreateInstance/vkDestroyInstance, and the diagnostics layer's vkEnumerateInstance
-# LayerProperties + vkCreate/vkDestroyDebugUtilsMessengerEXT - every one of them reached only through
-# the loader's function-pointer table (the two messenger entry points resolved on demand through a
-# live VkInstance, never cached in a slot). Still no Vulkan symbol at link time: the archive holds
-# no vk* undefined symbol, and dlclose/dlopen/dlsym come from libc.
+# xud_vulkan.c, xud_instance.c, xud_diagnostics.c and xud_physical.c are the layers above it: share
+# d VkResult/name vocabulary, vkCreateInstance/vkDestroyInstance, the diagnostics layer's vkEnumerat
+# eInstanceLayerProperties + vkCreate/vkDestroyDebugUtilsMessengerEXT, and the physical layer's vkEnu
+# meratePhysicalDevices + the three *2 caps getters + vkEnumerateDeviceExtensionProperties - every one
+# of them reached only through the loader's function-pointer table (the two messenger entry points res
+# olved on demand through a live VkInstance, never cached in a slot). Still no Vulkan symbol at link t
+# ime: the archive holds no vk* undefined symbol, and dlclose/dlopen/dlsym come from libc.
 add_library(xud STATIC
     src/xud/xud_core.c
     src/xud/xud_diagnostics.c
     src/xud/xud_loader.c
     src/xud/xud_vulkan.c
     src/xud/xud_instance.c
+    src/xud/xud_physical.c
 )
 
 target_include_directories(xud PUBLIC
@@ -60,6 +62,11 @@ target_include_directories(xud PUBLIC
 # Tests: headless by default, must stay green with no Vulkan driver present
 #-------------------------------------------------------------------------------------
 
+# The test links the archive, nothing else: every layer under the public API is in it, so the test
+# TU is one main() plus the checks, and there is no second executable to duplicate the harness for.
+# The physical layer joined the archive with the rest when its driver half landed (S5.4) - its header
+# contract is complete now, both halves are defined, so no undefined declaration is left in the TU an
+# d nothing has to be compiled into the test binary specially.
 add_executable(xud_test
     tests/xud_test.c
 )
