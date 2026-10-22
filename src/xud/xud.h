@@ -9,10 +9,11 @@
  *          Vulkan query xud_vulkan_supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c,
  *          xud_loader.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_p
- *          hysical.h/.c - and user code includes this header only; tests may include the in
- *          ternal ones. The Vulkan bring-up steps past the physical layer (S6..S8) are tracked
- *          in todo.md and do not exist yet; the physical layer (S5) is in the tree but stays
- *          internal, so nothing about a physical device or its caps is public API yet.
+ *          hysical.h/.c, xud_device.h/.c - and user code includes this header only; tests may inclu
+ *          de the internal ones. The device layer (S6) is in the tree now and stays internal like
+ *          every layer below this one, so nothing about a VkDevice or its queues is public API yet;
+ *          the steps after it (S7 GLFW window + surface, S8 ownership + teardown) are tracked in
+ *          todo.md and do not exist yet.
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape

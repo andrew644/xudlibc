@@ -6,15 +6,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] **S6 Device + queues**: one queue family chosen via `vkGetPhysicalDeviceQueueFamilyProperties2` (graphics +
-    present), one `VkQueueCreateInfo`, `DeviceCreateInfo` carrying **only** verified features/extensions
-    (the `XudDeviceCaps` the physical layer recorded is what it carries — the intersection is already normalised to
-    VK_TRUE/VK_FALSE, and the caps' three `pNext` fields are NULL on this driver, so the chain stays empty),
-    `xud_wait_idle` guard for teardown. GPU-gated test.
-    Facts already probed for S6 (2026-10-18, in `todo_completed.md`'s S5.4 note): 1 device, `apiVersion = 4211042`,
-    **196** device extensions with `VK_KHR_SWAPCHAIN` among them, **1** queue family (`queueFlags = 0x1f`,
-    `queueCount = 1`), `maxPushConstantsSize` 128, `maxCombinedImageSamplerDescriptorCount` 1.
-
 - [ ] S7 GLFW window + surface: `glfwCreateWindowSurface` (GLFW 3.5.1 — verified present), `glfwGetRequiredInstanceExtensions`
     merged into the instance extension list, `glfwGetPhysicalDevicePresentationSupport` checked against the chosen
     queue family (this is the **present** half of AGENTS.md's one-family rule — there is no `VK_QUEUE_PRESENT_BIT`
@@ -75,18 +66,32 @@ step, just move it, so the active tracker stays short and the log stays complete
 ## Completed
 
 See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-step notes (the long "Done as"
-detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, and the
-dated log entries (the "Bar met" / "Honest boundary" records). Newest entry: **2026-10-18 — the physical
-layer's driver half (S5.4), the layer landing in the archive**. Nothing is finished after that date.
+detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
+whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
+the same day)**,
+and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry: **2026-10-18 — the
+device layer, both halves (S6), the layer landing in the archive**. Nothing is finished after that date.
 
-- 2026-10-18 — **S5.4 the physical layer's driver half** (`xud_physical_query_devices` + `xud_physical_open` in
-    `src/xud/xud_physical.c`): the physical layer is now complete, in the archive (6 objects), and called by
-    `xud_init_context`. Probed on lavvk through the validation layer: 1 device, `apiVersion = 4211042`,
-    `INTEGRATED_GPU`, 196 device extensions (`VK_KHR_swapchain` among them), 1 queue family (`queueFlags = 0x1f`),
-    `maxPushConstantsSize` 128, `maxCombinedImageSamplerDescriptorCount` 1, `wideLines` absent so the ∩ rule leaves
-    it off. The validation layer turned an unstamped `VkQueueFamilyProperties2` row into a hard error — the queue
-    query stamps the whole capacity before the call. Bar: gcc+clang syntax-clean, headless **361/0**, GPU **463/0**
-    and validation-clean, sanitizers green both ways, link still Vulkan-free. S5.5 (the `XudPhysicalDevice *`
-    context field + teardown rung), S5.6 (the archive line), S5.7 (`xud_test_gpu_physical` + the headless
-    negative test) and S5.8 (AGENTS.md's *Verified physical-layer driver facts* block + the file-tops) landed
-    with it, each as its own note in `todo_completed.md`.
+- 2026-10-18 — **S6 the device layer** (`xud_device.h` + `xud_device.c`): `XudDevice`
+owns the `VkDevice` handle, the one `VkDeviceQueueCreateInfo` row built from the physical layer's chosen
+family (`queueCount = min(family row, XUD_DEVICE_QUEUE_MAX_COUNT)` 2, stamped, priorities in the struct's
+own array so the row's pointer cannot dangle past the call), the `VkPhysicalDeviceFeatures` handed to the
+driver is `xud_physical_record_features()`'s **intersection** (never `caps.features.features` verbatim —
+`geometryShader` stays off on a driver that has it), the enabled extensions come only from the recorded
+196 (`VK_KHR_SWAPCHAIN` at row 84 → exactly one enabled here), `VkDeviceCreateInfo.pNext` stays NULL (the
+caps' three `*2` chains came back empty); `XudQueue` is a **record**, not an owner (no `vkDestroyQueue` —
+grep zero hits), the two roles `XUD_QUEUE_ROLE_GRAPHICS`/`PRESENT` are a library decision (no `VK_QUEUE_PRESENT_BIT`,
+see the S5.2 grep) and both resolve to the same handle here (one family, one queue). `xud_device_wait_idle`
+is the teardown guard (the plan's `xud_wait_idle`, layer-prefixed), `xud_device_close` is guard → destroy →
+free and a **lost** device is still destroyed. The four device slots were already in the table since S2 —
+`XUD_LOADER_SLOT_COUNT` stays **20** — and all four resolve `XUD_OK` through a live `VkInstance` (`XUD_UNSUPPORTED`
+with `VK_NULL_HANDLE` in hand), so they are cached, and `vkGetDeviceProcAddr` is not slotted or called here.
+The validation layer is what catches the shapes the driver accepts silently (`pQueuePriorities is NULL`,
+`queueFamilyIndex (99) is not one of the queue families given via VkDeviceQueueCreateInfo`, `queueIndex (1)
+is not less than the 1 queues requested`, total-queue-count-over-available, duplicate family rows, unstamped
+create-infos, `queueCount must be greater than 0`); unadvertised extension → `-7`, absent feature → `-8`,
+both `XUD_UNSUPPORTED`. Bar: gcc+clang syntax-clean over the whole tree, headless **465/0** (was 361), GPU
+**615/0** (was 463) and validation-clean with `VK_INSTANCE_LAYERS` unset and forced on, sanitizers green
+both ways, `ar -t build/libxud.a` lists **7** objects with `xud_device.c.o`, link still Vulkan-free. **Honest
+boundary**: nothing in the context calls the device layer yet — `xud_core.h`'s `device` field is still a `void *`
+sentinel and `xud_init_context` still answers `XUD_UNSUPPORTED`; that wiring is S8's ownership step.

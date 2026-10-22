@@ -9,7 +9,9 @@
  *          diagnostics field from the diagnostics step on (NULL in a release build), the instan
  *          ce field from the instance layer on, and the physical field from the physical layer
  *          on; the device, queue, surface, swapchain and allocator fields are still sentinels,
- *          filled by the bring-up steps after this one (see todo.md).
+ *          filled by the bring-up steps after this one (see todo.md) - the device layer exists in
+ *          the tree now (xud_device.h/.c, landed and tested at S6) but nothing in the context cal
+ *          ls it until S8's ownership step, so the device field stays a sentinel here.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *

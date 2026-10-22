@@ -50,8 +50,16 @@
    the way a cached messenger pointer would not; a driver that hides the *2 forms behind an
    extension it did not enable answers NULL for them instead, and the layer that binds such a
    slot reports the nil slot rather than calling through it (the same check xud_instance.c
-   applies to createInstance). XUD_LOADER_SLOT_COUNT counts the slots that do exist (grep -c,
-   keep exact - 20 today, of which the **seven** the physical layer names are instance-level:
+   applies to createInstance). The four device-level slots the device layer binds (vkCreateDevice,
+   vkDestroyDevice, vkGetDeviceQueue, vkDeviceWaitIdle) follow the same rule and needed no new
+   slot - probed 2026-10-18 through xud_loader_resolve: all four answer XUD_OK through a live VkI
+   nstance and XUD_UNSUPPORTED with VK_NULL_HANDLE in hand, so they are instance-level for resolu
+   tion and cached like every other driver-name slot, bound by xud_device_open() before the first
+   call through them. vkGetDeviceProcAddr is the one device-level name that is NOT slotted: it nee
+   ds the VkDevice itself, not the instance, and nothing in this tree resolves a device-level entry
+   point through a device yet - that is the renderer layer's job. XUD_LOADER_SLOT_COUNT counts the
+   slots that do exist (grep -c, keep exact - 20 today, of which the **seven** the physical layer
+   names are instance-level:
    vkEnumeratePhysicalDevices, the non-2 and the *2 properties forms, vkGetPhysicalDeviceFeatures2,
    vkGetPhysicalDeviceMemoryProperties2, vkGetPhysicalDeviceQueueFamilyProperties2,
    vkEnumerateDeviceExtensionProperties - probed 2026-10-18 through a live VkInstance, all seven

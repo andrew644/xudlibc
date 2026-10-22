@@ -9,10 +9,12 @@
  *          instance is created at the VK_API_VERSION_1_0 floor with that handed over, and the
  *          physical layer is opened under it (vkEnumeratePhysicalDevices, one device ranked, its
  *          caps recorded: the three *2 property/feature/memory structs, the advertised device
- *          extensions, the chosen graphics queue family, the real apiVersion read back) - but
- *          device / queue / surface are not, so the honest answer for a context is still
- *          XUD_UNSUPPORTED, and the physical layer stays internal (xud.h declares nothing about
- *          a physical device or its caps).
+ *          extensions, the chosen graphics queue family, the real apiVersion read back). The devi
+ *          ce layer (S6) exists in the tree below it - vkCreateDevice from those recorded caps, one
+ *          VkDeviceQueueCreateInfo for the chosen family, the two role queues, the wait-idle guard -
+ *          but nothing in the context calls it until S8's ownership step, so the honest answer for
+ *          a context is still XUD_UNSUPPORTED, and both layers stay internal (xud.h declares nothi
+ *          ng about a physical device, its caps, a VkDevice, or a queue).
  *   Layer: examples. Public API only (xud.h).
  *
  *   Copyright (c) 2026 xudlibc authors.
