@@ -1,0 +1,5 @@
+---
+BasedOnStyle: WebKit
+BreakBeforeBraces: Attach
+Language: Cpp
+Standard: c++11

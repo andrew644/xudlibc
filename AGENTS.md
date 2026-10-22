@@ -142,6 +142,8 @@ Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers a
 - Cleanup idiom: `goto fail;` ladder in init paths, one `xud_close_*()` teardown; every partial-failure path must leak nothing.
 - No global mutable state except the single library context pointer; multiple windows must work.
 - `#include` guard `XUD_<FILE>_H_`; file-top comment stating what the file owns and which layer it belongs to.
+- All blocks must have curly braces. Even one line if statements.
+- Use clang-format before commit.
 - Doc comments: `///` Doxygen-style above public declarations only (no Doxygen build required yet).
 - Compile flags in dev: `-std=c11 -Wall -Wextra -Wpedantic -Werror` plus `-fsanitize=address,undefined` for tests. Release: `-O2`. The CMakeLists adds these itself (`-Wall -Wextra -Wpedantic -Werror` always, `-g -DXUD_DEBUG=1` by default, `-O2` under `-DXUD_DEBUG=OFF`, sanitizers under `-DXUD_SANITIZERS=ON`).
 - **Never add `-Ddefault=lib`** to a compile line here: with gcc 16.2.1 and clang 22.1.8 it is a preprocessor define of a macro named `default`, which rewrites every `default:` label in every `switch` and breaks the build (verified: both compilers fail a two-case switch under it).
