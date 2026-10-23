@@ -16,9 +16,12 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Next
 
-- [ ] Swapchain creation + recreate on window resize (never leak the old one)
-- [ ] First triangle end to end: SPIR-V built by `glslangValidator`, one graphics pipeline, one command buffer,
-    acquire/submit/present with semaphores + per-image fence
+- [ ] Swapchain creation + recreate on window resize (never leak the old one) — explicit-pass path: the `VkFramebuffer`
+    array is per swapchain image and is recreated with the swapchain
+- [ ] First triangle end to end on the **explicit `VkRenderPass` + `VkFramebuffer` path** (decided 2026-10-22, see Decided
+    below): SPIR-V built by `glslangValidator`, one graphics pipeline, one command buffer, one render pass + one
+    framebuffer per image, acquire/submit/present with semaphores + per-image fence; `vkGetDeviceProcAddr` becomes a
+    loader slot here (everything below the device resolves through it, not through the instance)
 - [ ] Test scaffolding hardened: headless pure-logic tests green by default, GPU tests opt-in via `XUD_GPU_TESTS=1`,
     validation-layer output treated as a failure signal
 
@@ -52,10 +55,35 @@ step, just move it, so the active tracker stays short and the log stays complete
 - Core floor → **`VK_API_VERSION_1_0` + `VK_KHR_SWAPCHAIN`**, everything higher gated on recorded caps.
 - GPU memory discipline → **allocate once, suballocate always**, staging via transfer ops.
 
+## Decided since then
+
+- 2026-10-22 — **Render pass → explicit `VkRenderPass` + `VkFramebuffer`** (not `VK_KHR_dynamic_rendering`, not both
+  gated on caps). Probed today before deciding (scratch probes against `build/libxud.a`, deleted after, no library file
+  touched): the driver answers **both** paths — `apiVersion 4211042` (core 1.4), `VK_KHR_dynamic_rendering` and
+  `VK_KHR_create_renderpass2` are among the 196 advertised device extensions, and the core
+  `VkPhysicalDeviceDynamicRenderingFeatures` answers `dynamicRendering = VK_TRUE` when chained into a fresh
+  `vkGetPhysicalDeviceFeatures2`. So a caps gate between the two would leave one half of the renderer never having met
+  a driver on this machine, which is against the testing rules — pick one path, write the other down as a gate.
+  Explicit wins because: it is the only path that runs at the declared 1.0 + swapchain floor **without touching two
+  landed contracts** (the dynamic feature is a *chained* struct, so it would grow `XudDeviceCaps` by a 4th chained
+  struct, restate `xud_physical.c`'s "the driver chained something we did not ask for" `pNext` check — probed: `pNext`
+  is NULL after the three unchained `*2` getters, non-NULL once we chain — and grow `VkDeviceCreateInfo.pNext`, which
+  is NULL today); it matches the design sketch ("begin render pass → clear color+depth") and the subpass-discipline
+  rule; it keeps the pure create-info assembly the headless tests lean on; and it is the only path with a **resolve
+  attachment**, which is real here — `limits.framebufferColor/Depth/NoAttachmentsSampleCounts` all answer 0x1f (up to
+  16 samples). Gate MSAA on those names, **never** on the queue family's `maxImageSampleCount` (1 for the chosen
+  family, and that number comes from `VkPhysicalDeviceQueueFamilyProperties2`, a `pNext` chain entry the physical
+  layer does not record today — a different limit). Loader slots: the explicit path needs 6 new device-level slots,
+  the dynamic path 2; `XUD_LOADER_SLOT_COUNT` stays 20 until the renderer step lands. `vkGetDeviceProcAddr` (PFN
+  4540) is the first slot that step must add. Naming trap found while deciding: the recording pair is
+  `vkBeginCommandBuffer`/`vkEndCommandBuffer` — **no `Cmd` prefix**, `vkCmdBeginCommandBuffer` does not exist.
+  Future gates, not implemented: `VK_KHR_dynamic_rendering` (needs the caps/device `pNext` plumbing above) and
+  `VK_KHR_create_renderpass2` as a strict upgrade of this path (+3 command-buffer slots, extension-gated, 1.0 form as
+  fallback).
+
 ## Blocked / needs a decision
 
 - 2D vs 3D scope (ask)
-- Render pass style: explicit render passes/framebuffers vs `VK_KHR_dynamic_rendering` vs both gated on caps (ask)
 - GPU allocator: vendor VMA vs own block allocator (ask)
 - Loader: hand-rolled PFN table vs vendor Volk (ask)
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
