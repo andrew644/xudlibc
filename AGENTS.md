@@ -416,7 +416,7 @@ GPU memory: one block allocator, ours, over the caps' recorded memory rows — `
   element size, `offset` 0) and one `VkVertexInputAttributeDescription` pointing at its own `binding`. Today's four streams:
   `pos` `float3` (12 B/vertex, `VK_FORMAT_R32G32B32_SFLOAT`), `uv` `float2` (8 B, `VK_FORMAT_R32G32_SFLOAT`), `color`
   normalized `ubyte4` (4 B, `VK_FORMAT_R8G8B8A8_UNORM`), `normal` `float3` (12 B, `VK_FORMAT_R32G32B32_SFLOAT`) — the same
-  36 B/vertex total the sketch first sketched interleaved, split across four buffers instead of woven into one.
+  36 B/vertex total as the sketch's interleaved form, split across four buffers instead of woven into one.
   **Header facts** (grepped today in `/usr/include/vulkan/vulkan_core.h`, 1.4.363, **no driver call**): `VkVertexInputAttributeDescription`
   **4267** = `{ location, binding, format, offset }` and `VkVertexInputBindingDescription` **4274** = `{ binding, stride,
   inputRate }` — **neither is a stamped struct** (no `sType`, no `pNext`, unlike every create-info this tree assembles, so
@@ -449,12 +449,13 @@ GPU memory: one block allocator, ours, over the caps' recorded memory rows — `
   device says `deviceID` 39497 and "Intel(R) Iris(R) Xe Graphics (TGL GT2)", i.e. the machine's Vulkan driver moved since
   2026-10-18, so the limits a step reads come **from the caps**, never from that note's numbers. Headroom here: 33 bindings
   against today's 4, so the attribute set can grow without a driver refusal. **No ECS at this level**: the CPU-side records stay
-  one plain struct per object kind inside its slot (`XudMeshRecord`, `XudTextureRecord`, …), not an archetype/component registry —
-  the per-kind slot arrays the handle-currency decision already fixes are the only arrays the library owns and are what an
-  iteration-friendly pass would walk. An ECS storage layer in C11 would be a subsystem (sparse sets, archetype storage, system
-  registration, storage migration) the raylib-shaped public API cannot express and no test here would exercise, and it buys
-  nothing the SoA streams have not already bought. **Not in the tree yet**: no vertex stream, no batch, no
-  `VkPipelineVertexInputStateCreateInfo` — this is a decision the batch/shapes steps write against, not code.
+  one plain struct per object kind inside its slot (`XudMeshRecord`, `XudTextureRecord`, … — illustrative names, none of
+  them in the tree yet), not an archetype/component registry — the per-kind slot arrays the handle-currency decision
+  already fixes are the only arrays the library owns and are what an iteration-friendly pass would walk. An ECS storage
+  layer in C11 would be a subsystem (sparse sets, archetype storage, system registration, storage migration) the raylib-shaped
+  public API cannot express and no test here would exercise, and it buys nothing the SoA streams have not already bought.
+  **Not in the tree yet**: no vertex stream, no batch, no `VkPipelineVertexInputStateCreateInfo` — this is a decision the
+  batch/shapes steps write against, not code.
 
 ## Open design decisions (ask, don't assume)
 
