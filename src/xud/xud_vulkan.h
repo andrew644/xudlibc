@@ -9,9 +9,9 @@
 #ifndef XUD_VULKAN_H_
 #define XUD_VULKAN_H_
 
+#include "xud.h"
 #include <assert.h>
 #include <stdbool.h>
-#include "xud.h"
 #include <vulkan/vulkan.h>
 
 /// Translate one Vulkan result code into the library's own vocabulary - the one funnel
@@ -39,12 +39,12 @@ XudResult xud_result_from_vk(VkResult vkResult);
 
 /// Compare two NUL-terminated names byte for byte (extension and layer names are ASCII).
 /// Two NULL pointers compare equal; one NULL and one not does not.
-bool xud_name_equal(const char *left, const char *right);
+bool xud_name_equal(const char* left, const char* right);
 
 /// Copy `source` into `destination`, a fixed buffer of `destinationSize` bytes
 /// (extension names and layer names are both VK_MAX_EXTENSION_NAME_SIZE bytes).
 /// XUD_INVALID_ARG when the name does not fit - a driver that lies about a name length
 /// must never be able to write past the buffer.
-XudResult xud_name_copy(char *destination, uint32_t destinationSize, const char *source);
+XudResult xud_name_copy(char* destination, uint32_t destinationSize, const char* source);
 
 #endif /* XUD_VULKAN_H_ */

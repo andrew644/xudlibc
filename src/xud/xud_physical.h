@@ -58,11 +58,11 @@
 #ifndef XUD_XUD_PHYSICAL_H_
 #define XUD_XUD_PHYSICAL_H_
 
-#include <assert.h>
 #include "xud.h"
-#include "xud_loader.h"
 #include "xud_instance.h"
+#include "xud_loader.h"
 #include "xud_vulkan.h"
+#include <assert.h>
 #include <vulkan/vulkan.h>
 
 /*-----------------------------------------------------------------------------------------------
@@ -97,21 +97,26 @@
 #define XUD_PHYSICAL_NO_QUEUE_FAMILY 0xFFFFFFFFu
 
 static_assert(XUD_PHYSICAL_QUERY_MIN_CAPACITY >= 1u, "a query must ask for at least one row");
-static_assert(XUD_PHYSICAL_QUERY_MIN_CAPACITY <= XUD_PHYSICAL_QUERY_MAX_CAPACITY, "the doubling must start at or below its cap");
-static_assert(XUD_PHYSICAL_QUERY_MAX_CAPACITY <= (0xFFFFFFFFu / 2u), "doubling the cap must stay inside uint32_t");
-static_assert(XUD_PHYSICAL_NO_QUEUE_FAMILY > XUD_PHYSICAL_QUERY_MAX_CAPACITY, "the no-family sentinel must be outside every index the query can return");
+static_assert(XUD_PHYSICAL_QUERY_MIN_CAPACITY <= XUD_PHYSICAL_QUERY_MAX_CAPACITY,
+    "the doubling must start at or below its cap");
+static_assert(XUD_PHYSICAL_QUERY_MAX_CAPACITY <= (0xFFFFFFFFu / 2u),
+    "doubling the cap must stay inside uint32_t");
+static_assert(XUD_PHYSICAL_NO_QUEUE_FAMILY > XUD_PHYSICAL_QUERY_MAX_CAPACITY,
+    "the no-family sentinel must be outside every index the query can return");
 
 /* The advertised device-extension list is a heap array of these, so one record must be one
    fixed-size row: extensionName[VK_MAX_EXTENSION_NAME_SIZE] then one uint32_t, no padding in
    between (VK_MAX_EXTENSION_NAME_SIZE is 256 here, a multiple of 4). If a future header ever
    changed the shape, the array arithmetic in xud_physical.c would be wrong, not this layer's
    decision - so the assumption is checked, not trusted. */
-static_assert(sizeof(VkExtensionProperties) == VK_MAX_EXTENSION_NAME_SIZE + sizeof(uint32_t), "one advertised device extension is one fixed-size record");
+static_assert(sizeof(VkExtensionProperties) == VK_MAX_EXTENSION_NAME_SIZE + sizeof(uint32_t),
+    "one advertised device extension is one fixed-size record");
 
 /* The apiVersion read-back below compares against the floor the instance layer asks for, and
    one macro owns that number (xud_instance.h) - seen through the include above, never a second
    macro that could drift. The read-back's meaning depends on that floor being at least 1.0. */
-static_assert(XUD_INSTANCE_API_FLOOR >= VK_API_VERSION_1_0, "the apiVersion read-back assumes the instance floor is at least Vulkan 1.0");
+static_assert(XUD_INSTANCE_API_FLOOR >= VK_API_VERSION_1_0,
+    "the apiVersion read-back assumes the instance floor is at least Vulkan 1.0");
 
 /*-----------------------------------------------------------------------------------------------
  * The caps: what the driver said, recorded once
@@ -135,21 +140,42 @@ static_assert(XUD_INSTANCE_API_FLOOR >= VK_API_VERSION_1_0, "the apiVersion read
  *-----------------------------------------------------------------------------------------------*/
 
 typedef struct XudDeviceCaps {
-    VkPhysicalDeviceProperties2 properties;                        /* sType + pNext (NULL in, NULL out) + the core properties: apiVersion, driverVersion, vendorID, deviceID, deviceType, deviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE], pipelineCacheUUID, limits, sparseProperties */
-    VkPhysicalDeviceFeatures2 features;                            /* the driver's answer, verbatim; the wanted ∩ this is what S6 enables, derived, not stored */
-    VkPhysicalDeviceMemoryProperties2 memoryProperties;            /* the allocator's input: memoryTypeCount + memoryTypes[VK_MAX_MEMORY_TYPES] + memoryHeapCount + memoryHeaps[VK_MAX_MEMORY_HEAPS] */
-    VkExtensionProperties *deviceExtensionProperties;              /* heap array of the driver's own device-level extensions (pLayerName NULL), NULL until the query filled it; xud_physical_close() frees it and nothing else here */
-    uint32_t deviceExtensionCount;                                 /* names the driver wrote */
-    uint32_t deviceExtensionCapacity;                              /* rows allocated for it, a step of the doubling sequence above */
-    uint32_t apiVersion;                                           /* read back from properties.properties.apiVersion by xud_physical_record_api_version */
-    uint32_t queueFamilyCount;                                     /* families the query wrote, 0 until it ran */
-    uint32_t queueFamilyIndex;                                     /* the chosen family, XUD_PHYSICAL_NO_QUEUE_FAMILY until xud_physical_select_queue_family chose one */
-    VkQueueFamilyProperties2 chosenQueueFamilyProperties;          /* the chosen family, copied once here: queueFlags (VK_QUEUE_GRAPHICS_BIT is what the rule checked), queueCount (S6's VkQueueCreateInfo input), timestampValidBits, minImageTransferGranularity - queried once, S6 and S7 must not re-query */
+    VkPhysicalDeviceProperties2
+        properties; /* sType + pNext (NULL in, NULL out) + the core properties: apiVersion,
+                       driverVersion, vendorID, deviceID, deviceType,
+                       deviceName[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE], pipelineCacheUUID, limits,
+                       sparseProperties */
+    VkPhysicalDeviceFeatures2 features; /* the driver's answer, verbatim; the wanted ∩ this is what
+                                           S6 enables, derived, not stored */
+    VkPhysicalDeviceMemoryProperties2
+        memoryProperties; /* the allocator's input: memoryTypeCount +
+                             memoryTypes[VK_MAX_MEMORY_TYPES] + memoryHeapCount +
+                             memoryHeaps[VK_MAX_MEMORY_HEAPS] */
+    VkExtensionProperties*
+        deviceExtensionProperties; /* heap array of the driver's own device-level extensions
+                                      (pLayerName NULL), NULL until the query filled it;
+                                      xud_physical_close() frees it and nothing else here */
+    uint32_t deviceExtensionCount; /* names the driver wrote */
+    uint32_t
+        deviceExtensionCapacity; /* rows allocated for it, a step of the doubling sequence above */
+    uint32_t apiVersion; /* read back from properties.properties.apiVersion by
+                            xud_physical_record_api_version */
+    uint32_t queueFamilyCount; /* families the query wrote, 0 until it ran */
+    uint32_t queueFamilyIndex; /* the chosen family, XUD_PHYSICAL_NO_QUEUE_FAMILY until
+                                  xud_physical_select_queue_family chose one */
+    VkQueueFamilyProperties2
+        chosenQueueFamilyProperties; /* the chosen family, copied once here: queueFlags
+                                        (VK_QUEUE_GRAPHICS_BIT is what the rule checked), queueCount
+                                        (S6's VkQueueCreateInfo input), timestampValidBits,
+                                        minImageTransferGranularity - queried once, S6 and S7 must
+                                        not re-query */
 } XudDeviceCaps;
 
 typedef struct XudPhysicalDevice {
-    VkPhysicalDevice physicalDevice;    /* the handle: VK_NULL_HANDLE until xud_physical_open() fills it, and never destroyed - there is nothing to destroy */
-    XudDeviceCaps caps;                 /* embedded by value, one allocation with the struct: the caps are this handle's, they never outlive it */
+    VkPhysicalDevice physicalDevice; /* the handle: VK_NULL_HANDLE until xud_physical_open() fills
+                                        it, and never destroyed - there is nothing to destroy */
+    XudDeviceCaps caps; /* embedded by value, one allocation with the struct: the caps are this
+                           handle's, they never outlive it */
 } XudPhysicalDevice;
 
 /*-----------------------------------------------------------------------------------------------
@@ -174,7 +200,8 @@ typedef struct XudPhysicalDevice {
 /// r must be handed the table it goes through. xud_physical.h declared it without one at S5.2; th
 /// e doc comment above already described the slot rule, and S5.4, the step that implements this qu
 /// ery, is where that lands.
-XudResult xud_physical_query_devices(const XudLoader *loader, VkPhysicalDevice **outCandidates, uint32_t *outCount, VkInstance instance);
+XudResult xud_physical_query_devices(const XudLoader* loader, VkPhysicalDevice** outCandidates,
+    uint32_t* outCount, VkInstance instance);
 
 /// Pure: choose one of the enumerated handles, given what each one reported. The policy today
 /// is "first in driver order" (the plan's note: first for now, a ranking later) - so the answer
@@ -194,7 +221,8 @@ XudResult xud_physical_query_devices(const XudLoader *loader, VkPhysicalDevice *
 /// non-zero count, or a NULL out-index. *outIndex is written only on XUD_OK - on every other
 /// path it stays untouched, it is an index into the caller's own array and there is no sentinel
 /// for "no device" here (the sentinel above is a queue-family index, a different thing).
-XudResult xud_physical_select(uint32_t *outIndex, const VkPhysicalDevice *candidates, const VkPhysicalDeviceProperties2 *properties, uint32_t candidateCount);
+XudResult xud_physical_select(uint32_t* outIndex, const VkPhysicalDevice* candidates,
+    const VkPhysicalDeviceProperties2* properties, uint32_t candidateCount);
 
 /// Pure: the VkPhysicalDeviceFeatures S6 hands to vkCreateDevice - what xudlibc wants that the
 /// driver actually reported. Every field xudlibc does not want stays VkFalseString, and every
@@ -206,7 +234,8 @@ XudResult xud_physical_select(uint32_t *outIndex, const VkPhysicalDevice *candid
 /// tim answer, so the caps stay exactly what the driver said and this answer is derived from
 /// them on every call.
 /// XUD_INVALID_ARG on a NULL out-struct or NULL caps.
-XudResult xud_physical_record_features(VkPhysicalDeviceFeatures *outEnabledFeatures, const XudDeviceCaps *caps);
+XudResult xud_physical_record_features(
+    VkPhysicalDeviceFeatures* outEnabledFeatures, const XudDeviceCaps* caps);
 
 /// Pure: choose the one queue family the rest of the library will use - AGENTS.md's one-family
 /// rule, so the answer is recorded in the caps and S6/S7 never query again. The rule is a family
@@ -226,7 +255,8 @@ XudResult xud_physical_record_features(VkPhysicalDeviceFeatures *outEnabledFeatu
 /// nothing here to draw with) and *outIndex is then set to XUD_PHYSICAL_NO_QUEUE_FAMILY; XUD
 /// _INVALID_ARG on a NULL families array with a non-zero count, a NULL out-index, or a NULL
 /// out-chosen row.
-XudResult xud_physical_select_queue_family(uint32_t *outIndex, VkQueueFamilyProperties2 *outChosen, const VkQueueFamilyProperties2 *families, uint32_t familyCount);
+XudResult xud_physical_select_queue_family(uint32_t* outIndex, VkQueueFamilyProperties2* outChosen,
+    const VkQueueFamilyProperties2* families, uint32_t familyCount);
 
 /// Pure: read caps.properties.properties.apiVersion back into caps.apiVersion and compare it
 /// with the floor the instance layer asked for (XUD_INSTANCE_API_FLOOR, xud_instance.h - one
@@ -237,7 +267,7 @@ XudResult xud_physical_select_queue_family(uint32_t *outIndex, VkQueueFamilyProp
 /// why the slot being present is not the test here. XUD_UNSUPPORTED below the floor: the driver
 /// cannot answer the queries this layer took, and xud_physical_open() fails rather than record
 /// a device it cannot drive. XUD_INVALID_ARG on a NULL caps.
-XudResult xud_physical_record_api_version(XudDeviceCaps *caps);
+XudResult xud_physical_record_api_version(XudDeviceCaps* caps);
 
 /// Driver: bring the physical layer up - allocate the struct, bind the **six** slots this layer
 /// calls through the live instance (xud_loader_bind, the same helper xud_instance.c uses: these
@@ -276,7 +306,8 @@ XudResult xud_physical_record_api_version(XudDeviceCaps *caps);
 /// oor; XUD_OUT_OF_MEMORY/XUD_OUT_OF_RESOURCES when an allocation or a query at the cap cannot be
 /// satisfied; XUD_VULKAN_ERROR when the driver refuses a query that does answer with a VkResult,
 /// or chained a struct into a *2 pNext this layer never asked for.
-XudResult xud_physical_open(XudPhysicalDevice **outPhysicalDevice, XudLoader *loader, VkInstance instance);
+XudResult xud_physical_open(
+    XudPhysicalDevice** outPhysicalDevice, XudLoader* loader, VkInstance instance);
 
 /// The free-only rung of the teardown ladder: Vulkan has no vkDestroyPhysicalDevice (grepped in
 /// these headers, the name does not exist) because a VkPhysicalDevice is a query result, not an
@@ -288,6 +319,6 @@ XudResult xud_physical_open(XudPhysicalDevice **outPhysicalDevice, XudLoader *lo
 /// XUD_ALREADY when the pointer is NULL or points at an already-closed device; XUD_INVALID_ARG
 /// on a NULL pointer-to-pointer (the arguments are checked before the state, the same rule
 /// xud_diagnostics_close() follows).
-XudResult xud_physical_close(XudPhysicalDevice **physicalDevice);
+XudResult xud_physical_close(XudPhysicalDevice** physicalDevice);
 
 #endif /* XUD_XUD_PHYSICAL_H_ */

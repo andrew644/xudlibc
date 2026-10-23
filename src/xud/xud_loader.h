@@ -72,32 +72,40 @@
    pointers, and -Wpedantic -Werror says so. Verified clean under gcc 16.2.1 and clang
    22.1.8; the slot size is checked at compile time in xud_loader.c. */
 typedef union XudPfnBits {
-    void *object;
+    void* object;
     void (*function)(void);
 } XudPfnBits;
 
 typedef struct XudLoader {
-    void *library;                                        /* dlopen() handle for XUD_VULKAN_LIBRARY_SONAME, NULL = not loaded */
-    uint32_t resolvedCount;                               /* how many PFN slots are filled - the "table populated" flag */
+    void* library; /* dlopen() handle for XUD_VULKAN_LIBRARY_SONAME, NULL = not loaded */
+    uint32_t resolvedCount; /* how many PFN slots are filled - the "table populated" flag */
 
     /* Global level: resolvable with no handle in hand, filled at step S2. */
-    PFN_vkGetInstanceProcAddr getInstanceProcAddr;        /* the seed: every other slot is resolved through it */
+    PFN_vkGetInstanceProcAddr
+        getInstanceProcAddr; /* the seed: every other slot is resolved through it */
     PFN_vkEnumerateInstanceLayerProperties enumerateInstanceLayerProperties;
     PFN_vkEnumerateInstanceExtensionProperties enumerateInstanceExtensionProperties;
 
-    /* Instance level: NULL until a live VkInstance exists to resolve through - vkGetInstanceProcAddr
-       answers NULL for these without one (verified 2026-10-18: every physical-layer name below
-       answers NULL with VK_NULL_HANDLE in hand, and answers non-NULL through any live instance,
-       a bare one at apiVersion 1.0 with no extension and no layer as much as xud_instance.c's).
-       The instance layer binds the ones it needs; the rest stay NULL until the layer that needs
-       them has that instance in hand. */
+    /* Instance level: NULL until a live VkInstance exists to resolve through -
+       vkGetInstanceProcAddr answers NULL for these without one (verified 2026-10-18: every
+       physical-layer name below answers NULL with VK_NULL_HANDLE in hand, and answers non-NULL
+       through any live instance, a bare one at apiVersion 1.0 with no extension and no layer as
+       much as xud_instance.c's). The instance layer binds the ones it needs; the rest stay NULL
+       until the layer that needs them has that instance in hand. */
     PFN_vkCreateInstance createInstance;
     PFN_vkDestroyInstance destroyInstance;
     PFN_vkEnumeratePhysicalDevices enumeratePhysicalDevices;
-    PFN_vkGetPhysicalDeviceProperties getPhysicalDeviceProperties;      /* 1.0-core form: needs no extension */
-    PFN_vkGetPhysicalDeviceProperties2 getPhysicalDeviceProperties2;    /* *2 form: core in 1.1, extension-gated at the floor */
+    PFN_vkGetPhysicalDeviceProperties
+        getPhysicalDeviceProperties; /* 1.0-core form: needs no extension */
+    PFN_vkGetPhysicalDeviceProperties2
+        getPhysicalDeviceProperties2; /* *2 form: core in 1.1, extension-gated at the floor */
     PFN_vkGetPhysicalDeviceFeatures2 getPhysicalDeviceFeatures2;
-    PFN_vkGetPhysicalDeviceMemoryProperties2 getPhysicalDeviceMemoryProperties2;  /* the allocator's input: memoryTypes/memoryHeaps, recorded into XudDeviceCaps by the physical layer (added 2026-10-18 with the physical layer's driver half - it was the one physical name the table did not already have) */
+    PFN_vkGetPhysicalDeviceMemoryProperties2
+        getPhysicalDeviceMemoryProperties2; /* the allocator's input: memoryTypes/memoryHeaps,
+                                               recorded into XudDeviceCaps by the physical layer
+                                               (added 2026-10-18 with the physical layer's driver
+                                               half - it was the one physical name the table did not
+                                               already have) */
     PFN_vkGetPhysicalDeviceQueueFamilyProperties2 getPhysicalDeviceQueueFamilyProperties2;
     PFN_vkEnumerateDeviceExtensionProperties enumerateDeviceExtensionProperties;
 
@@ -122,15 +130,15 @@ typedef struct XudLoader {
 /// dlsym, then resolve the global-level entry points through the seed. XUD_UNSUPPORTED if
 /// the loader is absent or does not answer - that is the honest "no driver" answer, not an
 /// error. On XUD_OK *outLoader owns a table with XUD_LOADER_GLOBAL_SLOT_COUNT slots filled.
-XudResult xud_loader_open(XudLoader **outLoader);
+XudResult xud_loader_open(XudLoader** outLoader);
 
 /// Closes the loader: dlclose the handle, zero the table, free it, set the pointer NULL.
-XudResult xud_loader_close(XudLoader **loader);
+XudResult xud_loader_close(XudLoader** loader);
 
 /// The open invariant, for the layers above: true when the loader handle is loaded and the
 /// seed entry point is resolved, which is what every call through the table needs. A layer
 /// that finds this false reports XUD_INVALID_ARG and never calls through a NULL PFN slot.
-bool xud_loader_is_open(const XudLoader *loader);
+bool xud_loader_is_open(const XudLoader* loader);
 
 /// Resolves one entry point through the seed. `handle` selects the level: VK_NULL_HANDLE
 /// for the global-level names the ICD loader answers before any instance exists, the
@@ -143,7 +151,8 @@ bool xud_loader_is_open(const XudLoader *loader);
 /// XUD_UNSUPPORTED when the seed slot is NULL (a nil PFN is reported, never called) or when
 /// the loader does not know `name`; XUD_INVALID_ARG on a NULL loader/name/out-function.
 /// `outFunction` is filled only on XUD_OK.
-XudResult xud_loader_resolve(const XudLoader *loader, const void *handle, const char *name, XudPfnBits *outFunction);
+XudResult xud_loader_resolve(
+    const XudLoader* loader, const void* handle, const char* name, XudPfnBits* outFunction);
 
 /// Resolves one entry point and stores it into a slot of the loader's table, bumping
 /// resolvedCount only the first time that slot goes from empty to filled - so resolvedCount
@@ -152,6 +161,6 @@ XudResult xud_loader_resolve(const XudLoader *loader, const void *handle, const 
 /// every layer static_asserts for the PFN types it binds (xud_loader.c checks the global
 /// ones). The address moves by copy, never by cast - ISO C forbids converting between
 /// object and function pointers and -Wpedantic -Werror says so.
-XudResult xud_loader_bind(XudLoader *loader, const void *handle, const char *name, void *dstSlot);
+XudResult xud_loader_bind(XudLoader* loader, const void* handle, const char* name, void* dstSlot);
 
 #endif /* XUD_XUD_LOADER_H_ */

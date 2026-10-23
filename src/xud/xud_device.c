@@ -29,8 +29,8 @@
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
 
-#include "xud.h"
 #include "xud_device.h"
+#include "xud.h"
 #include "xud_loader.h"
 #include "xud_physical.h"
 #include "xud_vulkan.h"
@@ -41,10 +41,10 @@
 /* The slots xud_device_open() binds through xud_loader_bind() must be pointer-sized, the same
    rule xud_loader.c checks for the global-level ones and xud_instance.c/xud_physical.c add for
    the tiers above them (xud_pfn_copy moves one word). */
-static_assert(sizeof(PFN_vkCreateDevice) == sizeof(void *), "PFN slot must be pointer-sized");
-static_assert(sizeof(PFN_vkDestroyDevice) == sizeof(void *), "PFN slot must be pointer-sized");
-static_assert(sizeof(PFN_vkGetDeviceQueue) == sizeof(void *), "PFN slot must be pointer-sized");
-static_assert(sizeof(PFN_vkDeviceWaitIdle) == sizeof(void *), "PFN slot must be pointer-sized");
+static_assert(sizeof(PFN_vkCreateDevice) == sizeof(void*), "PFN slot must be pointer-sized");
+static_assert(sizeof(PFN_vkDestroyDevice) == sizeof(void*), "PFN slot must be pointer-sized");
+static_assert(sizeof(PFN_vkGetDeviceQueue) == sizeof(void*), "PFN slot must be pointer-sized");
+static_assert(sizeof(PFN_vkDeviceWaitIdle) == sizeof(void*), "PFN slot must be pointer-sized");
 
 /* The row's pQueuePriorities points at the struct's own array (see xud_device.h's note on why the
    array lives inside the struct rather than on a frame), so the array must be at least as long as
@@ -53,7 +53,10 @@ static_assert(sizeof(PFN_vkDeviceWaitIdle) == sizeof(void *), "PFN slot must be 
    than that clamp would make the row point past its end. The member access inside sizeof is not e
    valuated - sizeof of a non-VLA array member is a compile-time computation - so no object is eve
    r dereferenced here. */
-static_assert(sizeof(((XudDevice *)0)->queuePriorities) / sizeof(float) >= XUD_DEVICE_QUEUE_MAX_COUNT, "the row's priorities array must be at least as long as the biggest count this layer asks a row for");
+static_assert(
+    sizeof(((XudDevice*)0)->queuePriorities) / sizeof(float) >= XUD_DEVICE_QUEUE_MAX_COUNT,
+    "the row's priorities array must be at least as long as the biggest count this layer asks a "
+    "row for");
 
 /* The device-level extension names this layer wants, in request order. One owner per wanted list
    - the rule xud_instance.c follows for its instance-level list and xud_diagnostics.c follows for
@@ -71,20 +74,22 @@ static_assert(sizeof(((XudDevice *)0)->queuePriorities) / sizeof(float) >= XUD_D
    ady, enabled by xud_instance.c), and every 1.1+ device-level name (AGENTS.md's minimum-core deci
    sion is the 1.0 floor plus VK_KHR_SWAPCHAIN; the layers above this one ask for higher paths gate
    d on recorded caps, and asking here would be asking for a path nothing above needs yet). */
-static const char *const XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[] = {
+static const char* const XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
-#define XUD_DEVICE_WANTED_DEVICE_COUNT \
-    ((uint32_t)(sizeof(XUD_DEVICE_WANTED_DEVICE_EXTENSIONS) / sizeof(XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[0])))
+#define XUD_DEVICE_WANTED_DEVICE_COUNT                                                             \
+    ((uint32_t)(sizeof(XUD_DEVICE_WANTED_DEVICE_EXTENSIONS)                                        \
+        / sizeof(XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[0])))
 
-static_assert(XUD_DEVICE_WANTED_DEVICE_COUNT <= XUD_DEVICE_MAX_DEVICE_EXTENSIONS, "the wanted device-extension list must fit the device struct's storage");
+static_assert(XUD_DEVICE_WANTED_DEVICE_COUNT <= XUD_DEVICE_MAX_DEVICE_EXTENSIONS,
+    "the wanted device-extension list must fit the device struct's storage");
 
 /*-----------------------------------------------------------------------------------------------
  * The one queue row, from the physical layer's chosen family
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_device_fill_queue_create_info(VkDeviceQueueCreateInfo *outQueueRow, const float *priorities, const XudDeviceCaps *caps)
-{
+XudResult xud_device_fill_queue_create_info(
+    VkDeviceQueueCreateInfo* outQueueRow, const float* priorities, const XudDeviceCaps* caps) {
     uint32_t familyQueues = 0u;
 
     if ((outQueueRow == NULL) || (priorities == NULL) || (caps == NULL))
@@ -99,14 +104,19 @@ XudResult xud_device_fill_queue_create_info(VkDeviceQueueCreateInfo *outQueueRow
         return XUD_INVALID_ARG;
     familyQueues = caps->chosenQueueFamilyProperties.queueFamilyProperties.queueCount;
     if (familyQueues == 0u)
-        return XUD_INVALID_ARG; /* a family with no queue in it is not a family this layer can ask for */
+        return XUD_INVALID_ARG; /* a family with no queue in it is not a family this layer can ask
+                                   for */
 
     outQueueRow->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     outQueueRow->pNext = NULL;
-    outQueueRow->flags = 0; /* VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT would put the protected-memory discipline above this layer, and nothing above it asks for that today - see xud_device.h */
+    outQueueRow->flags
+        = 0; /* VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT would put the protected-memory discipline above
+                this layer, and nothing above it asks for that today - see xud_device.h */
     outQueueRow->queueFamilyIndex = caps->queueFamilyIndex;
-    outQueueRow->queueCount = (familyQueues < XUD_DEVICE_QUEUE_MAX_COUNT) ? familyQueues : XUD_DEVICE_QUEUE_MAX_COUNT;
-    outQueueRow->pQueuePriorities = priorities; /* the parameter is const float * and the field is const float *, so the two match with no cast */
+    outQueueRow->queueCount
+        = (familyQueues < XUD_DEVICE_QUEUE_MAX_COUNT) ? familyQueues : XUD_DEVICE_QUEUE_MAX_COUNT;
+    outQueueRow->pQueuePriorities = priorities; /* the parameter is const float * and the field is
+                                                   const float *, so the two match with no cast */
     return XUD_OK;
 }
 
@@ -119,17 +129,16 @@ XudResult xud_device_fill_queue_create_info(VkDeviceQueueCreateInfo *outQueueRow
    sed one tier up: nothing is ever forced on, a name the caps do not advertise simply stays out,
    and the duplicate rule is what lets a wanted list repeat a name without the list needing to kno
    w what the struct already holds. */
-static XudResult xud_device_enable_if_advertised(XudDevice *outDevice, const VkExtensionProperties *advertised, uint32_t advertisedCount, const char *name, bool *outAppended)
-{
+static XudResult xud_device_enable_if_advertised(XudDevice* outDevice,
+    const VkExtensionProperties* advertised, uint32_t advertisedCount, const char* name,
+    bool* outAppended) {
     uint32_t advertisedIndex = 0u;
     uint32_t enabledIndex = 0u;
 
     *outAppended = false;
 
-    for (advertisedIndex = 0u; advertisedIndex < advertisedCount; advertisedIndex++)
-    {
-        if (xud_name_equal(advertised[advertisedIndex].extensionName, name))
-        {
+    for (advertisedIndex = 0u; advertisedIndex < advertisedCount; advertisedIndex++) {
+        if (xud_name_equal(advertised[advertisedIndex].extensionName, name)) {
             *outAppended = true;
             break;
         }
@@ -137,10 +146,8 @@ static XudResult xud_device_enable_if_advertised(XudDevice *outDevice, const VkE
     if (*outAppended == false)
         return XUD_OK; /* wanted but not advertised: stays out, nothing is forced on */
 
-    for (enabledIndex = 0u; enabledIndex < outDevice->enabledExtensionCount; enabledIndex++)
-    {
-        if (xud_name_equal(outDevice->enabledExtensionNameStorage[enabledIndex], name))
-        {
+    for (enabledIndex = 0u; enabledIndex < outDevice->enabledExtensionCount; enabledIndex++) {
+        if (xud_name_equal(outDevice->enabledExtensionNameStorage[enabledIndex], name)) {
             *outAppended = false;
             return XUD_OK; /* already in the list */
         }
@@ -149,18 +156,18 @@ static XudResult xud_device_enable_if_advertised(XudDevice *outDevice, const VkE
         return XUD_OUT_OF_RESOURCES;
 
     if (xud_name_copy(outDevice->enabledExtensionNameStorage[outDevice->enabledExtensionCount],
-                      VK_MAX_EXTENSION_NAME_SIZE,
-                      name)
+            VK_MAX_EXTENSION_NAME_SIZE, name)
         != XUD_OK)
-        return XUD_INTERNAL_ERROR; /* a driver name longer than the buffer: reported, not truncated */
+        return XUD_INTERNAL_ERROR; /* a driver name longer than the buffer: reported, not truncated
+                                    */
 
     outDevice->enabledExtensionCount += 1u;
     *outAppended = true;
     return XUD_OK;
 }
 
-XudResult xud_device_select_extensions(XudDevice *outDevice, const VkExtensionProperties *advertised, uint32_t advertisedCount)
-{
+XudResult xud_device_select_extensions(
+    XudDevice* outDevice, const VkExtensionProperties* advertised, uint32_t advertisedCount) {
     uint32_t wantedIndex = 0u;
     XudResult result = XUD_INVALID_ARG;
     bool appended = false;
@@ -171,11 +178,10 @@ XudResult xud_device_select_extensions(XudDevice *outDevice, const VkExtensionPr
     /* The selection is rewritten on every call, so a reused struct cannot keep a stale list. */
     outDevice->enabledExtensionCount = 0u;
 
-    for (wantedIndex = 0u; wantedIndex < XUD_DEVICE_WANTED_DEVICE_COUNT; wantedIndex++)
-    {
-        result = xud_device_enable_if_advertised(outDevice, advertised, advertisedCount, XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[wantedIndex], &appended);
-        if (result != XUD_OK)
-        {
+    for (wantedIndex = 0u; wantedIndex < XUD_DEVICE_WANTED_DEVICE_COUNT; wantedIndex++) {
+        result = xud_device_enable_if_advertised(outDevice, advertised, advertisedCount,
+            XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[wantedIndex], &appended);
+        if (result != XUD_OK) {
             outDevice->enabledExtensionCount = 0u;
             return result;
         }
@@ -187,8 +193,8 @@ XudResult xud_device_select_extensions(XudDevice *outDevice, const VkExtensionPr
  * The create-info, assembled from this layer's own record
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_device_fill_create_info(VkDeviceCreateInfo *outCreateInfo, const char *nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS], const XudDevice *device)
-{
+XudResult xud_device_fill_create_info(VkDeviceCreateInfo* outCreateInfo,
+    const char* nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS], const XudDevice* device) {
     uint32_t index = 0u;
 
     if ((outCreateInfo == NULL) || (nameSlots == NULL) || (device == NULL))
@@ -199,9 +205,11 @@ XudResult xud_device_fill_create_info(VkDeviceCreateInfo *outCreateInfo, const c
       angling-pointer bug the struct layout in xud_device.h exists to prevent, and lavvk accepts t
        he row without checking (probed 2026-10-18), so the check is here rather than in the drive
        r. */
-    if ((device->queueRow.sType != VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO) || (device->queueRow.pNext != NULL))
+    if ((device->queueRow.sType != VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO)
+        || (device->queueRow.pNext != NULL))
         return XUD_INVALID_ARG;
-    if ((device->queueRow.queueCount < 1u) || (device->queueRow.queueCount > XUD_DEVICE_QUEUE_MAX_COUNT))
+    if ((device->queueRow.queueCount < 1u)
+        || (device->queueRow.queueCount > XUD_DEVICE_QUEUE_MAX_COUNT))
         return XUD_INVALID_ARG;
     if (device->queueRow.queueFamilyIndex == XUD_PHYSICAL_NO_QUEUE_FAMILY)
         return XUD_INVALID_ARG;
@@ -234,14 +242,17 @@ XudResult xud_device_fill_create_info(VkDeviceCreateInfo *outCreateInfo, const c
         nameSlots[index] = NULL; /* the tail is always NULLed so a stale pointer cannot survive */
 
     outCreateInfo->enabledExtensionCount = device->enabledExtensionCount;
-    outCreateInfo->ppEnabledExtensionNames = (device->enabledExtensionCount != 0u) ? nameSlots : NULL;
+    outCreateInfo->ppEnabledExtensionNames
+        = (device->enabledExtensionCount != 0u) ? nameSlots : NULL;
 
     /* The features the device enables are the physical layer's wanted-intersection, already norm
        alised to VK_TRUE/VK_FALSE by xud_physical_record_features (see xud_physical.c: a driver an
        swering 42 for a feature does not get 42 handed to vkCreateDevice), and they are copied int
        o this struct so the record says what the device was created with rather than pointing at
        caps that belong to another layer. */
-    outCreateInfo->pEnabledFeatures = &device->enabledFeatures; /* the field is const VkPhysicalDeviceFeatures *, so the address of this struct's own copy needs no cast */
+    outCreateInfo->pEnabledFeatures
+        = &device->enabledFeatures; /* the field is const VkPhysicalDeviceFeatures *, so the address
+                                       of this struct's own copy needs no cast */
     return XUD_OK;
 }
 
@@ -249,20 +260,22 @@ XudResult xud_device_fill_create_info(VkDeviceCreateInfo *outCreateInfo, const c
  * The two role queues, looked up in what open resolved
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_device_queue_get(XudQueue *outQueue, const XudDevice *device, XudQueueRole role)
-{
-    const XudQueue *stored = NULL;
+XudResult xud_device_queue_get(XudQueue* outQueue, const XudDevice* device, XudQueueRole role) {
+    const XudQueue* stored = NULL;
 
     if ((outQueue == NULL) || (device == NULL))
         return XUD_INVALID_ARG;
     if (role >= (XudQueueRole)XUD_DEVICE_QUEUE_ROLE_COUNT)
         return XUD_INVALID_ARG; /* the enum has two values and a caller can still pass 7 */
     if (device->device == VK_NULL_HANDLE)
-        return XUD_INVALID_ARG; /* no device: there is no queue to hand back for a device that does not exist */
+        return XUD_INVALID_ARG; /* no device: there is no queue to hand back for a device that does
+                                   not exist */
 
     stored = (role == XUD_QUEUE_ROLE_PRESENT) ? &device->presentQueue : &device->graphicsQueue;
     if (stored->queue == VK_NULL_HANDLE)
-        return XUD_INTERNAL_ERROR; /* a struct that claims a live device but has no queue in it: xud_device_open() resolves both roles before it hands the struct out, so this state was not produced here */
+        return XUD_INTERNAL_ERROR; /* a struct that claims a live device but has no queue in it:
+                                      xud_device_open() resolves both roles before it hands the
+                                      struct out, so this state was not produced here */
 
     /* The pair is checked against this layer's own row before it is ever handed to vkGetDeviceQue
        ue above - the same two rules the validation layer states (VUID-vkGetDeviceQueue-queueFamil
@@ -283,24 +296,28 @@ XudResult xud_device_queue_get(XudQueue *outQueue, const XudDevice *device, XudQ
  * Bring-up: bind, assemble, create, resolve the two queues
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_device_open(XudDevice **outDevice, XudLoader *loader, const XudPhysicalDevice *physical, VkInstance instance)
-{
-    XudDevice *device = NULL;
+XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
+    const XudPhysicalDevice* physical, VkInstance instance) {
+    XudDevice* device = NULL;
     VkDeviceCreateInfo createInfo;
-    const char *nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS];
+    const char* nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS];
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_SUCCESS;
     uint32_t role = 0u;
     uint32_t queueIndex = 0u;
 
-    if ((outDevice == NULL) || (*outDevice != NULL) || (loader == NULL) || (physical == NULL) || (instance == VK_NULL_HANDLE))
+    if ((outDevice == NULL) || (*outDevice != NULL) || (loader == NULL) || (physical == NULL)
+        || (instance == VK_NULL_HANDLE))
         return XUD_INVALID_ARG;
     if (!xud_loader_is_open(loader))
         return XUD_UNSUPPORTED;
     if (physical->caps.queueFamilyIndex == XUD_PHYSICAL_NO_QUEUE_FAMILY)
-        return XUD_INVALID_ARG; /* the caps handed in are not a usable input - xud_physical_open() refuses that state, so nothing above produced these caps */
+        return XUD_INVALID_ARG; /* the caps handed in are not a usable input - xud_physical_open()
+                                   refuses that state, so nothing above produced these caps */
     if (physical->physicalDevice == VK_NULL_HANDLE)
-        return XUD_INVALID_ARG; /* vkCreateDevice's first argument in these headers (PFN_vkCreateDevice, vulkan_core.h:4541): a device cannot be created from no physical device */
+        return XUD_INVALID_ARG; /* vkCreateDevice's first argument in these headers
+                                   (PFN_vkCreateDevice, vulkan_core.h:4541): a device cannot be
+                                   created from no physical device */
 
     device = calloc(1u, sizeof(XudDevice));
     if (device == NULL)
@@ -338,8 +355,8 @@ XudResult xud_device_open(XudDevice **outDevice, XudLoader *loader, const XudPhy
     /* The nil-slot rule xud_device.h states, for the four calls this layer makes. xud_loader_bind
        filled each slot on XUD_OK; this is the check the contract promises, not a second opinion a
        bout the bind. */
-    if ((loader->createDevice == NULL) || (loader->getDeviceQueue == NULL) || (loader->deviceWaitIdle == NULL) || (loader->destroyDevice == NULL))
-    {
+    if ((loader->createDevice == NULL) || (loader->getDeviceQueue == NULL)
+        || (loader->deviceWaitIdle == NULL) || (loader->destroyDevice == NULL)) {
         result = XUD_UNSUPPORTED;
         goto fail;
     }
@@ -348,23 +365,26 @@ XudResult xud_device_open(XudDevice **outDevice, XudLoader *loader, const XudPhy
        rule, and the reason a driver without VK_KHR_swapchain still gets a device (the swapchain
        layer above is the one that refuses). The array is the caps' own: a query result the physi
        cal layer owns, never freed here. */
-    result = xud_device_select_extensions(device, physical->caps.deviceExtensionProperties, physical->caps.deviceExtensionCount);
+    result = xud_device_select_extensions(
+        device, physical->caps.deviceExtensionProperties, physical->caps.deviceExtensionCount);
     if (result != XUD_OK)
         goto fail;
 
     /* The features to enable: the physical layer's wanted-intersection, not the driver's verbat
        im answer. xud_physical_record_features is that intersection's one owner (xud_physical.c), s
        o this layer asks it for the answer rather than spelling the wanted list a second time here -
-       the rule xud_instance.c follows for its extension lists, one owner per wanted list. Copying ca
-       ps.features.features instead would hand vkCreateDevice every feature this driver happens to ha
-       ve (geometryShader, tessellation, everything), which is the opposite of the check-before-you-us
-       e rule in AGENTS.md: VkDeviceCreateInfo must carry only what was verified as wanted. A driver th
-       at reported a feature absent stays off in this struct, and nothing here forces it on. */
+       the rule xud_instance.c follows for its extension lists, one owner per wanted list. Copying
+       ca ps.features.features instead would hand vkCreateDevice every feature this driver happens
+       to ha ve (geometryShader, tessellation, everything), which is the opposite of the
+       check-before-you-us e rule in AGENTS.md: VkDeviceCreateInfo must carry only what was verified
+       as wanted. A driver th at reported a feature absent stays off in this struct, and nothing
+       here forces it on. */
     result = xud_physical_record_features(&device->enabledFeatures, &physical->caps);
     if (result != XUD_OK)
         goto fail;
 
-    result = xud_device_fill_queue_create_info(&device->queueRow, device->queuePriorities, &physical->caps);
+    result = xud_device_fill_queue_create_info(
+        &device->queueRow, device->queuePriorities, &physical->caps);
     if (result != XUD_OK)
         goto fail;
 
@@ -374,8 +394,7 @@ XudResult xud_device_open(XudDevice **outDevice, XudLoader *loader, const XudPhy
 
     vk = loader->createDevice(physical->physicalDevice, &createInfo, NULL, &device->device);
     result = xud_result_from_vk(vk);
-    if (result != XUD_OK)
-    {
+    if (result != XUD_OK) {
         /* A driver that refuses for a feature or a name we asked for is unsupported, not broken
            (xud_result_from_vk maps VK_ERROR_FEATURE_NOT_PRESENT and VK_ERROR_EXTENSION_NOT_PRESE
            NT to XUD_UNSUPPORTED); reaching that arm means the caps and the driver disagree, and
@@ -391,15 +410,19 @@ XudResult xud_device_open(XudDevice **outDevice, XudLoader *loader, const XudPhy
        above this layer can do with a re-resolve. The family index is the row's own and the index
        is the role clamped into the count the row asked for - the two rules the validation layer's
        queue VUIDs state, satisfied by construction rather than by hoping. */
-    for (role = 0u; role < XUD_DEVICE_QUEUE_ROLE_COUNT; role++)
-    {
-        XudQueue *record = (role == XUD_QUEUE_ROLE_PRESENT) ? &device->presentQueue : &device->graphicsQueue;
+    for (role = 0u; role < XUD_DEVICE_QUEUE_ROLE_COUNT; role++) {
+        XudQueue* record
+            = (role == XUD_QUEUE_ROLE_PRESENT) ? &device->presentQueue : &device->graphicsQueue;
 
-        queueIndex = (role < device->queueRow.queueCount) ? role : (device->queueRow.queueCount - 1u);
-        record->queue = VK_NULL_HANDLE; /* the zero state before the call: PFN_vkGetDeviceQueue returns void in these headers (vulkan_core.h:4547), so there is no VkResult to map and the out handle is the only answer available */
-        loader->getDeviceQueue(device->device, device->queueRow.queueFamilyIndex, queueIndex, &record->queue);
-        if (record->queue == VK_NULL_HANDLE)
-        {
+        queueIndex
+            = (role < device->queueRow.queueCount) ? role : (device->queueRow.queueCount - 1u);
+        record->queue
+            = VK_NULL_HANDLE; /* the zero state before the call: PFN_vkGetDeviceQueue returns void
+                                 in these headers (vulkan_core.h:4547), so there is no VkResult to
+                                 map and the out handle is the only answer available */
+        loader->getDeviceQueue(
+            device->device, device->queueRow.queueFamilyIndex, queueIndex, &record->queue);
+        if (record->queue == VK_NULL_HANDLE) {
             /* A driver that answers nothing for a family/index pair the row itself asked for: the
                caps and the driver disagree, and a device handed out with no queue in it would be a
                device nothing above can submit to. Refused here, and the fail ladder below destroys
@@ -420,8 +443,7 @@ fail:
        destroyed through the slot this layer just bound (PFN_vkDestroyDevice returns void in these
        headers, so there is no answer to check for the teardown call itself). The struct's memory is
        freed on every path, so a partial bring-up leaks nothing. */
-    if ((device != NULL) && (device->device != VK_NULL_HANDLE) && (loader->destroyDevice != NULL))
-    {
+    if ((device != NULL) && (device->device != VK_NULL_HANDLE) && (loader->destroyDevice != NULL)) {
         (void)loader->destroyDevice(device->device, NULL);
         device->device = VK_NULL_HANDLE;
     }
@@ -435,8 +457,7 @@ fail:
  * The teardown guard, and the rung that uses it
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_device_wait_idle(const XudDevice *device, const XudLoader *loader)
-{
+XudResult xud_device_wait_idle(const XudDevice* device, const XudLoader* loader) {
     VkResult vk = VK_SUCCESS;
 
     if ((loader == NULL) || (device == NULL))
@@ -444,21 +465,23 @@ XudResult xud_device_wait_idle(const XudDevice *device, const XudLoader *loader)
     if (!xud_loader_is_open(loader))
         return XUD_UNSUPPORTED;
     if (device->device == VK_NULL_HANDLE)
-        return XUD_ALREADY; /* nothing is in flight on a device that does not exist, which is already the state asked for */
+        return XUD_ALREADY; /* nothing is in flight on a device that does not exist, which is
+                               already the state asked for */
     if (loader->deviceWaitIdle == NULL)
-        return XUD_UNSUPPORTED; /* a nil PFN is reported, never called through - the rule every call site in this tree follows */
+        return XUD_UNSUPPORTED; /* a nil PFN is reported, never called through - the rule every call
+                                   site in this tree follows */
 
     vk = loader->deviceWaitIdle(device->device);
     return xud_result_from_vk(vk);
 }
 
-XudResult xud_device_close(XudDevice **device, const XudLoader *loader)
-{
-    XudDevice *victim = NULL;
+XudResult xud_device_close(XudDevice** device, const XudLoader* loader) {
+    XudDevice* victim = NULL;
     XudResult guard = XUD_OK;
 
     if ((device == NULL) || (loader == NULL))
-        return XUD_INVALID_ARG; /* the arguments are checked before the state, the rule xud_physical_close() follows */
+        return XUD_INVALID_ARG; /* the arguments are checked before the state, the rule
+                                   xud_physical_close() follows */
     if (!xud_loader_is_open(loader))
         return XUD_UNSUPPORTED;
     if (*device == NULL)
@@ -471,22 +494,23 @@ XudResult xud_device_close(XudDevice **device, const XudLoader *loader)
        that had queued submissions without submitting them would otherwise be racing them. A refus
        al here (a nil slot) leaves the device alive and the struct un-freed - refusing is the honest
        answer, leaking a handle silently is not. XUD_ALREADY (the struct has no handle) and XUD_LOST
-       (the driver says the device is gone) both continue below - a lost device is still destroyed, v
-       kDestroyDevice is this layer's teardown call and skipping it would leak an object the driver m
-       ay still hold. */
+       (the driver says the device is gone) both continue below - a lost device is still destroyed,
+       v kDestroyDevice is this layer's teardown call and skipping it would leak an object the
+       driver m ay still hold. */
     guard = xud_device_wait_idle(victim, loader);
     if (guard == XUD_UNSUPPORTED)
         return guard;
 
-    if (victim->device != VK_NULL_HANDLE)
-    {
+    if (victim->device != VK_NULL_HANDLE) {
         if (loader->destroyDevice == NULL)
-            return XUD_UNSUPPORTED; /* the handle would leak silently, so this rung refuses instead */
+            return XUD_UNSUPPORTED; /* the handle would leak silently, so this rung refuses instead
+                                     */
 
-        /* PFN_vkDestroyDevice returns void in these headers (vulkan_core.h:4542) - there is no VkResult
-           for xud_result_from_vk to map here, so the destroy is a call whose answer is not available and
-           the layer's answer is the guard's. The handle is cleared after the call so a struct that survi
-           ves this (it does not, it is freed below) cannot be torn down twice. */
+        /* PFN_vkDestroyDevice returns void in these headers (vulkan_core.h:4542) - there is no
+           VkResult for xud_result_from_vk to map here, so the destroy is a call whose answer is not
+           available and the layer's answer is the guard's. The handle is cleared after the call so
+           a struct that survi ves this (it does not, it is freed below) cannot be torn down twice.
+         */
         loader->destroyDevice(victim->device, NULL);
         victim->device = VK_NULL_HANDLE;
     }
@@ -495,10 +519,10 @@ XudResult xud_device_close(XudDevice **device, const XudLoader *loader)
     *device = NULL;
 
     /* A lost device is still destroyed above and still freed here - vkDestroyDevice is this layer's
-       teardown call and skipping it would leak an object the driver may still hold - and the answer th
-       at travels is the guard's, so a caller sees XUD_LOST rather than a clean OK. XUD_ALREADY from the
-       guard means this rung had nothing to guard and nothing to destroy: the struct was freed below, wh
-       ich is what the rung did, so the answer is XUD_OK. */
+       teardown call and skipping it would leak an object the driver may still hold - and the answer
+       th at travels is the guard's, so a caller sees XUD_LOST rather than a clean OK. XUD_ALREADY
+       from the guard means this rung had nothing to guard and nothing to destroy: the struct was
+       freed below, wh ich is what the rung did, so the answer is XUD_OK. */
     if (guard == XUD_LOST)
         return XUD_LOST;
     return XUD_OK;

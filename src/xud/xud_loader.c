@@ -15,20 +15,22 @@
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
 
-#include "xud.h"
 #include "xud_loader.h"
+#include "xud.h"
 
 #include <assert.h> /* Required for: static_assert, the compile-time PFN slot check */
-#include <dlfcn.h>  /* Required for: dlopen, dlsym, dlclose */
+#include <dlfcn.h> /* Required for: dlopen, dlsym, dlclose */
 #include <stdlib.h> /* Required for: calloc, free */
 #include <string.h> /* Required for: memcpy, the object->function address transfer */
 
 /* The PFN slots hold function addresses and xud_pfn_copy moves a pointer-sized word, so a
    slot must be pointer-sized. Checked here for the slots filled at loader bring-up; each later
    layer adds the checks for the slots it fills (xud_instance.c checks the instance-level ones). */
-static_assert(sizeof(PFN_vkGetInstanceProcAddr) == sizeof(void *), "PFN slot must be pointer-sized");
-static_assert(sizeof(PFN_vkEnumerateInstanceLayerProperties) == sizeof(void *), "PFN slot must be pointer-sized");
-static_assert(sizeof(PFN_vkEnumerateInstanceExtensionProperties) == sizeof(void *), "PFN slot must be pointer-sized");
+static_assert(sizeof(PFN_vkGetInstanceProcAddr) == sizeof(void*), "PFN slot must be pointer-sized");
+static_assert(sizeof(PFN_vkEnumerateInstanceLayerProperties) == sizeof(void*),
+    "PFN slot must be pointer-sized");
+static_assert(sizeof(PFN_vkEnumerateInstanceExtensionProperties) == sizeof(void*),
+    "PFN slot must be pointer-sized");
 
 /* xud_loader_resolve() takes a handle as void * and casts it to VkInstance at the call, which
    is only sound while every Vulkan handle is a pointer. Where this define is 0 the
@@ -38,9 +40,8 @@ static_assert(VK_USE_64_BIT_PTR_DEFINES == 1, "xudlibc assumes every Vulkan hand
 /* Internal: move one function address into one typed PFN slot. `dstSlot` is the address of
    the slot, `srcBits` the address of a variable holding the function address. No cast: ISO C
    forbids converting between object and function pointers (-Wpedantic says so). */
-static void xud_pfn_copy(void *dstSlot, const void *srcBits)
-{
-    memcpy(dstSlot, srcBits, sizeof(void *));
+static void xud_pfn_copy(void* dstSlot, const void* srcBits) {
+    memcpy(dstSlot, srcBits, sizeof(void*));
 }
 
 /* Public (xud_loader.h): resolve one name into its slot, bumping resolvedCount only when the
@@ -49,24 +50,23 @@ static void xud_pfn_copy(void *dstSlot, const void *srcBits)
    the global-level names, the instance/device handle for the lower-level ones. The address
    moves by copy (xud_pfn_copy), never by cast: casting a function pointer to void * is a
    hard error under these flags. */
-XudResult xud_loader_bind(XudLoader *loader, const void *handle, const char *name, void *dstSlot)
-{
+XudResult xud_loader_bind(XudLoader* loader, const void* handle, const char* name, void* dstSlot) {
     XudPfnBits bits;
-    void *previous = NULL;
+    void* previous = NULL;
     XudResult result = xud_loader_resolve(loader, handle, name, &bits);
 
     if (result != XUD_OK)
         return result;
 
-    memcpy(&previous, dstSlot, sizeof(void *));   /* the slot is pointer sized (static_assert) */
+    memcpy(&previous, dstSlot, sizeof(void*)); /* the slot is pointer sized (static_assert) */
     xud_pfn_copy(dstSlot, &bits.function);
     if (previous == NULL)
         loader->resolvedCount += 1u;
     return XUD_OK;
 }
 
-XudResult xud_loader_resolve(const XudLoader *loader, const void *handle, const char *name, XudPfnBits *outFunction)
-{
+XudResult xud_loader_resolve(
+    const XudLoader* loader, const void* handle, const char* name, XudPfnBits* outFunction) {
     XudPfnBits bits;
 
     if ((loader == NULL) || (outFunction == NULL) || (name == NULL) || (name[0] == '\0'))
@@ -90,12 +90,11 @@ XudResult xud_loader_resolve(const XudLoader *loader, const void *handle, const 
     return XUD_OK;
 }
 
-XudResult xud_loader_open(XudLoader **outLoader)
-{
-    XudLoader *loader = NULL;
+XudResult xud_loader_open(XudLoader** outLoader) {
+    XudLoader* loader = NULL;
     XudResult result = XUD_INVALID_ARG;
     XudPfnBits bits;
-    void *seedBits = NULL;
+    void* seedBits = NULL;
 
     if ((outLoader == NULL) || (*outLoader != NULL))
         return XUD_INVALID_ARG;
@@ -105,8 +104,7 @@ XudResult xud_loader_open(XudLoader **outLoader)
         return XUD_OUT_OF_MEMORY;
 
     loader->library = dlopen(XUD_VULKAN_LIBRARY_SONAME, RTLD_NOW | RTLD_GLOBAL);
-    if (loader->library == NULL)
-    {
+    if (loader->library == NULL) {
         /* No Vulkan loader on this machine: the honest answer is unsupported, and there is
            nothing yet to tear down. The dlerror() string is dropped here - the diagnostics
            layer that surfaces it arrives at step S8. */
@@ -126,16 +124,17 @@ XudResult xud_loader_open(XudLoader **outLoader)
     if ((result != XUD_OK) || (bits.function == NULL))
         goto fail;
 
-    result = xud_loader_bind(loader, VK_NULL_HANDLE, "vkEnumerateInstanceLayerProperties", &loader->enumerateInstanceLayerProperties);
+    result = xud_loader_bind(loader, VK_NULL_HANDLE, "vkEnumerateInstanceLayerProperties",
+        &loader->enumerateInstanceLayerProperties);
     if (result != XUD_OK)
         goto fail;
 
-    result = xud_loader_bind(loader, VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties", &loader->enumerateInstanceExtensionProperties);
+    result = xud_loader_bind(loader, VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties",
+        &loader->enumerateInstanceExtensionProperties);
     if (result != XUD_OK)
         goto fail;
 
-    if (loader->resolvedCount != XUD_LOADER_GLOBAL_SLOT_COUNT)
-    {
+    if (loader->resolvedCount != XUD_LOADER_GLOBAL_SLOT_COUNT) {
         result = XUD_INTERNAL_ERROR;
         goto fail;
     }
@@ -148,9 +147,8 @@ fail:
     return (result != XUD_OK) ? result : XUD_INTERNAL_ERROR;
 }
 
-XudResult xud_loader_close(XudLoader **loader)
-{
-    XudLoader *victim = NULL;
+XudResult xud_loader_close(XudLoader** loader) {
+    XudLoader* victim = NULL;
     int dlResult = 0;
 
     if (loader == NULL)
@@ -159,8 +157,7 @@ XudResult xud_loader_close(XudLoader **loader)
         return XUD_ALREADY;
 
     victim = *loader;
-    if (victim->library != NULL)
-    {
+    if (victim->library != NULL) {
         dlResult = dlclose(victim->library);
         victim->library = NULL;
     }
@@ -178,7 +175,6 @@ XudResult xud_loader_close(XudLoader **loader)
 /* The open invariant every layer above needs before it calls through the table: the handle is
    loaded and the seed is resolved. resolvedCount alone is not enough - it counts slots, and a
    table can hold slots resolved against a loader that never opened. */
-bool xud_loader_is_open(const XudLoader *loader)
-{
+bool xud_loader_is_open(const XudLoader* loader) {
     return (loader != NULL) && (loader->library != NULL) && (loader->getInstanceProcAddr != NULL);
 }

@@ -35,7 +35,7 @@
 extern "C" {
 #endif
 
-#include <stdint.h>     /* Required for: uint32_t - window extents and handle fields */
+#include <stdint.h> /* Required for: uint32_t - window extents and handle fields */
 
 /*-----------------------------------------------------------------------------------------------
  * Version
@@ -69,8 +69,8 @@ extern "C" {
 #endif
 
 /* Environment variables the library reads at runtime. */
-#define XUD_ENV_VALIDATE    "VK_INSTANCE_LAYERS"
-#define XUD_ENV_GPU_TESTS   "XUD_GPU_TESTS"
+#define XUD_ENV_VALIDATE "VK_INSTANCE_LAYERS"
+#define XUD_ENV_GPU_TESTS "XUD_GPU_TESTS"
 
 /* Host-side sanity bound on window extent, used until the real gate exists: the device
    query (maxImageExtent2D, recorded into XudDeviceCaps at step S5) is authoritative. */
@@ -81,20 +81,20 @@ extern "C" {
  *-----------------------------------------------------------------------------------------------*/
 
 typedef enum XudResult {
-    XUD_OK               = 0,   /* the operation succeeded                                        */
-    XUD_UNSUPPORTED      = 1,   /* a required feature, extension or entry point is absent at runtime */
-    XUD_INVALID_ARG      = 2,   /* null out-param, non-null out-param on entry, zero extent, ... */
-    XUD_OUT_OF_MEMORY    = 3,   /* a host allocation failed                                      */
-    XUD_OUT_OF_RESOURCES = 4,   /* a device-side allocation failed (VkResult OUT_OF_DEVICE_MEMORY) */
-    XUD_ALREADY          = 5,   /* the operation is already in effect (idempotent teardown)      */
-    XUD_LOST             = 6,   /* VkResult was VK_ERROR_DEVICE_LOST: the device is unusable     */
-    XUD_VULKAN_ERROR     = 7,   /* some other VkResult came back non-VK_SUCCESS                  */
-    XUD_INTERNAL_ERROR   = 8    /* an internal invariant broke: close the context and start over */
+    XUD_OK = 0, /* the operation succeeded                                        */
+    XUD_UNSUPPORTED = 1, /* a required feature, extension or entry point is absent at runtime */
+    XUD_INVALID_ARG = 2, /* null out-param, non-null out-param on entry, zero extent, ... */
+    XUD_OUT_OF_MEMORY = 3, /* a host allocation failed                                      */
+    XUD_OUT_OF_RESOURCES = 4, /* a device-side allocation failed (VkResult OUT_OF_DEVICE_MEMORY) */
+    XUD_ALREADY = 5, /* the operation is already in effect (idempotent teardown)      */
+    XUD_LOST = 6, /* VkResult was VK_ERROR_DEVICE_LOST: the device is unusable     */
+    XUD_VULKAN_ERROR = 7, /* some other VkResult came back non-VK_SUCCESS                  */
+    XUD_INTERNAL_ERROR = 8 /* an internal invariant broke: close the context and start over */
 } XudResult;
 
 /* Human-readable name for an error code - for logging and for test output.
    Never returns NULL, and never allocates. */
-const char *xud_result_name(XudResult result);
+const char* xud_result_name(XudResult result);
 
 /*-----------------------------------------------------------------------------------------------
  * The context - the single owner of everything the library creates
@@ -117,7 +117,7 @@ XudResult xud_vulkan_supported(void);
 /// al one (device + queues / swapchain / surface) do not exist yet, so a valid call still return
 /// s XUD_UNSUPPORTED and leaves *outContext NULL, having torn down everything it created without
 /// leaking it - including the caps' heap device-extension array the physical layer allocated.
-XudResult xud_init_context(XudContext **outContext, uint32_t width, uint32_t height);
+XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height);
 
 /// Tear the context down (physical -> instance -> diagnostics -> loader, and the layers that will
 /// come later slot in before the physical one) and free it. The diagnostics struct is destroyed a
@@ -127,7 +127,7 @@ XudResult xud_init_context(XudContext **outContext, uint32_t width, uint32_t hei
 /// d calls no driver function - which is why it can run before the instance goes away. Returns XU
 /// D_ALREADY if *context was already NULL, XUD_INVALID_ARG if context itself is NULL. Always sets
 /// *context to NULL when it is not NULL.
-XudResult xud_close_context(XudContext **context);
+XudResult xud_close_context(XudContext** context);
 
 #ifdef __cplusplus
 }
