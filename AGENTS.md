@@ -164,7 +164,7 @@ Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers a
 - Names: `xudPascalCaseOrNot` — concretely: **functions `xudSnakeCase`** (`xud_init_window`, `xud_draw_cube`), **types `PascalCase`** (`XudWindow`, `XudCamera3D`), **macros/constants `XUD_SNAKE_UPPER`** (`XUD_MAX_LIGHTS`). No Hungarian prefixes.
 - Every public function returns an error code (`XudResult`) or fills an out-param; **nothing is silently ignored**.
 - One `XudContext` owns instance/device/swapchain/allocator. Callers never hold a `VkDevice`, `VkSwapchainKHR`, or raw `VkBuffer`.
-- Opaque handles = `{ uint32_t index; uint32_t generation; }` validated against a slot array. Stale handles must be caught, not UB.
+- Opaque handles = `{ uint32_t index; uint32_t generation; }` validated against a slot array. Stale handles must be caught, not UB. **Decided 2026-10-23**: this is the currency the **public** API hands out — raylib's pointer/GL-id-in-a-struct form is not adopted (see *Settled decisions*).
 - Cleanup idiom: `goto fail;` ladder in init paths, one `xud_close_*()` teardown; every partial-failure path must leak nothing.
 - No global mutable state except the single library context pointer; multiple windows must work.
 - `#include` guard `XUD_<FILE>_H_`; file-top comment stating what the file owns and which layer it belongs to.
@@ -358,11 +358,44 @@ GPU memory: one block allocator, ours, over the caps' recorded memory rows — `
   `src/external/PROVENANCE.md`, which records versions, licenses and how the copies were made. This is the **opposite policy**
   from `reference/raylib/` (reference material: never committed, never edited). Consequence: the repo carries ~2.7 MB of
   upstream code, and a version bump is a **re-vendor commit**, never an in-place edit of those files.
+- **Public API currency: index+generation slot handles, not raylib-style pointers** (decided 2026-10-23).
+  **What raylib actually does** (re-read today in `reference/raylib/raylib.h`, 6.2): its public types are **value structs
+  that embed driver names and own sub-objects through pointer arrays** — `Texture` (273–279) is `{ unsigned int id; int
+  width, height, mipmaps, format; }` where `id` is an **OpenGL** texture name, `Texture2D` is just an alias of it (282);
+  `Mesh` (ends 372) carries the CPU arrays (`float *vertices/texcoords/normals/tangents`, `unsigned char *colors`,
+  `unsigned short *indices`) plus `unsigned int vaoId` and `unsigned int *vboId`; `Model` (ends 433) owns `Mesh *meshes`,
+  `Material *materials`, `int *meshMaterial`, a `ModelSkeleton`, `Transform *` poses and `Matrix *boneMatrices`;
+  `Font` (ends 324) owns a `Texture2D texture` **by value** plus `Rectangle *recs` and `GlyphInfo *glyphs`;
+  `Material` (ends 392) owns `Shader shader` by value plus `MaterialMap *maps`; `Shader` (ends 378) is
+  `{ unsigned int id; int *locs; }`; and `LoadMaterials` (1653) returns a raw `Material *` array. Ownership and lifetime
+  are invisible to the caller, and the GL id fields have **no Vulkan counterpart** — that shape is a fixed-function-era
+  artifact, exactly what the "no OpenGL, no state machine" rule refuses.
+  **The decision**: the public API hands out the house-style opaque handle — `{ uint32_t index; uint32_t generation; }`
+  validated against a **per-kind slot array** (textures, fonts, meshes, materials, models, and audio streams when audio
+  lands), each record holding the Vulkan handles and the caps-gated variant info. Consequences, all of them load-bearing:
+  creation functions **fill an out-param handle and return `XudResult`** (the house rule) and nothing returns a library-owned
+  pointer; teardown is `xud_close_*`/`xudUnload*(handle)` → `XudResult`, there is no `Detach*`-returns-pointer form;
+  handles are **value types** — copyable, storable in caller structs, comparable field-wise
+  (`a.index == b.index && a.generation == b.generation`), and one kept across a `xud_close_*` is **rejected**, not dangling;
+  the generation bumps on slot reuse, so a stale handle fails the equality check (the wrap case — 2³² reuses of one index —
+  would alias, and that is documented, not silently ignored); and raylib's habit of hanging **CPU-side** source data off the
+  public type (`Mesh.vertices`, `Font.recs`, `Model.meshes`) does **not** survive: CPU-side upload data becomes a separate
+  caller-owned input struct (`xud_upload_mesh(...)` takes it), the handle addresses **only** the GPU-side object, and anything
+  the caller wants back is read through accessors.
+  **Terminology trap**: "Vulkan-style handle" is **not** Vulkan's own handle. In these headers `VK_DEFINE_HANDLE(object)` is
+  `typedef struct object##_T* object;` (vulkan_core.h 26) — an opaque **pointer** —
+  `VK_USE_64_BIT_PTR_DEFINES` defaults to 1 there (29–33) and `xud_loader.c` asserts `== 1` (line 38), so
+  `VkImage`/`VkDevice`/`VkBuffer` are 64-bit pointers. Those stay **inside** the slot records,
+  per the existing rule that callers never hold a `VkDevice`, `VkSwapchainKHR`, or raw `VkBuffer`; the public handle is the
+  index+generation pair. **Not in the tree yet**: `xud.h` today exposes only `XudContext**` + `XudResult` (no object handle
+  exists), and no slot array exists — the handle type and its slot arrays land with the first GPU-object API (textures/fonts/models),
+  and the pure half (slot allocation, generation bump, stale-handle rejection) is headless-testable by construction. Whether the
+  handle also carries a **kind tag** — so a texture handle passed where a model is expected is caught rather than accepted on a
+  layout coincidence, since C structs with identical layout are interchangeable — is still open (see `todo.md` *Blocked*).
 
 ## Open design decisions (ask, don't assume)
 
 - **Model format**: glTF 2.0 via vendored cgltf (raylib does exactly this) vs a minimal `.glb` reader of our own.
 - **Audio backend**: vendor miniaudio (raylib's `raudio` does) vs no audio yet.
 - **Text/font**: bitmap-font atlas of our own vs vendored `stb_truetype`/fontstash.
-- **Handles vs pointers** for the public API (raylib hands out `Texture*`-style pointers; Vulkan wants index+generation handles).
 - **Data layout**: AoS vertex (sketched above) vs SoA/GPU-driven; ECS or plain structs.

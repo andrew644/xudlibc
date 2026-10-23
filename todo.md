@@ -30,6 +30,9 @@ step, just move it, so the active tracker stays short and the log stays complete
     below): SPIR-V built by `glslangValidator`, one graphics pipeline, one command buffer, one render pass + one
     framebuffer per image, acquire/submit/present with semaphores + per-image fence; `vkGetDeviceProcAddr` becomes a
     loader slot here (everything below the device resolves through it, not through the instance)
+- [ ] Handle layer: the `{ uint32_t index; uint32_t generation; }` handle type + per-kind slot arrays (textures, fonts,
+    meshes, materials, models) — slot allocation, generation bump on reuse, stale-handle rejection; the pure half is
+    headless-testable by construction, the Vulkan handles stay inside the slot records (decided 2026-10-23, see Decided below)
 - [ ] Test scaffolding hardened: headless pure-logic tests green by default, GPU tests opt-in via `XUD_GPU_TESTS=1`,
     validation-layer output treated as a failure signal
 
@@ -43,7 +46,7 @@ step, just move it, so the active tracker stays short and the log stays complete
     shape family in the API)
 - [ ] Camera + transform math (one perspective 3D camera; the 2D scope was settled out 2026-10-23, see Decided below)
 - [ ] Textures + samplers (create, upload via staging copies, mipmaps, sampler variants)
-- [ ] Mesh / vertex-buffer abstraction + handle table (index+generation)
+- [ ] Mesh / vertex-buffer abstraction + handle table (index+generation — the public-API currency, decided 2026-10-23)
 - [ ] 3D model loading (glTF 2.0 — format decision still open, see Blocked)
 - [ ] Text/font rendering
 - [ ] Audio wrapper
@@ -67,6 +70,33 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Decided since then
 
+- 2026-10-23 — **Public API currency → index+generation slot handles, not raylib-style pointers**.
+  **What raylib does** (re-read today in `reference/raylib/raylib.h`, 6.2): its public types are value structs that embed
+  driver names and own sub-objects through pointer arrays — `Texture` (273–279) is `{ unsigned int id; int width, height,
+  mipmaps, format; }` with an **OpenGL** texture name, `Texture2D` is only an alias of it (282); `Mesh` (ends 372) carries the
+  CPU arrays (`float *vertices/texcoords/texcoords2/normals/tangents`, `unsigned char *colors`, `unsigned short *indices`) plus
+  `unsigned int vaoId` and `unsigned int *vboId`; `Model` (ends 433) owns `Mesh *meshes`, `Material *materials`, `int *meshMaterial`,
+  a `ModelSkeleton`, `Transform *` poses, `Matrix *boneMatrices`; `Font` (ends 324) owns a `Texture2D texture` **by value** plus
+  `Rectangle *recs` + `GlyphInfo *glyphs`; `Material` (ends 392) owns `Shader shader` by value + `MaterialMap *maps`;
+  `Shader` (ends 378) is `{ unsigned int id; int *locs; }`; `LoadMaterials` (1653) returns a raw `Material *` array. Ownership/lifetime
+  is invisible to the caller and the GL id fields have **no Vulkan counterpart** — a fixed-function-era artifact the "no OpenGL,
+  no state machine" rule refuses.
+  **Decision**: the public API hands out the house-style opaque handle — `{ uint32_t index; uint32_t generation; }` validated
+  against a **per-kind slot array** (textures, fonts, meshes, materials, models, + audio streams when audio lands), each record
+  holding the Vulkan handles and the caps-gated variant info. Load-bearing consequences: creation functions fill an out-param
+  handle and return `XudResult`, nothing returns a library-owned pointer; teardown is `xud_close_*`/`xudUnload*(handle)` →
+  `XudResult` (no `Detach*`-returns-pointer form); handles are value types — copyable, storable, comparable field-wise
+  (`a.index == b.index && a.generation == b.generation`), and one kept across a close is **rejected**, not dangling; generation
+  bumps on slot reuse (the 2³²-reuse wrap would alias — documented, not ignored); and raylib's habit of hanging **CPU-side**
+  source data off the public type does not survive — CPU-side upload data becomes a separate caller-owned input struct
+  (`xud_upload_mesh(...)` takes it), the handle addresses **only** the GPU-side object, and read-back goes through accessors.
+  **Terminology trap**: "Vulkan-style handle" is **not** Vulkan's own handle — `VK_DEFINE_HANDLE(object)` in these headers
+  is `typedef struct object##_T* object;` (vulkan_core.h 26), an opaque pointer, `VK_USE_64_BIT_PTR_DEFINES` defaults to 1 there
+  (29–33) and `xud_loader.c:38` asserts `== 1`, so `VkImage`/`VkDevice`/`VkBuffer` are 64-bit pointers that stay **inside** the
+  slot records (the existing rule:
+  callers never hold a `VkDevice`, `VkSwapchainKHR`, or raw `VkBuffer`). **Not in the tree yet**: `xud.h` exposes only
+  `XudContext**` + `XudResult` today, no handle type and no slot array exists — that is the `Next` item above, and the open
+  sub-question (kind tag in the handle vs naming discipline) is in *Blocked*.
 - 2026-10-23 — **GLFW backend → Wayland** and **vendored material → committed with its license files**.
   **Wayland**: `GLFW_BUILD_WAYLAND` (glfw/CMakeLists.txt 30, `cmake_dependent_option` ON for `UNIX;NOT APPLE`; the removed
   `GLFW_USE_WAYLAND` switch is a hard error on a stale cache at line 24) → `-D_GLFW_WAYLAND` (glfw/src/CMakeLists.txt 54–55),
@@ -161,7 +191,9 @@ step, just move it, so the active tracker stays short and the log stays complete
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
 - Audio: vendor miniaudio vs no audio (ask)
 - Text/font: own bitmap atlas vs vendored `stb_truetype`/fontstash (ask)
-- Public API handles: index+generation handles vs raylib-style pointers (ask)
+- Public API handle **kind tag**: the handle is `{ index, generation }` (decided 2026-10-23), but C structs with identical
+    layout are interchangeable, so a texture handle passed where a model is expected is accepted on a layout coincidence —
+    add a kind tag to the handle (and validate it) or rely on naming discipline? (ask)
 
 ## Completed
 
