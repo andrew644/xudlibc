@@ -30,8 +30,9 @@ step, just move it, so the active tracker stays short and the log stays complete
 - [ ] GPU memory allocator + suballocation (one allocator, ring for transient; no `vkCreateBuffer` per frame)
 - [ ] Descriptor layout: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix + material/texture index
 - [ ] Batch layer (`xudrl`): dynamic vertex/index buffers, flush on pipeline/material change, fixed pipeline set
-- [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle*`, lines, points)
-- [ ] Camera + transform math (3D first; 2D scope is an open decision)
+- [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
+    shape family in the API)
+- [ ] Camera + transform math (one perspective 3D camera; the 2D scope was settled out 2026-10-23, see Decided below)
 - [ ] Textures + samplers (create, upload via staging copies, mipmaps, sampler variants)
 - [ ] Mesh / vertex-buffer abstraction + handle table (index+generation)
 - [ ] 3D model loading (glTF 2.0 — format decision still open, see Blocked)
@@ -57,6 +58,15 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Decided since then
 
+- 2026-10-23 — **Scope → 3D only** (no ortho pass, no sprite batch). One perspective camera, one depth buffer, one
+  render pass, one batch. The public API carries raylib's 3D half of the shape surface (`DrawCube`, `DrawSphere`,
+  `DrawMesh`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D`) and not its 2D half: the screen-space `DrawRectangle`/
+  `DrawCircle` family and the `BeginMode2D`/`EndMode2D` pair are out of `xud.h`, not stubbed. Rationale: the opaque/
+  transparent pipeline split, the depth-write vs depth-test pair and the sorted-transparent batch rule only mean
+  anything with a depth buffer in play, so a 2D pass would be a second pass + a second pipeline set + a second batch —
+  a subsystem, not a flag; and raylib's 2D primitives are fixed-function screen quads with no Vulkan shape here. Text
+  stays textured quads inside the one 3D pass (billboard or screen-aligned), so the point/glyph shader variant survives
+  the decision; the text/font atlas itself is still open below. Recorded in `AGENTS.md` *Settled decisions*.
 - 2026-10-22 — **Render pass → explicit `VkRenderPass` + `VkFramebuffer`** (not `VK_KHR_dynamic_rendering`, not both
   gated on caps). Probed today before deciding (scratch probes against `build/libxud.a`, deleted after, no library file
   touched): the driver answers **both** paths — `apiVersion 4211042` (core 1.4), `VK_KHR_dynamic_rendering` and
@@ -83,7 +93,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Blocked / needs a decision
 
-- 2D vs 3D scope (ask)
 - GPU allocator: vendor VMA vs own block allocator (ask)
 - Loader: hand-rolled PFN table vs vendor Volk (ask)
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)

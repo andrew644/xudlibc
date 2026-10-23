@@ -186,6 +186,9 @@ Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers a
 
 ## Design sketch
 
+**Scope: 3D only** (settled 2026-10-23, see *Settled decisions*) — the sketch below is one perspective 3D scene: one
+camera, one depth buffer, one render pass, one batch. There is no orthographic pass and no sprite batch anywhere in it.
+
 Layers, bottom to top (each layer only sees the one below it):
 
 ```
@@ -212,7 +215,7 @@ Pipeline set (created once, all GLSL→SPIR-V at build time):
 
 | Axis | Variants | Why |
 | --- | --- | --- |
-| Shader | untextured-solid, textured, line, point/glyph | raylib's four primitive families |
+| Shader | untextured-solid, textured, line, point/glyph | raylib's primitive families, **3D-only** — no ortho/sprite variant (scope settled 2026-10-23) |
 | Blend | opaque (blend off, depth write) / transparent (blend on, depth test, sorted) | raylib draws in call order |
 
 Descriptor layout:
@@ -246,7 +249,8 @@ Matches raylib's `Vertex{pos, texcoords, color}` plus a normal so the default ma
   Meet the bar, then commit immediately, even mid-subsystem. Never batch several steps into one commit at the end of a session, and never commit a state you are unsure about — if the bar is not met, keep working or write the blocker into `todo.md` instead.
 - Commit messages: short imperative mood, ≤ 50 chars, no trailing period (`Add Vulkan instance`, `Fix swapchain resize`).
 - No new dependencies (Volk, VMA, miniaudio, cgltf, stb, …) without asking first — none of them are packaged here, so "add a dep" always means "vendor a header".
-- Ask before: changing the public API surface, adding a subsystem, picking a Vulkan extension, or choosing a 2D/3D scope.
+- Ask before: changing the public API surface, adding a subsystem, or picking a Vulkan extension (the 2D/3D scope question is
+  settled — **3D only**, see *Settled decisions*).
 - Never commit `bin/`, `build/`, `reference/`, or third-party material. Never edit `reference/` (including `reference/raylib/`, which is gitignored — it still must not be edited even though it is untracked).
 
 ## Settled decisions (2026-10-16)
@@ -261,10 +265,20 @@ Matches raylib's `Vertex{pos, texcoords, color}` plus a normal so the default ma
 - **Minimum core version: `VK_API_VERSION_1_0` floor at instance creation + `VK_KHR_SWAPCHAIN`**, everything above that gated on recorded caps. Rationale: raylib's baseline portability feel; lavvk here reports 1.4.363 so the higher paths are exercised in tests, but the library must still work at the floor. The render-pass path is settled as explicit passes (2026-10-22, see *Settled decisions* below), so the floor stands as written and the dynamic-rendering path stays a future gate rather than an open question.
 - **GPU memory: suballocated, one allocator, ring for transient** — the "no `vkCreateBuffer` per frame" rule above. Whether the allocator is VMA (vendored) or ours is still open; the discipline is not.
 - **Render pass: explicit `VkRenderPass` + `VkFramebuffer`** (decided 2026-10-22, facts above). Chosen over `VK_KHR_dynamic_rendering` (core in 1.3, extension below) and over gating both on caps, for four reasons: it is the only path that runs at the declared `VK_API_VERSION_1_0` + `VK_KHR_SWAPCHAIN` floor **without touching two landed contracts** (the dynamic feature is a *chained* struct — it would grow `XudDeviceCaps` by a 4th chained struct, restate the caps' `pNext` write-back check, and grow `VkDeviceCreateInfo.pNext`); it matches the design sketch's "begin render pass → clear color+depth" and the "subpass discipline inside one render pass" rule already here; it keeps the pure create-info assembly (`VkRenderPassCreateInfo`/`VkFramebufferCreateInfo`) the headless-test rule leans on; and it is the only path with a **resolve attachment**, which is not hypothetical — `framebuffer*SampleCounts` answer 0x1f here. Both gates are written down, not implemented: `VK_KHR_dynamic_rendering` (needs the caps/device `pNext` plumbing above) and `VK_KHR_create_renderpass2` as a strict upgrade of this path (`vkCmdBeginRenderPass2`/`vkCmdNextSubpass2`/`vkCmdEndRenderPass2`, +3 command-buffer slots, advertised here, extension-gated with the 1.0 form as fallback).
+- **Scope: 3D only** (decided 2026-10-23). One perspective camera, one depth buffer, one render pass, one batch. The
+  public API carries raylib's **3D half** of the shape surface — `DrawCube`, `DrawSphere`, `DrawMesh`, `DrawTriangle3D`,
+  `DrawLine3D`, `DrawPoint3D` (names grepped in `reference/raylib/raylib.h`, lines 1585–1632) — and **not** its 2D half:
+  no orthographic pass, no sprite batch, no screen-space `DrawRectangle`/`DrawCircle`/`DrawRectangleRec` family (lines
+  1291–1306), no `BeginMode2D`/`EndMode2D` pair (2D at lines 1050–1051, the 3D pair at 1052–1053). Nothing is stubbed in their place — the names simply
+  do not exist in `xud.h`. Rationale: it matches the Odin sibling; the opaque/transparent pipeline split, the depth-write
+  vs depth-test pair and the sorted-transparent batch rule only mean anything with a depth buffer in play, so a 2D pass
+  would be a second render pass + a second pipeline set + a second batch — a subsystem, not a flag; and raylib's 2D
+  primitives are fixed-function screen quads that have no Vulkan shape here (repo rule: re-express it as a pipeline +
+  batch, or drop it). Text/glyphs stay textured quads inside the one 3D pass (billboard or screen-aligned), which is why
+  the point/glyph shader variant survives this decision; the text/font atlas itself stays open below.
 
 ## Open design decisions (ask, don't assume)
 
-- **2D vs 3D scope** — raylib has both; the Odin sibling is 3D-only. Which one does `xudlibc` ship? (Decides whether there is an ortho 2D pass and a sprite batch.)
 - **GPU allocator**: vendor VMA vs write our own block allocator.
 - **Loader**: hand-rolled `dlopen` table vs vendor Volk (single header, MIT).
 - **Model format**: glTF 2.0 via vendored cgltf (raylib does exactly this) vs a minimal `.glb` reader of our own.
