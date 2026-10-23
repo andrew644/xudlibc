@@ -27,7 +27,8 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Later
 
-- [ ] GPU memory allocator + suballocation (one allocator, ring for transient; no `vkCreateBuffer` per frame)
+- [ ] GPU memory allocator + suballocation (**ours**, ring for transient; no `vkCreateBuffer` per frame — the VMA
+    question is settled out 2026-10-23, see Decided below)
 - [ ] Descriptor layout: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix + material/texture index
 - [ ] Batch layer (`xudrl`): dynamic vertex/index buffers, flush on pipeline/material change, fixed pipeline set
 - [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
@@ -58,6 +59,23 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Decided since then
 
+- 2026-10-23 — **GPU allocator → our own block allocator, no VMA** (not vendored). One allocator owns all buffers/images,
+  suballocates over the memory rows the physical layer already recorded, the per-frame ring is one of its regions.
+  Header facts grepped in `vulkan_core.h` (1.4.363), no driver call: `VkMemoryAllocateInfo` 3783 is
+  `{ sType, pNext, allocationSize, memoryTypeIndex }` — one `VkDeviceMemory` per allocation, the type an **index into
+  the caps' `memoryTypes[]`**, stamp `VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO = 5` (212); `VkMemoryRequirements` 3790 is
+  `{ size, alignment, memoryTypeBits }`; `PFN_vkAllocateMemory` 4551 returns `VkResult`, `PFN_vkFreeMemory` 4552 returns
+  **`void`** (zero-state-before / check-after, like `vkDestroyDevice`). Naming trap: `VK_MEMORY_TYPE` greps to **zero
+  hits** in `/usr/include/vulkan/` — a memory type is `VkMemoryType { propertyFlags; heapIndex }` (3521), a pair keyed
+  by index, so the caps row the S5.4 note calls "UNIFORM_BUFFER" is a label, not a constant. Why ours: VMA is not
+  packaged here, so "use VMA" means vendoring ~200 KB of third-party header, and it hides the create-info assembly the
+  headless-test rule leans on behind an interface `tests/` cannot exercise with no device present; the free-list over
+  `(memoryTypeIndex, size, alignment)` is exactly that pure half. VMA's headline upgrades are unasked-for and each needs
+  its own gate: dedicated allocation is a `pNext` chain entry on `VkMemoryAllocateInfo` (`VkMemoryDedicatedAllocateInfo`
+  5704) — it would make the allocator's create-info chain non-empty, the same `pNext` discipline the caps' write-back
+  check depends on — and its extension-name constant is **not in these headers** (grep `DEDICATED_MEMORY_EXTENSION_NAME`:
+  zero hits), so it could not be requested by name without hardcoding a string. Slot cost: the allocator step adds 2
+  device-level slots (`vkAllocateMemory`, `vkFreeMemory`); `XUD_LOADER_SLOT_COUNT` stays 20 today, neither added yet.
 - 2026-10-23 — **Scope → 3D only** (no ortho pass, no sprite batch). One perspective camera, one depth buffer, one
   render pass, one batch. The public API carries raylib's 3D half of the shape surface (`DrawCube`, `DrawSphere`,
   `DrawMesh`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D`) and not its 2D half: the screen-space `DrawRectangle`/
@@ -93,7 +111,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Blocked / needs a decision
 
-- GPU allocator: vendor VMA vs own block allocator (ask)
 - Loader: hand-rolled PFN table vs vendor Volk (ask)
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
 - Audio: vendor miniaudio vs no audio (ask)

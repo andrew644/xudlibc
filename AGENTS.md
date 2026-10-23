@@ -175,7 +175,7 @@ Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers a
 - **Never hardcode a layer name.** Enumerate with `vkEnumerateInstanceLayerProperties`, request everything advertised, and re-create the instance with `ppEnabledLayerNames`. Validation is gated: `XUD_VALIDATE` on in debug builds, off in release, always overridable by env (`VK_INSTANCE_LAYERS`) or config.
 - **Check before you use.** Every extension and feature is queried (`vkEnumerateDeviceExtensionProperties`, `vkGetPhysicalDeviceFeatures2`) and recorded in a `XudDeviceCaps` struct; `VkDeviceCreateInfo` carries **only** what was verified. Anything unverified stays off and the feature that needed it returns `XUD_UNSUPPORTED`.
 - **Explicit pipelines, created once at init.** A small fixed set of variants (see Design sketch), never created per draw, never rebuilt per frame.
-- **Allocate once, suballocate always.** One GPU-memory allocator owns all buffers/images; static geometry is a one-time allocation, per-frame data comes from a ring/transient allocation. **No `vkCreateBuffer` inside a frame.**
+- **Allocate once, suballocate always.** One GPU-memory allocator owns all buffers/images; static geometry is a one-time allocation, per-frame data comes from a ring/transient allocation. **No `vkCreateBuffer` inside a frame.** The allocator is **ours** — no VMA, settled 2026-10-23, see *Settled decisions*.
 - **Staging via transfer ops only**: `vkCmdCopyBuffer` / `vkCmdCopyImage` / `vkCmdCopyBufferToImage` from a staging ring. No `vkMapMemory` per frame without a matching `vkUnmapMemory` + `VkBufferInvalidateRangeInfo` (or a `vkCmdPipelineBarrier` with the right scope), and prefer the copy path over mapped writes for anything transient.
 - **Synchronization is classic**: acquire/present semaphores for frame boundaries, one `VkFence` per swapchain image, `vkCmdPipelineBarrier` and explicit subpass dependencies inside a command buffer. **No `VK_KHR_vulkan_memory_model`**, no `vkmm*` sync — it is not in the vendored headers here and it makes the correctness argument untestable headlessly.
 - **Descriptor discipline**: one per-frame set (set 0, updated once per frame), one per-material set (set 1), push constants for the model matrix + material/texture indices. Query `maxPushConstantsSize` (guaranteed floor is 128 bytes) and `static_assert` our struct fits.
@@ -229,6 +229,11 @@ Descriptor layout:
 Vertex format (36 B, aligned): `pos float3` (12) + `uv float2` (8) + `color ubyte4 normalized` (4) + `normal float3` (12).
 Matches raylib's `Vertex{pos, texcoords, color}` plus a normal so the default material can light it.
 
+GPU memory: one block allocator, ours, over the caps' recorded memory rows — `VkMemoryAllocateInfo` carries
+`allocationSize` + `memoryTypeIndex` (one `VkDeviceMemory` per allocation, the index into the caps' `memoryTypes[]`),
+`VkMemoryRequirements` is what a buffer/image asks for. Static geometry one-time, per-frame data from a ring, no
+`vkAllocateMemory` inside a frame.
+
 ## Testing rules
 
 - Every public function gets at least one test in `tests/`.
@@ -263,7 +268,7 @@ Matches raylib's `Vertex{pos, texcoords, color}` plus a normal so the default ma
 - **Synchronization: classic** (semaphores + per-image fences + pipeline barriers + explicit subpass deps). No `VK_KHR_vulkan_memory_model`.
 - **Shaders: offline SPIR-V only** (`glslangValidator` at build time, `spirv-val` in CI). No runtime GLSL.
 - **Minimum core version: `VK_API_VERSION_1_0` floor at instance creation + `VK_KHR_SWAPCHAIN`**, everything above that gated on recorded caps. Rationale: raylib's baseline portability feel; lavvk here reports 1.4.363 so the higher paths are exercised in tests, but the library must still work at the floor. The render-pass path is settled as explicit passes (2026-10-22, see *Settled decisions* below), so the floor stands as written and the dynamic-rendering path stays a future gate rather than an open question.
-- **GPU memory: suballocated, one allocator, ring for transient** — the "no `vkCreateBuffer` per frame" rule above. Whether the allocator is VMA (vendored) or ours is still open; the discipline is not.
+- **GPU memory: suballocated, one allocator, ring for transient** — the "no `vkCreateBuffer` per frame" rule above. The discipline stands either way; the allocator itself is settled to ours, see the bullet below.
 - **Render pass: explicit `VkRenderPass` + `VkFramebuffer`** (decided 2026-10-22, facts above). Chosen over `VK_KHR_dynamic_rendering` (core in 1.3, extension below) and over gating both on caps, for four reasons: it is the only path that runs at the declared `VK_API_VERSION_1_0` + `VK_KHR_SWAPCHAIN` floor **without touching two landed contracts** (the dynamic feature is a *chained* struct — it would grow `XudDeviceCaps` by a 4th chained struct, restate the caps' `pNext` write-back check, and grow `VkDeviceCreateInfo.pNext`); it matches the design sketch's "begin render pass → clear color+depth" and the "subpass discipline inside one render pass" rule already here; it keeps the pure create-info assembly (`VkRenderPassCreateInfo`/`VkFramebufferCreateInfo`) the headless-test rule leans on; and it is the only path with a **resolve attachment**, which is not hypothetical — `framebuffer*SampleCounts` answer 0x1f here. Both gates are written down, not implemented: `VK_KHR_dynamic_rendering` (needs the caps/device `pNext` plumbing above) and `VK_KHR_create_renderpass2` as a strict upgrade of this path (`vkCmdBeginRenderPass2`/`vkCmdNextSubpass2`/`vkCmdEndRenderPass2`, +3 command-buffer slots, advertised here, extension-gated with the 1.0 form as fallback).
 - **Scope: 3D only** (decided 2026-10-23). One perspective camera, one depth buffer, one render pass, one batch. The
   public API carries raylib's **3D half** of the shape surface — `DrawCube`, `DrawSphere`, `DrawMesh`, `DrawTriangle3D`,
@@ -276,10 +281,34 @@ Matches raylib's `Vertex{pos, texcoords, color}` plus a normal so the default ma
   primitives are fixed-function screen quads that have no Vulkan shape here (repo rule: re-express it as a pipeline +
   batch, or drop it). Text/glyphs stay textured quads inside the one 3D pass (billboard or screen-aligned), which is why
   the point/glyph shader variant survives this decision; the text/font atlas itself stays open below.
+- **GPU allocator: our own block allocator, no VMA** (decided 2026-10-23). One allocator owns all buffers/images; it
+  suballocates over the memory rows the physical layer already recorded, and the per-frame ring is one of its regions.
+  Header facts grepped in `/usr/include/vulkan/vulkan_core.h` (1.4.363), **no driver call**: `VkMemoryAllocateInfo` is
+  **3783** — `{ sType, pNext, allocationSize, memoryTypeIndex }`, so one `VkDeviceMemory` per allocation and the type is
+  an **index into the caps' `memoryTypes[]`**, not a mask; `VkMemoryRequirements` is **3790** — `{ size, alignment,
+  memoryTypeBits }` — the bitmask of types a buffer/image may be bound to, and the allocate info picks **one index**
+  that must be set in it; the stamp is `VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO = 5`
+  (**212**); `PFN_vkAllocateMemory` **4551** returns `VkResult` (maps through `xud_result_from_vk`) and `PFN_vkFreeMemory`
+  **4552** returns **`void`** — same teardown rule as `vkDestroyDevice`/`vkGetDeviceQueue`: zero state before the call,
+  check after it. `VK_MAX_MEMORY_TYPES` 32U / `VK_MAX_MEMORY_HEAPS` 16U are the fixed bounds of the `memoryTypes[]`/
+  `memoryHeaps[]` arrays inside the core `VkPhysicalDeviceMemoryProperties` the caps embed (already listed in the
+  physical header-facts block above). **Naming trap**: grepping `VK_MEMORY_TYPE` across the whole `/usr/include/vulkan/` tree gives **zero
+  hits** — a memory type is `VkMemoryType { VkMemoryPropertyFlags propertyFlags; uint32_t heapIndex; }` (**3521**), a
+  property-flag/heap-index pair keyed by its **index**, so the caps row the S5.4 note calls "UNIFORM_BUFFER" is a label
+  for a row, not a constant anyone can write. Why ours: VMA is not packaged here (see *Toolchain*), so "use VMA" means
+  vendoring ~200 KB of third-party header, and it would hide the create-info assembly that the headless-test rule leans
+  on behind an interface `tests/` cannot exercise with no device present — the free-list over `(memoryTypeIndex, size,
+  alignment)` triples is exactly the pure half that stays testable headless. VMA's headline upgrades are ones we have
+  not asked for and would each need their own gate: dedicated allocation is a **`pNext` chain entry** on
+  `VkMemoryAllocateInfo` (`VkMemoryDedicatedAllocateInfo`, **5704**, aliased `…KHR` at 11294) — which would make the
+  allocator's create-info chain non-empty, the same `pNext` discipline the caps' write-back check depends on — and its
+  extension-name constant is **not in these headers at all** (grep `DEDICATED_MEMORY_EXTENSION_NAME` across
+  `/usr/include/vulkan/`: zero hits), so it could not even be requested by name without hardcoding a string. Loader-slot
+  cost of the choice: the allocator step adds **2** device-level slots (`vkAllocateMemory`, `vkFreeMemory`); `XUD_LOADER_SLOT_COUNT`
+  stays **20** today, neither is added yet.
 
 ## Open design decisions (ask, don't assume)
 
-- **GPU allocator**: vendor VMA vs write our own block allocator.
 - **Loader**: hand-rolled `dlopen` table vs vendor Volk (single header, MIT).
 - **Model format**: glTF 2.0 via vendored cgltf (raylib does exactly this) vs a minimal `.glb` reader of our own.
 - **Audio backend**: vendor miniaudio (raylib's `raudio` does) vs no audio yet.
