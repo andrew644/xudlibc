@@ -10,9 +10,9 @@ step, just move it, so the active tracker stays short and the log stays complete
     and `xud_loader_open`/`resolve`/`bind`/`is_open` are either kept as a thin wrapper over Volk's tables or dropped so the
     layers call Volk's `extern PFN_vkXxx vkXxx;` pointers directly; `VK_NO_PROTOTYPES` include order (volk.h **before**
     `<vulkan/vulkan.h>`, or define the macro first) lands here; the instance/physical/device layers move with it.
-- [ ] Build the **vendored GLFW** tree (`src/external/glfw`, 3.5.1) into the library: pick the Linux backend (Wayland —
-    `deps/wayland/*.xml` need `wayland-scanner` — or X11), exclude the win32/cocoa/macos/wgl/glx/egl/osmesa halves, keep
-    `-lglfw` off the link line.
+- [ ] Build the **vendored GLFW** tree (`src/external/glfw`, 3.5.1) into the library on the **Wayland** backend (decided
+    2026-10-23): `GLFW_BUILD_WAYLAND` → `-D_GLFW_WAYLAND`, protocol code generated from the 9 `deps/wayland/*.xml` by
+    `wayland-scanner` (all requirements verified present here — see AGENTS.md *Toolchain*), exclude the win32/cocoa/macos/wgl/glx/egl/osmesa and `x11_*`/`xkb_unicode.c` halves, keep `-lglfw` off the link line.
 - [ ] S7 GLFW window + surface: `glfwCreateWindowSurface` (GLFW 3.5.1 — verified present **in the vendored copy**,
     `glfw/src/vulkan.c` 331), `glfwGetRequiredInstanceExtensions` (264) merged into the instance extension list,
     `glfwGetPhysicalDevicePresentationSupport` (307) checked against the chosen queue family (this is the **present** half
@@ -67,6 +67,21 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Decided since then
 
+- 2026-10-23 — **GLFW backend → Wayland** and **vendored material → committed with its license files**.
+  **Wayland**: `GLFW_BUILD_WAYLAND` (glfw/CMakeLists.txt 30, `cmake_dependent_option` ON for `UNIX;NOT APPLE`; the removed
+  `GLFW_USE_WAYLAND` switch is a hard error on a stale cache at line 24) → `-D_GLFW_WAYLAND` (glfw/src/CMakeLists.txt 54–55),
+  `wayland-scanner` required (`find_program` + `FATAL_ERROR`, 75–77) and the **9** protocol XMLs GLFW ships in `deps/wayland/`
+  generated at 100–107, plus `pkg_check_modules(Wayland REQUIRED wayland-client>=0.2.7 wayland-cursor>=0.2.7 wayland-egl>=0.2.7
+  xkbcommon>=0.5.0)` (155–160). **All satisfied on this machine** (probed today): `pkg-config --exists` yes for all four,
+  `wayland-scanner` at `/usr/bin` (`local/wayland 1.26.0-1`), libs `libwayland-client.so.0.26.0` / `libwayland-cursor.so.0` /
+  `libwayland-egl.so.1` / `libxkbcommon.so.0.13.2`; `glfw/src/wl_platform.h` includes `<wayland-client-core.h>` +
+  `<xkbcommon/xkbcommon.h>` + `<xkbcommon/xkbcommon-compose.h>` (27–29). `local/libdecor 0.2.5-1` is present but 3.5.1's CMake
+  does not use it. `GLFW_BUILD_X11` (29) stays OFF — `x11_*.c`/`xkb_unicode.c` excluded, no X11 path of our own.
+  **Commit policy**: `src/external/` is tracked **with** its license files (Volk MIT notice at the end of `volk.h`, GLFW
+  zlib/libpng in `glfw/LICENSE.md`) and `src/external/PROVENANCE.md` was added recording versions/licenses/how the copies were
+  made (the upstream commit/tag was **not** recorded at copy time — what is recorded is what the files declare: `VOLK_HEADER_VERSION
+  366`, `GLFW_VERSION_MAJOR/MINOR/REVISION` 3/5/1). Opposite policy from `reference/raylib/` (never committed, never edited).
+  Consequence: ~2.7 MB of upstream code in the repo, and a version bump is a re-vendor commit, never an in-place edit.
 - 2026-10-23 — **Loader + window backend → vendored Volk and vendored GLFW** (both already sitting in `src/external/`,
   raylib's own name for vendored deps). **Volk**: `volk.h` + `volk.c`, zeux/volk by Arseny Kapoulkine, MIT (notice at the
   end of `volk.h`), `VOLK_HEADER_VERSION 366`; it declares **842** `extern PFN_vkXxx vkXxx;` entries (counted here), so
@@ -143,9 +158,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Blocked / needs a decision
 
-- Vendored material (`src/external/`: Volk MIT + GLFW's 3-point notice): committed with its license files, or gitignored
-    like `reference/`? AGENTS.md says "never commit third-party material", the layout now names the bucket `src/external/`,
-    and the files sit untracked and **not** gitignored — so `git add -A` would sweep them in (ask)
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
 - Audio: vendor miniaudio vs no audio (ask)
 - Text/font: own bitmap atlas vs vendored `stb_truetype`/fontstash (ask)
