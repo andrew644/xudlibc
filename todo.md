@@ -6,10 +6,18 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] S7 GLFW window + surface: `glfwCreateWindowSurface` (GLFW 3.5.1 — verified present), `glfwGetRequiredInstanceExtensions`
-    merged into the instance extension list, `glfwGetPhysicalDevicePresentationSupport` checked against the chosen
-    queue family (this is the **present** half of AGENTS.md's one-family rule — there is no `VK_QUEUE_PRESENT_BIT`
-    in these headers, see the S5.2 grep), `vkDestroySurfaceKHR` on teardown (no `glfwDestroyVulkanSurface` in 3.5).
+- [ ] Loader rework onto **vendored Volk** (`src/external/volk.h` + `volk.c`, settled 2026-10-23): the 20-slot `XudLoader`
+    and `xud_loader_open`/`resolve`/`bind`/`is_open` are either kept as a thin wrapper over Volk's tables or dropped so the
+    layers call Volk's `extern PFN_vkXxx vkXxx;` pointers directly; `VK_NO_PROTOTYPES` include order (volk.h **before**
+    `<vulkan/vulkan.h>`, or define the macro first) lands here; the instance/physical/device layers move with it.
+- [ ] Build the **vendored GLFW** tree (`src/external/glfw`, 3.5.1) into the library: pick the Linux backend (Wayland —
+    `deps/wayland/*.xml` need `wayland-scanner` — or X11), exclude the win32/cocoa/macos/wgl/glx/egl/osmesa halves, keep
+    `-lglfw` off the link line.
+- [ ] S7 GLFW window + surface: `glfwCreateWindowSurface` (GLFW 3.5.1 — verified present **in the vendored copy**,
+    `glfw/src/vulkan.c` 331), `glfwGetRequiredInstanceExtensions` (264) merged into the instance extension list,
+    `glfwGetPhysicalDevicePresentationSupport` (307) checked against the chosen queue family (this is the **present** half
+    of AGENTS.md's one-family rule — there is no `VK_QUEUE_PRESENT_BIT` in these headers, see the S5.2 grep),
+    `vkDestroySurfaceKHR` on teardown (no `glfwDestroyVulkanSurface` in 3.5, not even in the vendored tree).
 - [ ] S8 Ownership + teardown: the context owns loader/instance/device/surface/queues; destroy order device → surface →
     instance; `goto fail` ladder leaks nothing on partial init; a GPU test that creates then destroys and stays validation-clean.
 - [ ] S9 Docs: file-top comments naming the layer each file owns; one `todo.md` note per step.
@@ -59,6 +67,30 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Decided since then
 
+- 2026-10-23 — **Loader + window backend → vendored Volk and vendored GLFW** (both already sitting in `src/external/`,
+  raylib's own name for vendored deps). **Volk**: `volk.h` + `volk.c`, zeux/volk by Arseny Kapoulkine, MIT (notice at the
+  end of `volk.h`), `VOLK_HEADER_VERSION 366`; it declares **842** `extern PFN_vkXxx vkXxx;` entries (counted here), so
+  under `VK_NO_PROTOTYPES` every entry point is a **data pointer** filled by `volkLoadInstance`/`volkLoadDevice` — the
+  "no Vulkan symbols linked" rule becomes a link-time fact instead of a convention. Bring-up surface: `volkInitialize` /
+  `volkInitializeCustom` / `volkFinalize` / `volkGetInstanceVersion` / `volkLoadInstance(Only)` / `volkLoadDevice` /
+  `volkGetLoadedInstance` / `volkGetLoadedDevice` / `volkLoadInstanceTable` / `volkLoadDeviceTable`. Its POSIX bring-up is
+  `dlopen("libvulkan.so.1", RTLD_NOW|RTLD_LOCAL)` (volk.c 114, fallback `libvulkan.so` 116) — same loader as our own probe,
+  `RTLD_LOCAL` not `RTLD_GLOBAL`. Include-order trap (verified): volk.h errors `To use volk, you need to define VK_NO_PROTOTYPES
+  before including vulkan.h` when `VULKAN_H_` is already in (volk.h 17–18) and defines the macro itself when it is not
+  (25–26), so volk.h comes **before** `<vulkan/vulkan.h>` in every TU. Probed here: `#include "volk.h"` + a `main` compiles
+  clean with gcc **and** clang under `-std=c11 -Wall -Wextra -Wpedantic -Werror` even though Volk is 366 and this machine's
+  Vulkan-Headers are 363 (`vk_platform.h`, which volk.h includes by default, is present in Arch's headers). Volk here is
+  loader-only — no `vk_mem_alloc` reference anywhere in it, so the "our own block allocator" decision still stands.
+  **GLFW**: the full upstream 3.5.1 tree at `src/external/glfw` (86 files, 2.2 MB — `include/GLFW/glfw3.h` + `glfw3native.h`,
+  35 `.c` files under `src/`, `CMakeLists.txt`, `LICENSE.md`, `CONTRIBUTORS.md`, `deps/wayland/*.xml`), license = the 3-point
+  "provided as-is" notice (Copyright © 2002-2006 Marcus Geelnard, 2006-2019 Camilla Löwy). Same Vulkan surface as the system
+  copy, re-probed in the vendored tree: `glfw/src/vulkan.c` 264 `glfwGetRequiredInstanceExtensions`, 307
+  `glfwGetPhysicalDevicePresentationSupport`, 331 `glfwCreateWindowSurface`; `glfwInitVulkanLoader` at `glfw/src/init.c` 484
+  (declared `glfw3.h` 2368); `GLFW_VERSION_MAJOR/MINOR/REVISION` 3/5/1; still no `glfwDestroyVulkanSurface`. The system
+  `libglfw.so.3.5` links only `libc`/`libm` (`ldd`) and names `libEGL.so.1`/`libGL.so.1`/`libGLX.so.0`/`libdecor-0.so.0`
+  as strings — it `dlopen`s its backend at runtime, so a vendored build must pick Wayland or X11 explicitly.
+  **Not done**: `CMakeLists.txt` references neither `src/external/volk.*` nor `src/external/glfw`, nothing in `src/xud/`
+  includes `volk.h`, and the landed `xud_loader.c` table is still what runs — the rework is the two `Now` items above.
 - 2026-10-23 — **GPU allocator → our own block allocator, no VMA** (not vendored). One allocator owns all buffers/images,
   suballocates over the memory rows the physical layer already recorded, the per-frame ring is one of its regions.
   Header facts grepped in `vulkan_core.h` (1.4.363), no driver call: `VkMemoryAllocateInfo` 3783 is
@@ -111,7 +143,9 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Blocked / needs a decision
 
-- Loader: hand-rolled PFN table vs vendor Volk (ask)
+- Vendored material (`src/external/`: Volk MIT + GLFW's 3-point notice): committed with its license files, or gitignored
+    like `reference/`? AGENTS.md says "never commit third-party material", the layout now names the bucket `src/external/`,
+    and the files sit untracked and **not** gitignored — so `git add -A` would sweep them in (ask)
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
 - Audio: vendor miniaudio vs no audio (ask)
 - Text/font: own bitmap atlas vs vendored `stb_truetype`/fontstash (ask)

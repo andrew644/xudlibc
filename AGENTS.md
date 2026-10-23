@@ -18,13 +18,13 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 | `tests/` | Unit tests | Headless by default; GPU tests gated by `XUD_GPU_TESTS=1` |
 | `examples/` | Runnable demos | Small, one concern each |
 | `shaders/` | GLSL sources + built `.spv` | Compiled at build time, never at runtime |
-| `third_party/` | Vendored single-header deps | Only with an explicit decision (see Open decisions) |
+| `src/external/` | Vendored third-party deps (raylib's own convention) — **present today**: `volk.h`/`volk.c` (Volk) + a full `glfw/` source tree (GLFW 3.5.1) | Settled 2026-10-23 (see *Settled decisions*); not built into anything yet; git policy still open (see *Blocked*) |
 | `reference/raylib/` | raylib **6.2** headers (present today, 560 KB) | **NEVER EDIT** — gitignored, never `#include`d, never built against |
 | `bin/`, `build/` | Build output | Gitignored, never committed |
 | `todo.md` | Project progress tracker (open work only) | Update every session, dated one-liners |
 | `todo_completed.md` | Finished-step log, newest first | Where completed items and their long notes move to — never delete a finished step |
 
-**Present today (after the diagnostics + instance + physical + device steps)**: `src/xud/` = `xud.h` + `xud_core.h`/`xud_core.c` (context shell + teardown) + `xud_loader.h`/`xud_loader.c` (the `dlopen` table) + `xud_vulkan.h`/`xud_vulkan.c` (shared vocabulary: `VkResult`→`XudResult` funnel + fixed-buffer name helpers, no driver call) + `xud_diagnostics.h`/`xud_diagnostics.c` (the diagnostics layer: advertised layer selection, `VkValidationFeaturesEXT`, the `VK_EXT_debug_utils` messenger + log callback) + `xud_instance.h`/`xud_instance.c` (the `VkInstance` layer: application info, extension selection, create-info assembly, create/destroy) + `xud_physical.h`/`xud_physical.c` (the physical layer: `XudPhysicalDevice` + an embedded `XudDeviceCaps` + the layer's contract, **both halves implemented** — the pure half (selection, feature intersection, the graphics queue-family rule, `apiVersion` read-back, free-only teardown) landed at S5.3, the driver half `xud_physical_query_devices`/`xud_physical_open` at S5.4, and this `.c` is in the archive with them) + `xud_device.h`/`xud_device.c` (the device layer: `XudDevice` owning the `VkDevice` handle, the `VkDeviceQueueCreateInfo` row the driver was handed, the `VkPhysicalDeviceFeatures` it was handed, the enabled-extension names it was handed, and the two role queues it resolved; `XudQueue` is a **record** of a queue, not an owning type — there is no `vkDestroyQueue`; one queue row from the physical layer's chosen family, `VkDeviceCreateInfo` carrying the physical layer's **feature intersection** and only advertised device extensions, the `xud_device_wait_idle` guard, `xud_device_close` = guard → destroy → free, **both halves implemented** — the pure half (row assembly, extension selection, create-info assembly, queue lookup) and the driver half (`xud_device_open`/`xud_device_wait_idle`/`xud_device_close`), and this `.c` is in the archive with them); `tests/` = `xud_test.c`; `examples/` = `hello_context.c`; `reference/raylib/`; `build/` (gitignored CMake output, plus `build-san/` when sanitizers are wanted). **Not created yet**: `shaders/`, `third_party/`, `bin/`. A `VkPhysicalDevice` **and** a `VkDevice` with its queues **are** created now — the device layer is implemented, in the archive, and tested against the driver — but **nothing below the physical layer is wired into the `XudContext` yet**: the context's device/queue/surface/swapchain/allocator fields stay sentinels until S8's ownership step, and there is still no surface, swapchain, or allocator.
+**Present today (after the diagnostics + instance + physical + device steps)**: `src/xud/` = `xud.h` + `xud_core.h`/`xud_core.c` (context shell + teardown) + `xud_loader.h`/`xud_loader.c` (the `dlopen` table) + `xud_vulkan.h`/`xud_vulkan.c` (shared vocabulary: `VkResult`→`XudResult` funnel + fixed-buffer name helpers, no driver call) + `xud_diagnostics.h`/`xud_diagnostics.c` (the diagnostics layer: advertised layer selection, `VkValidationFeaturesEXT`, the `VK_EXT_debug_utils` messenger + log callback) + `xud_instance.h`/`xud_instance.c` (the `VkInstance` layer: application info, extension selection, create-info assembly, create/destroy) + `xud_physical.h`/`xud_physical.c` (the physical layer: `XudPhysicalDevice` + an embedded `XudDeviceCaps` + the layer's contract, **both halves implemented** — the pure half (selection, feature intersection, the graphics queue-family rule, `apiVersion` read-back, free-only teardown) landed at S5.3, the driver half `xud_physical_query_devices`/`xud_physical_open` at S5.4, and this `.c` is in the archive with them) + `xud_device.h`/`xud_device.c` (the device layer: `XudDevice` owning the `VkDevice` handle, the `VkDeviceQueueCreateInfo` row the driver was handed, the `VkPhysicalDeviceFeatures` it was handed, the enabled-extension names it was handed, and the two role queues it resolved; `XudQueue` is a **record** of a queue, not an owning type — there is no `vkDestroyQueue`; one queue row from the physical layer's chosen family, `VkDeviceCreateInfo` carrying the physical layer's **feature intersection** and only advertised device extensions, the `xud_device_wait_idle` guard, `xud_device_close` = guard → destroy → free, **both halves implemented** — the pure half (row assembly, extension selection, create-info assembly, queue lookup) and the driver half (`xud_device_open`/`xud_device_wait_idle`/`xud_device_close`), and this `.c` is in the archive with them); `tests/` = `xud_test.c`; `examples/` = `hello_context.c`; `reference/raylib/`; `src/external/` (vendored Volk + a GLFW source tree, untracked and not yet built into anything); `build/` (gitignored CMake output, plus `build-san/` when sanitizers are wanted). **Not created yet**: `shaders/`, `bin/`. A `VkPhysicalDevice` **and** a `VkDevice` with its queues **are** created now — the device layer is implemented, in the archive, and tested against the driver — but **nothing below the physical layer is wired into the `XudContext` yet**: the context's device/queue/surface/swapchain/allocator fields stay sentinels until S8's ownership step, and there is still no surface, swapchain, or allocator.
 
 ## Toolchain (verified on this machine — use exactly these)
 
@@ -38,7 +38,7 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 | Validation layer | `VK_LAYER_KHRONOS_validation` present (`/usr/share/vulkan/explicit_layer.d`, `api_version 1.4.363`) |
 | ICDs | `intel_icd`, `intel_hasvk_icd`, `nouveau_icd`, `radeon_icd` |
 | GPU | Intel **TigerLake-LP GT2 (Iris Xe)** → `vulkan_intel` (lavvk); `/dev/dri/renderD128` present |
-| Window/input | system **GLFW 3.5.1** (`pkg-config glfw3`, `/usr/include/GLFW/glfw3.h`, `libglfw.so.3.5`) |
+| Window/input | system **GLFW 3.5.1** (`pkg-config glfw3`, `/usr/include/GLFW/glfw3.h`, `libglfw.so.3.5`) — **not linked**: nothing in the tree uses GLFW yet, and once the vendored tree builds it is compiled in instead, see *Settled decisions* |
 | Shader tools | `glslangValidator` (glslang 11:16.4.0, GLSL 4.60 / ESSL 3.20), `glslc` 2026.3, `spirv-val`, `spirv-opt`, `spirv-as` |
 | **Not installed** | No Vulkan SDK, no Volk, no VMA, no miniaudio, no cgltf, no stb, no `cglm` — anything like that must be vendored by hand, and that needs a decision first |
 
@@ -47,6 +47,11 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 `glfwGetPhysicalDevicePresentationSupport(VkInstance, VkPhysicalDevice, uint32_t queuefamily)`,
 `glfwCreateWindowSurface(VkInstance, GLFWwindow *, const VkAllocationCallbacks *, VkSurfaceKHR *)`, `glfwInitVulkanLoader(PFN_vkGetInstanceProcAddr)`.
 There is **no** `glfwDestroyVulkanSurface` in 3.5 — destroy the surface with `vkDestroySurfaceKHR`.
+
+**The vendored copy says the same** (probed 2026-10-23 in `src/external/glfw`): `glfw/src/vulkan.c` has
+`glfwGetRequiredInstanceExtensions` (264), `glfwGetPhysicalDevicePresentationSupport` (307), `glfwCreateWindowSurface`
+(331); `glfwInitVulkanLoader` is at `glfw/src/init.c` 484, declared at `glfw/include/GLFW/glfw3.h` 2368; `glfw3.h`
+says `GLFW_VERSION_MAJOR/MINOR/REVISION` 3/5/1, the same version as the system copy; still no `glfwDestroyVulkanSurface`.
 
 **Verified loader bring-up (2026-10-16)** — the shape `src/xud/xud_loader.c` uses:
 - `dlopen("libvulkan.so.1", RTLD_NOW|RTLD_GLOBAL)` succeeds (resolves to `libvulkan.so.1.4.363`); `dlsym(handle, "vkGetInstanceProcAddr")` resolves; the seed then resolves `vkEnumerateInstanceLayerProperties` (**3 layers advertised** here) and `vkEnumerateInstanceExtensionProperties`. `dlopen`/`dlsym`/`dlclose` come from **libc** — there is no `-ldl` and no `-lvulkan` anywhere: `ldd build/xud_test` lists neither, `nm -u build/xud_test` lists no `vk*` symbol.
@@ -171,7 +176,7 @@ Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers a
 
 ## Vulkan rules (best practices — these are the point of the repo)
 
-- **No Vulkan symbols linked at build time.** Load `libvulkan.so` with `dlopen` + `vkGetInstanceProcAddr` (Volk-style), resolve entry points into a small internal function table. Rationale: the library must build and run on a machine with no driver, and `xud_vulkan_supported()` must be a real runtime query. Do **not** add `-lvulkan` to the link line.
+- **No Vulkan symbols linked at build time.** Load `libvulkan.so` with `dlopen` + `vkGetInstanceProcAddr` (Volk-style), resolve entry points into a small internal function table. Rationale: the library must build and run on a machine with no driver, and `xud_vulkan_supported()` must be a real runtime query. Do **not** add `-lvulkan` to the link line. Vendored Volk (`src/external/volk.h`/`volk.c`, settled 2026-10-23) is what will do this; the hand-rolled `xud_loader.c` table is the contract it replaces and is still what runs today.
 - **Never hardcode a layer name.** Enumerate with `vkEnumerateInstanceLayerProperties`, request everything advertised, and re-create the instance with `ppEnabledLayerNames`. Validation is gated: `XUD_VALIDATE` on in debug builds, off in release, always overridable by env (`VK_INSTANCE_LAYERS`) or config.
 - **Check before you use.** Every extension and feature is queried (`vkEnumerateDeviceExtensionProperties`, `vkGetPhysicalDeviceFeatures2`) and recorded in a `XudDeviceCaps` struct; `VkDeviceCreateInfo` carries **only** what was verified. Anything unverified stays off and the feature that needed it returns `XUD_UNSUPPORTED`.
 - **Explicit pipelines, created once at init.** A small fixed set of variants (see Design sketch), never created per draw, never rebuilt per frame.
@@ -253,17 +258,17 @@ GPU memory: one block allocator, ours, over the caps' recorded memory rows — `
   4. `AGENTS.md`, `todo.md`, `todo_completed.md` and the file-top comments describe exactly what is in the tree, nothing more and nothing less.
   Meet the bar, then commit immediately, even mid-subsystem. Never batch several steps into one commit at the end of a session, and never commit a state you are unsure about — if the bar is not met, keep working or write the blocker into `todo.md` instead.
 - Commit messages: short imperative mood, ≤ 50 chars, no trailing period (`Add Vulkan instance`, `Fix swapchain resize`).
-- No new dependencies (Volk, VMA, miniaudio, cgltf, stb, …) without asking first — none of them are packaged here, so "add a dep" always means "vendor a header".
+- No new dependencies without asking first — none of them are packaged here, so "add a dep" always means "vendor a header or a whole source tree". Settled so far: **Volk + GLFW vendored in** (`src/external/`, 2026-10-23), **VMA settled out** (2026-10-23). Still open: miniaudio, cgltf, stb, …
 - Ask before: changing the public API surface, adding a subsystem, or picking a Vulkan extension (the 2D/3D scope question is
   settled — **3D only**, see *Settled decisions*).
-- Never commit `bin/`, `build/`, `reference/`, or third-party material. Never edit `reference/` (including `reference/raylib/`, which is gitignored — it still must not be edited even though it is untracked).
+- Never commit `bin/`, `build/`, `reference/`, or third-party **reference** material. Never edit `reference/` (including `reference/raylib/`, which is gitignored — it still must not be edited even though it is untracked). The vendored material in `src/external/` is a **different bucket** — upstream code the library builds against, with its license files (`volk.h` MIT notice at the end of the file, `glfw/LICENSE.md`) — and whether that bucket is committed or gitignored is still an open question (see *Blocked* in `todo.md`). Until it is answered `src/external/` sits **untracked and not gitignored**, so a `git add -A` would sweep it in: do not.
 
 ## Settled decisions (2026-10-16)
 
 - **Language/standard: C11**, gcc 16.2.1 primary, clang 22.1.8 as a second opinion in CI.
 - **Build: CMake + ninja**, plus a documented raw-`gcc` one-liner for the single-TU/stb-style include path.
-- **Window/input backend: system GLFW 3.5.1** (`pkg-config glfw3`). Chosen because 3.5 exposes `glfwCreateWindowSurface` + `glfwGetPhysicalDevicePresentationSupport` + `glfwGetRequiredInstanceExtensions`, so GLFW hands us the `VkSurfaceKHR` and the instance extensions it needs; the swapchain itself is still ours. No X11/Wayland path, no RGFW.
-- **Vulkan access: `dlopen` the loader, no `-lvulkan` link dependency** (Volk-style, hand-rolled until Volk is explicitly approved for vendoring).
+- **Window/input backend: GLFW 3.5.1, vendored** (decided 2026-10-23; it was the system package until then). The sources live at `src/external/` (see the bullet below); the reason for GLFW is unchanged — 3.5 exposes `glfwCreateWindowSurface` + `glfwGetPhysicalDevicePresentationSupport` + `glfwGetRequiredInstanceExtensions`, so GLFW hands us the `VkSurfaceKHR` and the instance extensions it needs, and the swapchain is still ours. Vendoring is what makes the library build on a machine without the Arch `glfw` package (`local/glfw 1:3.5.1-1`) and keeps a `-lglfw` off the link line. **Consequence**: GLFW's platform backend becomes a build-time choice — the vendored tree carries `src/wl_*.c` (Wayland, with `deps/wayland/*.xml` that need `wayland-scanner`) and `src/x11_*.c` (X11), plus the halves that must be excluded from a Linux build (`win32_*`, `cocoa_*`/`macos_*`, `wgl_`/`glx_`/`egl_`/`osmesa_context.c`); the system `libglfw.so.3.5` links only `libc`/`libm` (probed with `ldd`) and names `libEGL.so.1`/`libGL.so.1`/`libGLX.so.0`/`libdecor-0.so.0` as strings, i.e. it `dlopen`s its backend at runtime, so a vendored build has to pick one explicitly. Still no X11/Wayland path of our own and no RGFW.
+- **Vulkan access: `dlopen` the loader, no `-lvulkan` link dependency** — now through **vendored Volk** (decided 2026-10-23, see the bullet below).
 - **Validation layers on in debug**, requested by enumerating advertised layers (never by name). `VK_VALIDATE_*` core features are unavailable here (SDK-only) — use `VkValidationFeaturesEXT` on the `pNext` chain and/or `DebugUtilsMessengerCreateInfoEXT` for the log side, and the `VK_INSTANCE_LAYERS` env as the user-facing override.
 - **Synchronization: classic** (semaphores + per-image fences + pipeline barriers + explicit subpass deps). No `VK_KHR_vulkan_memory_model`.
 - **Shaders: offline SPIR-V only** (`glslangValidator` at build time, `spirv-val` in CI). No runtime GLSL.
@@ -306,10 +311,35 @@ GPU memory: one block allocator, ours, over the caps' recorded memory rows — `
   `/usr/include/vulkan/`: zero hits), so it could not even be requested by name without hardcoding a string. Loader-slot
   cost of the choice: the allocator step adds **2** device-level slots (`vkAllocateMemory`, `vkFreeMemory`); `XUD_LOADER_SLOT_COUNT`
   stays **20** today, neither is added yet.
+- **Loader + window backend vendored** (decided 2026-10-23): Volk and GLFW move into `src/external/` (raylib's own
+  directory name for vendored deps) and are built from there, not from a system package.
+  **Volk** = `src/external/volk.h` + `volk.c`, zeux/volk by Arseny Kapoulkine, MIT (notice at the end of `volk.h`),
+  `VOLK_HEADER_VERSION 366`. It replaces the table we hand-maintain: `volk.h` declares **842** `extern PFN_vkXxx vkXxx;`
+  entries (counted here, e.g. `extern PFN_vkCreateInstance vkCreateInstance;` at 2102), so under `VK_NO_PROTOTYPES` every
+  Vulkan entry point is a **data pointer** that `volkLoadInstance`/`volkLoadDevice` fill — a direct `vkCreateInstance(...)`
+  call compiles and links against that pointer, which turns the "no Vulkan symbols linked" rule from a convention into a
+  link-time fact. Bring-up surface: `volkInitialize` / `volkInitializeCustom(PFN_vkGetInstanceProcAddr)` / `volkFinalize` /
+  `volkGetInstanceVersion` / `volkLoadInstance` / `volkLoadInstanceOnly` / `volkLoadDevice` / `volkGetLoadedInstance` /
+  `volkGetLoadedDevice` / `volkLoadInstanceTable` / `volkLoadDeviceTable` (`VolkInstanceTable`/`VolkDeviceTable`). Its POSIX
+  bring-up is `dlopen("libvulkan.so.1", RTLD_NOW|RTLD_LOCAL)` (volk.c 114, fallback `libvulkan.so` 116) — same loader our
+  own probe used, `RTLD_LOCAL` rather than `RTLD_GLOBAL`. **Include-order trap** (verified): volk.h errors
+  `To use volk, you need to define VK_NO_PROTOTYPES before including vulkan.h` when `VULKAN_H_` is already in (volk.h 17–18)
+  and defines `VK_NO_PROTOTYPES` itself when it is not (25–26) — so in every TU volk.h comes **before** `<vulkan/vulkan.h>`,
+  or the consumer defines the macro first. **Probed here**: `#include "volk.h"` + a `main` compiles clean with gcc **and**
+  clang under `-std=c11 -Wall -Wextra -Wpedantic -Werror` even though Volk is 366 and this machine's Vulkan-Headers are 363
+  (`vk_platform.h`, which volk.h includes by default, is present in Arch's headers). Volk here is loader-only — no `vk_mem_alloc`
+  reference anywhere in it, so the "our own block allocator" decision above still stands.
+  **GLFW** = the full upstream 3.5.1 tree at `src/external/glfw` (86 files, 2.2 MB: `include/GLFW/glfw3.h` + `glfw3native.h`,
+  35 `.c` files under `src/`, `CMakeLists.txt`, `LICENSE.md`, `CONTRIBUTORS.md`, `deps/wayland/*.xml`); license notice is the
+  3-point "provided as-is" text in `LICENSE.md` (Copyright © 2002-2006 Marcus Geelnard, 2006-2019 Camilla Löwy).
+  **Not done yet, and stated as such**: `CMakeLists.txt` references neither `src/external/volk.*` nor `src/external/glfw`,
+  nothing in `src/xud/` includes `volk.h`, and the landed `xud_loader.h`/`xud_loader.c` contract (the 20-slot `XudLoader`,
+  `xud_loader_open`/`resolve`/`bind`/`is_open`, used by the instance/physical/device layers) is still the code that runs.
+  The rework — keep the `xud_loader` surface backed by Volk's tables, or drop it and call the extern pointers directly — is
+  open work in `todo.md`.
 
 ## Open design decisions (ask, don't assume)
 
-- **Loader**: hand-rolled `dlopen` table vs vendor Volk (single header, MIT).
 - **Model format**: glTF 2.0 via vendored cgltf (raylib does exactly this) vs a minimal `.glb` reader of our own.
 - **Audio backend**: vendor miniaudio (raylib's `raudio` does) vs no audio yet.
 - **Text/font**: bitmap-font atlas of our own vs vendored `stb_truetype`/fontstash.
