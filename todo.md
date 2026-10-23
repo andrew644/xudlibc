@@ -43,12 +43,14 @@ step, just move it, so the active tracker stays short and the log stays complete
 - [ ] GPU memory allocator + suballocation (**ours**, ring for transient; no `vkCreateBuffer` per frame — the VMA
     question is settled out 2026-10-23, see Decided below)
 - [ ] Descriptor layout: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix + material/texture index
-- [ ] Batch layer (`xudrl`): dynamic vertex/index buffers, flush on pipeline/material change, fixed pipeline set
+- [ ] Batch layer (`xudrl`): dynamic per-attribute **stream** buffers + one index buffer (SoA, decided 2026-10-23 — see
+    Decided below), flush on pipeline/material change (flush is per stream), fixed pipeline set
 - [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
     shape family in the API)
 - [ ] Camera + transform math (one perspective 3D camera; the 2D scope was settled out 2026-10-23, see Decided below)
 - [ ] Textures + samplers (create, upload via staging copies, mipmaps, sampler variants)
-- [ ] Mesh / vertex-buffer abstraction + handle table (index+generation — the public-API currency, decided 2026-10-23)
+- [ ] Mesh / vertex-buffer abstraction (**one buffer per attribute stream**, SoA, decided 2026-10-23) + handle table
+    (index+generation — the public-API currency, decided 2026-10-23)
 - [ ] 3D model loading (glTF 2.0 — format decision still open, see Blocked)
 - [ ] Text/font rendering
 - [ ] Audio wrapper
@@ -71,6 +73,37 @@ step, just move it, so the active tracker stays short and the log stays complete
 - GPU memory discipline → **allocate once, suballocate always**, staging via transfer ops.
 
 ## Decided since then
+
+- 2026-10-23 — **Data layout → SoA, no ECS at this level** (settled; AGENTS.md's open question on this is closed).
+  One stream per vertex attribute, one `VkBuffer` per stream, one `VkVertexInputBindingDescription` each (`stride` = that
+  stream's element size, `offset` 0), one `VkVertexInputAttributeDescription` per attribute on its own `binding`; today's
+  four streams `pos`/`uv`/`color`/`normal` = 36 B/vertex **total** split across four buffers instead of interleaved into one.
+  **Header facts** grepped today in `/usr/include/vulkan/vulkan_core.h` (1.4.363, no driver call): `VkVertexInputAttributeDescription`
+  4267 = `{ location, binding, format, offset }` and `VkVertexInputBindingDescription` 4274 = `{ binding, stride, inputRate }`
+  are **not stamped structs** (no `sType`/`pNext` — the physical layer's "stamp the whole array" rule has nothing to stamp here),
+  `VkPipelineVertexInputStateCreateInfo` 4377 carries both arrays, `maxVertexInputAttributes` 3614 / `maxVertexInputBindings` 3615
+  sit inside the caps' recorded `VkPhysicalDeviceLimits` (3584) so the binding count is caps-gated and never assumed, and one
+  `vkCmdBindVertexBuffers` call binds the whole array (`PFN_…` 4655, returns **void** — the zero-state-then-check rule again).
+  **Naming trap**: the attribute `format` is a plain `VkFormat` — `VK_VERTEX_FORMAT_*` is **not in these headers** (grep
+  `VERTEX_FORMAT` across `/usr/include/vulkan/`: zero hits) and `VK_FORMAT_R8G8A8_UNORM` does not exist (grep `R8G8A8`:
+  zero hits), so the 4-byte color
+  stream is `VK_FORMAT_R8G8B8A8_UNORM` (byte order R,G,B,A). **Why it fits**: raylib's `Mesh` (`reference/raylib/raylib.h`
+  346–372) is already SoA — one array per attribute, `unsigned int *vboId` (371) plural, one VBO per attribute — so the caller-owned
+  upload struct the handle-currency decision fixes arrives de-interleaved already: no conversion step, one staging copy per stream.
+  **Consequences**: the batch is N stream buffers + one IB (the allocator's suballocation handles the count, no new mechanism), the
+  batch's pure-half invariant is "every stream holds the same vertex count" — headless-testable by construction — flush is per stream,
+  and the attribute set grows one binding at a time (tangents, bone index/weight pairs, raylib's `texcoords2`) instead of re-laying-out
+  a fixed-size vertex. **Probed today** (scratch program linked against `build/libxud.a`, loader → instance → physical, deleted after
+  running; same with the validation layer on and off): `maxVertexInputAttributes` 29, `maxVertexInputBindings` 33,
+  `maxVertexInputAttributeOffset` 2047, `maxVertexInputBindingStride` 4095, `maxPushConstantsSize` 256 — **not** the numbers the S5.4
+  driver note records (32 / 128, `deviceID` 0x400, name "Intel Iris Graphics … (TigerLake-LP GT2 …)") while `vendorID` 0x8086 and
+  `apiVersion` 4211042 do match; today's device says `deviceID` 39497 / "Intel(R) Iris(R) Xe Graphics (TGL GT2)", so the driver moved
+  since 2026-10-18 and limits must be read off the caps, never off that note. Headroom here: 33 bindings against today's 4.
+  **No ECS at this level**: CPU-side records stay one plain struct per object kind inside its slot — the per-kind slot arrays the handle
+  decision fixes are the only arrays the library owns and are what an iteration-friendly pass walks; an archetype/system registry in C11
+  would be a subsystem (sparse sets, storage migration, system registration) the raylib-shaped public API cannot express and no test here
+  would exercise. **Nothing in the tree yet**: no stream buffer, no batch, no `VkPipelineVertexInputStateCreateInfo` — the batch/shapes
+  steps write against this decision.
 
 - 2026-10-23 — **Public API handle carries a kind tag** (settled the same day, amends the handle entry below).
   Layout: `typedef struct XudHandle { uint32_t index; uint32_t generation; uint32_t kind; } XudHandle;` — 12 bytes, no padding,

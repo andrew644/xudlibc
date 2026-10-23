@@ -214,7 +214,8 @@ Frame loop (`BeginDrawing` → `EndDrawing`):
 
 ```
 BeginDrawing: acquire image (semaphore) → begin cmd → begin render pass → clear color+depth
-  draw calls: append vertices/indices into the dynamic VB/IB; flush on pipeline/material change
+  draw calls: append each attribute into its own dynamic stream buffer, indices into the dynamic IB (SoA,
+              settled 2026-10-23); flush on pipeline/material change
 EndDrawing: end pass → end cmd → submit (graphics) → present (queue) → signal fence (per-image)
 ```
 
@@ -233,8 +234,12 @@ Descriptor layout:
 | set 1 | combined image sampler array (partially bound, descriptor-indexed) | once per material change; textures suballocated in one atlas-friendly pool |
 | push constants | model matrix (64 B) + material idx + texture idx + flags (≤128 B total) | per draw |
 
-Vertex format (36 B, aligned): `pos float3` (12) + `uv float2` (8) + `color ubyte4 normalized` (4) + `normal float3` (12).
-Matches raylib's `Vertex{pos, texcoords, color}` plus a normal so the default material can light it.
+Vertex layout: **SoA** (settled 2026-10-23, see *Settled decisions*) — one stream per attribute, one `VkBuffer` per stream,
+one `VkVertexInputBindingDescription` per stream (`stride` = that stream's element size, `offset` 0), one
+`VkVertexInputAttributeDescription` per attribute pointing at its own binding. Today's four streams: `pos float3` (12 B/vertex)
++ `uv float2` (8) + `color ubyte4 normalized` (4) + `normal float3` (12) = 36 B/vertex **total**, split across four buffers
+rather than interleaved into one. Same attribute set as raylib's `Vertex{pos, texcoords, color}` plus a normal so the default
+material can light it.
 
 GPU memory: one block allocator, ours, over the caps' recorded memory rows — `VkMemoryAllocateInfo` carries
 `allocationSize` + `memoryTypeIndex` (one `VkDeviceMemory` per allocation, the index into the caps' `memoryTypes[]`),
@@ -406,10 +411,53 @@ GPU memory: one block allocator, ours, over the caps' recorded memory rows — `
   ring, swapchain images, pipelines, descriptor sets) stay tag-less. Constant naming follows the layer convention already in the
   tree (`XUD_DEVICE_QUEUE_MAX_COUNT 2u` at `xud_device.h` 92, `XUD_DEVICE_MAX_DEVICE_EXTENSIONS 8u` at 110, both guarded by
   message-carrying `static_assert`s at 128/131).
+- **Data layout: SoA, no ECS at this level** (decided 2026-10-23). **SoA** for the attribute streams — one stream per
+  vertex attribute, one `VkBuffer` per stream, one `VkVertexInputBindingDescription` per stream (`stride` = that stream's
+  element size, `offset` 0) and one `VkVertexInputAttributeDescription` pointing at its own `binding`. Today's four streams:
+  `pos` `float3` (12 B/vertex, `VK_FORMAT_R32G32B32_SFLOAT`), `uv` `float2` (8 B, `VK_FORMAT_R32G32_SFLOAT`), `color`
+  normalized `ubyte4` (4 B, `VK_FORMAT_R8G8B8A8_UNORM`), `normal` `float3` (12 B, `VK_FORMAT_R32G32B32_SFLOAT`) — the same
+  36 B/vertex total the sketch first sketched interleaved, split across four buffers instead of woven into one.
+  **Header facts** (grepped today in `/usr/include/vulkan/vulkan_core.h`, 1.4.363, **no driver call**): `VkVertexInputAttributeDescription`
+  **4267** = `{ location, binding, format, offset }` and `VkVertexInputBindingDescription` **4274** = `{ binding, stride,
+  inputRate }` — **neither is a stamped struct** (no `sType`, no `pNext`, unlike every create-info this tree assembles, so
+  the "stamp the whole array" rule that the physical layer leans on has nothing to stamp here); `VkPipelineVertexInputStateCreateInfo`
+  **4377** carries both arrays (`vertexBindingDescriptionCount`/`pVertexBindingDescriptions`, `vertexAttributeDescriptionCount`/`pVertexAttributeDescriptions`).
+  `inputRate` is `VK_VERTEX_INPUT_RATE_VERTEX` (2658) / `VK_VERTEX_INPUT_RATE_INSTANCE` (2659) — a future instancing path is one
+  more per-instance binding on the same buffers, which is part of why the stream form survives and a fixed-size interleaved
+  vertex does not. `maxVertexInputAttributes` (**3614**) and `maxVertexInputBindings` (**3615**) sit inside `VkPhysicalDeviceLimits`
+  (**3584**), which the caps already embed whole, so the binding count is gated on the caps and never assumed. **Naming trap**:
+  the attribute's `format` field is a plain **`VkFormat`** here — `VkVertexFormatType` / `VK_VERTEX_FORMAT_*` are **absent from
+  these headers** (grep `VERTEX_FORMAT` across `/usr/include/vulkan/`: **zero hits**), so streams are spelled with format names,
+  and `VK_FORMAT_R8G8A8_UNORM` **does not exist** (grep `R8G8A8` across `vulkan_core.h`: **zero hits**) — the 4-byte color
+  stream is `VK_FORMAT_R8G8B8A8_UNORM` (37), byte order R,G,B,A. One `vkCmdBindVertexBuffers` call binds the whole array
+  (`PFN_vkCmdBindVertexBuffers` **4655**, `(commandBuffer, firstBinding, bindingCount, pBuffers, pOffsets)`) and returns
+  **void** — the same zero-state-before-the-call rule `vkDestroyDevice`/`vkGetDeviceQueue`/`vkFreeMemory` follow.
+  **Why SoA**: raylib's own `Mesh` (`reference/raylib/raylib.h` **346–372**) is already SoA on the CPU side — one array per
+  attribute (`float *vertices/texcoords/texcoords2/normals/tangents`, `unsigned char *colors`, `unsigned short *indices`) and
+  `unsigned int *vboId` (371, "Vertex Buffer Objects id (default vertex data)", **plural**: one VBO per attribute) — so the
+  caller-owned upload struct the handle-currency decision already fixes (`xud_upload_mesh(...)` takes it) arrives in the form
+  the streams want: no de-interleave step, one staging copy per stream. Consequences, all load-bearing: the dynamic batch becomes
+  **N stream buffers + one index buffer** (the allocator's suballocation handles the count, no new mechanism), the batch's
+  pure-half invariant is "every stream holds the same vertex count" — headless-testable by construction — a pipeline/material
+  change flushes per stream, and an attribute set can grow (tangents, bone indices/weights, the second uv set raylib's `Mesh`
+  carries) without re-laying-out a fixed-size vertex: each new attribute is one more binding gated on the caps'
+  `maxVertexInputBindings`. **Driver facts, probed today** (scratch program linked against `build/libxud.a`, loader → instance
+  → physical, deleted after running; identical with the validation layer on and off): `maxVertexInputAttributes` **29**,
+  `maxVertexInputBindings` **33**, `maxVertexInputAttributeOffset` 2047, `maxVertexInputBindingStride` 4095, `maxPushConstantsSize`
+  **256**. Those **do not match** the numbers the S5.4 driver note records (128 push constants, 32 attributes, `deviceID` 0x400,
+  name "Intel Iris Graphics … (TigerLake-LP GT2 …)") while `vendorID` 32902 = 0x8086 and `apiVersion` 4211042 do match — today's
+  device says `deviceID` 39497 and "Intel(R) Iris(R) Xe Graphics (TGL GT2)", i.e. the machine's Vulkan driver moved since
+  2026-10-18, so the limits a step reads come **from the caps**, never from that note's numbers. Headroom here: 33 bindings
+  against today's 4, so the attribute set can grow without a driver refusal. **No ECS at this level**: the CPU-side records stay
+  one plain struct per object kind inside its slot (`XudMeshRecord`, `XudTextureRecord`, …), not an archetype/component registry —
+  the per-kind slot arrays the handle-currency decision already fixes are the only arrays the library owns and are what an
+  iteration-friendly pass would walk. An ECS storage layer in C11 would be a subsystem (sparse sets, archetype storage, system
+  registration, storage migration) the raylib-shaped public API cannot express and no test here would exercise, and it buys
+  nothing the SoA streams have not already bought. **Not in the tree yet**: no vertex stream, no batch, no
+  `VkPipelineVertexInputStateCreateInfo` — this is a decision the batch/shapes steps write against, not code.
 
 ## Open design decisions (ask, don't assume)
 
 - **Model format**: glTF 2.0 via vendored cgltf (raylib does exactly this) vs a minimal `.glb` reader of our own.
 - **Audio backend**: vendor miniaudio (raylib's `raudio` does) vs no audio yet.
 - **Text/font**: bitmap-font atlas of our own vs vendored `stb_truetype`/fontstash.
-- **Data layout**: AoS vertex (sketched above) vs SoA/GPU-driven; ECS or plain structs.
