@@ -165,7 +165,7 @@ Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers a
 - Names: `xudPascalCaseOrNot` — concretely: **functions `xudSnakeCase`** (`xud_init_window`, `xud_draw_cube`), **types `PascalCase`** (`XudWindow`, `XudCamera3D`), **macros/constants `XUD_SNAKE_UPPER`** (`XUD_MAX_LIGHTS`). No Hungarian prefixes.
 - Every public function returns an error code (`XudResult`) or fills an out-param; **nothing is silently ignored**.
 - One `XudContext` owns instance/device/swapchain/allocator. Callers never hold a `VkDevice`, `VkSwapchainKHR`, or raw `VkBuffer`.
-- Opaque handles = `{ uint32_t index; uint32_t generation; }` validated against a slot array. Stale handles must be caught, not UB. **Decided 2026-10-23**: this is the currency the **public** API hands out — raylib's pointer/GL-id-in-a-struct form is not adopted (see *Settled decisions*).
+- Opaque handles = `{ uint32_t index; uint32_t generation; uint32_t kind; }` validated against a slot array. Stale handles must be caught, not UB. **Decided 2026-10-23**: this is the currency the **public** API hands out — raylib's pointer/GL-id-in-a-struct form is not adopted, and the `kind` tag is what makes cross-kind misuse a caught runtime error rather than a layout coincidence (see *Settled decisions*).
 - Cleanup idiom: `goto fail;` ladder in init paths, one `xud_close_*()` teardown; every partial-failure path must leak nothing.
 - No global mutable state except the single library context pointer; multiple windows must work.
 - `#include` guard `XUD_<FILE>_H_`; file-top comment stating what the file owns and which layer it belongs to.
@@ -371,7 +371,7 @@ GPU memory: one block allocator, ours, over the caps' recorded memory rows — `
   `{ unsigned int id; int *locs; }`; and `LoadMaterials` (1653) returns a raw `Material *` array. Ownership and lifetime
   are invisible to the caller, and the GL id fields have **no Vulkan counterpart** — that shape is a fixed-function-era
   artifact, exactly what the "no OpenGL, no state machine" rule refuses.
-  **The decision**: the public API hands out the house-style opaque handle — `{ uint32_t index; uint32_t generation; }`
+  **The decision**: the public API hands out one handle type — `{ uint32_t index; uint32_t generation; uint32_t kind; }` —
   validated against a **per-kind slot array** (textures, fonts, meshes, materials, models, and audio streams when audio
   lands), each record holding the Vulkan handles and the caps-gated variant info. Consequences, all of them load-bearing:
   creation functions **fill an out-param handle and return `XudResult`** (the house rule) and nothing returns a library-owned
@@ -390,9 +390,22 @@ GPU memory: one block allocator, ours, over the caps' recorded memory rows — `
   per the existing rule that callers never hold a `VkDevice`, `VkSwapchainKHR`, or raw `VkBuffer`; the public handle is the
   index+generation pair. **Not in the tree yet**: `xud.h` today exposes only `XudContext**` + `XudResult` (no object handle
   exists), and no slot array exists — the handle type and its slot arrays land with the first GPU-object API (textures/fonts/models),
-  and the pure half (slot allocation, generation bump, stale-handle rejection) is headless-testable by construction. Whether the
-  handle also carries a **kind tag** — so a texture handle passed where a model is expected is caught rather than accepted on a
-  layout coincidence, since C structs with identical layout are interchangeable — is still open (see `todo.md` *Blocked*).
+  and the pure half (slot allocation, generation bump, stale-handle rejection) is headless-testable by construction.
+  **The handle carries a kind tag** (decided the same day): `typedef struct XudHandle { uint32_t index; uint32_t generation;
+  uint32_t kind; } XudHandle;` — 12 bytes, no padding, `static_assert(sizeof(XudHandle) == 12u, "...")` (message-carrying form
+  required: clang 22 rejects a message-less `static_assert` under these flags, see *Verified loader bring-up*). There is **one**
+  handle type for every object kind, because the tag is what distinguishes kinds — the compiler can no longer catch a cross-kind
+  mix-up (all kinds share the type), the runtime check does, exactly and cheaply. Validation at every public entry point is the
+  three-part test in that order — `index < slots[kind].count`, then `generation` equality, then `kind` equality — and any failure
+  answers `XUD_INVALID_ARG`, the existing `XudResult` code for a bad argument (`xud.h` 83–91). The tag is **not** redundant with
+  the array identity: it is what makes the check exact, since a texture handle's `(index, generation)` pair could otherwise match
+  a live model slot by coincidence. `XUD_HANDLE_KIND_NONE = 0u` is never stored in a live slot, so a **zero-initialised** handle —
+  the state a caller gets when it ignores the `XudResult` of the create call — is rejected by the tag compare before any array
+  lookup happens. Kind values are `XUD_HANDLE_KIND_TEXTURE`/`FONT`/`MESH`/`MATERIAL`/`MODEL` (+ `AUDIOSTREAM` when audio lands,
+  extended whenever a new caller-addressable kind lands); the library-owned objects callers never name (batch VB/IB, per-frame
+  ring, swapchain images, pipelines, descriptor sets) stay tag-less. Constant naming follows the layer convention already in the
+  tree (`XUD_DEVICE_QUEUE_MAX_COUNT 2u` at `xud_device.h` 92, `XUD_DEVICE_MAX_DEVICE_EXTENSIONS 8u` at 110, both guarded by
+  message-carrying `static_assert`s at 128/131).
 
 ## Open design decisions (ask, don't assume)
 

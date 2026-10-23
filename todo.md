@@ -30,8 +30,10 @@ step, just move it, so the active tracker stays short and the log stays complete
     below): SPIR-V built by `glslangValidator`, one graphics pipeline, one command buffer, one render pass + one
     framebuffer per image, acquire/submit/present with semaphores + per-image fence; `vkGetDeviceProcAddr` becomes a
     loader slot here (everything below the device resolves through it, not through the instance)
-- [ ] Handle layer: the `{ uint32_t index; uint32_t generation; }` handle type + per-kind slot arrays (textures, fonts,
-    meshes, materials, models) — slot allocation, generation bump on reuse, stale-handle rejection; the pure half is
+- [ ] Handle layer: the one `XudHandle` type — `{ uint32_t index; uint32_t generation; uint32_t kind; }` (12 B, no padding,
+    `static_assert(sizeof == 12u, "…")`) + per-kind slot arrays (textures, fonts, meshes, materials, models) + the `XUD_HANDLE_KIND_*`
+    tag (`XUD_HANDLE_KIND_NONE = 0u` never stored in a live slot) + validation in order index-bounds → generation → kind, failure
+    `XUD_INVALID_ARG`; slot allocation, generation bump on reuse, stale-handle rejection and cross-kind rejection; the pure half is
     headless-testable by construction, the Vulkan handles stay inside the slot records (decided 2026-10-23, see Decided below)
 - [ ] Test scaffolding hardened: headless pure-logic tests green by default, GPU tests opt-in via `XUD_GPU_TESTS=1`,
     validation-layer output treated as a failure signal
@@ -70,6 +72,22 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Decided since then
 
+- 2026-10-23 — **Public API handle carries a kind tag** (settled the same day, amends the handle entry below).
+  Layout: `typedef struct XudHandle { uint32_t index; uint32_t generation; uint32_t kind; } XudHandle;` — 12 bytes, no padding,
+  `static_assert(sizeof(XudHandle) == 12u, "…")` (message-carrying form required — clang 22 rejects a message-less `static_assert`
+  under `-std=c11 -Wall -Wextra -Wpedantic -Werror`, see AGENTS.md *Verified loader bring-up*). **One handle type for every kind**:
+  the tag, not the C type, is what distinguishes kinds, so a cross-kind mix-up stops being a compile-time type mismatch and becomes
+  a **caught runtime error** — exact and cheap. Validation at every public entry point, in this order: `index < slots[kind].count`
+  → `generation` equality → `kind` equality; any failure answers `XUD_INVALID_ARG` (the existing `XudResult` code for a bad argument,
+  `xud.h` 83–91). The tag is **not** redundant with the array identity — it is what makes the check exact, since a texture handle's
+  `(index, generation)` pair could otherwise match a live model slot by coincidence. `XUD_HANDLE_KIND_NONE = 0u` is never stored in
+  a live slot, so a **zero-initialised** handle (what a caller holds when it ignores the create call's `XudResult`) is rejected by the
+  tag compare before any array lookup happens. Kind values: `XUD_HANDLE_KIND_TEXTURE`/`FONT`/`MESH`/`MATERIAL`/`MODEL` (+ `AUDIOSTREAM`
+  when audio lands, extended whenever a new caller-addressable kind lands); library-owned objects callers never name (batch VB/IB,
+  per-frame ring, swapchain images, pipelines, descriptor sets) stay tag-less. Constant naming follows the layer convention already in
+  the tree (`XUD_DEVICE_QUEUE_MAX_COUNT 2u` at `xud_device.h` 92, `XUD_DEVICE_MAX_DEVICE_EXTENSIONS 8u` at 110, both guarded by
+  message-carrying `static_assert`s at 128/131). **Not in the tree yet**: no `XudHandle`, no `XUD_HANDLE_KIND_*`, no slot array exists —
+  that is the `Next` "Handle layer" item above.
 - 2026-10-23 — **Public API currency → index+generation slot handles, not raylib-style pointers**.
   **What raylib does** (re-read today in `reference/raylib/raylib.h`, 6.2): its public types are value structs that embed
   driver names and own sub-objects through pointer arrays — `Texture` (273–279) is `{ unsigned int id; int width, height,
@@ -96,7 +114,7 @@ step, just move it, so the active tracker stays short and the log stays complete
   slot records (the existing rule:
   callers never hold a `VkDevice`, `VkSwapchainKHR`, or raw `VkBuffer`). **Not in the tree yet**: `xud.h` exposes only
   `XudContext**` + `XudResult` today, no handle type and no slot array exists — that is the `Next` item above, and the open
-  sub-question (kind tag in the handle vs naming discipline) is in *Blocked*.
+  sub-question (kind tag in the handle vs naming discipline) was settled the same day — see the entry above.
 - 2026-10-23 — **GLFW backend → Wayland** and **vendored material → committed with its license files**.
   **Wayland**: `GLFW_BUILD_WAYLAND` (glfw/CMakeLists.txt 30, `cmake_dependent_option` ON for `UNIX;NOT APPLE`; the removed
   `GLFW_USE_WAYLAND` switch is a hard error on a stale cache at line 24) → `-D_GLFW_WAYLAND` (glfw/src/CMakeLists.txt 54–55),
@@ -191,9 +209,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
 - Audio: vendor miniaudio vs no audio (ask)
 - Text/font: own bitmap atlas vs vendored `stb_truetype`/fontstash (ask)
-- Public API handle **kind tag**: the handle is `{ index, generation }` (decided 2026-10-23), but C structs with identical
-    layout are interchangeable, so a texture handle passed where a model is expected is accepted on a layout coincidence —
-    add a kind tag to the handle (and validate it) or rely on naming discipline? (ask)
 
 ## Completed
 
