@@ -134,6 +134,7 @@ says `GLFW_VERSION_MAJOR/MINOR/REVISION` 3/5/1, the same version as the system c
 | Build everything | `ninja -C build` |
 | Build one example | `ninja -C build <target>` |
 | Syntax/lint check (fast, no codegen) | `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror -I src/xud src/xud/*.c` |
+| Format sources | `./scripts/format.sh` (clang-format over `src/xud tests examples` only — never `src/external/`, never a bare `src`); `./scripts/format.sh --check` is the form that can gate a commit |
 | Unit tests (headless) | `./build/xud_test` |
 | GPU tests | `XUD_GPU_TESTS=1 ./build/xud_test` |
 | Sanitizer build | `cmake -B build-san -G Ninja -DXUD_SANITIZERS=ON` then `./build-san/xud_test` (adds `-fsanitize=address,undefined`) |
