@@ -5,12 +5,15 @@
  *   Owns : instance bring-up. The pure parts (application info, extension selection, create-info
  *          assembly) are separate functions so the headless test run can cover them with no
  *          driver present; the driver parts are vkEnumerateInstanceExtensionProperties, vkCreate
- *          Instance and vkDestroyInstance, every one of them called through a PFN slot of the
- *          loader's table - this file never names a vk* function directly. The one exception is
- *          vkDestroyDebugUtilsMessengerEXT, which teardown calls through xud_loader_resolve() into
- *          a local: the diagnostics layer's messenger must die through the VkInstance that owns it,
- *          while that instance is still alive, and a resolve cached in a table slot would be stale
- *          across an instance recreation (see xud_loader.h for the same rule).
+ *          Instance and vkDestroyInstance, every one of them called through a row of the loader's
+ *          table pair - this file never names a vk* function directly. vkEnumerateInstanceExtens
+ *          ionProperties and vkCreateInstance are the loader-level rows xud_loader_open() copies
+ *          into XudLoader (no handle in hand); vkDestroyInstance and the diagnostics layer's mess
+ *          enger pair are rows of struct VolkInstanceTable, which xud_loader_bind_instance() fills
+ *          in bulk once this layer has a VkInstance. The pair is no longer resolved on demand int
+ *          o a local: the rule xud_loader.h used to state - a resolve cached across an instance r
+ *          ecreation would be stale - is now enforced by the bind being a rung, because re-bindin
+ *          g the instance overwrites every row of the table it filled for the old one.
  *   Layer: above the loader, below the physical device. Verified against lavvk here (2026-10-16):
  *          26 instance-level extensions advertised, all three wanted ones present, and vkCreate
  *          Instance at apiVersion 1.0 with those three enabled returns VK_SUCCESS.
@@ -27,8 +30,10 @@
 #include <stdlib.h> /* Required for: calloc, free */
 #include <string.h> /* Required for: memcpy, memcpy-based comparison (xud_name_equal) */
 
-/* The slots this layer binds through xud_loader_bind() must be pointer-sized, the same rule
-   xud_loader.c checks for the global-level slots (xud_pfn_copy moves one word). */
+/* The rows this layer calls through must be pointer-sized, the same rule xud_loader.h checks
+   for the table pair as a whole. Volk's rows are PFN typedefs, so this is a property of the
+   headers rather than of a copy that moves one word - the hand-rolled bring-up this replaced
+   had a word-moving helper to check against, Volk has nothing here to move. */
 static_assert(sizeof(PFN_vkCreateInstance) == sizeof(void*), "PFN slot must be pointer-sized");
 static_assert(sizeof(PFN_vkDestroyInstance) == sizeof(void*), "PFN slot must be pointer-sized");
 static_assert(sizeof(PFN_vkEnumerateInstanceExtensionProperties) == sizeof(void*),
@@ -88,8 +93,9 @@ static_assert(XUD_INSTANCE_WANTED_COUNT + XUD_DIAGNOSTICS_WANTED_MAX <= XUD_MAX_
    while writing more than the capacity is the same shape - its count is a lie, so the array
    may be short - and retries the same way; success is only ever claimed for a list the driver
    said fits.
-   The slot is guaranteed by the loader contract (xud_loader_open fills the global-level slots);
-   a NULL slot means the loader is not open, which is XUD_UNSUPPORTED, not a bind. */
+   The row is guaranteed by the loader contract (xud_loader_open copies the three loader-level
+   rows and refuses a loader that does not answer all three); a NULL row means the loader is n
+   ot open, which is XUD_UNSUPPORTED, not a bind. */
 static XudResult xud_instance_query_extensions(
     const XudLoader* loader, VkExtensionProperties** outProperties, uint32_t* outCount) {
     VkExtensionProperties* items = NULL;
@@ -371,11 +377,11 @@ XudResult xud_instance_create(
     if (result != XUD_OK)
         goto fail;
 
-    /* vkCreateInstance is a global-level command: the loader answers for it with no handle in
-       hand, so binding it into the table is the same shape as loader bring-up used. */
-    result = xud_loader_bind(loader, VK_NULL_HANDLE, "vkCreateInstance", &loader->createInstance);
-    if (result != XUD_OK)
-        goto fail;
+    /* vkCreateInstance is a loader-level command: xud_loader_open() copied the row into the
+       per-context struct when it checked the three loader-level names, so there is nothing to
+       bind here and the check below is the contract's nil-row rule rather than a second opinion
+       about a bind. XUD_INTERNAL_ERROR, not XUD_UNSUPPORTED: the loader said it was open, and a
+       loader that is open without this row is broken. */
     if (loader->createInstance == NULL) {
         result = XUD_INTERNAL_ERROR;
         goto fail;
@@ -385,6 +391,24 @@ XudResult xud_instance_create(
     result = xud_result_from_vk(vk);
     if (result != XUD_OK)
         goto fail;
+
+    /* The instance-level table, filled in bulk now that the instance exists: volkLoadInstanceT
+       able resolves every row through vkGetInstanceProcAddr(instance, name), so a row can only
+       name a layer this instance instantiated - which is what makes the bind a rung instead of
+       a lookup per call, and what makes the diagnostics layer's messenger pair and the physic
+       al layer's seven queries answerable at all. It is filled before the messenger pair is us
+       ed (xud_diagnostics_create_messenger runs one rung up the stack, after this call return
+       s) and before the physical layer reads its rows. */
+    result = xud_loader_bind_instance(loader, instance->instance);
+    if (result != XUD_OK) {
+        /* Unreachable while the loader is open and the handle is live: the three arguments bi
+           nd_instance checks are exactly the three this function established above. If it ever
+           does answer, the instance leaks and the reason travels - the rows it failed to fill
+           are what every layer above needs to call anything, and xud_instance_destroy() can on
+           ly destroy through those same rows, so there is no teardown path from here. AGENTS.m
+           d's "nothing is silently ignored" is satisfied by the code travelling out. */
+        goto fail;
+    }
 
     *outInstance = instance;
     /* The advertised list was a query result: the selection was already copied into the
@@ -407,23 +431,22 @@ fail:
 
 /* Internal: destroy the diagnostics layer's messenger through a VkInstance that is still alive,
    then clear the struct's own handles so a later xud_diagnostics_close() frees the struct exactly
-   once and never calls through a messenger that is gone. The entry point is resolved here, into a
-   local, rather than cached in a slot of the loader's table: vkGetInstanceProcAddr answers NULL for
-   it unless VK_EXT_debug_utils is enabled on the instance in hand, and a resolve cached across an
-   instance recreation would be a stale pointer into a layer that is gone (xud_loader.h says the
-   same for the diagnostics layer). */
+   once and never calls through a messenger that is gone. The entry point is a row of the loader's
+   instance-level table: vkGetInstanceProcAddr answers NULL for it unless VK_EXT_debug_utils is e
+   nabled on the instance in hand, so the row is NULL here on such an instance and XUD_UNSUPPOR
+   TED is the honest answer. It is no longer resolved into a local on each call - the staleness
+   rule xud_loader.h used to state (a resolve cached across an instance recreation would be a
+   stale pointer into a layer that is gone) is now enforced by the bind being a rung, because x
+   ud_loader_bind_instance() overwrites every row of the table when the instance is re-created.
+   */
 static XudResult xud_instance_close_messenger(
     const XudLoader* loader, VkInstance instance, XudDiagnostics* diagnostics) {
-    XudPfnBits bits;
-    XudResult result;
+    if (!xud_loader_instance_bound(loader, instance))
+        return XUD_UNSUPPORTED; /* no rows resolved for any instance, so nothing can be called */
+    if (loader->instanceTable.vkDestroyDebugUtilsMessengerEXT == NULL)
+        return XUD_UNSUPPORTED; /* this instance has no log side - the check-before-you-use rule */
 
-    result = xud_loader_resolve(loader, instance, "vkDestroyDebugUtilsMessengerEXT", &bits);
-    if (result != XUD_OK)
-        return result;
-    if (bits.function == NULL)
-        return XUD_INTERNAL_ERROR;
-
-    ((PFN_vkDestroyDebugUtilsMessengerEXT)bits.function)(instance, diagnostics->messenger, NULL);
+    loader->instanceTable.vkDestroyDebugUtilsMessengerEXT(instance, diagnostics->messenger, NULL);
     diagnostics->messenger = VK_NULL_HANDLE;
     diagnostics->instance = VK_NULL_HANDLE;
     return XUD_OK;
@@ -437,6 +460,20 @@ XudResult xud_instance_destroy(
         return XUD_INVALID_ARG;
     if (*instance == NULL)
         return XUD_ALREADY;
+
+    /* The rows this rung reads below belong to the instance the loader was last bound to. When
+       a loader is asked to free an instance it did not create last - a second instance on the sa
+       me loader, which xud_close_context() never does but a caller can - the table holds the row
+       s of the other one, so this rung re-binds for the handle in hand first and tears down thr
+       ough rows of the instance it is freeing. The re-bind clears a device table that belonged t
+       o the other instance: no device of THIS instance can be alive here, because the layer abov
+       e destroys a device before the instance that owns it (xud_close_context's order). */
+    if (((*instance)->instance != VK_NULL_HANDLE)
+        && !xud_loader_instance_bound(loader, (*instance)->instance)) {
+        result = xud_loader_bind_instance(loader, (*instance)->instance);
+        if (result != XUD_OK)
+            return result;
+    }
 
     /* Messenger first, and through the instance that is about to go away:
        vkDestroyDebugUtilsMessengerEXT takes the owning VkInstance and the extension requires that
@@ -462,21 +499,17 @@ XudResult xud_instance_destroy(
         return XUD_OK;
     }
 
-    /* vkDestroyInstance is an instance-level command: vkGetInstanceProcAddr answers NULL for it
-       while no instance exists (verified here), so it is resolved here, through the instance
-       being freed, and cached in the loader's table for the next context. If the loader cannot
-       resolve it the instance leaks and that is returned - a loader that cannot destroy what it
-       created is broken, and this layer does not paper over that. */
-    if (loader->destroyInstance == NULL) {
-        result = xud_loader_bind(
-            loader, (*instance)->instance, "vkDestroyInstance", &loader->destroyInstance);
-        if (result != XUD_OK)
-            return result;
-    }
-    if (loader->destroyInstance == NULL)
+    /* vkDestroyInstance is an instance-level command, so its row belongs to the table xud_loade
+       r_bind_instance filled for the instance that exists now: vkGetInstanceProcAddr answered N
+       ULL for it while no instance existed, and it still answers for the instance being freed. T
+       he re-bind above made that true of this instance, so a NULL row here is not a driver that
+       declined the command (vkDestroyInstance is core, it always answers) but a loader that is b
+       roken, and the instance leaks with the reason travelling out - a loader that cannot destro
+       y what it created is broken, and this layer does not paper over that. */
+    if (loader->instanceTable.vkDestroyInstance == NULL)
         return XUD_INTERNAL_ERROR;
 
-    loader->destroyInstance((*instance)->instance, NULL);
+    loader->instanceTable.vkDestroyInstance((*instance)->instance, NULL);
     (*instance)->instance = VK_NULL_HANDLE;
     free(*instance);
     *instance = NULL;

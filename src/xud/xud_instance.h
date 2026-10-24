@@ -7,11 +7,14 @@
  *          assembly), and the two driver calls that create/destroy the instance. It borrows the
  *          diagnostics layer's answer (xud_diagnostics.h) for the validation layers, the
  *          validation-feature request and the pNext chain - it does not own those.
- *   Layer: above the loader - every Vulkan call here goes through a PFN slot of XudLoader -
- *          and below the physical device (which resolves through the instance this layer
- *          fills) and the swapchain. Sees <vulkan/vulkan.h> for declarations only; no Vulkan
- *          symbol is linked (AGENTS.md: there is no -lvulkan anywhere in the build).
- *          Internal like xud_loader.h: tests may include it, user code must not.
+ *   Layer: above the loader - every Vulkan call here goes through a row of the loader's Volk
+ *          tables (struct VolkInstanceTable, filled in bulk by xud_loader_bind_instance once thi
+ *          s layer has a VkInstance) - and below the physical device (which resolves through th
+ *          e instance this layer fills) and the swapchain. Sees volk.h (VK_NO_PROTOTYPES, whic
+ *          h must come before the Vulkan header) and <vulkan/vulkan.h> for declarations only; n
+ *          o Vulkan symbol is linked (AGENTS.md: there is no -lvulkan anywhere in the build, an
+ *          d under VK_NO_PROTOTYPES volk.h turns that rule into a link-time fact). Internal lik
+ *          e xud_loader.h: tests may include it, user code must not.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
@@ -19,6 +22,7 @@
 #ifndef XUD_XUD_INSTANCE_H_
 #define XUD_XUD_INSTANCE_H_
 
+#include "volk.h" /* Required for: VK_NO_PROTOTYPES - must precede <vulkan/vulkan.h>, see xud_loader.h */
 #include "xud.h"
 #include "xud_diagnostics.h"
 #include "xud_loader.h"

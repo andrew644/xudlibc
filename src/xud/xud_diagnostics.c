@@ -10,10 +10,15 @@
  *          and vkDestroyDebugUtilsMessengerEXT, every one of them reached through the loader's
  *          table - this file never names a vk* function directly either.
  *   Layer: internal, above the loader and beside the instance. The two messenger entry points are
- *          resolved on demand through a live VkInstance (xud_loader_resolve), never cached in a
- *          slot: vkGetInstanceProcAddr answers NULL for them unless VK_EXT_debug_utils is enabled
- *          on the instance in hand, and a resolve cached across an instance recreation would be a
- *          stale pointer into a layer that is gone.
+ *          rows of the loader's struct VolkInstanceTable: vkGetInstanceProcAddr answers NULL for
+ *          them unless VK_EXT_debug_utils is enabled on the instance in hand, so the row is NULL
+ *          here on such an instance and XUD_UNSUPPORTED is the honest answer. They are no longer
+ *          resolved on demand into a local and never cached in a per-name slot - the staleness r
+ *          ule xud_loader.h used to state (a resolve cached across an instance recreation would b
+ *          e a stale pointer into a layer that is gone) is now enforced by the bind being a rung:
+ *          xud_loader_bind_instance() overwrites every row of the table, and xud_loader_instance_
+ *          bound() names the instance the rows belong to, so a handle kept across a recreation f
+ *          ails the check before any row is read.
  *   Verified against lavvk + the Khronos validation layer here (2026-10-16): three instance layers
  *   advertised, vkEnumerateInstanceLayerProperties answers 3 with no handle in hand; 26
  * instance-level extensions advertised, VK_EXT_debug_utils among them and
@@ -41,8 +46,15 @@
 #include <stdlib.h> /* Required for: calloc, free */
 #include <string.h> /* Required for: memcpy, memcpy-based comparison (xud_name_equal) */
 
-/* The two names this layer resolves on demand must be pointer-sized, the same rule every other
-   layer checks for the slots it fills - xud_loader_resolve hands back one pointer-sized word. */
+/* The two messenger rows this layer calls through must be pointer-sized, the same rule xud_loa
+   der.h checks for the table pair as a whole. The rule used to be about a resolve that handed ba
+   ck one pointer-sized word; Volk's rows are PFN typedefs, so it is a property of the headers. T
+   he 2026-10-16 note that followed - VK_EXT_debug_utils is among the 26 instance-level extension
+   s lavvk advertises, so the pair answers non-NULL through the instance xud_instance.c creates,
+   and vkDestroyDebugUtilsMessengerEXT takes three arguments in these headers and the owning VkIn
+   stance must still be alive at the call, which is why xud_close_context() destroys the messenge
+   r inside xud_instance_destroy() before the instance goes away - is a fact about the headers an
+   d the driver, not about the loader, and still holds. */
 static_assert(sizeof(PFN_vkCreateDebugUtilsMessengerEXT) == sizeof(void*),
     "messenger PFN must be pointer-sized");
 static_assert(sizeof(PFN_vkDestroyDebugUtilsMessengerEXT) == sizeof(void*),
@@ -297,7 +309,6 @@ XudResult xud_diagnostics_open(XudDiagnostics** outDiagnostics, XudLoader* loade
 
 XudResult xud_diagnostics_create_messenger(
     XudDiagnostics* diagnostics, XudLoader* loader, VkInstance instance) {
-    XudPfnBits bits;
     VkDebugUtilsMessengerEXT messenger = VK_NULL_HANDLE;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk;
@@ -309,18 +320,20 @@ XudResult xud_diagnostics_create_messenger(
     if (diagnostics->messenger != VK_NULL_HANDLE)
         return XUD_ALREADY;
 
-    /* Resolved here, through the instance that owns it, immediately before the call: vkGetInst
-    anceProcAddr answers NULL for this name unless VK_EXT_debug_utils is enabled on that instance,
-    so XUD_UNSUPPORTED is the honest answer for "this instance has no log side" and the caller
-    decides whether that is fatal. Nothing is cached in the loader's table (see the file-top note).
-  */
-    result = xud_loader_resolve(loader, instance, "vkCreateDebugUtilsMessengerEXT", &bits);
-    if ((result != XUD_OK) || (bits.function == NULL)) {
-        diagnostics->instance = VK_NULL_HANDLE;
-        return (result != XUD_OK) ? result : XUD_INTERNAL_ERROR;
-    }
+    /* The row belongs to the instance-level table xud_loader_bind_instance filled for the instan
+       ce in hand - the check names the instance so a table filled for another one cannot be cal
+       led through here. vkGetInstanceProcAddr answers NULL for this name unless VK_EXT_debug_u
+       tils is enabled on that instance, so the row is NULL here on such an instance and XUD_UNS
+       UPPORTED is the honest answer for "this instance has no log side" - the caller decides wh
+       ether that is fatal (xud_init_context() says no: the validation layers still print their o
+       wnut, only our counting callback is missing). Nothing is resolved per call any more; the r
+       ule xud_loader.h used to state about caching is enforced by the bind being a rung. */
+    if (!xud_loader_instance_bound(loader, instance))
+        return XUD_UNSUPPORTED;
+    if (loader->instanceTable.vkCreateDebugUtilsMessengerEXT == NULL)
+        return XUD_UNSUPPORTED;
 
-    vk = ((PFN_vkCreateDebugUtilsMessengerEXT)bits.function)(
+    vk = loader->instanceTable.vkCreateDebugUtilsMessengerEXT(
         instance, &diagnostics->messengerCreateInfo, NULL, &messenger);
     result = xud_result_from_vk(vk);
     if (result != XUD_OK) {
@@ -335,8 +348,6 @@ XudResult xud_diagnostics_create_messenger(
 
 XudResult xud_diagnostics_close(XudDiagnostics** diagnostics, XudLoader* loader) {
     XudDiagnostics* victim = NULL;
-    XudPfnBits bits;
-    XudResult result = XUD_INVALID_ARG;
 
     if ((diagnostics == NULL) || (loader == NULL))
         return XUD_INVALID_ARG;
@@ -356,19 +367,23 @@ XudResult xud_diagnostics_close(XudDiagnostics** diagnostics, XudLoader* loader)
     if (victim->instance == VK_NULL_HANDLE)
         return XUD_INVALID_ARG; /* a messenger without its owning instance cannot be destroyed */
 
-    /* The extension's own rule: destroying the messenger takes the VkInstance it belongs to, so
-       this runs while that instance is still alive - xud_close_context() orders it that way.
-       Resolved through that instance, immediately before the call, for the same reason create
-       resolves it: a loader that cannot destroy what it created is broken, and this layer does
-       not paper over that, so the struct leaks and the reason is returned. */
-    result = xud_loader_resolve(loader, victim->instance, "vkDestroyDebugUtilsMessengerEXT", &bits);
-    if ((result != XUD_OK) || (bits.function == NULL))
-        return (result != XUD_OK) ? result : XUD_INTERNAL_ERROR;
+    /* The extension owns the rule this one follows: destroying the messenger takes the VkInstan
+       ce it belongs to, so this runs while that instance is still alive - xud_close_context() o
+       rders it that way. The row is looked up for that same instance, which is what xud_loader_i
+       nstance_bound() checks: a messenger whose owning instance is no longer the one the table w
+       as resolved for cannot be destroyed through rows of a layer that is gone, and this layer d
+       oes not paper over that, so the struct leaks and the reason is returned. */
+    if (!xud_loader_instance_bound(loader, victim->instance))
+        return XUD_UNSUPPORTED;
+    if (loader->instanceTable.vkDestroyDebugUtilsMessengerEXT == NULL)
+        return XUD_UNSUPPORTED;
 
     /* Three arguments, not two: PFN_vkDestroyDebugUtilsMessengerEXT is
        (VkInstance, VkDebugUtilsMessengerEXT, const VkAllocationCallbacks *) in these headers, and
-       pAllocator NULL means the default allocator - the same one the create call above passes. */
-    ((PFN_vkDestroyDebugUtilsMessengerEXT)bits.function)(victim->instance, victim->messenger, NULL);
+       pAllocator NULL means the default allocator - the same one the create call above passes.
+       It returns void, so there is no VkResult for xud_result_from_vk to map. */
+    loader->instanceTable.vkDestroyDebugUtilsMessengerEXT(
+        victim->instance, victim->messenger, NULL);
     victim->messenger = VK_NULL_HANDLE;
     victim->instance = VK_NULL_HANDLE;
     free(victim);

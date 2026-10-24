@@ -16,19 +16,21 @@
  *          carries only what was verified" rule a property of the input type rather than a ch
  *          eck inside this layer - this layer cannot be handed a feature or a name the caps do
  *          not mention, because the only inputs it takes are the caps.
- *          Every Vulkan call the .c makes goes through a PFN slot of XudLoader (xud_loader.h)
- *          resolved through the live VkInstance handed in. The four names this layer calls (vkC
- *          reateDevice, vkDestroyDevice, vkGetDeviceQueue, vkDeviceWaitIdle) are already slots o
- *          f the table, and they are **instance-level**, not device-level: probed 2026-10-18 thr
- *          ough the instance xud_instance.c creates and through a bare one at apiVersion 1.0 with
- *          no extension and no layer, vkGetInstanceProcAddr answers non-NULL for all four, and N
- *          ULL for all four with VK_NULL_HANDLE in hand - which is why this layer needs an instan
- *          ce in hand and never a VkDevice to resolve through, and why the slots are cached rathe
- *          r than resolved a second time at teardown (they name the driver's own code, like every
- *          other name in the table except the messenger pair xud_loader.h refuses to cache). vkGe
- *          tDeviceProcAddr - the one name that does need the VkDevice itself - is not slotted and
- *          not called here: the layer above (the renderer) is what would resolve command-record
- *          entry points through it, and it will add that slot when it lands.
+ *          Every Vulkan call the .c makes goes through a row of the loader's struct VolkDeviceTa
+ *          ble (xud_loader.h), filled in bulk by xud_loader_bind_device once this layer has a Vk
+ *          Device. The four names this layer calls (vkCreateDevice, vkDestroyDevice, vkGetDevice
+ *          Queue, vkDeviceWaitIdle) are rows of that table, and they are still reached through t
+ *          he live VkInstance handed in: xud_loader_bind_device() fills the device table by resol
+ *          ving through vkGetDeviceProcAddr, and that entry point is *looked up* through the ins
+ *          tance - which is why Volk keeps it in struct VolkInstanceTable - so this layer still n
+ *          eeds an instance in hand and never a VkDevice to resolve through. Probed 2026-10-18 a
+ *          gainst the instance xud_instance.c creates and against a bare one at apiVersion 1.0 w
+ *          ith no extension and no layer: vkGetInstanceProcAddr answers non-NULL for all four an
+ *          d NULL for all four with VK_NULL_HANDLE in hand, which is the reason the four are rea
+ *          chable at all. vkGetDeviceProcAddr is now a row of the instance table and the one run
+ *          g the device table is filled through - the loader step that landed today hands it ove
+ *          r rather than leaving it for the renderer, which is still the layer that would resolv
+ *          e command-record entry points.
  *          Two header facts this layer's shape depends on, grepped in Vulkan-Headers 1.4.363 here
  *          (2026-10-18, no driver involved): PFN_vkCreateDevice (:4541) takes **four** arguments -
  *          the VkPhysicalDevice this layer was handed a handle for, the create-info, the allocator
@@ -48,6 +50,7 @@
 #ifndef XUD_XUD_DEVICE_H_
 #define XUD_XUD_DEVICE_H_
 
+#include "volk.h" /* Required for: VK_NO_PROTOTYPES - must precede <vulkan/vulkan.h>, see xud_loader.h */
 #include "xud.h"
 #include "xud_instance.h"
 #include "xud_loader.h"

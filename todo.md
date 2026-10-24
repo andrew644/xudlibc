@@ -6,10 +6,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] Loader rework onto **vendored Volk** (`src/external/volk.h` + `volk.c`, settled 2026-10-23): the 20-slot `XudLoader`
-    and `xud_loader_open`/`resolve`/`bind`/`is_open` are either kept as a thin wrapper over Volk's tables or dropped so the
-    layers call Volk's `extern PFN_vkXxx vkXxx;` pointers directly; `VK_NO_PROTOTYPES` include order (volk.h **before**
-    `<vulkan/vulkan.h>`, or define the macro first) lands here; the instance/physical/device layers move with it.
 - [ ] Build the **vendored GLFW** tree (`src/external/glfw`, 3.5.1) into the library on the **Wayland** backend (decided
     2026-10-23): `GLFW_BUILD_WAYLAND` → `-D_GLFW_WAYLAND`, protocol code generated from the 9 `deps/wayland/*.xml` by
     `wayland-scanner` (all requirements verified present here — see AGENTS.md *Toolchain*), exclude the win32/cocoa/macos/wgl/glx/egl/osmesa and `x11_*`/`xkb_unicode.c` halves, keep `-lglfw` off the link line.
@@ -248,9 +244,19 @@ step, just move it, so the active tracker stays short and the log stays complete
 See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-step notes (the long "Done as"
 detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
 whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
-the same day)**,
-and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry: **2026-10-18 — the
-device layer, both halves (S6), the layer landing in the archive**. Nothing is finished after that date.
+the same day)**, and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
+**2026-10-23 — S6.5, the loader rework onto vendored Volk** (the thin per-context wrapper over Volk's two
+tables, the `VK_NO_PROTOTYPES` include order, the four layers moved, `volk.c.o` in the archive). Nothing
+is finished after that.
+
+- 2026-10-23 — **S6.5 the loader rework onto vendored Volk** — see the *Steps complete (S6.5 …)* section
+    at the top of `todo_completed.md` for the full note: the 20-slot hand-maintained PFN table is gone, `XudLoader`
+    is now a thin per-context wrapper over Volk's `struct VolkInstanceTable` + `struct VolkDeviceTable` plus three
+    loader-level rows, `xud_loader_resolve`/`xud_loader_bind`/`XudPfnBits`/`XUD_LOADER_SLOT_COUNT` are gone, bound
+    state is handle equality (`xud_loader_instance_bound`/`xud_loader_device_bound`), `volk.h` comes before
+    `<vulkan/vulkan.h>` in every Vulkan-bearing TU, and `src/external/volk.c` is in the archive (8 objects) with
+    the link still Vulkan-free. Bar: headless **472/0**, GPU **623/0** validation-clean both ways, sanitizers
+    green, clang+gcc syntax-clean, `./scripts/format.sh --check` clean.
 
 - 2026-10-18 — **S6 the device layer** (`xud_device.h` + `xud_device.c`): `XudDevice`
 owns the `VkDevice` handle, the one `VkDeviceQueueCreateInfo` row built from the physical layer's chosen

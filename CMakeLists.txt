@@ -36,17 +36,30 @@ endif()
 # Library: one static archive, one public header, one TU per module
 #-------------------------------------------------------------------------------------
 
-# xud_loader.c dlopens the Vulkan ICD loader: dlopen/dlsym/dlclose come from libc, so
-# there is still no -lvulkan and no -ldl on any link line (verified with ldd + nm -u).
-# xud_vulkan.c, xud_instance.c, xud_diagnostics.c, xud_physical.c and xud_device.c are the layers above
-# it: shared VkResult/name vocabulary, vkCreateInstance/vkDestroyInstance, the diagnostics layer's vkEnu
-# merateInstanceLayerProperties + vkCreate/vkDestroyDebugUtilsMessengerEXT, the physical layer's vkEnumer
-# atePhysicalDevices + the three *2 caps getters + vkEnumerateDeviceExtensionProperties, and the device la
-# yer's vkCreateDevice/vkGetDeviceQueue/vkDeviceWaitIdle/vkDestroyDevice - every one of them reached only
-# through the loader's function-pointer table (the two messenger entry points resolved on demand through a
-# live VkInstance, never cached in a slot). Still no Vulkan symbol at link time: the archive holds no vk*
-# undefined symbol, and dlclose/dlopen/dlsym come from libc.
+# The loader rung is now vendored Volk (src/external/volk.c, see src/external/PROVENANCE.md):
+# volkInitialize() dlopen()s libvulkan.so.1 (RTLD_NOW|RTLD_LOCAL, volk.c 114 with a libvulkan.so
+# fallback at 116) and volkFinalize() dlclose()s it - dlopen/dlsym/dlclose come from libc, so there
+# is still no -lvulkan and no -ldl on any link line (verified with ldd + nm -u).
+# xud_loader.c is the per-context pair of Volk entry-point tables around it; xud_vulkan.c, xud_inst
+# ance.c, xud_diagnostics.c, xud_physical.c and xud_device.c are the layers above it: shared VkResu
+# lt/name vocabulary, vkCreateInstance/vkDestroyInstance, the diagnostics layer's vkEnumerateInsta
+# nceLayerProperties + vkCreate/vkDestroyDebugUtilsMessengerEXT, the physical layer's vkEnumerateP
+# hysicalDevices + the three *2 caps getters + vkEnumerateDeviceExtensionProperties, and the device
+# layer's vkCreateDevice/vkGetDeviceQueue/vkDeviceWaitIdle/vkDestroyDevice - every one of them rea
+# ched through a Volk table row (struct VolkInstanceTable filled in bulk by volkLoadInstanceTable,
+# struct VolkDeviceTable by volkLoadDeviceTable), never through a Vulkan call the linker could see.
+# Under VK_NO_PROTOTYPES volk.h declares every entry point as `extern PFN_vkXxx vkXxx;` - a data p
+# ointer, not a prototype - so "no Vulkan symbol at link time" is now a link-time fact: leaving vo
+# lk.c out of the link leaves those pointers undefined. Verified on this machine: the archive and
+# both executables hold no vk* undefined symbol and ldd lists no libvulkan.
+# src/external/volk.c is the vendored loader rung (upstream code, never edited in place - re-vend
+# or from upstream instead, see src/external/PROVENANCE.md). It is compiled in the same mode as th
+# e library's own TUs, which is what makes VK_NO_PROTOTYPES hold everywhere: volk.h defines the m
+# acro itself when <vulkan/vulkan.h> has not been seen yet, and errors when it has, so in every T
+# U volk.h comes before the Vulkan header (see xud_loader.h's include-order note) and src/external
+# has to be on the include path for that to resolve.
 add_library(xud STATIC
+    src/external/volk.c
     src/xud/xud_core.c
     src/xud/xud_diagnostics.c
     src/xud/xud_loader.c
@@ -58,6 +71,7 @@ add_library(xud STATIC
 
 target_include_directories(xud PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/xud"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/external"
 )
 
 #-------------------------------------------------------------------------------------

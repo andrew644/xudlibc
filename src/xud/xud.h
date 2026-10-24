@@ -105,12 +105,13 @@ const char* xud_result_name(XudResult result);
 
 typedef struct XudContext XudContext;
 
-/// True runtime query, not a build-time constant and not cached: dlopen the Vulkan loader
-/// and resolve its seed entry point. XUD_OK if the loader answers, XUD_UNSUPPORTED if the
-/// driver is absent or does not. Safe with no device present and no window open.
+/// True runtime query, not a build-time constant and not cached: volkInitialize() dlopens
+/// libvulkan.so.1 by name and resolves the loader-level entry points. XUD_OK if the loader
+/// answers all of them, XUD_UNSUPPORTED if the driver is absent or does not. Safe with no
+/// device present and no window open.
 XudResult xud_vulkan_supported(void);
 
-/// Create the library context for a width x height window: resolve the Vulkan loader, open the
+/// Create the library context for a width x height window: volkInitialize() the loader, open the
 /// diagnostics layer when XUD_VALIDATE asked for it, create the VkInstance, install the debug
 /// messenger, and open the physical layer (enumerate the devices, rank one, record its caps). On
 /// entry *outContext must be NULL; it is NULL on every failure path. The layers below the physic

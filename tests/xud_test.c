@@ -191,7 +191,7 @@ static void xud_test_init_arg_validation(void) {
         "every failure path must leave the out-param NULL");
 }
 
-/* The loader layer, unit-tested on its own: open, table contents, resolve, close. */
+/* The loader layer, unit-tested on its own: open, table contents, the two bind rungs, close. */
 static void xud_test_loader_table(void) {
     XudLoader* loader = NULL;
     const XudResult opened = xud_loader_open(&loader);
@@ -203,40 +203,51 @@ static void xud_test_loader_table(void) {
 
     xud_check(opened == XUD_OK, "loader/open-ok", "loader open must succeed or say unsupported");
     xud_check(loader != NULL, "loader/non-null-out", "loader out-param must be set");
-    xud_check(loader->library != NULL, "loader/handle-owned", "the dlopen handle must be owned");
+    xud_check(loader->open == true, "loader/open-flag", "an opened loader says it is open");
     xud_check(xud_loader_is_open(loader) == true, "loader/is-open", "an opened loader is open");
-    xud_check(loader->resolvedCount == XUD_LOADER_GLOBAL_SLOT_COUNT, "loader/table-populated",
-        "the populated-slot count must be the global-level count at step S2");
+    xud_check(loader->boundInstance == VK_NULL_HANDLE, "loader/no-instance-yet",
+        "no instance-level rows before an instance exists");
+    xud_check(loader->boundDevice == VK_NULL_HANDLE, "loader/no-device-yet",
+        "and no device-level rows before a device exists");
 
-    xud_check(
-        loader->getInstanceProcAddr != NULL, "loader/seed-resolved", "seed PFN must be resolved");
-    xud_check(loader->enumerateInstanceLayerProperties != NULL, "loader/global-slot",
-        "instance-layer PFN must be resolved");
-    xud_check(loader->enumerateInstanceExtensionProperties != NULL, "loader/global-slot",
-        "instance-extension PFN must be resolved");
+    /* The three loader-level rows: commands with no handle in hand, so volkInitialize() an-
+       swered them before xud_loader_open() accepted the loader. The count check that used to s
+       it in this test lives in the rung now, and this test reads the three rows it has to read.
+       vkGetInstanceProcAddr, the seed of the hand-rolled bring-up this replaced, is Volk's own
+       global and is not a row of this struct - nothing in xudlibc calls through it. */
+    xud_check(loader->createInstance != NULL, "loader/loader-row-create",
+        "the create row is resolved at loader open");
+    xud_check(loader->enumerateInstanceLayerProperties != NULL, "loader/loader-row-layers",
+        "instance-layer row must be resolved");
+    xud_check(loader->enumerateInstanceExtensionProperties != NULL, "loader/loader-row-exts",
+        "instance-extension row must be resolved");
 
-    /* Slots the later layers have not reached must still be NULL: opening the loader may not
-       claim what was not resolved. The instance layer binds createInstance/destroyInstance
-       later, when it creates an instance, not when the loader opens. */
-    xud_check(loader->createInstance == NULL, "loader/slot-null-at-open",
-        "instance-level slot must stay NULL at loader open");
-    xud_check(loader->createDevice == NULL, "loader/slot-null-at-open",
-        "device-level slot must stay NULL at loader open");
-    xud_check(loader->createSwapchainKHR == NULL, "loader/slot-null-at-open",
-        "swapchain slot must stay NULL at loader open");
-    xud_check(loader->destroySurfaceKHR == NULL, "loader/slot-null-at-open",
-        "surface teardown slot must stay NULL at loader open");
+    /* Both tables are still all-NULL: opening the loader may not claim what was not resolved t
+       hrough a handle. The instance layer fills the instance table at xud_loader_bind_instance,
+       the device layer fills the device table at xud_loader_bind_device - not here. */
+    xud_check(loader->instanceTable.vkDestroyInstance == NULL, "loader/instance-row-null-at-open",
+        "instance-level row must stay NULL at loader open");
+    xud_check(loader->instanceTable.vkCreateDevice == NULL, "loader/create-row-null-at-open",
+        "the create row is instance-level and stays NULL until the instance bind");
+    xud_check(loader->deviceTable.vkCreateSwapchainKHR == NULL, "loader/swapchain-row-null-at-open",
+        "swapchain row must stay NULL at loader open");
+    xud_check(loader->instanceTable.vkDestroySurfaceKHR == NULL, "loader/surface-row-null-at-open",
+        "surface teardown row must stay NULL at loader open");
 
-    /* An unknown entry point is reported, not guessed, and the out-param stays NULL. */
-    {
-        XudPfnBits bits;
-        bits.function = NULL;
-        xud_check(
-            xud_loader_resolve(loader, VK_NULL_HANDLE, "vkNotAFunction", &bits) == XUD_UNSUPPORTED,
-            "loader/unknown-name", "an unknown entry point must be unsupported");
-        xud_check(bits.function == NULL, "loader/unknown-name-out-null",
-            "a failed resolve must leave the out-param NULL");
-    }
+    /* A bind with no handle in hand is an argument error, and the tables stay untouched: the t
+       wo rungs replace the per-name resolve that used to report an unknown entry point. */
+    xud_check(xud_loader_bind_instance(loader, VK_NULL_HANDLE) == XUD_INVALID_ARG,
+        "loader/bind-instance-null", "a bind with no handle must be rejected");
+    xud_check(xud_loader_bind_device(loader, VK_NULL_HANDLE) == XUD_INVALID_ARG,
+        "loader/bind-device-null", "a bind with no device must be rejected");
+    xud_check(xud_loader_bind_device(loader, (VkDevice)(uintptr_t)1u) == XUD_UNSUPPORTED,
+        "loader/bind-device-needs-instance",
+        "a device table cannot be filled before an instance table exists - the device rung res"
+        "olves through this loader's own vkGetDeviceProcAddr row, so no instance means no row");
+    xud_check(loader->deviceTable.vkDestroyDevice == NULL, "loader/bind-device-left-rows-null",
+        "and a refused device bind must leave every device-level row NULL");
+    xud_check(loader->instanceTable.vkDestroyInstance == NULL, "loader/bind-rejected-untouched",
+        "a rejected bind must leave the table alone");
 
     /* A second open into an already-set out-param is rejected without touching it. */
     xud_check(xud_loader_open(&loader) == XUD_INVALID_ARG, "loader/open-non-null-out",
@@ -251,27 +262,37 @@ static void xud_test_loader_table(void) {
 /* The guard every call site relies on: a nil PFN is reported, never called. */
 static void xud_test_loader_nil_guard(void) {
     XudLoader loader;
-    XudPfnBits bits;
+    const VkInstance fake = (VkInstance)(uintptr_t)1u;
+    const VkDevice fakeDevice = (VkDevice)(uintptr_t)1u;
 
-    memset(&loader, 0, sizeof(loader)); /* a loader whose seed never resolved */
-    bits.function = NULL;
+    memset(&loader, 0, sizeof(loader)); /* a loader whose rows never resolved */
 
     xud_check(
         xud_loader_is_open(NULL) == false, "loader/is-open-null", "a null loader is not open");
     xud_check(xud_loader_is_open(&loader) == false, "loader/is-open-zeroed",
-        "a table whose seed never resolved is not open");
-    xud_check(xud_loader_resolve(&loader, VK_NULL_HANDLE, "vkX", &bits) == XUD_UNSUPPORTED,
-        "loader/nil-pfn-guard", "a nil PFN must be reported, never called");
-    xud_check(bits.function == NULL, "loader/nil-pfn-out-null", "out-param must stay NULL");
+        "a loader whose rows never resolved is not open");
 
-    xud_check(xud_loader_resolve(NULL, VK_NULL_HANDLE, "vkX", &bits) == XUD_INVALID_ARG,
-        "loader/null-loader", "a null loader must be rejected, not dereferenced");
-    xud_check(xud_loader_resolve(&loader, VK_NULL_HANDLE, NULL, &bits) == XUD_INVALID_ARG,
-        "loader/null-name", "a null name must be rejected");
-    xud_check(xud_loader_resolve(&loader, VK_NULL_HANDLE, "", &bits) == XUD_INVALID_ARG,
-        "loader/empty-name", "an empty name must be rejected, not resolved to the seed");
-    xud_check(xud_loader_resolve(&loader, VK_NULL_HANDLE, "vkX", NULL) == XUD_INVALID_ARG,
-        "loader/null-out", "a null out-param must be rejected");
+    /* The handles below are NOT real VkInstance/VkDevice handles and must never be dereferenc
+       ed: the point of every check here is that the guard answers before the call, and a mi
+       ssing guard would call through a NULL row and crash the run. */
+    xud_check(xud_loader_instance_bound(&loader, fake) == false, "loader/bound-nothing",
+        "a zeroed loader is bound to no instance");
+    xud_check(xud_loader_device_bound(&loader, fakeDevice) == false, "loader/device-bound-nothing",
+        "and to no device");
+    xud_check(xud_loader_instance_bound(&loader, VK_NULL_HANDLE) == false,
+        "loader/bound-not-null-handle", "and never to the null handle");
+    xud_check(xud_loader_bind_instance(&loader, fake) == XUD_INVALID_ARG, "loader/bind-closed",
+        "a closed loader cannot bind, before anything else");
+    xud_check(xud_loader_bind_device(&loader, fakeDevice) == XUD_INVALID_ARG,
+        "loader/bind-device-closed", "and neither can it fill a device table");
+    xud_check(xud_loader_bind_instance(NULL, fake) == XUD_INVALID_ARG, "loader/bind-null-loader",
+        "a null loader must be rejected, not dereferenced");
+    xud_check(xud_loader_bind_device(NULL, fakeDevice) == XUD_INVALID_ARG,
+        "loader/bind-device-null-loader", "the device rung guards the same way");
+    xud_check(loader.instanceTable.vkDestroyInstance == NULL, "loader/bind-left-rows-null",
+        "a refused bind must leave every instance-level row NULL");
+    xud_check(loader.deviceTable.vkDestroyDevice == NULL, "loader/bind-left-device-rows-null",
+        "...including the device-level ones");
 
     {
         XudLoader* existing = NULL;
@@ -1397,14 +1418,15 @@ static void xud_test_device_pure(void) {
                 "a rejected close leaves the struct alone");
 
             if (xud_loader_open(&openLoader) == XUD_OK) {
-                xud_check(openLoader->createDevice == NULL, "device/slot-create-unbound",
-                    "the create slot is instance-level: unbound until a layer binds it");
-                xud_check(openLoader->getDeviceQueue == NULL, "device/slot-get-unbound",
-                    "same for the queue lookup");
-                xud_check(openLoader->deviceWaitIdle == NULL, "device/slot-wait-unbound",
-                    "same for the guard");
-                xud_check(openLoader->destroyDevice == NULL, "device/slot-destroy-unbound",
-                    "same for the teardown call");
+                xud_check(openLoader->instanceTable.vkCreateDevice == NULL,
+                    "device/create-row-unbound",
+                    "the create row is instance-level: NULL until the instance layer fills it");
+                xud_check(openLoader->deviceTable.vkGetDeviceQueue == NULL,
+                    "device/get-row-unbound", "same for the queue lookup");
+                xud_check(openLoader->deviceTable.vkDeviceWaitIdle == NULL,
+                    "device/wait-row-unbound", "same for the guard");
+                xud_check(openLoader->deviceTable.vkDestroyDevice == NULL,
+                    "device/destroy-row-unbound", "same for the teardown call");
 
                 xud_check(xud_device_wait_idle(synthetic, openLoader) == XUD_ALREADY,
                     "device/wait-idle-no-handle",
@@ -1520,7 +1542,6 @@ static void xud_test_diagnostics_gpu(void) {
     XudInstance* instance = NULL;
     XudInstance* other = NULL;
     XudDiagnostics* diagnostics = NULL;
-    XudPfnBits bits;
     XudResult result;
 
     result = xud_loader_open(&loader);
@@ -1577,16 +1598,18 @@ static void xud_test_diagnostics_gpu(void) {
         "gpu/diagnostics-debug-utils-enabled",
         "the messenger extension is enabled in the diagnostics layer's order");
 
-    /* vkCreateDebugUtilsMessengerEXT is instance-level: the loader answers NULL for it with
-       VK_NULL_HANDLE in hand, and only a live VkInstance resolves it - which is why the
-       diagnostics layer resolves it at create time, not at loader time. */
-    bits.function = NULL;
-    xud_check(xud_loader_resolve(loader, VK_NULL_HANDLE, "vkCreateDebugUtilsMessengerEXT", &bits)
-            == XUD_UNSUPPORTED,
-        "gpu/diagnostics-messenger-not-global",
-        "the messenger command is not resolvable without a handle");
-    xud_check(bits.function == NULL, "gpu/diagnostics-messenger-out-null",
-        "a failed resolve must leave the out-param NULL");
+    /* The messenger row is instance-level: it is a row of the table the instance layer filled,
+       and the bound check names the instance the rows belong to - a table filled for one instan
+       ce is not a table for another, which is what makes a handle kept across a recreation a ca
+       ught error rather than a pointer into a layer that is gone. */
+    xud_check(xud_loader_instance_bound(loader, VK_NULL_HANDLE) == false,
+        "gpu/diagnostics-messenger-not-null-instance", "the rows are not the null handle's rows");
+    xud_check(xud_loader_instance_bound(loader, instance->instance) == true,
+        "gpu/diagnostics-messenger-table-bound",
+        "the instance layer filled the table for this instance");
+    xud_check(loader->instanceTable.vkCreateDebugUtilsMessengerEXT != NULL,
+        "gpu/diagnostics-messenger-row-resolved",
+        "VK_EXT_debug_utils is enabled, so the row answers");
 
     result = xud_diagnostics_create_messenger(diagnostics, loader, instance->instance);
     xud_check(result == XUD_OK, "gpu/diagnostics-messenger-create",
@@ -1700,8 +1723,8 @@ static void xud_test_physical_negative(void) {
     if (loader != NULL) {
         VkInstance fake = (VkInstance)(uintptr_t)1u;
 
-        xud_check(loader->enumeratePhysicalDevices == NULL, "physical/slot-unbound",
-            "the device-list slot is instance-level: unbound until a layer binds it");
+        xud_check(loader->instanceTable.vkEnumeratePhysicalDevices == NULL, "physical/row-unbound",
+            "the device-list row is instance-level: NULL until the instance layer fills it");
         xud_check(xud_physical_query_devices(loader, &candidates, &count, fake) == XUD_UNSUPPORTED,
             "physical/query-slot-nil",
             "a name the table does not know is reported, never called through");
@@ -1774,12 +1797,15 @@ static void xud_test_device_gpu(
         return;
 
     xud_check(device->device != VK_NULL_HANDLE, "device-gpu-handle", "the handle must be live");
-    xud_check(loader->createDevice != NULL, "device-gpu-slot-create",
-        "the create slot is cached in the table");
+    xud_check(loader->instanceTable.vkCreateDevice != NULL, "device-gpu-row-create",
+        "the create row is an instance-level row, resolved at the instance bind");
+    xud_check(xud_loader_device_bound(loader, device->device) == true, "device-gpu-table-bound",
+        "the device layer filled the device table for this device");
+    xud_check(loader->deviceTable.vkGetDeviceQueue != NULL, "device-gpu-row-get",
+        "...and so is the queue lookup");
     xud_check(
-        loader->getDeviceQueue != NULL, "device-gpu-slot-get", "...and so is the queue lookup");
-    xud_check(loader->deviceWaitIdle != NULL, "device-gpu-slot-wait", "...and the guard");
-    xud_check(loader->destroyDevice != NULL, "device-gpu-slot-destroy",
+        loader->deviceTable.vkDeviceWaitIdle != NULL, "device-gpu-row-wait", "...and the guard");
+    xud_check(loader->deviceTable.vkDestroyDevice != NULL, "device-gpu-row-destroy",
         "...and the teardown call, bound before it is needed");
 
     xud_check(device->queueRow.sType == VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
@@ -2091,7 +2117,6 @@ static void xud_test_gpu_physical(XudLoader* loader, VkInstance instance) {
 static void xud_test_gpu_instance(void) {
     XudLoader* loader = NULL;
     XudInstance* instance = NULL;
-    XudPfnBits bits;
     XudResult result;
 
     result = xud_loader_open(&loader);
@@ -2099,16 +2124,13 @@ static void xud_test_gpu_instance(void) {
     if (loader == NULL)
         return;
 
-    /* vkDestroyInstance is instance-level: no handle in hand means no answer, which is why
-       the instance layer cannot pre-bind it at loader time (see xud_instance.c). */
-    bits.function = NULL;
-    xud_check(
-        xud_loader_resolve(loader, VK_NULL_HANDLE, "vkDestroyInstance", &bits) == XUD_UNSUPPORTED,
-        "gpu/destroy-not-global", "instance-level commands are not resolvable without a handle");
-    xud_check(bits.function == NULL, "gpu/destroy-out-null",
-        "a failed resolve must leave the out-param NULL");
-    xud_check(loader->destroyInstance == NULL, "gpu/destroy-slot-null",
-        "the slot must stay NULL before the instance exists");
+    /* vkDestroyInstance is instance-level: it is a row of the instance table, and that table i
+       s filled only once an instance exists - the bind is a rung, not a lookup per call (see x
+       ud_instance.c). */
+    xud_check(loader->instanceTable.vkDestroyInstance == NULL, "gpu/destroy-row-null",
+        "the row must stay NULL before the instance exists");
+    xud_check(xud_loader_instance_bound(loader, VK_NULL_HANDLE) == false, "gpu/destroy-not-bound",
+        "and the loader is bound to no instance yet");
 
     result = xud_instance_create(&instance, loader, NULL);
     xud_check(result == XUD_OK, "gpu/instance-create",
@@ -2137,8 +2159,8 @@ static void xud_test_gpu_instance(void) {
                   VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)
             == true,
         "gpu/name-third", "wanted order reaches the driver");
-    xud_check(loader->createInstance != NULL, "gpu/create-slot-bound",
-        "the create slot is bound into the table");
+    xud_check(xud_loader_instance_bound(loader, instance->instance) == true,
+        "gpu/table-bound-after-create", "the instance layer filled the table for this instance");
 
     /* The physical layer, opened through the live instance and torn down inside xud_test_gpu_
        physical() below before this function destroys the instance - the order xud_close_context(
@@ -2150,8 +2172,8 @@ static void xud_test_gpu_instance(void) {
     xud_check(result == XUD_OK, "gpu/instance-destroy",
         "the instance must be destroyed through the live handle");
     xud_check(instance == NULL, "gpu/destroy-nulls-out", "destroy must clear the out-param");
-    xud_check(loader->destroyInstance != NULL, "gpu/destroy-slot-bound",
-        "destroy resolved the instance-level command and cached it");
+    xud_check(loader->instanceTable.vkDestroyInstance != NULL, "gpu/destroy-row-bound",
+        "the instance-level teardown row was resolved by the bind");
 
     xud_check(xud_instance_destroy(&instance, loader, NULL) == XUD_ALREADY, "gpu/destroy-twice",
         "a second destroy is XUD_ALREADY, not a double free");

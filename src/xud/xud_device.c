@@ -38,9 +38,10 @@
 #include <assert.h> /* Required for: static_assert, the PFN slot and array-size checks */
 #include <stdlib.h> /* Required for: calloc, free */
 
-/* The slots xud_device_open() binds through xud_loader_bind() must be pointer-sized, the same
-   rule xud_loader.c checks for the global-level ones and xud_instance.c/xud_physical.c add for
-   the tiers above them (xud_pfn_copy moves one word). */
+/* The rows this layer calls through must be pointer-sized, the same rule xud_loader.h checks
+   for the table pair as a whole. Volk's rows are PFN typedefs, so this is a property of the hea
+   ders rather than of a copy that moves one word - the hand-rolled bring-up this replaced had su
+   ch a helper to check against, Volk has nothing here to move. */
 static_assert(sizeof(PFN_vkCreateDevice) == sizeof(void*), "PFN slot must be pointer-sized");
 static_assert(sizeof(PFN_vkDestroyDevice) == sizeof(void*), "PFN slot must be pointer-sized");
 static_assert(sizeof(PFN_vkGetDeviceQueue) == sizeof(void*), "PFN slot must be pointer-sized");
@@ -332,32 +333,28 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
     for (role = 0u; role < XUD_DEVICE_QUEUE_MAX_COUNT; role++)
         device->queuePriorities[role] = XUD_DEVICE_QUEUE_PRIORITY_DEFAULT;
 
-    /* The four names this layer calls, resolved through the live instance and cached in the table
-       - they name the driver's own code, not a layer instantiated per instance, so a slot stays v
-       alid across an instance recreation the way a cached messenger pointer would not (xud_loader
-       .h's rule, and the reason the loader parameter is non-const: xud_loader_bind writes slots, a
-       nd both compilers reject a const XudLoader * here, the same rule xud_physical.c states). A n
-       ame the loader does not know answers NULL and xud_loader_bind reports XUD_UNSUPPORTED - neve
-       r called through. */
-    result = xud_loader_bind(loader, instance, "vkCreateDevice", &loader->createDevice);
-    if (result != XUD_OK)
+    /* The row this layer creates the device through is instance-level: vkCreateDevice is resolv
+       ed through vkGetInstanceProcAddr, which the instance layer resolved in bulk when it bound
+       the instance table (xud_loader.h's tier rule, probed 2026-10-18: non-NULL through a live
+       instance, NULL with VK_NULL_HANDLE in hand). The three rows this layer reads the device t
+       hrough - vkGetDeviceQueue, vkDeviceWaitIdle, vkDestroyDevice - are device-level and cann
+       ot exist before the device does, so they are filled by xud_loader_bind_device immediatel
+       y after vkCreateDevice answered, resolving through vkGetDeviceProcAddr; that entry point i
+       s looked up through the instance, which is why this layer still needs an instance in han
+       d and never a VkDevice to resolve through, and why the loader parameter is non-const: x
+       ud_loader_bind_device writes the device table, and both compilers reject a const XudLoad
+       er * here. Both checks below are the check-before-you-use rule, one rung lower: a row the
+       driver did not answer is reported, never called through. vkGetDeviceProcAddr is checked he
+       re rather than at the bind because a device created without it could not be destroyed by
+       the fail ladder below - leaking it silently is not an option this layer may take. */
+    if (!xud_loader_instance_bound(loader, instance)) {
+        result = XUD_UNSUPPORTED; /* no rows resolved for any instance, so nothing here can be
+                                      called */
         goto fail;
-    result = xud_loader_bind(loader, instance, "vkGetDeviceQueue", &loader->getDeviceQueue);
-    if (result != XUD_OK)
-        goto fail;
-    result = xud_loader_bind(loader, instance, "vkDeviceWaitIdle", &loader->deviceWaitIdle);
-    if (result != XUD_OK)
-        goto fail;
-    result = xud_loader_bind(loader, instance, "vkDestroyDevice", &loader->destroyDevice);
-    if (result != XUD_OK)
-        goto fail;
-
-    /* The nil-slot rule xud_device.h states, for the four calls this layer makes. xud_loader_bind
-       filled each slot on XUD_OK; this is the check the contract promises, not a second opinion a
-       bout the bind. */
-    if ((loader->createDevice == NULL) || (loader->getDeviceQueue == NULL)
-        || (loader->deviceWaitIdle == NULL) || (loader->destroyDevice == NULL)) {
-        result = XUD_UNSUPPORTED;
+    }
+    if ((loader->instanceTable.vkCreateDevice == NULL)
+        || (loader->instanceTable.vkGetDeviceProcAddr == NULL)) {
+        result = XUD_UNSUPPORTED; /* a row the driver did not answer - never called through */
         goto fail;
     }
 
@@ -392,7 +389,8 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
     if (result != XUD_OK)
         goto fail;
 
-    vk = loader->createDevice(physical->physicalDevice, &createInfo, NULL, &device->device);
+    vk = loader->instanceTable.vkCreateDevice(
+        physical->physicalDevice, &createInfo, NULL, &device->device);
     result = xud_result_from_vk(vk);
     if (result != XUD_OK) {
         /* A driver that refuses for a feature or a name we asked for is unsupported, not broken
@@ -402,6 +400,25 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
            these headers, and it was set to VK_NULL_HANDLE above, so the fail ladder below has not
            hing to destroy. */
         device->device = VK_NULL_HANDLE;
+        goto fail;
+    }
+
+    /* The device-level table, filled in bulk now that the device exists: volkLoadDeviceTable res
+       olves every row through vkGetDeviceProcAddr(device, name), so a row can only name code the
+       device this layer just created backs. It is filled before the two queue lookups below and
+       before anything can call xud_device_wait_idle()/xud_device_close() on this device, which i
+       s what makes xud_loader_device_bound() the invariant those two rungs check. The row was ch
+       ecked non-NULL above, so the bind cannot refuse here; if it ever does, the device leaks a
+       nd the reason travels - the fail ladder destroys through a row of this very table. */
+    result = xud_loader_bind_device(loader, device->device);
+    if (result != XUD_OK) {
+        result = XUD_INTERNAL_ERROR;
+        goto fail;
+    }
+    if ((loader->deviceTable.vkGetDeviceQueue == NULL)
+        || (loader->deviceTable.vkDeviceWaitIdle == NULL)
+        || (loader->deviceTable.vkDestroyDevice == NULL)) {
+        result = XUD_UNSUPPORTED;
         goto fail;
     }
 
@@ -420,7 +437,7 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
             = VK_NULL_HANDLE; /* the zero state before the call: PFN_vkGetDeviceQueue returns void
                                  in these headers (vulkan_core.h:4547), so there is no VkResult to
                                  map and the out handle is the only answer available */
-        loader->getDeviceQueue(
+        loader->deviceTable.vkGetDeviceQueue(
             device->device, device->queueRow.queueFamilyIndex, queueIndex, &record->queue);
         if (record->queue == VK_NULL_HANDLE) {
             /* A driver that answers nothing for a family/index pair the row itself asked for: the
@@ -443,8 +460,9 @@ fail:
        destroyed through the slot this layer just bound (PFN_vkDestroyDevice returns void in these
        headers, so there is no answer to check for the teardown call itself). The struct's memory is
        freed on every path, so a partial bring-up leaks nothing. */
-    if ((device != NULL) && (device->device != VK_NULL_HANDLE) && (loader->destroyDevice != NULL)) {
-        (void)loader->destroyDevice(device->device, NULL);
+    if ((device != NULL) && (device->device != VK_NULL_HANDLE)
+        && (loader->deviceTable.vkDestroyDevice != NULL)) {
+        (void)loader->deviceTable.vkDestroyDevice(device->device, NULL);
         device->device = VK_NULL_HANDLE;
     }
     if (device != NULL)
@@ -462,16 +480,20 @@ XudResult xud_device_wait_idle(const XudDevice* device, const XudLoader* loader)
 
     if ((loader == NULL) || (device == NULL))
         return XUD_INVALID_ARG;
-    if (!xud_loader_is_open(loader))
-        return XUD_UNSUPPORTED;
     if (device->device == VK_NULL_HANDLE)
-        return XUD_ALREADY; /* nothing is in flight on a device that does not exist, which is
-                               already the state asked for */
-    if (loader->deviceWaitIdle == NULL)
+        return XUD_ALREADY; /* nothing is in flight on a device that does not exist, which i
+                               s already the state asked for - and this answer needs no table, w
+                               hich is why it comes before the bound check */
+    if (!xud_loader_device_bound(loader, device->device))
+        return XUD_UNSUPPORTED; /* the device-level rows are the loader's, and an unbound tabl
+                                   e means they were never resolved for any device - a nil row i
+                                   s reported, never called through, the rule every call site i
+                                   n this tree follows */
+    if (loader->deviceTable.vkDeviceWaitIdle == NULL)
         return XUD_UNSUPPORTED; /* a nil PFN is reported, never called through - the rule every call
                                    site in this tree follows */
 
-    vk = loader->deviceWaitIdle(device->device);
+    vk = loader->deviceTable.vkDeviceWaitIdle(device->device);
     return xud_result_from_vk(vk);
 }
 
@@ -482,27 +504,28 @@ XudResult xud_device_close(XudDevice** device, const XudLoader* loader) {
     if ((device == NULL) || (loader == NULL))
         return XUD_INVALID_ARG; /* the arguments are checked before the state, the rule
                                    xud_physical_close() follows */
-    if (!xud_loader_is_open(loader))
-        return XUD_UNSUPPORTED;
     if (*device == NULL)
         return XUD_ALREADY;
 
     victim = *device;
 
-    /* The guard first, and it is this layer's own guarantee rather than a promise about the caller
-       above: the spec requires that nothing is in flight when a device is destroyed, and a caller
-       that had queued submissions without submitting them would otherwise be racing them. A refus
-       al here (a nil slot) leaves the device alive and the struct un-freed - refusing is the honest
-       answer, leaking a handle silently is not. XUD_ALREADY (the struct has no handle) and XUD_LOST
-       (the driver says the device is gone) both continue below - a lost device is still destroyed,
-       v kDestroyDevice is this layer's teardown call and skipping it would leak an object the
-       driver m ay still hold. */
+    /* The guard first, and it is this layer's own guarantee rather than a promise about the cal
+       ler above: the spec requires that nothing is in flight when a device is destroyed, and a
+       caller that had queued submissions without submitting them would otherwise be racing the
+       m. A refusal here (a nil row) leaves the device alive and the struct un-freed - refusing i
+       s the honest answer, leaking a handle silently is not. XUD_ALREADY (the struct has no han
+       dle) and XUD_LOST (the driver says the device is gone) both continue below - a lost device
+       is still destroyed, vkDestroyDevice is this layer's teardown call and skipping it would l
+       eak an object the driver may still hold. */
     guard = xud_device_wait_idle(victim, loader);
     if (guard == XUD_UNSUPPORTED)
         return guard;
 
     if (victim->device != VK_NULL_HANDLE) {
-        if (loader->destroyDevice == NULL)
+        if (!xud_loader_device_bound(loader, victim->device))
+            return XUD_UNSUPPORTED; /* no rows resolved for this device, so there is no teardow
+                                      n row to call through and the handle would leak silently */
+        if (loader->deviceTable.vkDestroyDevice == NULL)
             return XUD_UNSUPPORTED; /* the handle would leak silently, so this rung refuses instead
                                      */
 
@@ -511,7 +534,7 @@ XudResult xud_device_close(XudDevice** device, const XudLoader* loader) {
            available and the layer's answer is the guard's. The handle is cleared after the call so
            a struct that survi ves this (it does not, it is freed below) cannot be torn down twice.
          */
-        loader->destroyDevice(victim->device, NULL);
+        loader->deviceTable.vkDestroyDevice(victim->device, NULL);
         victim->device = VK_NULL_HANDLE;
     }
 

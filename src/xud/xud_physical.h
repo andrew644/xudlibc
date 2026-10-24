@@ -12,20 +12,21 @@
  *          TATIC ...) in CMakeLists.txt lists six objects, xud_physical.c.o among them), so the
  *          test binary links the archive rather than compiling that TU specially - see todo.md.
  *   Layer: above the instance, below the device. Every Vulkan call the .c makes goes through a
- *          PFN slot of XudLoader (xud_loader.h) resolved through the live VkInstance handed in;
- *          nothing here names a vk* function directly, and no Vulkan symbol is linked (AGENTS.md:
- *          there is no -lvulkan anywhere in the build). Internal like xud_loader.h: tests may
- *          include it, user code must not.
+ *          row of the loader's struct VolkInstanceTable (xud_loader.h), filled in bulk by xud_lo
+ *          ader_bind_instance at the instance layer; nothing here names a vk* function directly,
+ *          and no Vulkan symbol is linked (AGENTS.md: there is no -lvulkan anywhere in the buil
+ *          d). Internal like xud_loader.h: tests may include it, user code must not.
  *          The handle here is the one rung of the teardown ladder that is free-only: Vulkan has
  *          no vkDestroyPhysicalDevice (grepped in these headers - the name does not exist), a
  *          VkPhysicalDevice is a query result and not an object the driver allocated for us, so
  *          xud_physical_close() frees memory and calls no driver function at all.
- *   Loader fact probed here (2026-10-18, through a live VkInstance, dlopen only, no link
- *          dependency): vkGetPhysicalDeviceMemoryProperties2 is the **one** physical-layer name
- *          the loader's PFN table did not already have, so xud_loader.h grew a slot for it and
- *          XUD_LOADER_SLOT_COUNT went 19 -> 20; all seven physical names resolve non-NULL through
- *          a live VkInstance and NULL with VK_NULL_HANDLE in hand, which is why all seven sit in
- *          the instance-level tier. Header facts verified against Vulkan-Headers 1.4.363 here
+ *   Loader fact restated here (2026-10-23, the loader rework onto vendored Volk): the physical
+ *          layer's seven names are rows of struct VolkInstanceTable, filled in bulk by xud_loa
+ *          der_bind_instance - there is no per-name slot left to grow, which is what the 2026-1
+ *          0-18 note about XUD_LOADER_SLOT_COUNT going 19 -> 20 used to record. The seven are s
+ *          till instance-level for lookup: probed through a live VkInstance they resolve non-NU
+ *          LL and with VK_NULL_HANDLE in hand they resolve NULL. Header facts verified against V
+ *          ulkan-Headers 1.4.363 here
  *          (2026-10-18, grepped, no driver involved): VkPhysicalDeviceProperties2 at vulkan_core
  *          h:5809, VkPhysicalDeviceFeatures
  *          Features2 at :5803, VkPhysicalDeviceMemoryProperties2 at :5843, and the queue-family
@@ -58,6 +59,7 @@
 #ifndef XUD_XUD_PHYSICAL_H_
 #define XUD_XUD_PHYSICAL_H_
 
+#include "volk.h" /* Required for: VK_NO_PROTOTYPES - must precede <vulkan/vulkan.h>, see xud_loader.h */
 #include "xud.h"
 #include "xud_instance.h"
 #include "xud_loader.h"

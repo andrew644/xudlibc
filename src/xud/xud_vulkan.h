@@ -4,11 +4,14 @@
  *         needs while copying extension/layer names around. Nothing here calls the driver
  *         and nothing here creates a Vulkan object.
  *   Layer: internal, like xud_loader.h - tests may include it, user code must not. Sees
- *          xud.h (the XudResult codes) and <vulkan/vulkan.h> declarations only.
+ *          xud.h (the XudResult codes), volk.h (VK_NO_PROTOTYPES, which must come before the
+ *          Vulkan header - see xud_loader.h's include-order note) and <vulkan/vulkan.h> decla-
+ *          rations only.
  ***********************************************************************************************/
 #ifndef XUD_VULKAN_H_
 #define XUD_VULKAN_H_
 
+#include "volk.h" /* Required for: VK_NO_PROTOTYPES - must precede <vulkan/vulkan.h>, see xud_loader.h */
 #include "xud.h"
 #include <assert.h>
 #include <stdbool.h>

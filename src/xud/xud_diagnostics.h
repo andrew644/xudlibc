@@ -4,13 +4,16 @@
  *         the debug messenger create-info assembled, the messenger handle) and the one log
  *         callback every xudlibc messenger installs.
  *   Layer: internal, like xud_loader.h - tests may include it, user code must not. Sees xud.h,
- *          xud_loader.h (the PFN table + resolve/bind), xud_vulkan.h (the shared vocabulary) and
- *          <vulkan/vulkan.h> declarations only. It creates no VkInstance and calls no Vulkan
- *         entry point of its own: every call goes through a slot of the loader's table.
+ *          xud_loader.h (Volk's entry-point tables + the two bind rungs), xud_vulkan.h (the shared
+ *          vocabulary) and <vulkan/vulkan.h> declarations only, with volk.h immediately above tha
+ *          t include (VK_NO_PROTOTYPES, see xud_loader.h's include-order rule). It creates no VK
+ *          Instance and calls no Vulkan entry point of its own: every call goes through a row of
+ *         the loader's Volk tables.
  ***********************************************************************************************/
 #ifndef XUD_XUD_DIAGNOSTICS_H_
 #define XUD_XUD_DIAGNOSTICS_H_
 
+#include "volk.h" /* Required for: VK_NO_PROTOTYPES - must precede <vulkan/vulkan.h>, see xud_loader.h */
 #include "xud.h"
 #include "xud_loader.h"
 #include "xud_vulkan.h"

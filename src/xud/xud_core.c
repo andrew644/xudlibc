@@ -79,7 +79,6 @@ const char* xud_result_name(XudResult result) {
 XudResult xud_vulkan_supported(void) {
     XudLoader* loader = NULL;
     XudResult result = XUD_INVALID_ARG;
-    uint32_t resolved = 0u;
 
     result = xud_loader_open(&loader);
     if (result != XUD_OK) {
@@ -88,10 +87,13 @@ XudResult xud_vulkan_supported(void) {
         return result;
     }
 
-    resolved = loader->resolvedCount;
+    /* xud_loader_open() already refused a loader that did not answer all three loader-level row
+       s, so reaching here is the answer: a Vulkan loader is present and reachable. The rows are
+       not counted again here - the count check lives in one place, in the rung that fills them.
+       The loader this query opened is closed straight away: it is a runtime question, not a cont
+       ext, and leaving it open would be a second, leaked owner of Volk's globals. */
     (void)xud_loader_close(&loader);
-
-    return (resolved >= XUD_LOADER_GLOBAL_SLOT_COUNT) ? XUD_OK : XUD_UNSUPPORTED;
+    return XUD_OK;
 }
 
 XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height) {
@@ -105,8 +107,8 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         return result;
 
-    /* Loader bring-up: opens, dlsyms the seed entry point, and fills the global-level slots
-       of the PFN table. XUD_UNSUPPORTED here means "no Vulkan loader on this machine". */
+    /* Loader bring-up: volkInitialize() dlopens libvulkan.so.1 by name and resolves the loader-
+       level rows. XUD_UNSUPPORTED here means "no Vulkan loader on this machine". */
     result = xud_loader_open(&context->loader);
     if (result != XUD_OK)
         goto fail;

@@ -8,9 +8,10 @@
  *          intersection S6 hands vkCreateDevice), xud_physical_select_queue_family() (the one-
  *          family rule), xud_physical_record_api_version() (the apiVersion read-back) - and the
  *          driver half, xud_physical_query_devices() and xud_physical_open() (landed today, at
- *          S5.4), which reach the driver only through slots of XudLoader's table bound through
- *          the live VkInstance handed in: this file names no vk* function directly and no Vulkan
- *          symbol is linked (AGENTS.md: there is no -lvulkan anywhere in the build). The three
+ *          S5.4), which reach the driver only through rows of XudLoader's struct VolkInstanceTa-
+ *          ble, resolved in bulk at the instance layer and checked here before every call: this
+ *          file names no vk* function directly and no Vulkan symbol is linked (AGENTS.md: there
+ *          is no -lvulkan anywhere in the build). The three
  *          doubling-capacity queries here (the device list, the advertised device extensions,
  *          the queue families) are the shape xud_instance_query_extensions in xud_instance.c and
  *          xud_diagnostics_query_layers in xud_diagnostics.c already established - all three of
@@ -76,15 +77,16 @@ static_assert((VK_QUEUE_GRAPHICS_BIT & VK_QUEUE_TRANSFER_BIT) == 0u,
    TRUE = 1. A driver that writes anything else into a feature field must not be able to smuggle
    a third value into the request S6 hands vkCreateDevice - see xud_physical_and_feature. */
 
-/* The slots xud_physical_open() binds through xud_loader_bind() must be pointer-sized, the same
-   rule xud_loader.c checks for the global-level ones and xud_instance.c adds for the instance-
-   level ones it binds (xud_pfn_copy moves one word). vkGetPhysicalDeviceMemoryProperties2 is the
-   one name here that the table did not already have: xud_loader.h grew a slot for it today and
-   XUD_LOADER_SLOT_COUNT went 19 -> 20 (probed: it resolves through a live VkInstance, and answers
-   NULL with VK_NULL_HANDLE in hand, so it belongs to the instance-level tier like the other six
-   physical names). The non-2 vkGetPhysicalDeviceProperties form is slotted too but never bound
-   here - a ranking policy has to read deviceType with no extension in hand, this layer reads the
-   *2 form. */
+/* The rows this layer calls through must be pointer-sized, the same rule xud_loader.h checks
+   for the table pair as a whole. The 2026-10-18 note that used to sit here - vkGetPhysicalDev
+   iceMemoryProperties2 being the one physical name the hand-maintained table did not already
+   have, and XUD_LOADER_SLOT_COUNT going 19 -> 20 - has no subject any more: struct VolkInstan
+   ceTable is Volk's, it carries every instance-level entry point the Vulkan headers declare,
+   and there is no per-name slot left to grow. What survives of that note is the tier fact: al
+   l seven physical names resolve non-NULL through a live VkInstance and NULL with VK_NULL_HAND
+   LE in hand, which is why all seven are rows of the instance-level table. The non-2 vkGetPhy
+   sicalDeviceProperties form is a row too but is never read here - a ranking policy has to rea
+   d deviceType with no extension in hand, this layer reads the *2 form. */
 static_assert(sizeof(PFN_vkEnumeratePhysicalDevices) == sizeof(void*),
     "the device-list slot must be pointer-sized");
 static_assert(sizeof(PFN_vkGetPhysicalDeviceProperties2) == sizeof(void*),
@@ -456,7 +458,7 @@ static XudResult xud_physical_query_device_extensions(const XudLoader* loader,
     if ((loader == NULL) || (outProperties == NULL) || (outCount == NULL) || (outCapacity == NULL))
         return XUD_INVALID_ARG;
     if ((physicalDevice == VK_NULL_HANDLE) || (!xud_loader_is_open(loader))
-        || (loader->enumerateDeviceExtensionProperties == NULL))
+        || (loader->instanceTable.vkEnumerateDeviceExtensionProperties == NULL))
         return XUD_UNSUPPORTED;
 
     *outProperties = NULL;
@@ -469,7 +471,8 @@ static XudResult xud_physical_query_device_extensions(const XudLoader* loader,
             return XUD_OUT_OF_MEMORY;
 
         count = capacity;
-        vk = loader->enumerateDeviceExtensionProperties(physicalDevice, NULL, &count, items);
+        vk = loader->instanceTable.vkEnumerateDeviceExtensionProperties(
+            physicalDevice, NULL, &count, items);
 
         if ((vk == VK_SUCCESS) && (count <= capacity)) {
             *outProperties = items;
@@ -505,7 +508,7 @@ static XudResult xud_physical_query_queue_families(const XudLoader* loader,
     if ((loader == NULL) || (outFamilies == NULL) || (outCount == NULL))
         return XUD_INVALID_ARG;
     if ((physicalDevice == VK_NULL_HANDLE) || (!xud_loader_is_open(loader))
-        || (loader->getPhysicalDeviceQueueFamilyProperties2 == NULL))
+        || (loader->instanceTable.vkGetPhysicalDeviceQueueFamilyProperties2 == NULL))
         return XUD_UNSUPPORTED;
 
     *outFamilies = NULL;
@@ -530,7 +533,8 @@ static XudResult xud_physical_query_queue_families(const XudLoader* loader,
         }
 
         count = capacity;
-        loader->getPhysicalDeviceQueueFamilyProperties2(physicalDevice, &count, items);
+        loader->instanceTable.vkGetPhysicalDeviceQueueFamilyProperties2(
+            physicalDevice, &count, items);
 
         if ((count > 0u) && (count <= capacity)) {
             *outFamilies = items;
@@ -563,7 +567,7 @@ XudResult xud_physical_query_devices(const XudLoader* loader, VkPhysicalDevice**
     if ((loader == NULL) || (outCandidates == NULL) || (outCount == NULL))
         return XUD_INVALID_ARG;
     if ((instance == VK_NULL_HANDLE) || (!xud_loader_is_open(loader))
-        || (loader->enumeratePhysicalDevices == NULL))
+        || (loader->instanceTable.vkEnumeratePhysicalDevices == NULL))
         return XUD_UNSUPPORTED;
 
     *outCandidates = NULL;
@@ -575,7 +579,7 @@ XudResult xud_physical_query_devices(const XudLoader* loader, VkPhysicalDevice**
             return XUD_OUT_OF_MEMORY;
 
         count = capacity;
-        vk = loader->enumeratePhysicalDevices(instance, &count, items);
+        vk = loader->instanceTable.vkEnumeratePhysicalDevices(instance, &count, items);
 
         if ((vk == VK_SUCCESS) && (count <= capacity)) {
             *outCandidates = items;
@@ -635,43 +639,27 @@ XudResult xud_physical_open(
     physicalDevice->physicalDevice = VK_NULL_HANDLE;
     caps->queueFamilyIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
 
-    /* The six names this layer calls, resolved through the live instance and cached in the tab
-       le: they name the driver's own code, not a layer instantiated per instance, so a slot sta
-       ys valid across an instance recreation (xud_loader.h). A name the loader does not know ans
-       wers NULL and xud_loader_bind reports XUD_UNSUPPORTED - never called through. */
-    result = xud_loader_bind(
-        loader, instance, "vkEnumeratePhysicalDevices", &loader->enumeratePhysicalDevices);
-    if (result != XUD_OK)
+    /* The rows this layer calls through belong to the instance-level table the instance layer
+       filled in bulk (xud_loader_bind_instance, immediately after vkCreateInstance answered): t
+       hey name the driver's own code rather than a layer instantiated per instance, and the tabl
+       e is the loader's, so a per-name bind here would be a second opinion about a rung that al
+       ready filled every row. What this layer does add is the check-before-you-use rule for the
+       six rows it is about to call: a row the driver did not answer stays NULL in the table and
+       the layer reports XUD_UNSUPPORTED rather than calling through it. The three doubling-capa
+       city queries below check their own row before calling; the three void caps getters have n
+       o query helper of their own, which is why their rows are checked here. */
+    if (!xud_loader_instance_bound(loader, instance)) {
+        result = XUD_UNSUPPORTED; /* no rows resolved for any instance, so nothing here can be
+                                      called */
         goto fail;
-    result = xud_loader_bind(
-        loader, instance, "vkGetPhysicalDeviceProperties2", &loader->getPhysicalDeviceProperties2);
-    if (result != XUD_OK)
-        goto fail;
-    result = xud_loader_bind(
-        loader, instance, "vkGetPhysicalDeviceFeatures2", &loader->getPhysicalDeviceFeatures2);
-    if (result != XUD_OK)
-        goto fail;
-    result = xud_loader_bind(loader, instance, "vkGetPhysicalDeviceMemoryProperties2",
-        &loader->getPhysicalDeviceMemoryProperties2);
-    if (result != XUD_OK)
-        goto fail;
-    result = xud_loader_bind(loader, instance, "vkGetPhysicalDeviceQueueFamilyProperties2",
-        &loader->getPhysicalDeviceQueueFamilyProperties2);
-    if (result != XUD_OK)
-        goto fail;
-    result = xud_loader_bind(loader, instance, "vkEnumerateDeviceExtensionProperties",
-        &loader->enumerateDeviceExtensionProperties);
-    if (result != XUD_OK)
-        goto fail;
-
-    /* The nil-slot rule xud_physical.h states, for the three caps getters that return void and
-       therefore have no query helper of their own to check it (the three queries above check th
-       eir own slot before calling). xud_loader_bind filled the slot on XUD_OK; this is the check
-       the contract promises, not a second opinion about the bind. */
-    if ((loader->getPhysicalDeviceProperties2 == NULL)
-        || (loader->getPhysicalDeviceFeatures2 == NULL)
-        || (loader->getPhysicalDeviceMemoryProperties2 == NULL)) {
-        result = XUD_UNSUPPORTED;
+    }
+    if ((loader->instanceTable.vkEnumeratePhysicalDevices == NULL)
+        || (loader->instanceTable.vkGetPhysicalDeviceProperties2 == NULL)
+        || (loader->instanceTable.vkGetPhysicalDeviceFeatures2 == NULL)
+        || (loader->instanceTable.vkGetPhysicalDeviceMemoryProperties2 == NULL)
+        || (loader->instanceTable.vkGetPhysicalDeviceQueueFamilyProperties2 == NULL)
+        || (loader->instanceTable.vkEnumerateDeviceExtensionProperties == NULL)) {
+        result = XUD_UNSUPPORTED; /* a row the driver did not answer - never called through */
         goto fail;
     }
 
@@ -696,7 +684,8 @@ XudResult xud_physical_open(
     for (candidate = 0u; candidate < candidateCount; candidate++) {
         properties[candidate].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
         properties[candidate].pNext = NULL;
-        loader->getPhysicalDeviceProperties2(candidates[candidate], &properties[candidate]);
+        loader->instanceTable.vkGetPhysicalDeviceProperties2(
+            candidates[candidate], &properties[candidate]);
     }
 
     result = xud_physical_select(&chosenIndex, candidates, properties, candidateCount);
@@ -715,11 +704,12 @@ XudResult xud_physical_open(
 
     caps->features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     caps->features.pNext = NULL;
-    loader->getPhysicalDeviceFeatures2(physicalDevice->physicalDevice, &caps->features);
+    loader->instanceTable.vkGetPhysicalDeviceFeatures2(
+        physicalDevice->physicalDevice, &caps->features);
 
     caps->memoryProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
     caps->memoryProperties.pNext = NULL;
-    loader->getPhysicalDeviceMemoryProperties2(
+    loader->instanceTable.vkGetPhysicalDeviceMemoryProperties2(
         physicalDevice->physicalDevice, &caps->memoryProperties);
 
     /* The chain rule, checked not assumed: this layer provided no chained struct for any of the

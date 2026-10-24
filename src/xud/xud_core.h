@@ -44,7 +44,7 @@ struct XudContext {
 
     /* Owned from loader bring-up on: opened by xud_init_context(), closed by xud_close_context().
      */
-    XudLoader* loader; /* dlopen handle for libvulkan.so.1 + the PFN table           */
+    XudLoader* loader; /* Volk's entry-point tables + the loader-level rows, per context  */
 
     /* Owned from the diagnostics step on, and only when `validate` asked for validation: NULL in
        a release build, which is the "no layer requested, no validation request, no messenger"
