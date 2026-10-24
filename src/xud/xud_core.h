@@ -5,17 +5,19 @@
  *   Owns : the struct definition that completes the opaque `typedef struct XudContext`
  *          declared in xud.h, and nothing else. Internal module header: user code includes
  *          xud.h only, and never sees these fields.
- *   Layer: core (bottom of the public API). The loader field is owned from bring-up on, the
- *          diagnostics field from the diagnostics step on (NULL in a release build), the instan
- *          ce field from the instance layer on, and the physical field from the physical layer
- *          on; the device, queue, window, swapchain and allocator fields are still sentinels,
- *          filled by the bring-up steps after this one (see todo.md) - the device layer exists in
- *          the tree now (xud_device.h/.c, landed and tested at S6) but nothing in the context cal
- *          ls it until S8's ownership step, so the device field stays a sentinel here. The windo
- *          w layer exists in the tree now too (xud_window.h/.c, landed at S7) and is the reason
- *          the window field below is typed rather than a void* sentinel: a GLFW window is what th
- *          e surface belongs to, so the context will own one, but xud_init_context() still creates
- *          neither a window nor a surface.
+ *   Layer: core (bottom of the public API). Every field below the shell is owned from the step
+ *          that fills it on: loader from bring-up, diagnostics from the diagnostics step (NULL in
+ *          a release build), window from the window step, instance from the instance layer, physic
+ *          al device from the physical layer, device from the device layer - all of them filled by
+ *          xud_init_context() now, so a context that comes back XUD_OK owns a live GLFW window, a
+ *          VkInstance carrying that window's required extensions, a physical device queried throug
+ *          h it, a VkDevice created from that device's recorded caps and a VkSurfaceKHR for the wi
+ *          ndow. The swapchain and allocator fields are the only sentinels left, filled by the ste
+ *          ps after this one (see todo.md). There is deliberately no queue field: XudQueue is a rec
+ *          ord of a queue, not an owning type (there is no vkDestroyQueue - grepped in these heade
+ *          rs, the name does not exist), and both role records live inside the XudDevice that owns
+ *          the handles, so a context field beside it would be a copy of a record with nothing of i
+ *          ts own to tear down - read them through xud_device_queue_get().
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -24,6 +26,7 @@
 #ifndef XUD_XUD_CORE_H_
 #define XUD_XUD_CORE_H_
 
+#include "xud_device.h" /* Required for: XudDevice, the VkDevice plus its queue row, its enabled features/extensions and its two role queue records - the context owns one from the device layer on */
 #include "xud_diagnostics.h" /* Required for: XudDiagnostics, the diagnostics struct the context owns once validation is on */
 #include "xud_instance.h" /* Required for: XudInstance, the VkInstance the context owns from the instance layer on */
 #include "xud_loader.h" /* Required for: XudLoader, the loader the context owns from bring-up on */
@@ -33,18 +36,19 @@
 
 /* Completed here; xud.h keeps callers to an opaque handle. Every Vulkan field is a
    sentinel (NULL / 0) until the layer named beside it fills it, and is destroyed in the
-   reverse order of creation: swapchain -> surface -> window -> device -> physical -> instance ->
-   diagnostics -> loader. The window entry sits where it does because both halves of it belong to
-   what is either side of it: the VkSurfaceKHR glfwCreateWindowSurface handed over for a window is
-   destroyed by vkDestroySurfaceKHR through the instance that window's surface was created for, an
-   d glfwTerminate - GLFW's own teardown, which the window layer runs once no live window is left -
-   must not run while a surface still names a window. The diagnostics entry sits where it does bec
-   ause its messenger must die before the VkInstance it belongs to (vkDestroyDebugUtilsMessengerEX
-   T takes the owning instance, and the extension says that instance must still be alive) - xud_in
-   stance_destroy() does that teardown, and xud_diagnostics_close() only frees the struct once the
-   messenger is gone. The physical entry sits where it does for the same reason one rung down: a Vk
-   PhysicalDevice is a query result of an instance, so the caps it recorded must be gone before tha
-   t instance is.
+   reverse order of creation: swapchain -> device -> surface -> window -> physical -> instance ->
+   diagnostics -> loader. The device entry sits where it does because a VkDevice is created FROM the
+   physical device below it and everything that submits to it (a swapchain, a command buffer)
+   belongs to it, so it goes before the surface and the window whose swapchain would have used it -
+   and the surface goes before the window because a VkSurfaceKHR is destroyed by vkDestroySurfaceKHR
+   through the instance that window's surface was created for, while glfwTerminate - GLFW's own
+   teardown, wh ich the window layer runs once no live window is left - must not run while a surface
+   still names a window. The diagnostics entry sits where it does because its messenger must die
+   before the VkIn stance it belongs to (vkDestroyDebugUtilsMessengerEXT takes the owning instance,
+   and the extension s say that instance must still be alive) - xud_instance_destroy() does that
+   teardown, and xud_diag nostics_close() only frees the struct once the messenger is gone. The
+   physical entry sits where it does for the same reason one rung down: a VkPhysicalDevice is a
+   query result of an instance, so th e caps it recorded must be gone before that instance is.
  */
 struct XudContext {
     /* Created and validated at repo skeleton step S1. */
@@ -63,6 +67,18 @@ struct XudContext {
     XudDiagnostics* diagnostics; /* advertised layers + VkValidationFeaturesEXT + the
                                     VK_EXT_debug_utils messenger */
 
+    /* Owned from the window step on, and BEFORE the instance for a reason that is load-bearing: glF
+       WCreateWindowSurface resolves vkCreateWaylandSurfaceKHR through vkGetInstanceProcAddr AGAINST
+       TH E INSTANCE IT IS HANDED (src/external/glfw/src/wl_window.c 145), so the instance the
+       surface wi ll be created for has to carry GLFW's own required instance extensions, and those
+       are only know able once a window exists. xud_init_context() therefore opens the window first
+       and hands xud_in stance_create() the window's required-name list, which is what grew that
+       extraNames/extraCount p arameter. The field is typed rather than a void* sentinel for the
+       same reason a surface cannot b e held: the context owns one XudWindow, and the VkSurfaceKHR
+       lives inside it.
+     */
+    XudWindow* window; /* a GLFW window plus the VkSurfaceKHR it was handed            */
+
     XudInstance* instance; /* the VkInstance plus the create-info that produced it       */
 
     /* Owned from the physical layer on: opened by xud_init_context() through xud_physical_open(),
@@ -75,21 +91,28 @@ struct XudContext {
     XudPhysicalDevice*
         physicalDevice; /* the chosen VkPhysicalDevice plus the caps recorded from it */
 
+    /* Owned from the device layer on: opened by xud_init_context() through xud_device_open(),
+       closed by xud_close_context() through xud_device_close() - the wait-idle guard, then
+       vkDestroyDevice through a row of the loader's device table, then free. It is the last Vulkan
+       rung the context owns through a field of its own: the surface below it is owned by the windo
+       w above rather than by a context field, which is why only the swapchain and the allocator fi
+       elds below stay sentinels - those rungs are not in the tree.
+     */
+    XudDevice* device; /* the VkDevice plus its queue row, its enabled features/extensions and its
+                          two role queue records */
+
+    /* Deliberately absent: the graphics and present queues. XudQueue is a record of a queue, not an
+       owning type (grepped in these headers: there is no vkDestroyQueue), and xud_device_open() res
+       olved both role records into the XudDevice above, so the context has nothing of its own to
+       own or tear down for them - a field here would be a second copy of a record that could
+       disagree wi th the device's. xud_device_queue_get() is the accessor that reads them, and it
+       answers the coo rdinates alongside the handle so a caller above can check the two queue VUIDs
+       itself.
+     */
+
     /* Pending: filled by the bring-up layers below, NULL/0 until then. */
-    void* device; /* VkDevice                                                     */
-    void* queueGraphics; /* the one graphics queue of the chosen family                */
-    void* queuePresent; /* the one present queue of the chosen family                 */
     void* swapchain; /* VkSwapchainKHR, recreated on window resize                 */
     void* allocator; /* the single GPU-memory allocator (buffers + images)         */
-
-    /* The window layer exists in the tree (xud_window.h/.c, landed at S7) and this field is typ
-       ed for that reason rather than left a void* sentinel: a VkSurfaceKHR cannot be held withou
-       t the GLFW window it was created for, so the context owns one XudWindow, not a bare handle.
-       xud_init_context() still leaves it NULL - creating a window is not what a context asks for
-       (there is no public extent-to-window path yet), and wiring this field is S8's ownership ste
-       p. NULL here is the state calloc gives, which is also the state xud_window_close() reports a
-       s XUD_ALREADY, so a context that never opened a window tears down without touching GLFW. */
-    XudWindow* window; /* a GLFW window plus the VkSurfaceKHR it was handed            */
 };
 
 #endif /* XUD_XUD_CORE_H_ */

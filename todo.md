@@ -6,9 +6,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] S8 Ownership + teardown: the context owns loader/instance/device/**window** (the surface lives inside the window now,
-    not in a context field of its own); destroy order device → surface → window → instance; `goto fail` ladder leaks nothing
-    on partial init; a GPU test that creates then destroys and stays validation-clean.
 - [ ] S9 Docs: file-top comments naming the layer each file owns; one `todo.md` note per step.
 
 ## Next

@@ -4,23 +4,32 @@
  *
  *   Owns : the test runner and the checks for every public function in xud.h plus the
  *          loader layer, the diagnostics layer, the shared Vulkan vocabulary, the instance
- *          layer below it, the physical layer below that and the device layer below that -
- *          the physical layer's pure half (selection, the feature intersection, the queue-
- *          family rule, the apiVersion read-back, the free-only teardown, none of which cal
- *          ls the driver, so they run headless), the device layer's pure half (the queue-row
- *          assembly, the device-extension selection, the create-info assembly, the queue loo
- *          kup, the argument guards - also no driver call, so they run headless too) and, un
- *          der the GPU gate, both driver halves (xud_physical_open()/xud_physical_query_devices
- *          () and xud_device_open()/xud_device_wait_idle()/xud_device_close() against the real
- *          driver). Headless by default: this run must stay green on a machine with no Vulkan
- *          driver present - the loader checks degrade to a note when dlopen fails, they never
- *          fail because of a missing driver, and neither driver half is reached at all. GPU ch
- *          ecks are opt-in via XUD_GPU_TESTS=1 and they exist now: the instance layer, the physi
- *          cal layer and the device layer need a device.
- *   Layer: tests. Sees xud.h and the internal module headers of the layers under the public
- *          API (xud_loader.h, xud_vulkan.h, xud_diagnostics.h, xud_instance.h, xud_physical.h,
- *          xud_device.h) so the layers can be unit-tested on their own; user code includes xud.h
- *          only. xud_core.h stays private to the library.
+ *          layer below it, the physical layer below that, the device layer below that and th
+ *          e window layer above the instance - and the ownership step in xud_core.c, which is abou
+ *          t what a context owns and about the one order that hands it back.
+ *          The pure halves run headless: the physical layer's selection, feature intersectio
+ *          n, queue-family rule, apiVersion read-back and free-only teardown; the device layer's qu
+ *          eue-row assembly, device-extension selection, create-info assembly, queue lookup and
+ * argum ent guards; the window layer's required-extension list, its instance-support check and its
+ * argum ent guards; and the context's argument guards, its teardown-order contract and its refusal
+ * state. Non e of those calls the driver, so they run with no device present. Headless by default:
+ * this run must sta y green on a machine with no Vulkan driver - the loader checks degrade to a
+ * note when dlopen fails, the y never fail because of a missing driver, and no driver half is
+ * reached at all. GPU checks are opt-in vi a XUD_GPU_TESTS=1 and they exist now: the instance
+ * layer, the physical layer, the device layer, the windo w layer (a real GLFW window on this
+ * machine's Wayland session, a real surface created and destroyed) and the whole-context lifecycle
+ * all need a device. Every GPU test runs inside the one instance the test open s, so the physical
+ * device, the device and the window's surface are created and destroyed while their own er is
+ * alive, in the order xud_close_context() uses - and xud_test_gpu_context() is the one place in the
+ * ru n that creates a CONTEXT, so it is the one place that can say what a context owns: a loader, a
+ * diagnosti cs struct when validation was asked for, a GLFW window, an instance carrying that
+ * window's required exte nsions, a physical device queried through THAT instance, a VkDevice with
+ * both role queues resolved, and a surface inside the window. Layer: tests. Sees xud.h and the
+ * internal module headers of the layers under the public API (xud_loader.h, xud_vulkan.h,
+ * xud_diagnostics.h, xud_instance.h, xud_physical.h, xud_device.h, xud_window.h) so the layers can
+ * be unit-tested on their own; user code i ncludes xud.h only. xud_core.h is included here too from
+ * S8 on: the ownership step is a bout what the context owns, and the only way to say that in a test
+ * is to read the field s it owns them through - user code still never sees them.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -33,6 +42,7 @@
 #include <string.h>
 
 #include "xud.h"
+#include "xud_core.h"
 #include "xud_device.h"
 #include "xud_diagnostics.h"
 #include "xud_instance.h"
@@ -184,12 +194,16 @@ static void xud_test_init_arg_validation(void) {
         "zero height must be rejected");
     xud_check(xud_init_context(&context, XUD_MAX_WINDOW_EXTENT + 1u, 480) == XUD_INVALID_ARG,
         "init/extent-too-large", "an absurd extent must be rejected host-side");
-    xud_check(
-        xud_init_context(&context, XUD_MAX_WINDOW_EXTENT, XUD_MAX_WINDOW_EXTENT) == XUD_UNSUPPORTED,
-        "init/extent-at-limit", "the limit itself must be accepted");
+    xud_check(xud_init_context(&context, 0, XUD_MAX_WINDOW_EXTENT + 1u) == XUD_INVALID_ARG,
+        "init/zero-height-over-limit", "both halves bad at once is still one bad argument");
 
+    /* The limit itself is not checked here: it is inside the argument bound, so it reaches the
+       windo w layer and a real window is opened, which is the boundary test's job, not this one's.
+       The bound r elation that makes the limit accepted is checked in
+       xud_test_init_bringup_boundary().
+     */
     xud_check(context == NULL, "init/out-param-stays-null",
-        "every failure path must leave the out-param NULL");
+        "every failure path above must leave the out-param NULL");
 }
 
 /* The loader layer, unit-tested on its own: open, table contents, the two bind rungs, close. */
@@ -1485,26 +1499,64 @@ static void xud_test_vulkan_supported(void) {
     printf("note: xud_vulkan_supported() -> %s\n", xud_result_name(first));
 }
 
-/* Bring-up boundary: the loader and the instance layer exist now, but the layers below the
-   instance (device, queue, surface, swapchain) do not - so a valid request must still report
-   XUD_UNSUPPORTED rather than hand back a context that owns an instance and no way to use it. */
+/* Bring-up boundary, S8's shape: the context owns loader/diagnostics/window/instance/physica
+   l/device/surface now, so a valid request completes on a machine that has both a Vulkan loader an
+   d a window system, and is refused XUD_UNSUPPORTED on one that has either missing. Which of the tw
+   o this machine is cannot be assumed - that is the whole point of the headless run - and what has
+   t o hold either way is the out-param contract: a refused request hands back nothing, and a
+   complete d one hands back a context that closes back to nothing. The full create-then-destroy
+   pass, with th e ownership checks and the validation-clean requirement, is xud_test_gpu_context()
+   below the gate; here stays the boundary, and at most two real windows are opened by it. */
 static void xud_test_init_bringup_boundary(void) {
     XudContext* context = NULL;
+    XudResult smallest = XUD_INVALID_ARG;
     const XudResult result = xud_init_context(&context, 640, 480);
 
-    xud_check(result == XUD_UNSUPPORTED, "init/bringup-incomplete",
-        "valid args must yield XUD_UNSUPPORTED until the layers below the instance land");
-    xud_check(context == NULL, "init/no-context-on-unsupported",
-        "an incomplete bring-up must not return a context");
+    xud_check((result == XUD_OK) || (result == XUD_UNSUPPORTED), "init/complete-or-refused",
+        "a valid request either completes to a context or is refused outright, never a"
+        " half-built one");
+    if (result == XUD_OK) {
+        xud_check(
+            context != NULL, "init/ok-hands-context", "a completed bring-up hands back a context");
+        xud_check(xud_close_context(&context) == XUD_OK, "init/ok-closes-clean",
+            "and it tears back down with nothing refused");
+        xud_check(
+            context == NULL, "init/ok-cleared", "and the out-param is cleared by the teardown");
+    } else {
+        xud_check(context == NULL, "init/no-context-on-refusal",
+            "a refused request must not return a context");
+    }
 
-    /* The same must hold for the smallest and the largest accepted extents. */
-    xud_check(xud_init_context(&context, 1, 1) == XUD_UNSUPPORTED, "init/min-extent",
-        "1x1 must be accepted then reported unsupported");
-    xud_check(context == NULL, "init/min-extent-null", "out-param must stay NULL");
-    xud_check(
-        xud_init_context(&context, XUD_MAX_WINDOW_EXTENT, XUD_MAX_WINDOW_EXTENT) == XUD_UNSUPPORTED,
-        "init/extent-at-limit", "the limit itself must be accepted");
-    xud_check(context == NULL, "init/limit-extent-null", "out-param must stay NULL");
+    /* The smallest accepted extent: inside the argument bound, so not a bad argument, and whatev
+       er the window system makes of a 1x1 window is that system's answer, not a library failure. A
+       comp letion must close back to nothing; a refusal must hand back nothing. Both are the same
+       contract the 640x480 call above is checking, at the other end of the accepted range.
+     */
+    smallest = xud_init_context(&context, 1, 1);
+    xud_check(smallest != XUD_INVALID_ARG, "init/min-extent-accepted",
+        "1x1 is inside the argument bound, so it is not a bad argument");
+    if (smallest == XUD_OK) {
+        xud_check(context != NULL, "init/min-extent-hands-context",
+            "a 1x1 window the compositor accepted comes back as a context");
+        xud_check(xud_close_context(&context) == XUD_OK, "init/min-extent-closes",
+            "and it tears back down with nothing refused");
+    } else {
+        xud_check(context == NULL, "init/min-extent-null",
+            "a 1x1 window the compositor refused hands back nothing");
+    }
+
+    /* The extent bound, without creating a window at the limit: XUD_MAX_WINDOW_EXTENT is what the
+       argument check accepts up to, XUD_WINDOW_MAX_EXTENT is what GLFW's int extents cap at, and th
+       e first sitting inside the second is the whole reason the limit itself is not a bad argument.
+       Th e compositor's answer to a 16384x16384 window is not a property of this library, so it is
+       not aske d here.
+     */
+    xud_check(XUD_MAX_WINDOW_EXTENT <= XUD_WINDOW_MAX_EXTENT, "init/extent-limit-inside-glfw-bound",
+        "the accepted limit must be inside GLFW's own int bound");
+    xud_check(xud_init_context(&context, XUD_MAX_WINDOW_EXTENT + 1u, XUD_MAX_WINDOW_EXTENT)
+            == XUD_INVALID_ARG,
+        "init/limit-extent-rejected", "one above the limit is a bad argument");
+    xud_check(context == NULL, "init/limit-extent-null", "and nothing was handed back");
 }
 
 static void xud_test_close(void) {
@@ -1517,18 +1569,27 @@ static void xud_test_close(void) {
     xud_check(context == NULL, "close/leaves-null", "closing a NULL context keeps it NULL");
 }
 
-/* Every rejected and every incomplete init must free what it allocated - including the
-   instance and the loader handle it opened before reporting the bring-up incomplete. The
-   verdict is the sanitizer/valgrind report over these 1000 iterations (each one a dlopen/dlsym
-   plus a vkCreateInstance/vkDestroyInstance cycle where a driver is present), not an assertion
-   here. */
+/* Every rejected init must free what it allocated. Rejected extents only here, and that is a
+   change from the run before S8: a valid request completes now, so a thousand iterations of thos
+   e would be a thousand real GLFW windows and a thousand real VkDevices rather than the argument c
+   heck this loop is about. The full-cycle leak verdict is xud_test_gpu_context()'s, under the gate,
+   where the same loop runs a small number of times and the sanitizer report over that run is the ve
+   rdict (AGENTS.md records what that run reports, including the one external libdecor allocation th
+   at is not ours). Nothing above here is reached: both calls are refused before a single allocation
+   is made, so the loop is deterministic and driver-free either way. */
 static void xud_test_no_leak(void) {
     for (int i = 0; i < 1000; i++) {
         XudContext* context = NULL;
-        (void)xud_init_context(&context, 64u + (uint32_t)i, 480u);
+        (void)xud_init_context(&context, 0u, 480u);
+        (void)xud_close_context(&context);
+        (void)xud_init_context(&context, XUD_MAX_WINDOW_EXTENT + 1u, 480u);
+        (void)xud_close_context(&context);
+        (void)xud_init_context(&context, 480u, XUD_MAX_WINDOW_EXTENT + 1u);
+        xud_check(context == NULL, "no-leak/rejected-hands-nothing",
+            "a refused init must leave the out-param NULL, on every iteration");
         (void)xud_close_context(&context);
     }
-    xud_check(1, "no-leak/ran", "1000 init+close iterations completed");
+    xud_check(1, "no-leak/ran", "1000 rejected init+close iterations completed");
 }
 
 /* GPU-gated: the diagnostics layer against the real driver. Verified here on 2026-10-16 with
@@ -2547,6 +2608,179 @@ static void xud_test_gpu_window(void) {
     xud_check(loader == NULL, "gpu-window/loader-null", "and cleared");
 }
 
+/* How many full create+destroy cycles the GPU test below runs. Small on purpose: each one is a
+   real GLFW window on this machine's Wayland session and a real VkDevice, so the count is a time an
+   d a screen-flicker budget, not a coverage one - the verdict it exists for is the sanitizer report
+   o ver the run, and 25 cycles of the whole ladder is 25 chances to catch a leak in it. */
+#define XUD_TEST_GPU_CONTEXT_CYCLES 25
+
+/* GPU-gated: the whole context lifecycle against the real driver - S8's ownership step. This i
+   s the one place in the run that creates a context, so it is the one place that can say what a con
+   text owns: a loader, a diagnostics struct when validation was asked for, a GLFW window, a
+   VkInstan ce carrying that window's required instance extensions, a physical device queried
+   through THAT insta nce, a VkDevice created from that device's recorded caps with both role queues
+   resolved, and a VkSurf aceKHR for the window. Nothing below the device layer is owned yet - the
+   swapchain and the allocator fiel ds stay sentinels, and the checks below say so rather than
+   assuming it. The teardown is xud_close_conte xt()'s order (device -> surface -> window ->
+   physical -> instance -> diagnostics -> loader) and the run has to be validation-clean, not just
+   crash-free: the messenger is installed, so a validation complaint would lan d in the callback and
+   the error counter below must stay zero. The repeated create+destroy loop is here for th e same
+   reason xud_test_no_leak() exists - the verdict is the sanitizer report over these cycles, and
+   each one i s a real window and a real device, so the count is small. */
+static void xud_test_gpu_context(void) {
+    XudContext* context = NULL;
+    XudResult result = XUD_OK;
+    int cycle = 0;
+
+    result = xud_init_context(&context, 320u, 240u);
+    xud_check(result == XUD_OK, "gpu-context/bringup-completes",
+        "this machine has a Vulkan loader and a Wayland session, so the ladder must complete");
+    if (context == NULL)
+        return;
+
+    xud_check(context->width == 320u, "context/extent-width",
+        "the extent asked for is the extent recorded");
+    xud_check(context->height == 240u, "context/extent-height", "and so is the other half of it");
+    xud_check(context->validate == XUD_VALIDATE, "context/validate-snapshot",
+        "the context carries the XUD_VALIDATE build switch it was built with, as a snapshot");
+
+    xud_check(context->loader != NULL, "context/owns-loader", "the context owns its loader");
+    xud_check(xud_loader_is_open(context->loader), "context/loader-open",
+        "and it is open, which is the invariant every layer above checks");
+
+    xud_check(context->window != NULL, "context/owns-window",
+        "a context that completed owns a GLFW window");
+    xud_check(context->window->glfwWindow != NULL, "context/window-live",
+        "and GLFW's own window handle is live in it");
+    xud_check(context->window->width == 320u, "context/window-extent",
+        "the window was opened at the context's extent");
+    xud_check(context->window->requiredInstanceExtensionCount == 2u,
+        "context/window-required-names",
+        "GLFW's Wayland backend asked for exactly two instance-level names, recorded at open time");
+
+    xud_check(context->instance != NULL, "context/owns-instance", "and an instance");
+    xud_check(context->instance->instance != VK_NULL_HANDLE, "context/instance-live",
+        "whose VkInstance handle is live");
+    xud_check(xud_loader_instance_bound(context->loader, context->instance->instance),
+        "context/loader-bound-to-own-instance",
+        "and the loader's instance rows are this instance's rows, not another context's");
+
+    /* The load-bearing fact from S7, one rung up: glfwCreateWindowSurface resolves vkCreateWayland
+       SurfaceKHR through vkGetInstanceProcAddr against the instance it is handed, so the instance a
+        surface is created for has to carry GLFW's window-system name. VK_KHR_surface is wanted by
+       the instance layer already, so it must appear exactly once - the dedup is what makes a merged
+       insta nce enable four names here, not five.
+     */
+    {
+        bool waylandName = false;
+        uint32_t surfaceRows = 0u;
+        uint32_t row = 0u;
+        for (row = 0u; row < context->instance->enabledExtensionCount; row++) {
+            if (xud_name_equal(
+                    context->instance->enabledExtensionNameStorage[row], "VK_KHR_wayland_surface"))
+                waylandName = true;
+            if (xud_name_equal(context->instance->enabledExtensionNameStorage[row],
+                    VK_KHR_SURFACE_EXTENSION_NAME))
+                surfaceRows++;
+        }
+        xud_check(waylandName, "context/wayland-name-enabled",
+            "the window system's own name is in the instance's enabled list");
+        xud_check(surfaceRows == 1u, "context/surface-name-not-duplicated",
+            "VK_KHR_surface is wanted by the instance layer and by GLFW, and is enabled once");
+        xud_check(context->instance->enabledExtensionCount >= 4u, "context/enabled-count-merged",
+            "this layer's three names plus GLFW's wayland name, at least");
+    }
+
+    xud_check(context->physicalDevice != NULL, "context/owns-physical", "and a physical device");
+    xud_check(context->physicalDevice->physicalDevice != VK_NULL_HANDLE, "context/physical-live",
+        "whose handle is live");
+    xud_check(context->physicalDevice->caps.queueFamilyIndex != XUD_PHYSICAL_NO_QUEUE_FAMILY,
+        "context/queue-family-chosen",
+        "and the physical layer chose a graphics family, which is what the device row below uses");
+
+    xud_check(context->device != NULL, "context/owns-device", "and a VkDevice");
+    xud_check(
+        context->device->device != VK_NULL_HANDLE, "context/device-live", "whose handle is live");
+    xud_check(context->device->queueRow.queueFamilyIndex
+            == context->physicalDevice->caps.queueFamilyIndex,
+        "context/device-row-is-the-chosen-family",
+        "the device was created for the family the physical layer chose, not another one");
+    xud_check(context->device->queueRow.pQueuePriorities == context->device->queuePriorities,
+        "context/priorities-live",
+        "the row's pointer points into the owning struct, which is what keeps it valid past the "
+        "call");
+    xud_check(context->device->graphicsQueue.queue != VK_NULL_HANDLE,
+        "context/graphics-queue-resolved", "the graphics role resolved");
+    xud_check(context->device->presentQueue.queue != VK_NULL_HANDLE,
+        "context/present-queue-resolved",
+        "and so did the present role - the same handle when the family rowed one queue, which is "
+        "the case here");
+    xud_check(xud_loader_device_bound(context->loader, context->device->device),
+        "context/loader-bound-to-own-device",
+        "and the loader's device rows are this device's rows");
+
+    xud_check(context->window->surface != VK_NULL_HANDLE, "context/surface-live",
+        "the context owns a VkSurfaceKHR, inside the window it owns");
+    xud_check(context->window->surfaceInstance == context->instance->instance,
+        "context/surface-names-own-instance",
+        "and it names the context's own instance, which is the handle vkDestroySurfaceKHR needs "
+        "alive");
+
+    xud_check(context->swapchain == NULL, "context/no-swapchain-yet",
+        "the swapchain is still a sentinel - that rung is not in the tree");
+    xud_check(context->allocator == NULL, "context/no-allocator-yet",
+        "and so is the GPU-memory allocator");
+
+    if (context->validate != 0u) {
+        xud_check(context->diagnostics != NULL, "context/validate-opens-diagnostics",
+            "validation was asked for, so the diagnostics struct is there");
+        xud_check(context->diagnostics->errorMessages == 0u, "context/validation-clean-so-far",
+            "the run must be validation-clean, not just crash-free");
+    } else {
+        xud_check(context->diagnostics == NULL, "context/release-has-no-diagnostics",
+            "a release build asks for no layer at all, and has no diagnostics struct");
+    }
+
+    /* GLFW's presentation query, asked again about the live triple so the gate that refused part-wa
+       y through the ladder above is visible here rather than only implied by the fact that the
+       ladder c ompleted. It is asked about the CHOSEN family, which is the present half of the
+       one-family rule.
+     */
+    {
+        bool supports = false;
+        xud_check(xud_window_presentation_support(
+                      &supports, context->window, context->instance, context->physicalDevice)
+                == XUD_OK,
+            "gpu-context/presentation-query-answers",
+            "GLFW's query runs for this window/device pair");
+        xud_check(supports == true, "gpu-context/presentation-true",
+            "this machine's window system can present to this device, which is why the ladder "
+            "above completed");
+    }
+
+    result = xud_close_context(&context);
+    xud_check(result == XUD_OK, "context/close-clean",
+        "the whole ladder tears back down with nothing refused");
+    xud_check(context == NULL, "context/close-clears", "and the out-param is cleared");
+    xud_check(xud_close_context(&context) == XUD_ALREADY, "context/close-twice",
+        "a second teardown is reported, not a double free");
+
+    /* Repeated full cycles, for the leak verdict rather than for an assertion: each one is a real
+       wi ndow and a real device, created and destroyed. A cycle that this machine cannot complete
+       is repor ted, not assumed - the loop's job is to run the ladder over and over, not to
+       re-prove the checks abo ve.
+     */
+    for (cycle = 0; cycle < XUD_TEST_GPU_CONTEXT_CYCLES; cycle++) {
+        XudContext* once = NULL;
+        (void)xud_init_context(&once, 64u, 64u);
+        if (once != NULL)
+            (void)xud_close_context(&once);
+        xud_check(once == NULL, "gpu-context/cycle-hands-nothing-back",
+            "a cycle hands back nothing once it is closed, whether it completed or was refused");
+    }
+    xud_check(1, "gpu-context/cycles-ran", "the create+destroy cycles completed");
+}
+
 int main(void) {
     const int gpu = xud_gpu_tests_enabled();
 
@@ -2578,6 +2812,7 @@ int main(void) {
         xud_test_gpu_instance();
         xud_test_diagnostics_gpu();
         xud_test_gpu_window();
+        xud_test_gpu_context();
     } else
         printf("gpu checks: skipped (set XUD_GPU_TESTS=1 to run them)\n");
 

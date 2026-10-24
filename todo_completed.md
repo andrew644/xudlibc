@@ -2,6 +2,57 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S8 Context ownership + teardown — one step, landed as one commit 2026-10-24)
+
+- [x] ~~**S8 Ownership + teardown**: the context owns loader/instance/device/**window** (the surface lives inside the windo
+  w now, not in a context field of its own); destroy order device → surface → window → instance; `goto fail` ladder leaks n
+  othing on partial init; a GPU test that creates then destroys and stays validation-clean~~ — **done 2026-10-24**: `src/xu
+  d/xud_core.h`/`xud_core.c` stop being a shell and become **the owner** — `xud_init_context()` runs the whole bring-up ladde
+  r to the surface and `xud_close_context()` is the one teardown order that hands it all back. See AGENTS.md's **Verified con
+  text ownership facts (2026-10-24)** block for the full ground (the bring-up order is the order the dependencies force, not t
+  he bottom-to-top layer order, and it is written in the header comment where it can be read: loader → diagnostics → **windo
+  w** → GLFW's required instance extensions → instance carrying them → messenger → physical through THAT instance → GLFW's p
+  resentation check → device → surface; the window comes **before** the instance because `glfwCreateWindowSurface` resolves v
+  kCreateWaylandSurfaceKHR through `vkGetInstanceProcAddr` **against the instance it is handed**, which is the S7 fact one ru
+  ng up and the whole reason `xud_instance_create()` has an `extraNames`/`extraCount` pair; a merged instance enables four na
+  mes here, not five, because GLFW's Wayland list is exactly `VK_KHR_surface` + `VK_KHR_wayland_surface` and `VK_KHR_surface` i
+  s already wanted — the GPU test asserts the dedup directly; teardown is `device → surface → window → physical → instance → d
+  iagnostics → loader`, the swapchain slots before the device when it lands, and every step is load-bearing: a `VkDevice` is cr
+  eated from a `VkPhysicalDevice` so it goes first, `vkDestroySurfaceKHR` needs the owning `VkInstance` alive and `xud_window_c
+  lose()` **refuses** a window whose surface is live so the surface goes before the window, a `VkPhysicalDevice` is a query resu
+  lt **of** an instance so it goes before it, and `xud_instance_destroy()` tears the messenger down through the still-alive insta
+  nce before `xud_diagnostics_close()` frees the struct; `xud_init_context()`'s failure path calls `xud_close_context()`, so a p
+  artial bring-up leaks nothing and there is exactly one teardown order in the tree; `xud_close_context()` is idempotent per run
+  g and returns the **first** non-`XUD_OK`, non-`XUD_ALREADY` result, so a lost device (`XUD_LOST`) and a NULL loader row are rep
+  orted, not hidden, and the remaining rungs still run; the presentation check is a **refusal**, not a bad argument, and it is as
+  ked about the physical layer's **chosen** family, the present half of the one-family rule; `XUD_VALIDATE` is snapshotted into th
+  e context and the diagnostics struct is opened on that copy; the context carries **no queue field at all** — `XudQueue` is a reco
+  rd, there is no `vkDestroyQueue`, and both records live inside `XudDevice`).
+
+  **What landed**: `xud_core.h`'s `void *device` sentinel becomes a typed `XudDevice*`, its `void *queueGraphics`/`void *queuePre
+  sent` sentinels are **deleted** rather than filled (a context field for them would be a second, unowned copy of state the device
+  already owns, and the public API has no way to name a queue), `XudWindow* window` moves above `XudInstance*` to match the creation
+  order, and the ownership + teardown comments say exactly what the code does. `xud_core.c` grows the ladder: `xud_window_open()` → `x
+  ud_window_required_instance_extensions()` → `xud_instance_create()` with those names → `xud_diagnostics_create_messenger()` → `xud_phys
+  ical_open()` → `xud_window_presentation_support()` (a `false` answer is `XUD_UNSUPPORTED`, part-way through, unwound through the one teardown
+  order) → `xud_device_open()` → `xud_window_surface_create()`, with the `goto fail` ladder landing in `xud_close_context()` rather than in a per-ru
+  ng unwind. `xud.h`'s two doc comments now describe the completed bring-up and the reverse teardown instead of promising `XUD_UNSUPPORTED`. `hello_conte
+  xt.c`'s comment says the bring-up is complete to the surface and what is still open below it. `xud_test.c` gains `xud_test_gpu_context()` — the one place in
+  the run that creates a **context**, asserting what a context owns field by field (loader open, diagnostics present when validation was asked for and its e
+  rror counter still zero, window live at the context's extent, instance carrying GLFW's wayland name with `VK_KHR_surface` enabled **exactly once**, physical wi
+  th a chosen family, device whose queue row **is** that family and whose priorities pointer is live, both role queues resolved, the loader bound to this instance a
+  nd this device, the surface inside the window naming the context's own instance, and the swapchain/allocator sentinels NULL because those rungs are not in the tree)
+  — plus 25 full create+destroy cycles. The old `init/*` expectations that asserted `XUD_UNSUPPORTED` for valid extents are gone: valid extents now assert **eithe
+  r** outcome, a completion must close back to nothing and a refusal must hand back nothing. `xud_test_no_leak()` no longer runs 1000 full cycles — it runs 1000 **rej
+  ected** extents, which is the leak-free argument it was ever making — because a completed context is what `xud_init_context()` answers on this machine now, and the 1
+  000 full cycles moved to the GPU gate as 25 cycles that are actually a real window and a real `VkDevice` each.
+
+  **Bar met (2026-10-24)**: gcc **and** clang builds green from scratch (`-DCMAKE_C_COMPILER=clang`, warning-free, same counts), headless **1529 checks / 0 failures** (w
+  as 525) and GPU **1786 / 0** (was 719), validation-clean with `VK_INSTANCE_LAYERS` unset **and** forced to `VK_LAYER_KHRONOS_validation` (the only `ERROR/validation` line i
+  n either run is still the diagnostics layer's own synthetic headless probe), `ar -t build/libxud.a` still lists **30** objects (this step added no module — `xud_core.c` was alr
+  eady in the archive), `nm -u build/xud_test` and `nm -u build/hello_context` still list no `vk*` and no `glfw*` symbol and `ldd` lists no `libvulkan`, no `libglfw` and no `libGL`/`l
+  ibEGL` for either. The sanitizer runs report **only** allocations whose whole stack is outside this tree: the 8-byte libdecor/libgdk leak the S7 block records (GLFW `dlopen`s libdecor when it is present) — which now appears in the **headless** run too, because a completed context creates a real window there — and, in the debug config only, **32 bytes per `vkCreateDevice`** allocated inside the **validation layer** (stack: `malloc ← <unknown module> ×4 ← xud_device_open at the `vkCreateDevice` call line`; a `-DXUD_DEBUG=OFF` config, which asks for no layer at all, reports only the libdecor leak, headless and GPU alike). Nothing in xudlibc allocates, frees or can see either one, so there is nothing to fix and **no suppression is installed** to make the runs look clean.
+
 ## Steps complete (S7 The GLFW window + surface rung — one step, landed as one commit 2026-10-23)
 
 - [x] ~~**S7 GLFW window + surface**: `glfwCreateWindowSurface`, `glfwGetRequiredInstanceExtensions` merged into the
