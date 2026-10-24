@@ -131,9 +131,13 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        advertised extensions enabled and, when the diagnostics struct is there, its layers,
        its wanted extensions and its validation-feature request handed over - the instance
        layer checks every one of those against what the driver advertised and enables nothing
-       that was not. XUD_UNSUPPORTED here means the loader is present but refuses to create
+       that was not. NULL/0 for the window layer's required names: xud_init_context() creates no
+       window (there is no public extent-to-window path yet, and the context's window field stays
+       NULL until S8's ownership step), so there is no GLFW window-system extension to ask the ins
+       tance for here. XUD_UNSUPPORTED here means the loader is present but refuses to create
        an instance - a different reason from "no loader", and worth telling apart. */
-    result = xud_instance_create(&context->instance, context->loader, context->diagnostics);
+    result
+        = xud_instance_create(&context->instance, context->loader, context->diagnostics, NULL, 0u);
     if (result != XUD_OK)
         goto fail;
 

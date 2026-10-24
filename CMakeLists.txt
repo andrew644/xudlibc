@@ -192,6 +192,7 @@ add_library(xud STATIC
     src/xud/xud_instance.c
     src/xud/xud_physical.c
     src/xud/xud_device.c
+    src/xud/xud_window.c
 )
 
 # glfw_vendor is an OBJECT library, so its objects go into this archive rather than into a
@@ -216,7 +217,18 @@ target_link_libraries(xud PUBLIC glfw_vendor ${GLFW_WAYLAND_LDFLAGS})
 target_include_directories(xud PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/xud"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/external"
+    "${GLFW_DIR}/include"
 )
+
+# src/external is Volk's home (xud_loader.h includes "volk.h", which must come before <vulkan/vul
+# kan.h> - see the include-order trap in AGENTS.md). ${GLFW_DIR}/include is here because xud_windo
+# w.h - the one header of the window rung - includes <GLFW/glfw3.h>, and it is PUBLIC: the test an
+# d example executables link xud, so they inherit the include path and compile xud_window.h withou
+# t naming GLFW's include dir themselves. Nothing but xud_window.h includes glfw3.h in this tree, an
+# d glfw3.h's Vulkan declarations (glfwVulkanSupported, glfwGetRequiredInstanceExtensions, glfwGetP
+# hysicalDevicePresentationSupport, glfwCreateWindowSurface) sit inside #if defined(VK_VERSION_1_0)
+# -, so <vulkan/vulkan.h> has to be seen first; that is a property of the header's own include bloc
+# k, not of the compile line.
 
 #-------------------------------------------------------------------------------------
 # Tests: headless by default, must stay green with no Vulkan driver present

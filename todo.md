@@ -6,13 +6,9 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] S7 GLFW window + surface: `glfwCreateWindowSurface` (GLFW 3.5.1 — verified present **in the vendored copy**,
-    `glfw/src/vulkan.c` 331), `glfwGetRequiredInstanceExtensions` (264) merged into the instance extension list,
-    `glfwGetPhysicalDevicePresentationSupport` (307) checked against the chosen queue family (this is the **present** half
-    of AGENTS.md's one-family rule — there is no `VK_QUEUE_PRESENT_BIT` in these headers, see the S5.2 grep),
-    `vkDestroySurfaceKHR` on teardown (no `glfwDestroyVulkanSurface` in 3.5, not even in the vendored tree).
-- [ ] S8 Ownership + teardown: the context owns loader/instance/device/surface/queues; destroy order device → surface →
-    instance; `goto fail` ladder leaks nothing on partial init; a GPU test that creates then destroys and stays validation-clean.
+- [ ] S8 Ownership + teardown: the context owns loader/instance/device/**window** (the surface lives inside the window now,
+    not in a context field of its own); destroy order device → surface → window → instance; `goto fail` ladder leaks nothing
+    on partial init; a GPU test that creates then destroys and stays validation-clean.
 - [ ] S9 Docs: file-top comments naming the layer each file owns; one `todo.md` note per step.
 
 ## Next
@@ -242,10 +238,13 @@ See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-s
 detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
 whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
 the same day)**, and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
-**2026-10-23 — S6.6, the vendored GLFW tree built into the archive on the Wayland backend** (the `glfw_vendor` OBJECT
-target, the source set read off upstream's CMake, the generated protocol pairs, the PUBLIC Wayland link). One step
-before it: **S6.5, the loader rework onto vendored Volk** (the thin per-context wrapper over Volk's two tables, the
-`VK_NO_PROTOTYPES` include order, the four layers moved, `volk.c.o` in the archive). Nothing is finished after S6.6.
+**2026-10-23 — S7, the GLFW window + surface rung** (the `xud_window.h`/`xud_window.c` pair, the instance layer
+grown to carry GLFW's required names, the window/surface teardown order, the process-level live-window count).
+One step before it: **2026-10-23 — S6.6, the vendored GLFW tree built into the archive on the Wayland backend**
+(the `glfw_vendor` OBJECT target, the source set read off upstream's CMake, the generated protocol pairs, the PUBLIC
+Wayland link), and before that **S6.5, the loader rework onto vendored Volk** (the thin per-context wrapper over Volk's
+two tables, the `VK_NO_PROTOTYPES` include order, the four layers moved, `volk.c.o` in the archive). Nothing is finished
+after S7.
 
 - 2026-10-23 — **S6.6 the vendored GLFW tree built into the archive (Wayland backend)** — see the *Steps complete
     (S6.6 …)* section at the top of `todo_completed.md` for the full note: `CMakeLists.txt` reads upstream's

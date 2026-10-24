@@ -2,6 +2,51 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S7 The GLFW window + surface rung — one step, landed as one commit 2026-10-23)
+
+- [x] ~~**S7 GLFW window + surface**: `glfwCreateWindowSurface`, `glfwGetRequiredInstanceExtensions` merged into the
+  instance extension list, `glfwGetPhysicalDevicePresentationSupport` checked against the chosen queue family, `vkDestroySurfaceKHR`
+  on teardown~~ — **done 2026-10-23**: `src/xud/xud_window.h` + `src/xud/xud_window.c` land as the **window rung**, above
+  the instance and below the swapchain, and `xud_instance.h`/`xud_instance.c` grow an `extraNames`/`extraCount` parameter
+  so the instance can carry the names GLFW needs. See AGENTS.md's **Verified window + surface facts (2026-10-23)** block
+  for the full ground (the GLFW Vulkan declarations sit inside `#if defined(VK_VERSION_1_0)`, so `<vulkan/vulkan.h>` must
+  precede `<GLFW/glfw3.h>`; GLFW's required list on the Wayland backend is exactly `VK_KHR_surface` + `VK_KHR_wayland_surface`,
+  so a merged instance enables 4 names, not 5; `glfwCreateWindowSurface` resolves `vkCreateWaylandSurfaceKHR` through
+  `vkGetInstanceProcAddr` **against the instance it is handed**, so an instance without GLFW's window-system extension
+  answers `VK_ERROR_EXTENSION_NOT_PRESENT` and the presentation query answers `GLFW_FALSE`; a `VkPhysicalDevice` belongs
+  to the instance it was queried through and the validation layer aborts when it is reused across an instance recreation;
+  `glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API)` is required or `glfw/src/vulkan.c` 110–113 refuses the window with
+  `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`; `glfwCreateWindow` takes `int`, so `XUD_WINDOW_MAX_EXTENT` is `(uint32_t)INT_MAX`;
+  there is no `glfwDestroyVulkanSurface` in 3.5, so teardown is the loader's `vkDestroySurfaceKHR` row, checked **before**
+  the create; presentation support is asked about the physical layer's **chosen** queue family, the present half of the
+  one-family rule; GLFW's state is process-level, so `xudGlfwLiveWindowCount` — the one piece of state in this tree that
+  is not inside `XudContext` — decides when `glfwTerminate()` may run).
+
+  **What landed**: `XudWindow` owns both halves that must die together — the `GLFWwindow*` and the `VkSurfaceKHR` — plus
+  the extent asked for, the instance the surface was created for (borrowed, for the teardown call that needs it) and
+  GLFW's required-name list copied into fixed buffers it owns (`glfwGetRequiredInstanceExtensions` returns pointers into
+  storage GLFW keeps only until `glfwTerminate()`). `xud_window_open`/`xud_window_close` are GLFW's create/destroy,
+  `xud_window_surface_create`/`xud_window_surface_close` are GLFW's create and the loader's destroy row, `xud_window_presentation_support`
+  is GLFW's window-system query, and `xud_window_required_instance_extensions`/`xud_window_check_instance_support` are pure
+  (no GLFW call, no driver call — the headless run covers them completely). `xud_window_close()` **refuses** a window whose
+  surface is still live (`XUD_INVALID_ARG`), which is what makes the teardown order surface → window → instance a property
+  of the layer rather than of the caller, and `xud_core.h`'s surface sentinel becomes a typed `XudWindow*` for the same
+  reason: a `VkSurfaceKHR` cannot be held without the window it was created for. `xud_core.c` passes `NULL, 0u` for the
+  window layer's required names — `xud_init_context()` creates no window, so there is no window-system extension to ask
+  the instance for, and wiring the context's window field is S8's.
+
+  **Bar met (2026-10-23)**: gcc **and** clang builds green from scratch (`-DCMAKE_C_COMPILER=clang`, warning-free over
+  the vendored set and over the new TU), headless **525 checks / 0 failures** (was 472) and GPU **719 / 0** (was 623),
+  validation-clean with `VK_INSTANCE_LAYERS` unset **and** forced to `VK_LAYER_KHRONOS_validation` (the only `ERROR/validation`
+  line in either run is still the diagnostics layer's own synthetic headless probe), `-DXUD_SANITIZERS=ON` green headless
+  (525 / 0, no report) and the GPU run reporting **only** the one external 8-byte leak inside libdecor's GTK plugin that
+  this layer does not own (recorded in `xud_window.c`'s file-top comment and in AGENTS.md, no suppression installed),
+  `ar -t build/libxud.a` lists **30** objects with `xud_window.c.o` among them, `nm -u build/xud_test` lists no `vk*` and
+  no `glfw*` symbol, `ldd` lists no `libvulkan`/`libglfw`/`libGL`/`libEGL`, and `./scripts/format.sh --check` is clean.
+  **Honest boundary**: the window and its surface exist in the GPU test run, not in the context — `xud_init_context()` still
+  creates neither and `xud_core.h`'s `window` field stays NULL; there is still no swapchain, no allocator, and nothing below
+  the physical layer is wired into `XudContext`. That wiring is S8's ownership step.
+
 ## Steps complete (S6.6 The vendored GLFW tree built into the archive — Wayland backend, one step, landed as one commit 2026-10-23)
 
 - [x] ~~Build the **vendored GLFW** tree (`src/external/glfw`, 3.5.1) into the library on the **Wayland** backend~~ —

@@ -46,6 +46,14 @@
 #define XUD_INSTANCE_QUERY_MIN_CAPACITY 16u
 #define XUD_INSTANCE_QUERY_MAX_CAPACITY 512u
 
+/* How many instance-level extensions a layer above this one can ask to have enabled, on top of
+   the diagnostics layer's wanted list: GLFW's window system answers its required list through
+   glfwGetRequiredInstanceExtensions (VK_KHR_surface plus the window system's own name - VK_KHR_wa
+   yland_surface for the vendored Wayland backend, probed here), and xud_window.h sizes its storage
+   by this macro, so the list GLFW answers and the list this layer accepts cannot drift apart. One
+   macro for one number, and the bound of the extra-names array below. */
+#define XUD_INSTANCE_EXTRA_MAX 3u
+
 /* The diagnostics layer's wanted instance-level extensions have exactly one mechanism here:
    xud_diagnostics_wanted_extensions() (xud_diagnostics.h), which xud_instance_create() asks
    before selecting - the accessor, not an array declared here. An `extern const char *const
@@ -79,18 +87,22 @@ XudResult xud_instance_fill_application_info(VkApplicationInfo* outApplicationIn
 /// Choose which of the advertised instance-level extensions to enable: the ones xudlibc
 /// wants that the driver actually advertised, in wanted order (the wanted list itself lives
 /// in xud_instance.c, documented there), then the ones `extraNames`/`extraCount` ask for
-/// on top - the diagnostics layer's list (VK_EXT_debug_utils, VK_EXT_validation_features),
-/// documented in xud_diagnostics.c. Nothing is required - an extension that was not
-/// advertised simply stays out of the list, and the feature that needed it fails later with
-/// XUD_UNSUPPORTED. A name already in the first list is not added twice.
+/// on top - today the diagnostics layer's list (VK_EXT_debug_utils, VK_EXT_validation_features),
+/// documented in xud_diagnostics.c, followed by the window layer's GLFW-required list (VK_KHR
+/// _surface plus the window system's own name, from xud_window.h). Nothing is required - an exten
+/// sion that was not advertised simply stays out of the list, and the feature that needed it fails
+/// later with XUD_UNSUPPORTED. A name already in the first list is not added twice.
 /// Pure: `advertised` is just an array and `extraNames` just an array of names, so tests feed
-/// synthetic ones and the selection is covered with no device present. Rewrites enabledExt
-/// ensionCount/Storage on every call, including when nothing matches. XUD_INVALID_ARG when
-/// `advertised` is NULL while advertisedCount is not 0, or `extraNames` is NULL while
+/// synthetic ones and the selection is covered with no device present. The array is XUD_DIAGNOSTI
+/// CS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX pointers wide - the widest list this header's own
+/// `xud_instance_create()` can build - and the function reads `extraCount` entries, never past it.
+/// Rewrites enabledExtensionCount/Storage on every call, including when nothing matches. XUD_INVA
+/// LID_ARG when `advertised` is NULL while advertisedCount is not 0, or `extraNames` is NULL while
 /// extraCount is not 0.
 XudResult xud_instance_select_extensions(XudInstance* outInstance,
     const VkExtensionProperties* advertised, uint32_t advertisedCount,
-    const char* const extraNames[XUD_DIAGNOSTICS_WANTED_MAX], uint32_t extraCount);
+    const char* const extraNames[XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX],
+    uint32_t extraCount);
 
 /// Assemble the VkInstanceCreateInfo for an XudInstance: sType, pNext NULL when `diagnostics` is
 /// NULL, -> &diagnostics->validationFeatures when it is not **and every extension the
@@ -124,15 +136,23 @@ XudResult xud_instance_fill_create_info(const XudInstance* instance,
 /// forced on. On XUD_OK `outInstance` owns a live VkInstance plus the create-info that produced it;
 /// on any error it stays NULL and everything created so far is destroyed, in reverse creation
 /// order. XUD_INVALID_ARG on a NULL out-pointer, an out-pointer that already owns an instance
-/// (nothing is created twice into the same slot), or a missing/unopen loader. Driver calls, in
-/// order: vkEnumerate InstanceExtensionProperties (twice at least - pCount is input/output, see
-/// xud_instance_query_exten sions), vkCreateInstance through the slot the loader table binds here.
+/// (nothing is created twice into the same slot), or a missing/unopen loader. extraNames/extraCou
+/// nt are a layer above this one's required names - GLFW's window system answers them, and a surf
+/// ace cannot be created for an instance that does not have them enabled, because glfwCreateWind
+/// owSurface resolves vkCreateWaylandSurfaceKHR through vkGetInstanceProcAddr against the instance
+/// it is handed and that row answers NULL otherwise (probed here: the call answered VK_ERROR_EXTEN
+/// SION_NOT_PRESENT for an instance created without it) - so they are appended after the diagnos
+/// tics layer's list and still enabled only if the driver advertised them. NULL/0 when there is no
+/// window above this one. Driver calls, in order: vkEnumerateInstanceExtensionProperties (twice at
+/// least - pCount is input/output, see xud_instance_query_extensions), vkCreateInstance through a
+/// row of the loader's instance table.
 /// vkDestroyInstance is *not* resolved here: it is an instance-level command, vkGetInstanceProcAddr
 /// answers NULL for it without a live handle (verified here), and a failure to resolve it after a
 /// successful create would leave an instance nothing could free - so it is resolved by
 /// xud_instance_destroy(), through the instance it frees.
-XudResult xud_instance_create(
-    XudInstance** outInstance, XudLoader* loader, XudDiagnostics* diagnostics);
+XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader,
+    XudDiagnostics* diagnostics, const char* extraNames[XUD_INSTANCE_EXTRA_MAX],
+    uint32_t extraCount);
 
 /// Destroy the instance and clear the out pointer. The arguments are checked before the state:
 /// XUD_INVALID_ARG when the pointer itself is NULL or the loader is missing/not open, and

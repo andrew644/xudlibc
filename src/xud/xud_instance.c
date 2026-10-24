@@ -82,6 +82,10 @@ static_assert(XUD_DIAGNOSTICS_WANTED_MAX <= XUD_MAX_INSTANCE_EXTENSIONS,
     "the diagnostics wanted list must fit the instance struct");
 static_assert(XUD_INSTANCE_WANTED_COUNT + XUD_DIAGNOSTICS_WANTED_MAX <= XUD_MAX_INSTANCE_EXTENSIONS,
     "both wanted lists must fit the instance struct");
+static_assert(XUD_INSTANCE_WANTED_COUNT + XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX
+        <= XUD_MAX_INSTANCE_EXTENSIONS,
+    "all three wanted lists - this layer's, the diagnostics layer's, the window layer's GLFW requi"
+    "res - must fit the instance struct");
 
 /* Internal: the instance-level extensions the loader advertises, as a heap array the caller
    frees. vkEnumerateInstanceExtensionProperties has no count-only form: pCount is input/output,
@@ -199,7 +203,8 @@ static XudResult xud_instance_enable_if_advertised(XudInstance* outInstance,
 
 XudResult xud_instance_select_extensions(XudInstance* outInstance,
     const VkExtensionProperties* advertised, uint32_t advertisedCount,
-    const char* const extraNames[XUD_DIAGNOSTICS_WANTED_MAX], uint32_t extraCount) {
+    const char* const extraNames[XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX],
+    uint32_t extraCount) {
     uint32_t wantedIndex = 0u;
     uint32_t extraIndex = 0u;
     XudResult result = XUD_INVALID_ARG;
@@ -324,20 +329,22 @@ XudResult xud_instance_fill_create_info(const XudInstance* instance,
     return XUD_OK;
 }
 
-XudResult xud_instance_create(
-    XudInstance** outInstance, XudLoader* loader, XudDiagnostics* diagnostics) {
+XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader,
+    XudDiagnostics* diagnostics, const char* extraNames[XUD_INSTANCE_EXTRA_MAX],
+    uint32_t extraCount) {
     XudInstance* instance = NULL;
     VkExtensionProperties* advertised = NULL;
     VkInstanceCreateInfo createInfo;
     const char* nameSlots[XUD_MAX_INSTANCE_EXTENSIONS];
-    const char* diagnosticsWanted[XUD_DIAGNOSTICS_WANTED_MAX] = { NULL };
+    const char* requestedWanted[XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX] = { NULL };
     XudResult result = XUD_INVALID_ARG;
     uint32_t advertisedCount = 0u;
+    uint32_t requestedWantedCount = 0u;
     uint32_t diagnosticsWantedCount = 0u;
     VkResult vk;
 
     if ((outInstance == NULL) || (*outInstance != NULL) || (loader == NULL)
-        || (!xud_loader_is_open(loader)))
+        || (!xud_loader_is_open(loader)) || ((extraNames == NULL) && (extraCount != 0u)))
         return XUD_INVALID_ARG;
 
     instance = calloc(1, sizeof(XudInstance));
@@ -363,13 +370,28 @@ XudResult xud_instance_create(
        no messenger to ask for and no validation request to carry, so the pair stays out of the
        enabled list. */
     if (diagnostics != NULL) {
-        result = xud_diagnostics_wanted_extensions(diagnosticsWanted, &diagnosticsWantedCount);
+        result = xud_diagnostics_wanted_extensions(
+            &requestedWanted[requestedWantedCount], &diagnosticsWantedCount);
         if (result != XUD_OK)
             goto fail;
+        requestedWantedCount += diagnosticsWantedCount;
+    }
+
+    /* A layer above this one - the window layer, xud_window.h - asks for GLFW's required inst
+       ance-level extensions here rather than creating a second instance beside this one: glfwCrea
+       teWindowSurface resolves vkCreateWaylandSurfaceKHR through vkGetInstanceProcAddr against the
+       instance it is handed, and that row answers NULL for an instance that does not have the exte
+       nsion enabled (probed here: the call answered VK_ERROR_EXTENSION_NOT_PRESENT, and glfwGetPhy
+       sicalDevicePresentationSupport answered GLFW_FALSE, for exactly such an instance). The names
+       are still only enabled if the driver advertised them - the selection below enables no name i
+       t has not seen, in either case. */
+    if (extraCount != 0u) {
+        for (uint32_t extra = 0u; extra < extraCount; extra++)
+            requestedWanted[requestedWantedCount++] = extraNames[extra];
     }
 
     result = xud_instance_select_extensions(
-        instance, advertised, advertisedCount, diagnosticsWanted, diagnosticsWantedCount);
+        instance, advertised, advertisedCount, requestedWanted, requestedWantedCount);
     if (result != XUD_OK)
         goto fail;
 
