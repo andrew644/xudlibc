@@ -3,4 +3,4 @@ BasedOnStyle: WebKit
 BreakBeforeBraces: Attach
 Language: Cpp
 Standard: c++11
-ColumnLimit: 100
+ColumnLimit: 1000

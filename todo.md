@@ -6,12 +6,10 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] S9 Docs: file-top comments naming the layer each file owns; one `todo.md` note per step.
+- [ ] Handle layer: the one `XudHandle` type — the rung below the swapchain, see *Next* below
 
 ## Next
 
-- [ ] Swapchain creation + recreate on window resize (never leak the old one) — explicit-pass path: the `VkFramebuffer`
-    array is per swapchain image and is recreated with the swapchain
 - [ ] First triangle end to end on the **explicit `VkRenderPass` + `VkFramebuffer` path** (decided 2026-10-22, see Decided
     below): SPIR-V built by `glslangValidator`, one graphics pipeline, one command buffer, one render pass + one
     framebuffer per image, acquire/submit/present with semaphores + per-image fence; `vkGetDeviceProcAddr` becomes a
@@ -235,13 +233,32 @@ See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-s
 detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
 whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
 the same day)**, and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
-**2026-10-23 — S7, the GLFW window + surface rung** (the `xud_window.h`/`xud_window.c` pair, the instance layer
-grown to carry GLFW's required names, the window/surface teardown order, the process-level live-window count).
-One step before it: **2026-10-23 — S6.6, the vendored GLFW tree built into the archive on the Wayland backend**
-(the `glfw_vendor` OBJECT target, the source set read off upstream's CMake, the generated protocol pairs, the PUBLIC
-Wayland link), and before that **S6.5, the loader rework onto vendored Volk** (the thin per-context wrapper over Volk's
-two tables, the `VK_NO_PROTOTYPES` include order, the four layers moved, `volk.c.o` in the archive). Nothing is finished
-after S7.
+**2026-10-24 — S9, the swapchain rung** (the `xud_swapchain.h`/`xud_swapchain.c` pair, the three surface
+queries, the selection rules, the recreate-on-resize path and the one teardown order that now runs through
+it). One step before it: **2026-10-24 — S8, the context ownership step** (`xud_init_context()` completes to
+the surface, `xud_close_context()` is the one teardown order), and before that **2026-10-23 — S7, the GLFW
+window + surface rung**. Nothing is finished after S9.
+
+- 2026-10-24 — **S9 the swapchain rung** (`src/xud/xud_swapchain.h` + `src/xud/xud_swapchain.c`, and the
+    context wiring that makes it owned) — see the *Steps complete (S9 …)* section at the top of
+    `todo_completed.md` for the full note: `XudSurfaceCaps` records the three surface queries' answers
+    (`vkGetPhysicalDeviceSurfaceCapabilitiesKHR` / `…FormatsKHR` / `…PresentModesKHR`, all three **instance-level**
+    rows because they take a `VkPhysicalDevice`), `XudSwapchain` owns the one `VkSwapchainKHR` this layer creates
+    plus the `VkImage*` array `vkGetSwapchainImagesKHR` handed it (its only heap member — freed, never destroyed,
+    there is no `vkDestroyImage` call in this layer), the three selection rules are pure and `xud_swapchain_fill_create_info()`
+    calls them so the create-info and the record of it cannot disagree, `xud_swapchain_open()` is the whole ladder for
+    one surface or nothing, `xud_swapchain_recreate()` is the one place a swapchain is replaced (create carrying
+    `oldSwapchain` → destroy the old explicitly → query the new images → swap the record), `xud_swapchain_close()` is
+    guard (`xud_device_wait_idle()`) → destroy → free, and `xud_core.c`'s bring-up now completes through the swapchain
+    while `xud_close_context()`'s one teardown order starts with it. Bar: gcc **and** clang syntax-clean over the whole
+    tree, headless **1642/0** (was 1529), GPU **1969/0** (was 1786) and validation-clean with `VK_INSTANCE_LAYERS` unset
+    **and** forced to `VK_LAYER_KHRONOS_validation` (the only `ERROR/validation` line in either run is still the diagnostics
+    layer's own synthetic headless probe), sanitizers reporting **only** the external allocations AGENTS.md records (see
+    *Verified swapchain facts*), `ar -t build/libxud.a` lists **31** objects with `xud_swapchain.c.o` among them, `nm -u`
+    lists no `vk*`/`glfw*` symbol and `ldd` lists no `libvulkan`. **Honest boundary**: the swapchain is created, recreated
+    and destroyed, and the context owns it — but nothing is **drawn** into its images yet: no command buffer, no render
+    pass, no framebuffer, no acquire/present pair. That is the *Next* item above, and `xud_core.h`'s `allocator` field is
+    the one rung still not in the tree.
 
 - 2026-10-23 — **S6.6 the vendored GLFW tree built into the archive (Wayland backend)** — see the *Steps complete
     (S6.6 …)* section at the top of `todo_completed.md` for the full note: `CMakeLists.txt` reads upstream's

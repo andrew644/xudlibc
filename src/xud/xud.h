@@ -9,15 +9,17 @@
  *          Vulkan query xud_vulkan_supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
  *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
- * xud_de vice.h/.c, xud_window.h/.c - and user code includes this header only; tests may include
- * the in ternal ones. Every layer below this one is in the tree now and stays internal like the
- * rest, so n othing about a VkDevice, its queues, a GLFW window or a VkSurfaceKHR is public API
- * yet; the context owns all of them (S8's ownership step is landed, so xud_init_context() completes
- * to the surface and x ud_close_context() tears it all back), and the steps after it (the
- * swapchain, the allocator, the rendere r) are tracked in todo.md and do not exist yet. The window
- * layer is internal for the same reason every l ayer below the public API is: xud.h declares no
- * window type and calls no GLFW function, and the VkSurfaceK HR a context owns lives inside the
- * XudWindow it owns rather than in a field of its own.
+ *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c - and user code includes this
+ *          header only; tests may include the internal ones. Every layer below this one is in the
+ *          tree now and stays internal like the rest, so nothing about a VkDevice, its queues, a
+ *          GLFW window, a VkSurfaceKHR or a VkSwapchainKHR is public API yet; the context owns all
+ *          of them (S8's ownership step is landed and S9's swapchain rung sits on top of it, so
+ *          xud_init_context() completes to the swapchain and xud_close_context() tears it all
+ *          back), and the steps after it (the allocator, the renderer) are tracked in todo.md and
+ *          do not exist yet. The window layer and the swapchain layer are internal for the same
+ *          reason every layer below the public API is: xud.h declares no window type, no swapchain
+ *          type and calls no GLFW function, and the VkSurfaceKHR a context owns lives inside the
+ *          XudWindow it owns rather than in a field of its own.
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -116,34 +118,39 @@ typedef struct XudContext XudContext;
 XudResult xud_vulkan_supported(void);
 
 /// Create the library context for a width x height window, in creation order: volkInitialize() the
-/// loader, open the diagnostics layer when XUD_VALIDATE asked for it, open a GLFW window, create th
-/// e VkInstance carrying that window's required instance extensions, install the debug messenger,
-/// ope n the physical layer through THAT instance (enumerate, rank, record caps), ask GLFW whether
-/// that ph ysical device can present to this window's system, create the VkDevice from the recorded
-/// caps and th e chosen queue family, resolve the two role queues, and create the VkSurfaceKHR for
-/// the window. On en try *outContext must be NULL; it is NULL on every failure path, and every
-/// failure path tears down wha t was built - a refused request leaks nothing and a valid one never
-/// hands back a half-built context. X UD_UNSUPPORTED means this machine cannot host a context at
-/// all (no Vulkan loader, no window system, no d evice this layer can take, a window system this
-/// device cannot present to); the swapchain and the allocator
-///  are the only fields still unfilled, which is why nothing can be drawn yet.
+/// loader, open the diagnostics layer when XUD_VALIDATE asked for it, open a GLFW window, create
+/// the VkInstance carrying that window's required instance extensions, install the debug
+/// messenger, open the physical layer through THAT instance (enumerate, rank, record caps), ask
+/// GLFW whether that physical device can present to this window's system, create the VkDevice from
+/// the recorded caps and the chosen queue family, resolve the two role queues, create the
+/// VkSurfaceKHR for the window, and create the VkSwapchainKHR for that surface on that device (the
+/// three surface queries' answers decide its image count, its format and its present mode -
+/// nothing about it is a constant this layer hoped for). On entry *outContext must be NULL; it is
+/// NULL on every failure path, and every failure path tears down what was built - a refused
+/// request leaks nothing and a valid one never hands back a half-built context. XUD_UNSUPPORTED
+/// means this machine cannot host a context at all (no Vulkan loader, no window system, no device
+/// this layer can take, a window system this device cannot present to, a surface this layer cannot
+/// get a swapchain for); the allocator is the only field still unfilled, which is why nothing can
+/// be drawn yet.
 XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height);
 
-/// Tear the context down in the reverse order of creation - device -> surface -> window -> physic
-/// al -> instance -> diagnostics -> loader - and free it. The device goes first because a VkDevice
-/// is c reated FROM the physical device below it and everything that submits through it belongs to
-/// it; the surfac e goes next because vkDestroySurfaceKHR takes the owning VkInstance, which is
-/// still alive there; the windo w goes after its surface because the window layer refuses a window
-/// whose surface is live and may run glfwTe rminate(), GLFW's own teardown, which must not walk
-/// GLFW's window list while a surface still names a window. The diagnostics struct is destroyed
-/// after the instance because its messenger belongs to that VkInstance and x ud_instance_destroy()
-/// tears the messenger down first, while the instance is still alive. The physical rung is th e
-/// free-only one: a VkPhysicalDevice is a query result of an instance, so closing it frees memory
-/// and calls no d river function. Every rung is XUD_ALREADY on a field that was never filled, which
-/// is why a context rejected part- way through bring-up is closed by this same code path. Returns
-/// the first rung that refused (XUD_LOST included, XUD_ALREADY not counted as a refusal),
-/// XUD_ALREADY if *context was already NULL, XUD_INVALID_ARG if context its elf is NULL. Always
-/// sets *context to NULL when it is not NULL.
+/// Tear the context down in the reverse order of creation - swapchain -> device -> surface ->
+/// window -> physical -> instance -> diagnostics -> loader - and free it. The swapchain goes first
+/// because it is presented through a queue of the device below it, its own close runs that
+/// device's wait-idle guard, and it is the last rung created. The device goes next because a
+/// VkDevice is created FROM the physical device below it and everything that submits through it
+/// belongs to it; the surface goes next because vkDestroySurfaceKHR takes the owning VkInstance,
+/// which is still alive there; the window goes after its surface because the window layer refuses
+/// a window whose surface is live and may run glfwTerminate(), GLFW's own teardown, which must not
+/// walk GLFW's window list while a surface still names a window. The diagnostics struct is
+/// destroyed after the instance because its messenger belongs to that VkInstance and
+/// xud_instance_destroy() tears the messenger down first, while the instance is still alive. The
+/// physical rung is the free-only one: a VkPhysicalDevice is a query result of an instance, so
+/// closing it frees memory and calls no driver function. Every rung is XUD_ALREADY on a field that
+/// was never filled, which is why a context rejected part-way through bring-up is closed by this
+/// same code path. Returns the first rung that refused (XUD_LOST included, XUD_ALREADY not counted
+/// as a refusal), XUD_ALREADY if *context was already NULL, XUD_INVALID_ARG if context itself is
+/// NULL. Always sets *context to NULL when it is not NULL.
 XudResult xud_close_context(XudContext** context);
 
 #ifdef __cplusplus

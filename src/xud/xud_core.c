@@ -2,22 +2,24 @@
  *
  *   xud_core.c - XudContext lifecycle
  *
- *   Owns : argument validation, the context shell allocation, the error-code names, the
- *          runtime Vulkan query, and teardown. Every layer below it is reached from here, and onl
- *          y through its own header: loader, diagnostics, window, instance, physical, device. Not
- *          hing in this file calls a Vulkan or a GLFW entry point directly - each one of them is c
- *          alled by the rung that owns it, the Vulkan ones through a row of the loader's Volk tabl
- *          es - which is what keeps this file free of any Vulkan or GLFW symbol the linker could se
- *          e, and what keeps a machine with no driver and a machine with no window system both onl
- *          y ever getting XUD_UNSUPPORTED, which is what keeps the headless test run green.
- *   Layer: core (bottom of the public API). Sees xud.h, xud_core.h and every layer below it (loade
- *          r, diagnostics, window, instance, physical, device). The diagnostics struct is opened
- * onl y when XUD_VALIDATE asked for validation, and it sits between the loader and the instance in
- * both the open order and the teardown order for the reason the extension gives it: its m essenger
- * is destroyed through the VkInstance that owns it, which must still be alive at tha t call. The
- * window sits above the instance for the same kind of reason - glfwCreateWindowSu rface resolves
- * the window system's surface command through vkGetInstanceProcAddr against the instance it is
- * handed, so the instance cannot exist before the window says which extensions it needs.
+ *   Owns : argument validation, the context shell allocation, the error-code names, the runtime
+ *          Vulkan query, and teardown. Every layer below it is reached from here, and only through
+ *          its own header: loader, diagnostics, window, instance, physical, device, swapchain.
+ *          Nothing in this file calls a Vulkan or a GLFW entry point directly - each one of them
+ *          is called by the rung that owns it, the Vulkan ones through a row of the loader's Volk
+ *          tables - which is what keeps this file free of any Vulkan or GLFW symbol the linker
+ *          could see, and what keeps a machine with no driver and a machine with no window system
+ *          both only ever getting XUD_UNSUPPORTED, which is what keeps the headless test run
+ *          green.
+ *   Layer: core (bottom of the public API). Sees xud.h, xud_core.h and every layer below it
+ *          (loader, diagnostics, window, instance, physical, device, swapchain). The diagnostics
+ *          struct is opened only when XUD_VALIDATE asked for validation, and it sits between the
+ *          loader and the instance in both the open order and the teardown order for the reason
+ *          the extension gives it: its messenger is destroyed through the VkInstance that owns it,
+ *          which must still be alive at that call. The window sits above the instance for the same
+ *          kind of reason - glfwCreateWindowSurface resolves the window system's surface command
+ *          through vkGetInstanceProcAddr against the instance it is handed, so the instance cannot
+ *          exist before the window says which extensions it needs.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -30,6 +32,7 @@
 #include "xud_instance.h"
 #include "xud_loader.h"
 #include "xud_physical.h"
+#include "xud_swapchain.h"
 #include "xud_window.h"
 
 #include <stdbool.h>
@@ -249,13 +252,30 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         goto fail;
 
-    /* The surface, last: it is the one Vulkan object this bring-up needs both the instance's rows
-       and a wi ndow for, and xud_window_surface_create() refuses rather than creating a surface
-       this layer cannot destr oy - the destroy row is checked before the create. It is last in
-       creation order and second in teardown ord er (device -> surface -> window), which is the
-       reason the order below is what it is.
-     */
+    /* The surface, last of the two rungs that need both the instance's rows and a window for: it is
+       the one Vulkan object this bring-up needs both the instance's rows and a window for, and
+       xud_window_surface_create() refuses rather than creating a surface this layer cannot destroy
+       - the destroy row is checked before the create. It is last in creation order among the rungs
+       that name a surface and second in teardown order (swapchain -> device -> surface -> window),
+       which is the reason the order below is what it is. */
     result = xud_window_surface_create(context->window, context->loader, context->instance);
+    if (result != XUD_OK)
+        goto fail;
+
+    /* The swapchain, last of the ladder and the only rung that needs a device AND a surface: it is
+       created for the surface the window owns and on the device the ladder above opened, so it is
+       the one bring-up step that sits below both. Its inputs are the three surface queries' answers
+       (minImageCount, the advertised (format, colorSpace) pairs, the advertised present modes) and
+       the window's own extent - nothing here is a constant this layer hoped for, and the layer
+       answers XUD_UNSUPPORTED for an extent outside the surface's own minImageExtent/maxImageExtent
+       rather than asking the driver. XUD_UNSUPPORTED from here means the surface queries refused,
+       the surface advertises no format / no present mode / no COLOR_ATTACHMENT usage, or a
+       swapchain row of the loader's device table is nil - VK_KHR_swapchain not enabled on the
+       instance is one of the reasons. The presentation check above already refused a window system
+       this physical device cannot present to, which is the gate this rung would otherwise have had
+       to restate. */
+    result = xud_swapchain_open(&context->swapchain, context->loader, context->physicalDevice,
+        context->window, context->device);
     if (result != XUD_OK)
         goto fail;
 
@@ -289,28 +309,33 @@ XudResult xud_close_context(XudContext** context) {
 
     victim = *context;
 
-    /* Destroy order is the reverse of creation: device -> surface -> window -> physical -> instan
-       ce -> diagnostics -> loader. The device goes first because a VkDevice is created FROM the ph
-       ysical device below it and everything that submits through it belongs to it, and its close is
-       the wait-idle guard then vkDestroyDevice through a row of the loader's device table - a swapc
-       hain, when it lands, slots in before it for the same reason. The surface goes next because vk
-       DestroySurfaceKHR takes the owning VkInstance, which is still alive at this point; the window
-        goes after its surface because xud_window_close() refuses a window whose surface is live and
-        may run glfwTerminate(), GLFW's own teardown, which walks GLFW's window list and must not do
-        that while a surface still names a window. The physical rung is the free-only one: a VkPhysi
-       calDevice is a query result, not an object the driver allocated for us, so it frees the caps'
-        extension array and the struct and calls no driver function at all, which is why it can run
-       b efore the instance goes away without owing it anything. The diagnostics struct is the one
-       entr y that is not strictly in that slot - its messenger belongs to the VkInstance, and
-       vkDestroyD ebugUtilsMessengerEXT takes that instance while it is still alive, so
-       xud_instance_destroy() t ears the messenger down first, through the instance it is about to
-       free, and xud_diagnostics_ close() runs after it and only frees the struct (it finds the
-       messenger already VK_NULL_HANDL E there, and the borrowed instance handle cleared, so nothing
-       is called through a dying insta nce). Every rung is XUD_ALREADY on a field that was never
-       filled, which is why a context reje cted part-way through bring-up is closed by this same
-       code path, and every one of them clears its out handle before freeing, so a context torn down
-       twice cannot double-free.
-     */
+    /* Destroy order is the reverse of creation: swapchain -> device -> surface -> window ->
+       physical -> instance -> diagnostics -> loader. The swapchain goes first because it is
+       presented through a queue of the device below it and its own close runs that device's
+       wait-idle guard - a presentation may still be in flight against the swapchain's images, so
+       the guarantee that nothing is in flight has to come before the images go, and it is the last
+       rung created, so it is the first torn down. The device goes next because a VkDevice is
+       created FROM the physical device below it and everything that submits through it belongs to
+       it, and its close is the wait-idle guard then vkDestroyDevice through a row of the loader's
+       device table. The surface goes next because vkDestroySurfaceKHR takes the owning VkInstance,
+       which is still alive at this point; the window goes after its surface because
+       xud_window_close() refuses a window whose surface is live and may run glfwTerminate(), GLFW's
+       own teardown, which walks GLFW's window list and must not do that while a surface still names
+       a window. The physical rung is the free-only one: a VkPhysicalDevice is a query result, not
+       an object the driver allocated for us, so it frees the caps' extension array and the struct
+       and calls no driver function at all, which is why it can run before the instance goes away
+       without owing it anything. The diagnostics struct is the one entry that is not strictly in
+       that slot - its messenger belongs to the VkInstance, and vkDestroyDebugUtilsMessengerEXT
+       takes that instance while it is still alive, so xud_instance_destroy() tears the messenger
+       down first, through the instance it is about to free, and xud_diagnostics_close() runs after
+       it and only frees the struct (it finds the messenger already VK_NULL_HANDLE there, and the
+       borrowed instance handle cleared, so nothing is called through a dying instance). Every rung
+       is XUD_ALREADY on a field that was never filled, which is why a context rejected part-way
+       through bring-up is closed by this same code path, and every one of them clears its out
+       handle before freeing, so a context torn down twice cannot double-free. */
+    rung = xud_swapchain_close(&victim->swapchain, victim->device, victim->loader);
+    if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
+        first = rung;
     rung = xud_device_close(&victim->device, victim->loader);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;

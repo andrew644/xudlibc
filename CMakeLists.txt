@@ -193,6 +193,7 @@ add_library(xud STATIC
     src/xud/xud_physical.c
     src/xud/xud_device.c
     src/xud/xud_window.c
+    src/xud/xud_swapchain.c
 )
 
 # glfw_vendor is an OBJECT library, so its objects go into this archive rather than into a

@@ -2,6 +2,56 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S9 Swapchain rung + context wiring — one step, landed as one commit 2026-10-24)
+
+- [x] ~~**S9 Swapchain**: create the `VkSwapchainKHR` for the surface, recreate it on window resize, never leak the old
+  one; explicit-pass path — the `VkFramebuffer` array is per swapchain image and is recreated with the swapchain~~ —
+  **done 2026-10-24**: `src/xud/xud_swapchain.h`/`src/xud/xud_swapchain.c` land as the rung **above the device and
+  below the renderer**, and `xud_core.c` now creates one as the last rung of the bring-up ladder and destroys one as
+  the first rung of the teardown order. See AGENTS.md's **Verified swapchain facts (2026-10-24)** block for the ground
+  (the three surface queries probed through the validation layer, the create-info fields the validation layer catches,
+  the `oldSwapchain` + explicit-destroy rule, the `maxImageCount == 0` answer, the `4294967295` "undefined" `currentExtent`,
+  the format/present-mode lists this surface advertises, and the two Vulkan names that do **not** exist here).
+
+  **What landed**: `XudSurfaceCaps` records the three surface queries' answers — `VkSurfaceCapabilitiesKHR` plus fixed
+  arrays for the formats (`XUD_SWAPCHAIN_MAX_SURFACE_FORMATS` 32) and the present modes (`XUD_SWAPCHAIN_MAX_PRESENT_MODES`
+  8) — and `xud_swapchain_query_surface()` refuses `VK_INCOMPLETE` and an over-count at those bounds with `XUD_OUT_OF_RESOURCES`
+  rather than truncating, because unlike the extension lists these two bounds are the storage of the struct being filled,
+  not a heap array that can grow. The three selection rules are **pure** (`xud_swapchain_choose_image_count()` / `xud_swapchain_select_format()`
+  / `xud_swapchain_select_present_mode()`) and `xud_swapchain_fill_create_info()` calls them, so the create-info and the
+  record of it cannot disagree — there is exactly one derivation path from the caps to the create-info. `xud_swapchain_open()`
+  is the whole ladder for one surface or nothing (query → assemble → create → query the images, and a swapchain nobody can
+  get an image from is destroyed before the struct goes away). `xud_swapchain_recreate()` is the one place a swapchain is
+  replaced: create carrying `oldSwapchain` → **destroy the old explicitly** (the spec retires its images as part of the
+  create but the handle still has to be destroyed, and a driver that only retired it implicitly would leak it) → query the
+  new images → swap the record; a failed create leaves the old swapchain alive and unchanged (probed), and a successful
+  create followed by a failed image query destroys the new one and leaves the struct in the no-swapchain state with its
+  record still at the extent it **had** a swapchain for, so the retry above cannot answer `XUD_ALREADY` with nothing in
+  hand. `xud_swapchain_close()` is guard → destroy → free: it calls `xud_device_wait_idle()` first, because a presentation
+  may still be in flight against these very images, and a lost device (`XUD_LOST`) is still destroyed and still reported.
+  `xud_swapchain_images_get()` is the accessor that makes a caller above hold an **index** rather than a `VkImage` — a
+  recreate replaces the whole array, so a handle kept across one is refused, not dangling. `XudSwapchain`'s one heap member
+  is the image array, **freed and never destroyed**: there is no `vkDestroyImage` call anywhere in this layer, because the
+  images belong to the swapchain and `vkDestroySwapchainKHR` retires them. `xud_core.h`'s `swapchain` sentinel becomes a
+  typed `XudSwapchain*` (`allocator` is now the only sentinel field left), `xud_core.c` calls `xud_swapchain_open()` after
+  the surface and `xud_swapchain_close()` before `xud_device_close()`, and `xud.h`'s two doc comments say so. `CMakeLists.txt`
+  adds `xud_swapchain.c` to the archive (31 objects).
+
+  **Bar met** (2026-10-24, gcc 16.2.1 + clang 22.1.8): `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` clean
+  over the whole tree, and the same under clang with no warning over the vendored set; headless **1642/0** (was 1529),
+  `XUD_GPU_TESTS=1` **1969/0** (was 1786) and validation-clean with `VK_INSTANCE_LAYERS` unset **and** forced to
+  `VK_LAYER_KHRONOS_validation` (the only `ERROR/validation` line in either run is still the diagnostics layer's own
+  synthetic headless probe); `-DXUD_SANITIZERS=ON` reporting **only** the external allocations AGENTS.md records (see
+  *Verified swapchain facts* — the libdecor/libgdk 8 B and the validation layer's 32 B per `vkCreateDevice`, neither of
+  it ours, no suppression installed); `ar -t build/libxud.a` lists **31** objects with `xud_swapchain.c.o` among them;
+  `nm -u build/xud_test` lists no `vk*` and no `glfw*` symbol and `ldd` lists no `libvulkan`, no `libglfw`, no `libGL`/`libEGL`;
+  `./scripts/format.sh --check` clean.
+
+  **Honest boundary**: the swapchain is created, recreated and destroyed, and the context owns it — but **nothing is drawn
+  into its images yet**: no command buffer, no render pass, no framebuffer, no acquire/present pair, and the `VkFramebuffer`
+  array the item speaks of does not exist yet, so "recreated with the swapchain" is a rule the *Next* step writes against,
+  not a rule this step could test. `xud_core.h`'s `allocator` field is the one rung still not in the tree.
+
 ## Steps complete (S8 Context ownership + teardown — one step, landed as one commit 2026-10-24)
 
 - [x] ~~**S8 Ownership + teardown**: the context owns loader/instance/device/**window** (the surface lives inside the windo

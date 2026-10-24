@@ -7,17 +7,18 @@
  *          xud.h only, and never sees these fields.
  *   Layer: core (bottom of the public API). Every field below the shell is owned from the step
  *          that fills it on: loader from bring-up, diagnostics from the diagnostics step (NULL in
- *          a release build), window from the window step, instance from the instance layer, physic
- *          al device from the physical layer, device from the device layer - all of them filled by
- *          xud_init_context() now, so a context that comes back XUD_OK owns a live GLFW window, a
- *          VkInstance carrying that window's required extensions, a physical device queried throug
- *          h it, a VkDevice created from that device's recorded caps and a VkSurfaceKHR for the wi
- *          ndow. The swapchain and allocator fields are the only sentinels left, filled by the ste
- *          ps after this one (see todo.md). There is deliberately no queue field: XudQueue is a rec
- *          ord of a queue, not an owning type (there is no vkDestroyQueue - grepped in these heade
- *          rs, the name does not exist), and both role records live inside the XudDevice that owns
- *          the handles, so a context field beside it would be a copy of a record with nothing of i
- *          ts own to tear down - read them through xud_device_queue_get().
+ *          a release build), window from the window step, instance from the instance layer,
+ *          physical device from the physical layer, device from the device layer, swapchain from
+ *          the swapchain step - all of them filled by xud_init_context() now, so a context that
+ *          comes back XUD_OK owns a live GLFW window, a VkInstance carrying that window's required
+ *          extensions, a physical device queried through it, a VkDevice created from that device's
+ *          recorded caps, a VkSurfaceKHR for the window and a VkSwapchainKHR for that surface. The
+ *          allocator field is the only sentinel left, filled by the steps after this one (see
+ *          todo.md). There is deliberately no queue field: XudQueue is a record of a queue, not an
+ *          owning type (there is no vkDestroyQueue - grepped in these headers, the name does not
+ *          exist), and both role records live inside the XudDevice that owns the handles, so a
+ *          context field beside it would be a copy of a record with nothing of its own to tear
+ *          down - read them through xud_device_queue_get().
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -31,6 +32,7 @@
 #include "xud_instance.h" /* Required for: XudInstance, the VkInstance the context owns from the instance layer on */
 #include "xud_loader.h" /* Required for: XudLoader, the loader the context owns from bring-up on */
 #include "xud_physical.h" /* Required for: XudPhysicalDevice, the chosen handle plus the caps the context owns from the physical layer on */
+#include "xud_swapchain.h" /* Required for: XudSwapchain, the VkSwapchainKHR plus the images vkGetSwapchainImagesKHR handed it - the context owns one from the swapchain step on, and the teardown order below makes it die before the device whose queue it used */
 #include "xud_window.h" /* Required for: XudWindow, the GLFW window plus the VkSurfaceKHR it was handed - the context will own one, and the teardown order below is what makes the surface die before the window and the window before the instance */
 #include <stdint.h>
 
@@ -42,13 +44,13 @@
    belongs to it, so it goes before the surface and the window whose swapchain would have used it -
    and the surface goes before the window because a VkSurfaceKHR is destroyed by vkDestroySurfaceKHR
    through the instance that window's surface was created for, while glfwTerminate - GLFW's own
-   teardown, wh ich the window layer runs once no live window is left - must not run while a surface
+   teardown, which the window layer runs once no live window is left - must not run while a surface
    still names a window. The diagnostics entry sits where it does because its messenger must die
-   before the VkIn stance it belongs to (vkDestroyDebugUtilsMessengerEXT takes the owning instance,
-   and the extension s say that instance must still be alive) - xud_instance_destroy() does that
-   teardown, and xud_diag nostics_close() only frees the struct once the messenger is gone. The
+   before the VkInstance it belongs to (vkDestroyDebugUtilsMessengerEXT takes the owning instance,
+   and the extension says that instance must still be alive) - xud_instance_destroy() does that
+   teardown, and xud_diagnostics_close() only frees the struct once the messenger is gone. The
    physical entry sits where it does for the same reason one rung down: a VkPhysicalDevice is a
-   query result of an instance, so th e caps it recorded must be gone before that instance is.
+   query result of an instance, so the caps it recorded must be gone before that instance is.
  */
 struct XudContext {
     /* Created and validated at repo skeleton step S1. */
@@ -93,13 +95,26 @@ struct XudContext {
 
     /* Owned from the device layer on: opened by xud_init_context() through xud_device_open(),
        closed by xud_close_context() through xud_device_close() - the wait-idle guard, then
-       vkDestroyDevice through a row of the loader's device table, then free. It is the last Vulkan
-       rung the context owns through a field of its own: the surface below it is owned by the windo
-       w above rather than by a context field, which is why only the swapchain and the allocator fi
-       elds below stay sentinels - those rungs are not in the tree.
-     */
+       vkDestroyDevice through a row of the loader's device table, then free. It is no longer the
+       last Vulkan rung the context owns through a field of its own - the swapchain below it is
+       owned through a field of its own too, and it goes BEFORE this one in teardown order because
+       a swapchain is presented through a queue of this device and its teardown runs the device's
+       own wait-idle guard. The surface below the device is the one Vulkan rung owned by the window
+       above rather than by a context field, which is why no field here names a VkSurfaceKHR. */
     XudDevice* device; /* the VkDevice plus its queue row, its enabled features/extensions and its
                           two role queue records */
+
+    /* Owned from the swapchain step on: opened by xud_init_context() through xud_swapchain_open(),
+       closed by xud_close_context() through xud_swapchain_close() FIRST in the teardown order
+       below - a swapchain is presented through a queue of the device above, so it must be gone
+       before that device is, and its close is the device's own wait-idle guard then
+       vkDestroySwapchainKHR. It is the last field created in bring-up (the surface has to exist
+       before a swapchain can be made for it) and the first torn down, which is what the order
+       comment above states. The images it holds are the swapchain's, not the context's: there is
+       no vkDestroyImage call anywhere in this tree, and xud_swapchain_close() frees the array
+       rather than destroying it. */
+    XudSwapchain* swapchain; /* the VkSwapchainKHR plus the images it was handed, recreated on
+                                window resize */
 
     /* Deliberately absent: the graphics and present queues. XudQueue is a record of a queue, not an
        owning type (grepped in these headers: there is no vkDestroyQueue), and xud_device_open() res
@@ -110,8 +125,11 @@ struct XudContext {
        itself.
      */
 
-    /* Pending: filled by the bring-up layers below, NULL/0 until then. */
-    void* swapchain; /* VkSwapchainKHR, recreated on window resize                 */
+    /* Pending: filled by the bring-up layers below, NULL/0 until then. The allocator is the only
+       sentinel left in this struct - the GPU-memory rung that owns every buffer and image below the
+       swapchain is not in the tree yet (see todo.md), and unlike the swapchain above there is no
+       Vulkan object of that shape to name until it is.
+     */
     void* allocator; /* the single GPU-memory allocator (buffers + images)         */
 };
 
