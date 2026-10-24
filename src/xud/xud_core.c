@@ -167,8 +167,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     result = xud_window_open(&context->window, width, height);
     if (result != XUD_OK)
         goto fail;
-    result
-        = xud_window_required_instance_extensions(context->window, requiredNames, &requiredCount);
+    result = xud_window_required_instance_extensions(context->window, requiredNames, &requiredCount);
     if (result != XUD_OK)
         goto fail;
 
@@ -183,8 +182,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        her e, not five - the instance layer's dedup is what makes that so. XUD_UNSUPPORTED here
        means the l oader is present but refuses to create an instance - a different reason from "no
        loader", and wort h telling apart. */
-    result = xud_instance_create(
-        &context->instance, context->loader, context->diagnostics, requiredNames, requiredCount);
+    result = xud_instance_create(&context->instance, context->loader, context->diagnostics, requiredNames, requiredCount);
     if (result != XUD_OK)
         goto fail;
 
@@ -196,8 +194,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        not a failure: the validation layers are still enabled and still print their own output,
        only our counting callback is missing. Any other failure is torn down below. */
     if (context->diagnostics != NULL) {
-        result = xud_diagnostics_create_messenger(
-            context->diagnostics, context->loader, context->instance->instance);
+        result = xud_diagnostics_create_messenger(context->diagnostics, context->loader, context->instance->instance);
         if (result == XUD_UNSUPPORTED)
             result = XUD_OK; /* no log side on this driver, see the comment above */
         if (result != XUD_OK)
@@ -215,8 +212,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        so the teardown below frees memory and calls no driver function: Vulkan has no vkDestroyP
        hysicalDevice (grepped in these headers, the name does not exist).
      */
-    result
-        = xud_physical_open(&context->physicalDevice, context->loader, context->instance->instance);
+    result = xud_physical_open(&context->physicalDevice, context->loader, context->instance->instance);
     if (result != XUD_OK)
         goto fail;
 
@@ -229,8 +225,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        what the swapchain step below would have had to do anyway - a swapchain on a surface this
        device cannot present to is a swapchain nothing ca n present through.
      */
-    result = xud_window_presentation_support(
-        &presents, context->window, context->instance, context->physicalDevice);
+    result = xud_window_presentation_support(&presents, context->window, context->instance, context->physicalDevice);
     if (result != XUD_OK)
         goto fail;
     if (!presents) {
@@ -247,8 +242,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        refused by that layer, and its own fail ladder destroy s the device it just made, so a
        refusal below here still leaks nothing.
      */
-    result = xud_device_open(
-        &context->device, context->loader, context->physicalDevice, context->instance->instance);
+    result = xud_device_open(&context->device, context->loader, context->physicalDevice, context->instance->instance);
     if (result != XUD_OK)
         goto fail;
 
@@ -274,8 +268,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        instance is one of the reasons. The presentation check above already refused a window system
        this physical device cannot present to, which is the gate this rung would otherwise have had
        to restate. */
-    result = xud_swapchain_open(&context->swapchain, context->loader, context->physicalDevice,
-        context->window, context->device);
+    result = xud_swapchain_open(&context->swapchain, context->loader, context->physicalDevice, context->window, context->device);
     if (result != XUD_OK)
         goto fail;
 

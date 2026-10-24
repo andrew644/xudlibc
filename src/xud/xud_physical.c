@@ -67,8 +67,7 @@
    window-system query (GLFW's glfwGetPhysicalDevicePresentationSupport at S7) - see
    xud_physical_select_queue_family below for what that means for the one-family rule. */
 static_assert(VK_QUEUE_GRAPHICS_BIT != 0u, "the graphics bit must exist");
-static_assert((VK_QUEUE_GRAPHICS_BIT & (VK_QUEUE_GRAPHICS_BIT - 1u)) == 0u,
-    "the graphics check assumes exactly one bit");
+static_assert((VK_QUEUE_GRAPHICS_BIT & (VK_QUEUE_GRAPHICS_BIT - 1u)) == 0u, "the graphics check assumes exactly one bit");
 static_assert((VK_QUEUE_GRAPHICS_BIT & VK_QUEUE_TRANSFER_BIT) == 0u,
     "graphics and transfer must be distinct bits, transfer is recorded but never required");
 
@@ -87,26 +86,19 @@ static_assert((VK_QUEUE_GRAPHICS_BIT & VK_QUEUE_TRANSFER_BIT) == 0u,
    LE in hand, which is why all seven are rows of the instance-level table. The non-2 vkGetPhy
    sicalDeviceProperties form is a row too but is never read here - a ranking policy has to rea
    d deviceType with no extension in hand, this layer reads the *2 form. */
-static_assert(sizeof(PFN_vkEnumeratePhysicalDevices) == sizeof(void*),
-    "the device-list slot must be pointer-sized");
-static_assert(sizeof(PFN_vkGetPhysicalDeviceProperties2) == sizeof(void*),
-    "the properties2 slot must be pointer-sized");
-static_assert(sizeof(PFN_vkGetPhysicalDeviceFeatures2) == sizeof(void*),
-    "the features2 slot must be pointer-sized");
-static_assert(sizeof(PFN_vkGetPhysicalDeviceMemoryProperties2) == sizeof(void*),
-    "the memoryProperties2 slot must be pointer-sized");
-static_assert(sizeof(PFN_vkGetPhysicalDeviceQueueFamilyProperties2) == sizeof(void*),
-    "the queue-family slot must be pointer-sized");
-static_assert(sizeof(PFN_vkEnumerateDeviceExtensionProperties) == sizeof(void*),
-    "the device-extension slot must be pointer-sized");
+static_assert(sizeof(PFN_vkEnumeratePhysicalDevices) == sizeof(void*), "the device-list slot must be pointer-sized");
+static_assert(sizeof(PFN_vkGetPhysicalDeviceProperties2) == sizeof(void*), "the properties2 slot must be pointer-sized");
+static_assert(sizeof(PFN_vkGetPhysicalDeviceFeatures2) == sizeof(void*), "the features2 slot must be pointer-sized");
+static_assert(sizeof(PFN_vkGetPhysicalDeviceMemoryProperties2) == sizeof(void*), "the memoryProperties2 slot must be pointer-sized");
+static_assert(sizeof(PFN_vkGetPhysicalDeviceQueueFamilyProperties2) == sizeof(void*), "the queue-family slot must be pointer-sized");
+static_assert(sizeof(PFN_vkEnumerateDeviceExtensionProperties) == sizeof(void*), "the device-extension slot must be pointer-sized");
 static_assert(VK_FALSE == 0u, "VK_FALSE is zero in these headers");
 static_assert(VK_TRUE == 1u, "VK_TRUE is one in these headers");
 
 /* The apiVersion read-back compares the driver's number with the instance floor. The encoding
    (VK_MAKE_API_VERSION, variant<<22 | major<<12 | minor<<4 | patch) is what makes that
    comparison mean "at or above", and the floor itself is asserted in xud_physical.h. */
-static_assert(VK_API_VERSION_1_0 <= VK_API_VERSION_1_4,
-    "the apiVersion encoding must be ordered, oldest version first");
+static_assert(VK_API_VERSION_1_0 <= VK_API_VERSION_1_4, "the apiVersion encoding must be ordered, oldest version first");
 
 /*-----------------------------------------------------------------------------------------------
  * The features this library wants: one owner per wanted list (AGENTS.md), this layer's decision
@@ -172,8 +164,7 @@ static VkBool32 xud_physical_and_feature(VkBool32 driverHasIt, VkBool32 layerWan
 /// See xud_physical.h for the contract. The wanted list is the file-scope const above, so this
 /// function is the intersection and nothing else: it never turns a feature on that the driver
 /// did not report, and never turns one off that both sides agreed on.
-XudResult xud_physical_record_features(
-    VkPhysicalDeviceFeatures* outEnabledFeatures, const XudDeviceCaps* caps) {
+XudResult xud_physical_record_features(VkPhysicalDeviceFeatures* outEnabledFeatures, const XudDeviceCaps* caps) {
     const VkPhysicalDeviceFeatures* has;
     const VkPhysicalDeviceFeatures* wants;
     VkPhysicalDeviceFeatures* out;
@@ -187,103 +178,70 @@ XudResult xud_physical_record_features(
 
     /* Written in struct order, every field named: see the wanted-list note above for why each
        field is wanted or not. */
-    out->robustBufferAccess
-        = xud_physical_and_feature(has->robustBufferAccess, wants->robustBufferAccess);
-    out->fullDrawIndexUint32
-        = xud_physical_and_feature(has->fullDrawIndexUint32, wants->fullDrawIndexUint32);
+    out->robustBufferAccess = xud_physical_and_feature(has->robustBufferAccess, wants->robustBufferAccess);
+    out->fullDrawIndexUint32 = xud_physical_and_feature(has->fullDrawIndexUint32, wants->fullDrawIndexUint32);
     out->imageCubeArray = xud_physical_and_feature(has->imageCubeArray, wants->imageCubeArray);
-    out->independentBlend
-        = xud_physical_and_feature(has->independentBlend, wants->independentBlend);
+    out->independentBlend = xud_physical_and_feature(has->independentBlend, wants->independentBlend);
     out->geometryShader = xud_physical_and_feature(has->geometryShader, wants->geometryShader);
-    out->tessellationShader
-        = xud_physical_and_feature(has->tessellationShader, wants->tessellationShader);
-    out->sampleRateShading
-        = xud_physical_and_feature(has->sampleRateShading, wants->sampleRateShading);
+    out->tessellationShader = xud_physical_and_feature(has->tessellationShader, wants->tessellationShader);
+    out->sampleRateShading = xud_physical_and_feature(has->sampleRateShading, wants->sampleRateShading);
     out->dualSrcBlend = xud_physical_and_feature(has->dualSrcBlend, wants->dualSrcBlend);
     out->logicOp = xud_physical_and_feature(has->logicOp, wants->logicOp);
-    out->multiDrawIndirect
-        = xud_physical_and_feature(has->multiDrawIndirect, wants->multiDrawIndirect);
-    out->drawIndirectFirstInstance = xud_physical_and_feature(
-        has->drawIndirectFirstInstance, wants->drawIndirectFirstInstance);
+    out->multiDrawIndirect = xud_physical_and_feature(has->multiDrawIndirect, wants->multiDrawIndirect);
+    out->drawIndirectFirstInstance = xud_physical_and_feature(has->drawIndirectFirstInstance, wants->drawIndirectFirstInstance);
     out->depthClamp = xud_physical_and_feature(has->depthClamp, wants->depthClamp);
     out->depthBiasClamp = xud_physical_and_feature(has->depthBiasClamp, wants->depthBiasClamp);
-    out->fillModeNonSolid
-        = xud_physical_and_feature(has->fillModeNonSolid, wants->fillModeNonSolid);
+    out->fillModeNonSolid = xud_physical_and_feature(has->fillModeNonSolid, wants->fillModeNonSolid);
     out->depthBounds = xud_physical_and_feature(has->depthBounds, wants->depthBounds);
     out->wideLines = xud_physical_and_feature(has->wideLines, wants->wideLines);
     out->largePoints = xud_physical_and_feature(has->largePoints, wants->largePoints);
     out->alphaToOne = xud_physical_and_feature(has->alphaToOne, wants->alphaToOne);
     out->multiViewport = xud_physical_and_feature(has->multiViewport, wants->multiViewport);
-    out->samplerAnisotropy
-        = xud_physical_and_feature(has->samplerAnisotropy, wants->samplerAnisotropy);
-    out->textureCompressionETC2
-        = xud_physical_and_feature(has->textureCompressionETC2, wants->textureCompressionETC2);
-    out->textureCompressionASTC_LDR = xud_physical_and_feature(
-        has->textureCompressionASTC_LDR, wants->textureCompressionASTC_LDR);
-    out->textureCompressionBC
-        = xud_physical_and_feature(has->textureCompressionBC, wants->textureCompressionBC);
-    out->occlusionQueryPrecise
-        = xud_physical_and_feature(has->occlusionQueryPrecise, wants->occlusionQueryPrecise);
-    out->pipelineStatisticsQuery
-        = xud_physical_and_feature(has->pipelineStatisticsQuery, wants->pipelineStatisticsQuery);
-    out->vertexPipelineStoresAndAtomics = xud_physical_and_feature(
-        has->vertexPipelineStoresAndAtomics, wants->vertexPipelineStoresAndAtomics);
-    out->fragmentStoresAndAtomics
-        = xud_physical_and_feature(has->fragmentStoresAndAtomics, wants->fragmentStoresAndAtomics);
-    out->shaderTessellationAndGeometryPointSize = xud_physical_and_feature(
-        has->shaderTessellationAndGeometryPointSize, wants->shaderTessellationAndGeometryPointSize);
-    out->shaderImageGatherExtended = xud_physical_and_feature(
-        has->shaderImageGatherExtended, wants->shaderImageGatherExtended);
-    out->shaderStorageImageExtendedFormats = xud_physical_and_feature(
-        has->shaderStorageImageExtendedFormats, wants->shaderStorageImageExtendedFormats);
-    out->shaderStorageImageMultisample = xud_physical_and_feature(
-        has->shaderStorageImageMultisample, wants->shaderStorageImageMultisample);
-    out->shaderStorageImageReadWithoutFormat = xud_physical_and_feature(
-        has->shaderStorageImageReadWithoutFormat, wants->shaderStorageImageReadWithoutFormat);
-    out->shaderStorageImageWriteWithoutFormat = xud_physical_and_feature(
-        has->shaderStorageImageWriteWithoutFormat, wants->shaderStorageImageWriteWithoutFormat);
+    out->samplerAnisotropy = xud_physical_and_feature(has->samplerAnisotropy, wants->samplerAnisotropy);
+    out->textureCompressionETC2 = xud_physical_and_feature(has->textureCompressionETC2, wants->textureCompressionETC2);
+    out->textureCompressionASTC_LDR = xud_physical_and_feature(has->textureCompressionASTC_LDR, wants->textureCompressionASTC_LDR);
+    out->textureCompressionBC = xud_physical_and_feature(has->textureCompressionBC, wants->textureCompressionBC);
+    out->occlusionQueryPrecise = xud_physical_and_feature(has->occlusionQueryPrecise, wants->occlusionQueryPrecise);
+    out->pipelineStatisticsQuery = xud_physical_and_feature(has->pipelineStatisticsQuery, wants->pipelineStatisticsQuery);
+    out->vertexPipelineStoresAndAtomics
+        = xud_physical_and_feature(has->vertexPipelineStoresAndAtomics, wants->vertexPipelineStoresAndAtomics);
+    out->fragmentStoresAndAtomics = xud_physical_and_feature(has->fragmentStoresAndAtomics, wants->fragmentStoresAndAtomics);
+    out->shaderTessellationAndGeometryPointSize
+        = xud_physical_and_feature(has->shaderTessellationAndGeometryPointSize, wants->shaderTessellationAndGeometryPointSize);
+    out->shaderImageGatherExtended = xud_physical_and_feature(has->shaderImageGatherExtended, wants->shaderImageGatherExtended);
+    out->shaderStorageImageExtendedFormats
+        = xud_physical_and_feature(has->shaderStorageImageExtendedFormats, wants->shaderStorageImageExtendedFormats);
+    out->shaderStorageImageMultisample = xud_physical_and_feature(has->shaderStorageImageMultisample, wants->shaderStorageImageMultisample);
+    out->shaderStorageImageReadWithoutFormat
+        = xud_physical_and_feature(has->shaderStorageImageReadWithoutFormat, wants->shaderStorageImageReadWithoutFormat);
+    out->shaderStorageImageWriteWithoutFormat
+        = xud_physical_and_feature(has->shaderStorageImageWriteWithoutFormat, wants->shaderStorageImageWriteWithoutFormat);
     out->shaderUniformBufferArrayDynamicIndexing
-        = xud_physical_and_feature(has->shaderUniformBufferArrayDynamicIndexing,
-            wants->shaderUniformBufferArrayDynamicIndexing);
-    out->shaderSampledImageArrayDynamicIndexing = xud_physical_and_feature(
-        has->shaderSampledImageArrayDynamicIndexing, wants->shaderSampledImageArrayDynamicIndexing);
+        = xud_physical_and_feature(has->shaderUniformBufferArrayDynamicIndexing, wants->shaderUniformBufferArrayDynamicIndexing);
+    out->shaderSampledImageArrayDynamicIndexing
+        = xud_physical_and_feature(has->shaderSampledImageArrayDynamicIndexing, wants->shaderSampledImageArrayDynamicIndexing);
     out->shaderStorageBufferArrayDynamicIndexing
-        = xud_physical_and_feature(has->shaderStorageBufferArrayDynamicIndexing,
-            wants->shaderStorageBufferArrayDynamicIndexing);
-    out->shaderStorageImageArrayDynamicIndexing = xud_physical_and_feature(
-        has->shaderStorageImageArrayDynamicIndexing, wants->shaderStorageImageArrayDynamicIndexing);
-    out->shaderClipDistance
-        = xud_physical_and_feature(has->shaderClipDistance, wants->shaderClipDistance);
-    out->shaderCullDistance
-        = xud_physical_and_feature(has->shaderCullDistance, wants->shaderCullDistance);
+        = xud_physical_and_feature(has->shaderStorageBufferArrayDynamicIndexing, wants->shaderStorageBufferArrayDynamicIndexing);
+    out->shaderStorageImageArrayDynamicIndexing
+        = xud_physical_and_feature(has->shaderStorageImageArrayDynamicIndexing, wants->shaderStorageImageArrayDynamicIndexing);
+    out->shaderClipDistance = xud_physical_and_feature(has->shaderClipDistance, wants->shaderClipDistance);
+    out->shaderCullDistance = xud_physical_and_feature(has->shaderCullDistance, wants->shaderCullDistance);
     out->shaderFloat64 = xud_physical_and_feature(has->shaderFloat64, wants->shaderFloat64);
     out->shaderInt64 = xud_physical_and_feature(has->shaderInt64, wants->shaderInt64);
     out->shaderInt16 = xud_physical_and_feature(has->shaderInt16, wants->shaderInt16);
-    out->shaderResourceResidency
-        = xud_physical_and_feature(has->shaderResourceResidency, wants->shaderResourceResidency);
-    out->shaderResourceMinLod
-        = xud_physical_and_feature(has->shaderResourceMinLod, wants->shaderResourceMinLod);
+    out->shaderResourceResidency = xud_physical_and_feature(has->shaderResourceResidency, wants->shaderResourceResidency);
+    out->shaderResourceMinLod = xud_physical_and_feature(has->shaderResourceMinLod, wants->shaderResourceMinLod);
     out->sparseBinding = xud_physical_and_feature(has->sparseBinding, wants->sparseBinding);
-    out->sparseResidencyBuffer
-        = xud_physical_and_feature(has->sparseResidencyBuffer, wants->sparseResidencyBuffer);
-    out->sparseResidencyImage2D
-        = xud_physical_and_feature(has->sparseResidencyImage2D, wants->sparseResidencyImage2D);
-    out->sparseResidencyImage3D
-        = xud_physical_and_feature(has->sparseResidencyImage3D, wants->sparseResidencyImage3D);
-    out->sparseResidency2Samples
-        = xud_physical_and_feature(has->sparseResidency2Samples, wants->sparseResidency2Samples);
-    out->sparseResidency4Samples
-        = xud_physical_and_feature(has->sparseResidency4Samples, wants->sparseResidency4Samples);
-    out->sparseResidency8Samples
-        = xud_physical_and_feature(has->sparseResidency8Samples, wants->sparseResidency8Samples);
-    out->sparseResidency16Samples
-        = xud_physical_and_feature(has->sparseResidency16Samples, wants->sparseResidency16Samples);
-    out->sparseResidencyAliased
-        = xud_physical_and_feature(has->sparseResidencyAliased, wants->sparseResidencyAliased);
-    out->variableMultisampleRate
-        = xud_physical_and_feature(has->variableMultisampleRate, wants->variableMultisampleRate);
-    out->inheritedQueries
-        = xud_physical_and_feature(has->inheritedQueries, wants->inheritedQueries);
+    out->sparseResidencyBuffer = xud_physical_and_feature(has->sparseResidencyBuffer, wants->sparseResidencyBuffer);
+    out->sparseResidencyImage2D = xud_physical_and_feature(has->sparseResidencyImage2D, wants->sparseResidencyImage2D);
+    out->sparseResidencyImage3D = xud_physical_and_feature(has->sparseResidencyImage3D, wants->sparseResidencyImage3D);
+    out->sparseResidency2Samples = xud_physical_and_feature(has->sparseResidency2Samples, wants->sparseResidency2Samples);
+    out->sparseResidency4Samples = xud_physical_and_feature(has->sparseResidency4Samples, wants->sparseResidency4Samples);
+    out->sparseResidency8Samples = xud_physical_and_feature(has->sparseResidency8Samples, wants->sparseResidency8Samples);
+    out->sparseResidency16Samples = xud_physical_and_feature(has->sparseResidency16Samples, wants->sparseResidency16Samples);
+    out->sparseResidencyAliased = xud_physical_and_feature(has->sparseResidencyAliased, wants->sparseResidencyAliased);
+    out->variableMultisampleRate = xud_physical_and_feature(has->variableMultisampleRate, wants->variableMultisampleRate);
+    out->inheritedQueries = xud_physical_and_feature(has->inheritedQueries, wants->inheritedQueries);
 
     return XUD_OK;
 }
@@ -300,8 +258,8 @@ XudResult xud_physical_record_features(
 /// pipelineCacheUUID: VkPhysicalDeviceArchitectureInfo, which names the microarchitecture a
 /// discrete GPU actually is, is not in these headers at all (grepped: zero hits). Ranking is the
 /// plan's "policy later", not something this layer invents - see xud_physical.h.
-XudResult xud_physical_select(uint32_t* outIndex, const VkPhysicalDevice* candidates,
-    const VkPhysicalDeviceProperties2* properties, uint32_t candidateCount) {
+XudResult xud_physical_select(
+    uint32_t* outIndex, const VkPhysicalDevice* candidates, const VkPhysicalDeviceProperties2* properties, uint32_t candidateCount) {
     if (outIndex == NULL)
         return XUD_INVALID_ARG;
 
@@ -330,8 +288,8 @@ XudResult xud_physical_select(uint32_t* outIndex, const VkPhysicalDevice* candid
 /// driver order wins; transfer/compute/granularity are recorded, not required, and presentation
 /// is not a flag at all in these headers (no VK_QUEUE_PRESENT_BIT - grepped), so S7's GLFW check
 /// is what refuses a surface on a family that cannot present.
-XudResult xud_physical_select_queue_family(uint32_t* outIndex, VkQueueFamilyProperties2* outChosen,
-    const VkQueueFamilyProperties2* families, uint32_t familyCount) {
+XudResult xud_physical_select_queue_family(
+    uint32_t* outIndex, VkQueueFamilyProperties2* outChosen, const VkQueueFamilyProperties2* families, uint32_t familyCount) {
     uint32_t i;
 
     if ((outIndex == NULL) || (outChosen == NULL))
@@ -350,8 +308,7 @@ XudResult xud_physical_select_queue_family(uint32_t* outIndex, VkQueueFamilyProp
     }
 
     for (i = 0u; i < familyCount; i++) {
-        if ((families[i].queueFamilyProperties.queueFlags & VK_QUEUE_GRAPHICS_BIT)
-            != VK_QUEUE_GRAPHICS_BIT)
+        if ((families[i].queueFamilyProperties.queueFlags & VK_QUEUE_GRAPHICS_BIT) != VK_QUEUE_GRAPHICS_BIT)
             continue;
 
         *outIndex = i;
@@ -447,9 +404,8 @@ XudResult xud_physical_close(XudPhysicalDevice** physicalDevice) {
    Names is intersected with at S6. The capacity is an out-param because the caps record it next
    to the count: the array is a step of the sequence above, not a tight fit, and xud_physical_clo
    se() frees exactly that block. */
-static XudResult xud_physical_query_device_extensions(const XudLoader* loader,
-    VkPhysicalDevice physicalDevice, VkExtensionProperties** outProperties, uint32_t* outCount,
-    uint32_t* outCapacity) {
+static XudResult xud_physical_query_device_extensions(const XudLoader* loader, VkPhysicalDevice physicalDevice,
+    VkExtensionProperties** outProperties, uint32_t* outCount, uint32_t* outCapacity) {
     VkExtensionProperties* items = NULL;
     uint32_t capacity = XUD_PHYSICAL_QUERY_MIN_CAPACITY;
     uint32_t count = 0u;
@@ -471,8 +427,7 @@ static XudResult xud_physical_query_device_extensions(const XudLoader* loader,
             return XUD_OUT_OF_MEMORY;
 
         count = capacity;
-        vk = loader->instanceTable.vkEnumerateDeviceExtensionProperties(
-            physicalDevice, NULL, &count, items);
+        vk = loader->instanceTable.vkEnumerateDeviceExtensionProperties(physicalDevice, NULL, &count, items);
 
         if ((vk == VK_SUCCESS) && (count <= capacity)) {
             *outProperties = items;
@@ -498,8 +453,8 @@ static XudResult xud_physical_query_device_extensions(const XudLoader* loader,
    hat xud_physical_select_queue_family() answers for an empty list too - the sentinel plus a zer
    oed row, never a row still carrying a family this layer did not check. A count above the capaci
    ty in hand is a driver that wrote past the rows this layer provided: reported, not chased. */
-static XudResult xud_physical_query_queue_families(const XudLoader* loader,
-    VkPhysicalDevice physicalDevice, VkQueueFamilyProperties2** outFamilies, uint32_t* outCount) {
+static XudResult xud_physical_query_queue_families(
+    const XudLoader* loader, VkPhysicalDevice physicalDevice, VkQueueFamilyProperties2** outFamilies, uint32_t* outCount) {
     VkQueueFamilyProperties2* items = NULL;
     uint32_t capacity = XUD_PHYSICAL_QUERY_MIN_CAPACITY;
     uint32_t count = 0u;
@@ -533,8 +488,7 @@ static XudResult xud_physical_query_queue_families(const XudLoader* loader,
         }
 
         count = capacity;
-        loader->instanceTable.vkGetPhysicalDeviceQueueFamilyProperties2(
-            physicalDevice, &count, items);
+        loader->instanceTable.vkGetPhysicalDeviceQueueFamilyProperties2(physicalDevice, &count, items);
 
         if ((count > 0u) && (count <= capacity)) {
             *outFamilies = items;
@@ -557,8 +511,7 @@ static XudResult xud_physical_query_queue_families(const XudLoader* loader,
    maps through xud_result_from_vk; VK_INCOMPLETE means the list was cut at the capacity in hand,
    which is not an error in Vulkan but is here - a device this layer did not see is a device it c
    annot rank, so the doubling continues and a list cut at the cap fails. */
-XudResult xud_physical_query_devices(const XudLoader* loader, VkPhysicalDevice** outCandidates,
-    uint32_t* outCount, VkInstance instance) {
+XudResult xud_physical_query_devices(const XudLoader* loader, VkPhysicalDevice** outCandidates, uint32_t* outCount, VkInstance instance) {
     VkPhysicalDevice* items = NULL;
     uint32_t capacity = XUD_PHYSICAL_QUERY_MIN_CAPACITY;
     uint32_t count = 0u;
@@ -566,8 +519,7 @@ XudResult xud_physical_query_devices(const XudLoader* loader, VkPhysicalDevice**
 
     if ((loader == NULL) || (outCandidates == NULL) || (outCount == NULL))
         return XUD_INVALID_ARG;
-    if ((instance == VK_NULL_HANDLE) || (!xud_loader_is_open(loader))
-        || (loader->instanceTable.vkEnumeratePhysicalDevices == NULL))
+    if ((instance == VK_NULL_HANDLE) || (!xud_loader_is_open(loader)) || (loader->instanceTable.vkEnumeratePhysicalDevices == NULL))
         return XUD_UNSUPPORTED;
 
     *outCandidates = NULL;
@@ -605,8 +557,7 @@ XudResult xud_physical_query_devices(const XudLoader* loader, VkPhysicalDevice**
    calls, enumerate, rank, then record the chosen device's caps. The caps are zeroed as part of
    the one allocation because the four caps getters return void - a field the driver did not wri
    te has to be at a valid zero state, never at uninitialised memory (see xud_physical.h). */
-XudResult xud_physical_open(
-    XudPhysicalDevice** outPhysicalDevice, XudLoader* loader, VkInstance instance) {
+XudResult xud_physical_open(XudPhysicalDevice** outPhysicalDevice, XudLoader* loader, VkInstance instance) {
     XudPhysicalDevice* physicalDevice = NULL;
     XudDeviceCaps* caps = NULL;
     VkPhysicalDevice* candidates = NULL;
@@ -622,8 +573,7 @@ XudResult xud_physical_open(
     uint32_t familyIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
     uint32_t candidate = 0u;
 
-    if ((outPhysicalDevice == NULL) || (*outPhysicalDevice != NULL) || (loader == NULL)
-        || (instance == VK_NULL_HANDLE))
+    if ((outPhysicalDevice == NULL) || (*outPhysicalDevice != NULL) || (loader == NULL) || (instance == VK_NULL_HANDLE))
         return XUD_INVALID_ARG;
     if (!xud_loader_is_open(loader))
         return XUD_UNSUPPORTED;
@@ -653,8 +603,7 @@ XudResult xud_physical_open(
                                       called */
         goto fail;
     }
-    if ((loader->instanceTable.vkEnumeratePhysicalDevices == NULL)
-        || (loader->instanceTable.vkGetPhysicalDeviceProperties2 == NULL)
+    if ((loader->instanceTable.vkEnumeratePhysicalDevices == NULL) || (loader->instanceTable.vkGetPhysicalDeviceProperties2 == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceFeatures2 == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceMemoryProperties2 == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceQueueFamilyProperties2 == NULL)
@@ -684,8 +633,7 @@ XudResult xud_physical_open(
     for (candidate = 0u; candidate < candidateCount; candidate++) {
         properties[candidate].sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
         properties[candidate].pNext = NULL;
-        loader->instanceTable.vkGetPhysicalDeviceProperties2(
-            candidates[candidate], &properties[candidate]);
+        loader->instanceTable.vkGetPhysicalDeviceProperties2(candidates[candidate], &properties[candidate]);
     }
 
     result = xud_physical_select(&chosenIndex, candidates, properties, candidateCount);
@@ -704,27 +652,23 @@ XudResult xud_physical_open(
 
     caps->features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     caps->features.pNext = NULL;
-    loader->instanceTable.vkGetPhysicalDeviceFeatures2(
-        physicalDevice->physicalDevice, &caps->features);
+    loader->instanceTable.vkGetPhysicalDeviceFeatures2(physicalDevice->physicalDevice, &caps->features);
 
     caps->memoryProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
     caps->memoryProperties.pNext = NULL;
-    loader->instanceTable.vkGetPhysicalDeviceMemoryProperties2(
-        physicalDevice->physicalDevice, &caps->memoryProperties);
+    loader->instanceTable.vkGetPhysicalDeviceMemoryProperties2(physicalDevice->physicalDevice, &caps->memoryProperties);
 
     /* The chain rule, checked not assumed: this layer provided no chained struct for any of the
        three *2 queries, so a driver that wrote one into pNext is a driver whose caps this layer
        cannot hand on - the caps' pNext is never walked by xud_physical_close(), and a struct the
        layer does not own is not something a later layer may read. Probed here (lavvk): NULL in,
        NULL out for all three. */
-    if ((caps->properties.pNext != NULL) || (caps->features.pNext != NULL)
-        || (caps->memoryProperties.pNext != NULL)) {
+    if ((caps->properties.pNext != NULL) || (caps->features.pNext != NULL) || (caps->memoryProperties.pNext != NULL)) {
         result = XUD_VULKAN_ERROR;
         goto fail;
     }
 
-    result = xud_physical_query_device_extensions(
-        loader, physicalDevice->physicalDevice, &extensions, &extensionCount, &extensionCapacity);
+    result = xud_physical_query_device_extensions(loader, physicalDevice->physicalDevice, &extensions, &extensionCount, &extensionCapacity);
     if (result != XUD_OK)
         goto fail;
 
@@ -734,13 +678,11 @@ XudResult xud_physical_open(
     extensions = NULL; /* ownership moved into the caps: xud_physical_close() frees that block, the
                           fail ladder below must not free it twice */
 
-    result = xud_physical_query_queue_families(
-        loader, physicalDevice->physicalDevice, &families, &familyCount);
+    result = xud_physical_query_queue_families(loader, physicalDevice->physicalDevice, &families, &familyCount);
     if (result != XUD_OK)
         goto fail;
 
-    result = xud_physical_select_queue_family(
-        &familyIndex, &caps->chosenQueueFamilyProperties, families, familyCount);
+    result = xud_physical_select_queue_family(&familyIndex, &caps->chosenQueueFamilyProperties, families, familyCount);
     if (result != XUD_OK)
         goto fail; /* XUD_UNSUPPORTED: no family here carries the graphics bit; the sentinel and a
                       zeroed row are already in the caps, and this struct is about to be freed */

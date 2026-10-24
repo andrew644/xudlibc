@@ -54,8 +54,7 @@ static_assert(sizeof(PFN_vkDeviceWaitIdle) == sizeof(void*), "PFN slot must be p
    than that clamp would make the row point past its end. The member access inside sizeof is not e
    valuated - sizeof of a non-VLA array member is a compile-time computation - so no object is eve
    r dereferenced here. */
-static_assert(
-    sizeof(((XudDevice*)0)->queuePriorities) / sizeof(float) >= XUD_DEVICE_QUEUE_MAX_COUNT,
+static_assert(sizeof(((XudDevice*)0)->queuePriorities) / sizeof(float) >= XUD_DEVICE_QUEUE_MAX_COUNT,
     "the row's priorities array must be at least as long as the biggest count this layer asks a "
     "row for");
 
@@ -78,9 +77,8 @@ static_assert(
 static const char* const XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };
-#define XUD_DEVICE_WANTED_DEVICE_COUNT                                                             \
-    ((uint32_t)(sizeof(XUD_DEVICE_WANTED_DEVICE_EXTENSIONS)                                        \
-        / sizeof(XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[0])))
+#define XUD_DEVICE_WANTED_DEVICE_COUNT                                                                                                     \
+    ((uint32_t)(sizeof(XUD_DEVICE_WANTED_DEVICE_EXTENSIONS) / sizeof(XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[0])))
 
 static_assert(XUD_DEVICE_WANTED_DEVICE_COUNT <= XUD_DEVICE_MAX_DEVICE_EXTENSIONS,
     "the wanted device-extension list must fit the device struct's storage");
@@ -89,8 +87,7 @@ static_assert(XUD_DEVICE_WANTED_DEVICE_COUNT <= XUD_DEVICE_MAX_DEVICE_EXTENSIONS
  * The one queue row, from the physical layer's chosen family
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_device_fill_queue_create_info(
-    VkDeviceQueueCreateInfo* outQueueRow, const float* priorities, const XudDeviceCaps* caps) {
+XudResult xud_device_fill_queue_create_info(VkDeviceQueueCreateInfo* outQueueRow, const float* priorities, const XudDeviceCaps* caps) {
     uint32_t familyQueues = 0u;
 
     if ((outQueueRow == NULL) || (priorities == NULL) || (caps == NULL))
@@ -110,12 +107,10 @@ XudResult xud_device_fill_queue_create_info(
 
     outQueueRow->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
     outQueueRow->pNext = NULL;
-    outQueueRow->flags
-        = 0; /* VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT would put the protected-memory discipline above
-                this layer, and nothing above it asks for that today - see xud_device.h */
+    outQueueRow->flags = 0; /* VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT would put the protected-memory discipline above
+                               this layer, and nothing above it asks for that today - see xud_device.h */
     outQueueRow->queueFamilyIndex = caps->queueFamilyIndex;
-    outQueueRow->queueCount
-        = (familyQueues < XUD_DEVICE_QUEUE_MAX_COUNT) ? familyQueues : XUD_DEVICE_QUEUE_MAX_COUNT;
+    outQueueRow->queueCount = (familyQueues < XUD_DEVICE_QUEUE_MAX_COUNT) ? familyQueues : XUD_DEVICE_QUEUE_MAX_COUNT;
     outQueueRow->pQueuePriorities = priorities; /* the parameter is const float * and the field is
                                                    const float *, so the two match with no cast */
     return XUD_OK;
@@ -130,9 +125,8 @@ XudResult xud_device_fill_queue_create_info(
    sed one tier up: nothing is ever forced on, a name the caps do not advertise simply stays out,
    and the duplicate rule is what lets a wanted list repeat a name without the list needing to kno
    w what the struct already holds. */
-static XudResult xud_device_enable_if_advertised(XudDevice* outDevice,
-    const VkExtensionProperties* advertised, uint32_t advertisedCount, const char* name,
-    bool* outAppended) {
+static XudResult xud_device_enable_if_advertised(
+    XudDevice* outDevice, const VkExtensionProperties* advertised, uint32_t advertisedCount, const char* name, bool* outAppended) {
     uint32_t advertisedIndex = 0u;
     uint32_t enabledIndex = 0u;
 
@@ -156,9 +150,7 @@ static XudResult xud_device_enable_if_advertised(XudDevice* outDevice,
     if (outDevice->enabledExtensionCount >= XUD_DEVICE_MAX_DEVICE_EXTENSIONS)
         return XUD_OUT_OF_RESOURCES;
 
-    if (xud_name_copy(outDevice->enabledExtensionNameStorage[outDevice->enabledExtensionCount],
-            VK_MAX_EXTENSION_NAME_SIZE, name)
-        != XUD_OK)
+    if (xud_name_copy(outDevice->enabledExtensionNameStorage[outDevice->enabledExtensionCount], VK_MAX_EXTENSION_NAME_SIZE, name) != XUD_OK)
         return XUD_INTERNAL_ERROR; /* a driver name longer than the buffer: reported, not truncated
                                     */
 
@@ -167,8 +159,7 @@ static XudResult xud_device_enable_if_advertised(XudDevice* outDevice,
     return XUD_OK;
 }
 
-XudResult xud_device_select_extensions(
-    XudDevice* outDevice, const VkExtensionProperties* advertised, uint32_t advertisedCount) {
+XudResult xud_device_select_extensions(XudDevice* outDevice, const VkExtensionProperties* advertised, uint32_t advertisedCount) {
     uint32_t wantedIndex = 0u;
     XudResult result = XUD_INVALID_ARG;
     bool appended = false;
@@ -180,8 +171,8 @@ XudResult xud_device_select_extensions(
     outDevice->enabledExtensionCount = 0u;
 
     for (wantedIndex = 0u; wantedIndex < XUD_DEVICE_WANTED_DEVICE_COUNT; wantedIndex++) {
-        result = xud_device_enable_if_advertised(outDevice, advertised, advertisedCount,
-            XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[wantedIndex], &appended);
+        result = xud_device_enable_if_advertised(
+            outDevice, advertised, advertisedCount, XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[wantedIndex], &appended);
         if (result != XUD_OK) {
             outDevice->enabledExtensionCount = 0u;
             return result;
@@ -194,8 +185,8 @@ XudResult xud_device_select_extensions(
  * The create-info, assembled from this layer's own record
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_device_fill_create_info(VkDeviceCreateInfo* outCreateInfo,
-    const char* nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS], const XudDevice* device) {
+XudResult xud_device_fill_create_info(
+    VkDeviceCreateInfo* outCreateInfo, const char* nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS], const XudDevice* device) {
     uint32_t index = 0u;
 
     if ((outCreateInfo == NULL) || (nameSlots == NULL) || (device == NULL))
@@ -206,11 +197,9 @@ XudResult xud_device_fill_create_info(VkDeviceCreateInfo* outCreateInfo,
       angling-pointer bug the struct layout in xud_device.h exists to prevent, and lavvk accepts t
        he row without checking (probed 2026-10-18), so the check is here rather than in the drive
        r. */
-    if ((device->queueRow.sType != VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO)
-        || (device->queueRow.pNext != NULL))
+    if ((device->queueRow.sType != VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO) || (device->queueRow.pNext != NULL))
         return XUD_INVALID_ARG;
-    if ((device->queueRow.queueCount < 1u)
-        || (device->queueRow.queueCount > XUD_DEVICE_QUEUE_MAX_COUNT))
+    if ((device->queueRow.queueCount < 1u) || (device->queueRow.queueCount > XUD_DEVICE_QUEUE_MAX_COUNT))
         return XUD_INVALID_ARG;
     if (device->queueRow.queueFamilyIndex == XUD_PHYSICAL_NO_QUEUE_FAMILY)
         return XUD_INVALID_ARG;
@@ -243,17 +232,15 @@ XudResult xud_device_fill_create_info(VkDeviceCreateInfo* outCreateInfo,
         nameSlots[index] = NULL; /* the tail is always NULLed so a stale pointer cannot survive */
 
     outCreateInfo->enabledExtensionCount = device->enabledExtensionCount;
-    outCreateInfo->ppEnabledExtensionNames
-        = (device->enabledExtensionCount != 0u) ? nameSlots : NULL;
+    outCreateInfo->ppEnabledExtensionNames = (device->enabledExtensionCount != 0u) ? nameSlots : NULL;
 
     /* The features the device enables are the physical layer's wanted-intersection, already norm
        alised to VK_TRUE/VK_FALSE by xud_physical_record_features (see xud_physical.c: a driver an
        swering 42 for a feature does not get 42 handed to vkCreateDevice), and they are copied int
        o this struct so the record says what the device was created with rather than pointing at
        caps that belong to another layer. */
-    outCreateInfo->pEnabledFeatures
-        = &device->enabledFeatures; /* the field is const VkPhysicalDeviceFeatures *, so the address
-                                       of this struct's own copy needs no cast */
+    outCreateInfo->pEnabledFeatures = &device->enabledFeatures; /* the field is const VkPhysicalDeviceFeatures *, so the address
+                                                                   of this struct's own copy needs no cast */
     return XUD_OK;
 }
 
@@ -297,8 +284,7 @@ XudResult xud_device_queue_get(XudQueue* outQueue, const XudDevice* device, XudQ
  * Bring-up: bind, assemble, create, resolve the two queues
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
-    const XudPhysicalDevice* physical, VkInstance instance) {
+XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader, const XudPhysicalDevice* physical, VkInstance instance) {
     XudDevice* device = NULL;
     VkDeviceCreateInfo createInfo;
     const char* nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS];
@@ -307,8 +293,7 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
     uint32_t role = 0u;
     uint32_t queueIndex = 0u;
 
-    if ((outDevice == NULL) || (*outDevice != NULL) || (loader == NULL) || (physical == NULL)
-        || (instance == VK_NULL_HANDLE))
+    if ((outDevice == NULL) || (*outDevice != NULL) || (loader == NULL) || (physical == NULL) || (instance == VK_NULL_HANDLE))
         return XUD_INVALID_ARG;
     if (!xud_loader_is_open(loader))
         return XUD_UNSUPPORTED;
@@ -352,8 +337,7 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
                                       called */
         goto fail;
     }
-    if ((loader->instanceTable.vkCreateDevice == NULL)
-        || (loader->instanceTable.vkGetDeviceProcAddr == NULL)) {
+    if ((loader->instanceTable.vkCreateDevice == NULL) || (loader->instanceTable.vkGetDeviceProcAddr == NULL)) {
         result = XUD_UNSUPPORTED; /* a row the driver did not answer - never called through */
         goto fail;
     }
@@ -362,8 +346,7 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
        rule, and the reason a driver without VK_KHR_swapchain still gets a device (the swapchain
        layer above is the one that refuses). The array is the caps' own: a query result the physi
        cal layer owns, never freed here. */
-    result = xud_device_select_extensions(
-        device, physical->caps.deviceExtensionProperties, physical->caps.deviceExtensionCount);
+    result = xud_device_select_extensions(device, physical->caps.deviceExtensionProperties, physical->caps.deviceExtensionCount);
     if (result != XUD_OK)
         goto fail;
 
@@ -380,8 +363,7 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
     if (result != XUD_OK)
         goto fail;
 
-    result = xud_device_fill_queue_create_info(
-        &device->queueRow, device->queuePriorities, &physical->caps);
+    result = xud_device_fill_queue_create_info(&device->queueRow, device->queuePriorities, &physical->caps);
     if (result != XUD_OK)
         goto fail;
 
@@ -389,8 +371,7 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
     if (result != XUD_OK)
         goto fail;
 
-    vk = loader->instanceTable.vkCreateDevice(
-        physical->physicalDevice, &createInfo, NULL, &device->device);
+    vk = loader->instanceTable.vkCreateDevice(physical->physicalDevice, &createInfo, NULL, &device->device);
     result = xud_result_from_vk(vk);
     if (result != XUD_OK) {
         /* A driver that refuses for a feature or a name we asked for is unsupported, not broken
@@ -415,8 +396,7 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
         result = XUD_INTERNAL_ERROR;
         goto fail;
     }
-    if ((loader->deviceTable.vkGetDeviceQueue == NULL)
-        || (loader->deviceTable.vkDeviceWaitIdle == NULL)
+    if ((loader->deviceTable.vkGetDeviceQueue == NULL) || (loader->deviceTable.vkDeviceWaitIdle == NULL)
         || (loader->deviceTable.vkDestroyDevice == NULL)) {
         result = XUD_UNSUPPORTED;
         goto fail;
@@ -428,17 +408,13 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
        is the role clamped into the count the row asked for - the two rules the validation layer's
        queue VUIDs state, satisfied by construction rather than by hoping. */
     for (role = 0u; role < XUD_DEVICE_QUEUE_ROLE_COUNT; role++) {
-        XudQueue* record
-            = (role == XUD_QUEUE_ROLE_PRESENT) ? &device->presentQueue : &device->graphicsQueue;
+        XudQueue* record = (role == XUD_QUEUE_ROLE_PRESENT) ? &device->presentQueue : &device->graphicsQueue;
 
-        queueIndex
-            = (role < device->queueRow.queueCount) ? role : (device->queueRow.queueCount - 1u);
-        record->queue
-            = VK_NULL_HANDLE; /* the zero state before the call: PFN_vkGetDeviceQueue returns void
-                                 in these headers (vulkan_core.h:4547), so there is no VkResult to
-                                 map and the out handle is the only answer available */
-        loader->deviceTable.vkGetDeviceQueue(
-            device->device, device->queueRow.queueFamilyIndex, queueIndex, &record->queue);
+        queueIndex = (role < device->queueRow.queueCount) ? role : (device->queueRow.queueCount - 1u);
+        record->queue = VK_NULL_HANDLE; /* the zero state before the call: PFN_vkGetDeviceQueue returns void
+                                           in these headers (vulkan_core.h:4547), so there is no VkResult to
+                                           map and the out handle is the only answer available */
+        loader->deviceTable.vkGetDeviceQueue(device->device, device->queueRow.queueFamilyIndex, queueIndex, &record->queue);
         if (record->queue == VK_NULL_HANDLE) {
             /* A driver that answers nothing for a family/index pair the row itself asked for: the
                caps and the driver disagree, and a device handed out with no queue in it would be a
@@ -460,8 +436,7 @@ fail:
        destroyed through the slot this layer just bound (PFN_vkDestroyDevice returns void in these
        headers, so there is no answer to check for the teardown call itself). The struct's memory is
        freed on every path, so a partial bring-up leaks nothing. */
-    if ((device != NULL) && (device->device != VK_NULL_HANDLE)
-        && (loader->deviceTable.vkDestroyDevice != NULL)) {
+    if ((device != NULL) && (device->device != VK_NULL_HANDLE) && (loader->deviceTable.vkDestroyDevice != NULL)) {
         (void)loader->deviceTable.vkDestroyDevice(device->device, NULL);
         device->device = VK_NULL_HANDLE;
     }

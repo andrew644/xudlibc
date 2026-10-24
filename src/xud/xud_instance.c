@@ -36,10 +36,8 @@
    had a word-moving helper to check against, Volk has nothing here to move. */
 static_assert(sizeof(PFN_vkCreateInstance) == sizeof(void*), "PFN slot must be pointer-sized");
 static_assert(sizeof(PFN_vkDestroyInstance) == sizeof(void*), "PFN slot must be pointer-sized");
-static_assert(sizeof(PFN_vkEnumerateInstanceExtensionProperties) == sizeof(void*),
-    "PFN slot must be pointer-sized");
-static_assert(sizeof(PFN_vkDestroyDebugUtilsMessengerEXT) == sizeof(void*),
-    "resolved messenger teardown must fit one word");
+static_assert(sizeof(PFN_vkEnumerateInstanceExtensionProperties) == sizeof(void*), "PFN slot must be pointer-sized");
+static_assert(sizeof(PFN_vkDestroyDebugUtilsMessengerEXT) == sizeof(void*), "resolved messenger teardown must fit one word");
 
 /* The instance-level extensions xudlibc asks for, in the order it asks. None is required: each
    is checked against what the driver advertised before it goes into VkInstanceCreateInfo, an
@@ -62,11 +60,9 @@ static const char* const XUD_INSTANCE_WANTED_EXTENSIONS[] = {
     VK_KHR_SURFACE_EXTENSION_NAME,
     VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
 };
-#define XUD_INSTANCE_WANTED_COUNT                                                                  \
-    ((uint32_t)(sizeof(XUD_INSTANCE_WANTED_EXTENSIONS) / sizeof(XUD_INSTANCE_WANTED_EXTENSIONS[0])))
+#define XUD_INSTANCE_WANTED_COUNT ((uint32_t)(sizeof(XUD_INSTANCE_WANTED_EXTENSIONS) / sizeof(XUD_INSTANCE_WANTED_EXTENSIONS[0])))
 
-static_assert(XUD_INSTANCE_WANTED_COUNT <= XUD_MAX_INSTANCE_EXTENSIONS,
-    "the wanted list must fit the instance struct");
+static_assert(XUD_INSTANCE_WANTED_COUNT <= XUD_MAX_INSTANCE_EXTENSIONS, "the wanted list must fit the instance struct");
 
 /* Both wanted lists share the instance's fixed storage, so the union has to fit - the diagnostics
    layer's list (VK_EXT_debug_utils, VK_EXT_validation_features) is documented in xud_diagnostics.c,
@@ -78,12 +74,10 @@ static_assert(XUD_INSTANCE_WANTED_COUNT <= XUD_MAX_INSTANCE_EXTENSIONS,
    before the define sees an undeclared identifier inside a constant expression, which is two
    errors, not one (verified with gcc 16.2.1 under the project flags: "XUD_INSTANCE_WANTED_COUNT
    undeclared here" plus "expression in static assertion is not an integer"). */
-static_assert(XUD_DIAGNOSTICS_WANTED_MAX <= XUD_MAX_INSTANCE_EXTENSIONS,
-    "the diagnostics wanted list must fit the instance struct");
+static_assert(XUD_DIAGNOSTICS_WANTED_MAX <= XUD_MAX_INSTANCE_EXTENSIONS, "the diagnostics wanted list must fit the instance struct");
 static_assert(XUD_INSTANCE_WANTED_COUNT + XUD_DIAGNOSTICS_WANTED_MAX <= XUD_MAX_INSTANCE_EXTENSIONS,
     "both wanted lists must fit the instance struct");
-static_assert(XUD_INSTANCE_WANTED_COUNT + XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX
-        <= XUD_MAX_INSTANCE_EXTENSIONS,
+static_assert(XUD_INSTANCE_WANTED_COUNT + XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX <= XUD_MAX_INSTANCE_EXTENSIONS,
     "all three wanted lists - this layer's, the diagnostics layer's, the window layer's GLFW requi"
     "res - must fit the instance struct");
 
@@ -100,8 +94,7 @@ static_assert(XUD_INSTANCE_WANTED_COUNT + XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTA
    The row is guaranteed by the loader contract (xud_loader_open copies the three loader-level
    rows and refuses a loader that does not answer all three); a NULL row means the loader is n
    ot open, which is XUD_UNSUPPORTED, not a bind. */
-static XudResult xud_instance_query_extensions(
-    const XudLoader* loader, VkExtensionProperties** outProperties, uint32_t* outCount) {
+static XudResult xud_instance_query_extensions(const XudLoader* loader, VkExtensionProperties** outProperties, uint32_t* outCount) {
     VkExtensionProperties* items = NULL;
     uint32_t capacity = XUD_INSTANCE_QUERY_MIN_CAPACITY;
     uint32_t count = 0u;
@@ -151,8 +144,7 @@ XudResult xud_instance_fill_application_info(VkApplicationInfo* outApplicationIn
 
     /* One version for both slots: this library is the engine and the application. The Vulkan
        header macro composes the same three numbers xud.h publishes. */
-    outApplicationInfo->applicationVersion
-        = VK_MAKE_API_VERSION(0u, XUD_VERSION_MAJOR, XUD_VERSION_MINOR, XUD_VERSION_PATCH);
+    outApplicationInfo->applicationVersion = VK_MAKE_API_VERSION(0u, XUD_VERSION_MAJOR, XUD_VERSION_MINOR, XUD_VERSION_PATCH);
     outApplicationInfo->engineVersion = outApplicationInfo->applicationVersion;
     outApplicationInfo->apiVersion = XUD_INSTANCE_API_FLOOR;
     return XUD_OK;
@@ -164,9 +156,8 @@ XudResult xud_instance_fill_application_info(VkApplicationInfo* outApplicationIn
    XUD_UNSUPPORTED. The duplicate check is what lets the diagnostics layer's list repeat a name
    this layer also wants - the two wanted lists are owned by two different files and neither may
    assume what the other contains. */
-static XudResult xud_instance_enable_if_advertised(XudInstance* outInstance,
-    const VkExtensionProperties* advertised, uint32_t advertisedCount, const char* name,
-    bool* outAppended) {
+static XudResult xud_instance_enable_if_advertised(
+    XudInstance* outInstance, const VkExtensionProperties* advertised, uint32_t advertisedCount, const char* name, bool* outAppended) {
     uint32_t advertisedIndex = 0u;
     uint32_t enabledIndex = 0u;
 
@@ -190,8 +181,7 @@ static XudResult xud_instance_enable_if_advertised(XudInstance* outInstance,
     if (outInstance->enabledExtensionCount >= XUD_MAX_INSTANCE_EXTENSIONS)
         return XUD_OUT_OF_RESOURCES;
 
-    if (xud_name_copy(outInstance->enabledExtensionNameStorage[outInstance->enabledExtensionCount],
-            VK_MAX_EXTENSION_NAME_SIZE, name)
+    if (xud_name_copy(outInstance->enabledExtensionNameStorage[outInstance->enabledExtensionCount], VK_MAX_EXTENSION_NAME_SIZE, name)
         != XUD_OK)
         return XUD_INTERNAL_ERROR; /* a driver name longer than the buffer: reported, not truncated
                                     */
@@ -201,33 +191,29 @@ static XudResult xud_instance_enable_if_advertised(XudInstance* outInstance,
     return XUD_OK;
 }
 
-XudResult xud_instance_select_extensions(XudInstance* outInstance,
-    const VkExtensionProperties* advertised, uint32_t advertisedCount,
-    const char* const extraNames[XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX],
-    uint32_t extraCount) {
+XudResult xud_instance_select_extensions(XudInstance* outInstance, const VkExtensionProperties* advertised, uint32_t advertisedCount,
+    const char* const extraNames[XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX], uint32_t extraCount) {
     uint32_t wantedIndex = 0u;
     uint32_t extraIndex = 0u;
     XudResult result = XUD_INVALID_ARG;
     bool appended = false;
 
-    if ((outInstance == NULL) || ((advertised == NULL) && (advertisedCount != 0u))
-        || ((extraNames == NULL) && (extraCount != 0u)))
+    if ((outInstance == NULL) || ((advertised == NULL) && (advertisedCount != 0u)) || ((extraNames == NULL) && (extraCount != 0u)))
         return XUD_INVALID_ARG;
 
     /* The selection is rewritten on every call, so a reused struct cannot keep a stale list. */
     outInstance->enabledExtensionCount = 0u;
 
     for (wantedIndex = 0u; wantedIndex < XUD_INSTANCE_WANTED_COUNT; wantedIndex++) {
-        result = xud_instance_enable_if_advertised(outInstance, advertised, advertisedCount,
-            XUD_INSTANCE_WANTED_EXTENSIONS[wantedIndex], &appended);
+        result = xud_instance_enable_if_advertised(
+            outInstance, advertised, advertisedCount, XUD_INSTANCE_WANTED_EXTENSIONS[wantedIndex], &appended);
         if (result != XUD_OK) {
             outInstance->enabledExtensionCount = 0u;
             return result;
         }
     }
     for (extraIndex = 0u; extraIndex < extraCount; extraIndex++) {
-        result = xud_instance_enable_if_advertised(
-            outInstance, advertised, advertisedCount, extraNames[extraIndex], &appended);
+        result = xud_instance_enable_if_advertised(outInstance, advertised, advertisedCount, extraNames[extraIndex], &appended);
         if (result != XUD_OK) {
             outInstance->enabledExtensionCount = 0u;
             return result;
@@ -246,8 +232,8 @@ the environment), so on this machine the chain stays empty and the validation la
 defaults. Checking the whole diagnostics wanted set instead of only that one name is the
 conservative form of the same check: it can leave a legal request out, it can never put an illegal
 one on the chain, and it keeps this file free of extension names it does not own. */
-static bool xud_instance_all_names_enabled(const XudInstance* instance,
-    const char* const names[XUD_DIAGNOSTICS_WANTED_MAX], uint32_t count) {
+static bool xud_instance_all_names_enabled(
+    const XudInstance* instance, const char* const names[XUD_DIAGNOSTICS_WANTED_MAX], uint32_t count) {
     uint32_t wanted = 0u;
     uint32_t row = 0u;
     bool found = false;
@@ -268,9 +254,8 @@ static bool xud_instance_all_names_enabled(const XudInstance* instance,
     return true;
 }
 
-XudResult xud_instance_fill_create_info(const XudInstance* instance,
-    const char* nameSlots[XUD_MAX_INSTANCE_EXTENSIONS], const XudDiagnostics* diagnostics,
-    VkInstanceCreateInfo* outCreateInfo) {
+XudResult xud_instance_fill_create_info(const XudInstance* instance, const char* nameSlots[XUD_MAX_INSTANCE_EXTENSIONS],
+    const XudDiagnostics* diagnostics, VkInstanceCreateInfo* outCreateInfo) {
     uint32_t index = 0u;
     const char* diagnosticsWanted[XUD_DIAGNOSTICS_WANTED_MAX] = { NULL };
     uint32_t diagnosticsWantedCount = 0u;
@@ -311,8 +296,7 @@ XudResult xud_instance_fill_create_info(const XudInstance* instance,
        no layer requested at all: 0 + NULL, which is the "no layers" shape. */
     if (diagnostics != NULL) {
         outCreateInfo->enabledLayerCount = diagnostics->enabledLayerCount;
-        outCreateInfo->ppEnabledLayerNames
-            = (diagnostics->enabledLayerCount != 0u) ? diagnostics->enabledLayerNamePointers : NULL;
+        outCreateInfo->ppEnabledLayerNames = (diagnostics->enabledLayerCount != 0u) ? diagnostics->enabledLayerNamePointers : NULL;
     } else {
         outCreateInfo->enabledLayerCount = 0u;
         outCreateInfo->ppEnabledLayerNames = NULL;
@@ -324,14 +308,12 @@ XudResult xud_instance_fill_create_info(const XudInstance* instance,
         nameSlots[index] = NULL; /* the tail is always NULLed so a stale pointer cannot survive */
 
     outCreateInfo->enabledExtensionCount = instance->enabledExtensionCount;
-    outCreateInfo->ppEnabledExtensionNames
-        = (instance->enabledExtensionCount != 0u) ? nameSlots : NULL;
+    outCreateInfo->ppEnabledExtensionNames = (instance->enabledExtensionCount != 0u) ? nameSlots : NULL;
     return XUD_OK;
 }
 
-XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader,
-    XudDiagnostics* diagnostics, const char* extraNames[XUD_INSTANCE_EXTRA_MAX],
-    uint32_t extraCount) {
+XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader, XudDiagnostics* diagnostics,
+    const char* extraNames[XUD_INSTANCE_EXTRA_MAX], uint32_t extraCount) {
     XudInstance* instance = NULL;
     VkExtensionProperties* advertised = NULL;
     VkInstanceCreateInfo createInfo;
@@ -343,8 +325,8 @@ XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader,
     uint32_t diagnosticsWantedCount = 0u;
     VkResult vk;
 
-    if ((outInstance == NULL) || (*outInstance != NULL) || (loader == NULL)
-        || (!xud_loader_is_open(loader)) || ((extraNames == NULL) && (extraCount != 0u)))
+    if ((outInstance == NULL) || (*outInstance != NULL) || (loader == NULL) || (!xud_loader_is_open(loader))
+        || ((extraNames == NULL) && (extraCount != 0u)))
         return XUD_INVALID_ARG;
 
     instance = calloc(1, sizeof(XudInstance));
@@ -370,8 +352,7 @@ XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader,
        no messenger to ask for and no validation request to carry, so the pair stays out of the
        enabled list. */
     if (diagnostics != NULL) {
-        result = xud_diagnostics_wanted_extensions(
-            &requestedWanted[requestedWantedCount], &diagnosticsWantedCount);
+        result = xud_diagnostics_wanted_extensions(&requestedWanted[requestedWantedCount], &diagnosticsWantedCount);
         if (result != XUD_OK)
             goto fail;
         requestedWantedCount += diagnosticsWantedCount;
@@ -390,8 +371,7 @@ XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader,
             requestedWanted[requestedWantedCount++] = extraNames[extra];
     }
 
-    result = xud_instance_select_extensions(
-        instance, advertised, advertisedCount, requestedWanted, requestedWantedCount);
+    result = xud_instance_select_extensions(instance, advertised, advertisedCount, requestedWanted, requestedWantedCount);
     if (result != XUD_OK)
         goto fail;
 
@@ -461,8 +441,7 @@ fail:
    stale pointer into a layer that is gone) is now enforced by the bind being a rung, because x
    ud_loader_bind_instance() overwrites every row of the table when the instance is re-created.
    */
-static XudResult xud_instance_close_messenger(
-    const XudLoader* loader, VkInstance instance, XudDiagnostics* diagnostics) {
+static XudResult xud_instance_close_messenger(const XudLoader* loader, VkInstance instance, XudDiagnostics* diagnostics) {
     if (!xud_loader_instance_bound(loader, instance))
         return XUD_UNSUPPORTED; /* no rows resolved for any instance, so nothing can be called */
     if (loader->instanceTable.vkDestroyDebugUtilsMessengerEXT == NULL)
@@ -474,8 +453,7 @@ static XudResult xud_instance_close_messenger(
     return XUD_OK;
 }
 
-XudResult xud_instance_destroy(
-    XudInstance** instance, XudLoader* loader, XudDiagnostics* diagnostics) {
+XudResult xud_instance_destroy(XudInstance** instance, XudLoader* loader, XudDiagnostics* diagnostics) {
     XudResult result;
 
     if ((instance == NULL) || (loader == NULL) || (!xud_loader_is_open(loader)))
@@ -490,8 +468,7 @@ XudResult xud_instance_destroy(
        ough rows of the instance it is freeing. The re-bind clears a device table that belonged t
        o the other instance: no device of THIS instance can be alive here, because the layer abov
        e destroys a device before the instance that owns it (xud_close_context's order). */
-    if (((*instance)->instance != VK_NULL_HANDLE)
-        && !xud_loader_instance_bound(loader, (*instance)->instance)) {
+    if (((*instance)->instance != VK_NULL_HANDLE) && !xud_loader_instance_bound(loader, (*instance)->instance)) {
         result = xud_loader_bind_instance(loader, (*instance)->instance);
         if (result != XUD_OK)
             return result;

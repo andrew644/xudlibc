@@ -89,8 +89,7 @@ static_assert(GLFW_VERSION_MINOR == 5, "xud_window.h: the vendored GLFW is the 3
    two names glfwGetRequiredInstanceExtensions answers for it are asserted about in xud_test_gpu_
    window(), not here. */
 
-static_assert(VK_MAX_EXTENSION_NAME_SIZE == 256u,
-    "xud_window.h: GLFW's required-extension names are copied into that-wide fixed buffers");
+static_assert(VK_MAX_EXTENSION_NAME_SIZE == 256u, "xud_window.h: GLFW's required-extension names are copied into that-wide fixed buffers");
 /* GLFW's Vulkan surface teardown. There is deliberately no glfwDestroyVulkanSurface in 3.5.1
    (grepped in the vendored glfw3.h and in src/vulkan.c: the name does not exist) - the surface
    GLFW hands over is destroyed with vkDestroySurfaceKHR, which is why this layer needs the
@@ -101,8 +100,7 @@ static_assert(VK_MAX_EXTENSION_NAME_SIZE == 256u,
    over without wrapping - it is a bad argument, not a truncation. */
 #define XUD_WINDOW_MIN_EXTENT 1u
 #define XUD_WINDOW_MAX_EXTENT 2147483647u
-static_assert(XUD_WINDOW_MAX_EXTENT == (uint32_t)INT_MAX,
-    "xud_window.h: the extent bound is glfwCreateWindow's int bound");
+static_assert(XUD_WINDOW_MAX_EXTENT == (uint32_t)INT_MAX, "xud_window.h: the extent bound is glfwCreateWindow's int bound");
 
 /* The window title every xudlibc window carries. GLFW's Wayland backend uses it as the window
    title and, through xdg-decoration, as the hint for a decorated session; a fixed title keeps
@@ -136,11 +134,10 @@ typedef struct XudWindow {
     uint32_t height;
     uint32_t requiredInstanceExtensionCount; /* how many rows below are live, at most XUD_INSTANCE
                                                _EXTRA_MAX */
-    char requiredInstanceExtensionNameStorage
-        [XUD_INSTANCE_EXTRA_MAX]
-        [VK_MAX_EXTENSION_NAME_SIZE]; /* GLFW's required names, copied out of GLFW's own storage
-            (glfwGetRequiredInstanceExtensions returns pointers into a static GLFW keeps only
-            until the library is terminated) into fixed buffers this struct owns */
+    char requiredInstanceExtensionNameStorage[XUD_INSTANCE_EXTRA_MAX]
+                                             [VK_MAX_EXTENSION_NAME_SIZE]; /* GLFW's required names, copied out of GLFW's own storage
+                                                 (glfwGetRequiredInstanceExtensions returns pointers into a static GLFW keeps only
+                                                 until the library is terminated) into fixed buffers this struct owns */
 } XudWindow;
 
 /// The instance-level extensions GLFW's window system needs enabled on the instance a surface
@@ -162,8 +159,7 @@ XudResult xud_window_required_instance_extensions(
 /// ce). A window whose required list is empty - GLFW had no Vulkan answer at open time - asks
 /// for nothing, so this answers true and the GLFW call below is the one that refuses.
 /// XUD_INVALID_ARG on a NULL out-param, window or instance.
-XudResult xud_window_check_instance_support(
-    bool* outSupports, const XudWindow* window, const XudInstance* instance);
+XudResult xud_window_check_instance_support(bool* outSupports, const XudWindow* window, const XudInstance* instance);
 
 /// Driver (GLFW): bring the window half up - glfwInit (idempotent: init.c 386-389 returns GLFW
 /// TRUE when GLFW is already initialized, which is what lets every context call it and is why
@@ -199,8 +195,8 @@ XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height
 /// this window at all (xud_window_check_instance_support) - the call is refused, not made. On
 /// XUD_OK *outSupports is GLFW's answer: false means the window system says no, and the swap-
 /// chain that needs this window must not be created.
-XudResult xud_window_presentation_support(bool* outSupports, const XudWindow* window,
-    const XudInstance* instance, const XudPhysicalDevice* physicalDevice);
+XudResult xud_window_presentation_support(
+    bool* outSupports, const XudWindow* window, const XudInstance* instance, const XudPhysicalDevice* physicalDevice);
 
 /// Driver: create the surface for this window - glfwCreateWindowSurface, which hands the instan-
 /// ce a VkSurfaceKHR for this window's wl_surface. Before calling it: the instance must have
@@ -216,8 +212,7 @@ XudResult xud_window_presentation_support(bool* outSupports, const XudWindow* wi
 /// destroy row is NULL, or GLFW/the driver refuses (VK_ERROR_EXTENSION_NOT_PRESENT and the like
 /// map through xud_result_from_vk). On XUD_OK window->surface is live and window->surfaceInstan-
 /// ce records the instance it belongs to; on any failure both stay at their zero state.
-XudResult xud_window_surface_create(
-    XudWindow* window, XudLoader* loader, const XudInstance* instance);
+XudResult xud_window_surface_create(XudWindow* window, XudLoader* loader, const XudInstance* instance);
 
 /// Driver: destroy the surface through the instance it belongs to, while that instance is still
 /// alive - vkDestroySurfaceKHR, a row of the loader's instance table (there is no glfwDestroyVu-

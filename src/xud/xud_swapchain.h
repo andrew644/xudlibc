@@ -97,10 +97,8 @@ static_assert(VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR != 0u,
    sit at vulkan_core.h:9171-9173 and the three surface queries' at 9022-9024, and there is no
    count-only form for the two list-shaped ones, so the image query follows the same doubling-
    capacity shape xud_instance.c and xud_physical.c use. */
-static_assert(sizeof(PFN_vkCreateSwapchainKHR) == sizeof(void*),
-    "xud_swapchain.h: a Volk entry-point row is one pointer wide");
-static_assert(sizeof(PFN_vkDestroySwapchainKHR) == sizeof(void*),
-    "xud_swapchain.h: and so is the teardown row");
+static_assert(sizeof(PFN_vkCreateSwapchainKHR) == sizeof(void*), "xud_swapchain.h: a Volk entry-point row is one pointer wide");
+static_assert(sizeof(PFN_vkDestroySwapchainKHR) == sizeof(void*), "xud_swapchain.h: and so is the teardown row");
 
 /* The two table levels this layer calls through, and the reason they are two: the three
    surface queries take a VkPhysicalDevice, so they are instance-level rows of struct
@@ -190,9 +188,8 @@ typedef struct XudSurfaceCaps {
                                               maxImageExtent / maxImageArrayLayers /
                                               supportedTransforms / currentTransform /
                                               supportedCompositeAlpha / supportedUsageFlags */
-    VkSurfaceFormatKHR
-        surfaceFormats[XUD_SWAPCHAIN_MAX_SURFACE_FORMATS]; /* the advertised (format, colorSpace)
-                                                              pairs, in the driver's order */
+    VkSurfaceFormatKHR surfaceFormats[XUD_SWAPCHAIN_MAX_SURFACE_FORMATS]; /* the advertised (format, colorSpace)
+                                                                             pairs, in the driver's order */
     uint32_t surfaceFormatCount; /* how many rows above are live */
     VkPresentModeKHR presentModes[XUD_SWAPCHAIN_MAX_PRESENT_MODES]; /* the advertised modes, in the
                                                                        driver's order */
@@ -247,8 +244,7 @@ struct XudSwapchain {
 /// zero but below minImageCount (an inconsistent answer - the clamp order above cannot fix
 /// that, and it is not a shape any layer above this one produced). XUD_INVALID_ARG on a NULL
 /// out-count or NULL caps.
-XudResult xud_swapchain_choose_image_count(
-    uint32_t* outImageCount, const VkSurfaceCapabilitiesKHR* capabilities);
+XudResult xud_swapchain_choose_image_count(uint32_t* outImageCount, const VkSurfaceCapabilitiesKHR* capabilities);
 
 /// Pure: which of the surface's advertised (format, colorSpace) pairs this layer will create
 /// the swapchain with. The rule is three-deep and each step is a reason, not a preference:
@@ -269,8 +265,8 @@ XudResult xud_swapchain_choose_image_count(
 /// on XUD_OK - the index is the row of the caps' own array, so a caller above can read the
 /// pair back out of the caps it already has. XUD_INVALID_ARG on a NULL out-format/out-index
 /// or a NULL advertised array with a non-zero count.
-XudResult xud_swapchain_select_format(VkSurfaceFormatKHR* outFormat, uint32_t* outIndex,
-    const VkSurfaceFormatKHR* advertised, uint32_t advertisedCount);
+XudResult xud_swapchain_select_format(
+    VkSurfaceFormatKHR* outFormat, uint32_t* outIndex, const VkSurfaceFormatKHR* advertised, uint32_t advertisedCount);
 
 /// Pure: which of the surface's advertised present modes this layer will create with. The
 /// rule is MAILBOX if the surface advertises it (one frame of latency, no tearing, no dropped
@@ -281,8 +277,7 @@ XudResult xud_swapchain_select_format(VkSurfaceFormatKHR* outFormat, uint32_t* o
 /// (0,1,2,3 then 1000111000/1000111001/1000361000, see the note above), so a present mode is
 /// a value and an index into this array is nothing at all. XUD_INVALID_ARG on a NULL out-mode
 /// or a NULL advertised array with a non-zero count.
-XudResult xud_swapchain_select_present_mode(
-    VkPresentModeKHR* outMode, const VkPresentModeKHR* advertised, uint32_t advertisedCount);
+XudResult xud_swapchain_select_present_mode(VkPresentModeKHR* outMode, const VkPresentModeKHR* advertised, uint32_t advertisedCount);
 
 /// Pure: the VkSwapchainCreateInfoKHR the swapchain will be created with, assembled from the
 /// surface caps above and the extent above it asked for. Stamped, pNext NULL (this layer
@@ -327,9 +322,8 @@ XudResult xud_swapchain_select_present_mode(
 /// or out-caps, on a handle-less surface, or on an extent of 0 (0 is not an extent, and it is a
 /// bad argument rather than a surface answer because no window above was ever opened at it -
 /// GLFW refuses it, see xud_window.h).
-XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo,
-    const XudSurfaceCaps* surfaceCaps, VkSurfaceKHR surface, uint32_t width, uint32_t height,
-    VkSwapchainKHR oldSwapchain);
+XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo, const XudSurfaceCaps* surfaceCaps, VkSurfaceKHR surface,
+    uint32_t width, uint32_t height, VkSwapchainKHR oldSwapchain);
 
 /// Driver: the three surface queries for one surface, into the caps struct above. All three
 /// are instance-level rows of struct VolkInstanceTable (they take a VkPhysicalDevice, not a
@@ -346,8 +340,8 @@ XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo
 /// XUD_UNSUPPORTED when the loader is closed, a row is nil, or a query refuses. On XUD_OK every
 /// field of *outSurfaceCaps says what the driver answered; on any error the struct is cleared to
 /// its zero state so a caller cannot read a half-filled answer.
-XudResult xud_swapchain_query_surface(XudSurfaceCaps* outSurfaceCaps, const XudLoader* loader,
-    VkPhysicalDevice physicalDevice, VkSurfaceKHR surface);
+XudResult xud_swapchain_query_surface(
+    XudSurfaceCaps* outSurfaceCaps, const XudLoader* loader, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface);
 
 /// Driver: bring the swapchain up for the surface the window above owns. Before any call: the
 /// loader must be open, its instance rows must be the surface's instance's rows
@@ -377,8 +371,8 @@ XudResult xud_swapchain_query_surface(XudSurfaceCaps* outSurfaceCaps, const XudL
 /// - GLFW's own -1000000001, probed when a window whose client API is not GLFW_NO_API is handed
 /// over - maps through xud_result_from_vk to XUD_VULKAN_ERROR, and
 /// VK_ERROR_INCOMPATIBLE_DRIVER/VK_ERROR_EXTENSION_NOT_PRESENT map to XUD_UNSUPPORTED).
-XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader,
-    const XudPhysicalDevice* physicalDevice, const XudWindow* window, const XudDevice* device);
+XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader, const XudPhysicalDevice* physicalDevice,
+    const XudWindow* window, const XudDevice* device);
 
 /// Driver: the resize path - recreate the swapchain at a new extent and never leak the one
 /// this replaces. The order is the spec's and it is the whole point of the signature: the
@@ -406,9 +400,8 @@ XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader,
 /// answering XUD_ALREADY with nothing in hand. On XUD_OK the handle in hand is replaced by the new
 /// one and the images array is replaced with it, so nothing above this layer may hold an image
 /// handle across this call - the renderer rung re-reads them through the accessor below after it.
-XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
-    const XudPhysicalDevice* physicalDevice, const XudWindow* window, const XudDevice* device,
-    uint32_t width, uint32_t height);
+XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader, const XudPhysicalDevice* physicalDevice,
+    const XudWindow* window, const XudDevice* device, uint32_t width, uint32_t height);
 
 /// Driver: the image at one index of this swapchain, as the renderer will bind it - the
 /// accessor that keeps a caller above from holding a VkImage across a recreate (the array
@@ -419,8 +412,7 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
 /// struct has no swapchain (there is no image array for a swapchain that does not exist,
 /// and the zero state of a struct whose create ran but whose image query failed is that
 /// state, not an empty array of one image).
-XudResult xud_swapchain_images_get(
-    const XudSwapchain* swapchain, uint32_t index, VkImage* outImage);
+XudResult xud_swapchain_images_get(const XudSwapchain* swapchain, uint32_t index, VkImage* outImage);
 
 /// Driver: the teardown rung - the device layer's own wait-idle guard first, then
 /// vkDestroySwapchainKHR through the device row, then free the images array and the struct. The
@@ -439,7 +431,6 @@ XudResult xud_swapchain_images_get(
 /// XUD_UNSUPPORTED when the guard's row is nil or the destroy row is nil while a handle is in hand
 /// - the rung refuses, the struct is not freed, because freeing it would leak the handle silently,
 /// the same rule xud_device_close() applies to a nil destroy row.
-XudResult xud_swapchain_close(
-    XudSwapchain** swapchain, const XudDevice* device, const XudLoader* loader);
+XudResult xud_swapchain_close(XudSwapchain** swapchain, const XudDevice* device, const XudLoader* loader);
 
 #endif /* XUD_XUD_SWAPCHAIN_H_ */

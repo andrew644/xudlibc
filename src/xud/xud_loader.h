@@ -80,12 +80,11 @@
 static_assert(VK_USE_64_BIT_PTR_DEFINES == 1,
     "xud_loader.h: the bound-handle compares below are pointer compares only while "
     "VK_DEFINE_HANDLE is a pointer");
-static_assert(sizeof(PFN_vkCreateInstance) == sizeof(void*),
-    "xud_loader.h: an entry-point slot is one pointer wide");
-static_assert(sizeof(struct VolkInstanceTable) % sizeof(void*) == 0u,
-    "xud_loader.h: Volk's instance table is a whole number of pointer-wide slots");
-static_assert(sizeof(struct VolkDeviceTable) % sizeof(void*) == 0u,
-    "xud_loader.h: Volk's device table is a whole number of pointer-wide slots");
+static_assert(sizeof(PFN_vkCreateInstance) == sizeof(void*), "xud_loader.h: an entry-point slot is one pointer wide");
+static_assert(
+    sizeof(struct VolkInstanceTable) % sizeof(void*) == 0u, "xud_loader.h: Volk's instance table is a whole number of pointer-wide slots");
+static_assert(
+    sizeof(struct VolkDeviceTable) % sizeof(void*) == 0u, "xud_loader.h: Volk's device table is a whole number of pointer-wide slots");
 
 /*-----------------------------------------------------------------------------------------------
  * The loader's own vocabulary: one per-context table pair, plus the loader-level rows

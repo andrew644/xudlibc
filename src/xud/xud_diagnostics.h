@@ -44,19 +44,15 @@ typedef struct XudDiagnostics {
     VkDebugUtilsMessengerEXT messenger; /* the created messenger, VK_NULL_HANDLE until then */
     VkInstance instance; /* borrowed: the instance this messenger belongs to,
                             must still be alive when the messenger is destroyed */
-    VkDebugUtilsMessengerCreateInfoEXT
-        messengerCreateInfo; /* what was asked for, kept for the log side */
-    VkValidationFeaturesEXT
-        validationFeatures; /* the pNext chain piece, kept for the same reason */
+    VkDebugUtilsMessengerCreateInfoEXT messengerCreateInfo; /* what was asked for, kept for the log side */
+    VkValidationFeaturesEXT validationFeatures; /* the pNext chain piece, kept for the same reason */
     uint32_t enabledLayerCount; /* layers enabled, <= XUD_MAX_DIAGNOSTIC_LAYERS */
-    char enabledLayerNameStorage[XUD_MAX_DIAGNOSTIC_LAYERS]
-                                [VK_MAX_EXTENSION_NAME_SIZE]; /* layerName is that wide */
-    const char*
-        enabledLayerNamePointers[XUD_MAX_DIAGNOSTIC_LAYERS]; /* into the rows above: VkInstance
-                                                                ppEnabledLayerNames wants const char
-                                                                *const *, which a char (*)[256] is
-                                                                not (verified: gcc rejects the array
-                                                                directly) */
+    char enabledLayerNameStorage[XUD_MAX_DIAGNOSTIC_LAYERS][VK_MAX_EXTENSION_NAME_SIZE]; /* layerName is that wide */
+    const char* enabledLayerNamePointers[XUD_MAX_DIAGNOSTIC_LAYERS]; /* into the rows above: VkInstance
+                                                                        ppEnabledLayerNames wants const char
+                                                                        *const *, which a char (*)[256] is
+                                                                        not (verified: gcc rejects the array
+                                                                        directly) */
     VkValidationFeatureEnableEXT enabledValidationFeatures[XUD_MAX_ENABLED_VALIDATION_FEATURES];
     uint32_t messagesReceived; /* callback invocations so far */
     uint32_t errorMessages; /* of those, how many were severity >= ERROR */
@@ -67,8 +63,7 @@ typedef struct XudDiagnostics {
 /// (the pNext chain piece). The instance layer intersects this with what the driver advertised,
 /// exactly like it does with its own wanted list - one owner of each list, one place that decides.
 /// XUD_INVALID_ARG on a NULL outNames/outCount.
-XudResult xud_diagnostics_wanted_extensions(
-    const char* outNames[XUD_DIAGNOSTICS_WANTED_MAX], uint32_t* outCount);
+XudResult xud_diagnostics_wanted_extensions(const char* outNames[XUD_DIAGNOSTICS_WANTED_MAX], uint32_t* outCount);
 
 /// Pure: ask the validation layer for what xudlibc can act on - best practices (the library's
 /// rules are the validation layer's rules, so its complaints are real) and synchronization
@@ -96,10 +91,8 @@ const char* xud_diagnostics_severity_name(VkDebugUtilsMessageSeverityFlagBitsEXT
 /// the struct pUserData points at (messagesReceived, and errorMessages when the severity is >=
 /// ERROR) and writes the message to stderr. It returns VK_FALSE always - never abort a driver
 /// because of a message. Signature-compatible with PFN_vkDebugUtilsMessengerCallbackEXT.
-VKAPI_ATTR VkBool32 VKAPI_CALL xud_diagnostics_message_callback(
-    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-    VkDebugUtilsMessageTypeFlagsEXT messageTypes,
-    const VkDebugUtilsMessengerCallbackDataEXT* callbackData, void* userData);
+VKAPI_ATTR VkBool32 VKAPI_CALL xud_diagnostics_message_callback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageTypes, const VkDebugUtilsMessengerCallbackDataEXT* callbackData, void* userData);
 
 /// Pure: enable every advertised instance layer, in advertised order, into the struct's own
 /// storage - never a hardcoded name, which is the whole point (a driver that advertises a layer
@@ -109,8 +102,7 @@ VKAPI_ATTR VkBool32 VKAPI_CALL xud_diagnostics_message_callback(
 /// XUD_INVALID_ARG on a NULL struct or a NULL advertised array with a non-zero count; XUD_OUT_OF
 /// _RESOURCES when more layers are advertised than the struct can hold (a truncated layer list
 /// would mean a silently un-validated run).
-XudResult xud_diagnostics_select_layers(
-    XudDiagnostics* outDiagnostics, const VkLayerProperties* advertised, uint32_t advertisedCount);
+XudResult xud_diagnostics_select_layers(XudDiagnostics* outDiagnostics, const VkLayerProperties* advertised, uint32_t advertisedCount);
 
 /// Driver: one doubling-capacity call of the loader's enumerateInstanceLayerProperties slot
 /// (16 -> 512, same shape as the instance-extension query). *outProperties is a fresh array
@@ -118,8 +110,7 @@ XudResult xud_diagnostics_select_layers(
 /// XUD_INVALID_ARG on a NULL loader/out pair or a closed loader; XUD_UNSUPPORTED when the slot
 /// is NULL; XUD_VULKAN_ERROR on VK_INCOMPLETE (the list was cut, not an error in Vulkan but
 /// unusable here).
-XudResult xud_diagnostics_query_layers(
-    const XudLoader* loader, VkLayerProperties** outProperties, uint32_t* outCount);
+XudResult xud_diagnostics_query_layers(const XudLoader* loader, VkLayerProperties** outProperties, uint32_t* outCount);
 
 /// Driver: allocate a diagnostics struct and fill everything the instance layer will need before
 /// the instance exists - the advertised layers queried and selected, the validation features and
@@ -138,8 +129,7 @@ XudResult xud_diagnostics_open(XudDiagnostics** outDiagnostics, XudLoader* loade
 /// only the log side is missing). Resolves vkCreateDebugUtilsMessengerEXT through the instance
 /// immediately before calling it, never caches it. XUD_INVALID_ARG on a NULL struct/loader/instance
 /// or a closed loader; XUD_VULKAN_ERROR when the driver refuses to create it.
-XudResult xud_diagnostics_create_messenger(
-    XudDiagnostics* diagnostics, XudLoader* loader, VkInstance instance);
+XudResult xud_diagnostics_create_messenger(XudDiagnostics* diagnostics, XudLoader* loader, VkInstance instance);
 
 /// Driver: destroy the messenger while its instance is still alive (the extension's own rule -
 /// vkDestroyDebugUtilsMessengerEXT takes the owning VkInstance), then free the struct and set the

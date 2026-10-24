@@ -73,9 +73,8 @@ typedef struct XudInstance {
     VkInstance instance; /* VK_NULL_HANDLE until xud_instance_create() fills it */
     VkApplicationInfo applicationInfo; /* what was asked for: names, versions, apiVersion floor */
     uint32_t enabledExtensionCount; /* how many rows of enabledExtensionNameStorage are live */
-    char enabledExtensionNameStorage[XUD_MAX_INSTANCE_EXTENSIONS]
-                                    [VK_MAX_EXTENSION_NAME_SIZE]; /* the names, copied into fixed
-                                                                     buffers */
+    char enabledExtensionNameStorage[XUD_MAX_INSTANCE_EXTENSIONS][VK_MAX_EXTENSION_NAME_SIZE]; /* the names, copied into fixed
+                                                                                                  buffers */
 } XudInstance;
 
 /// The VkApplicationInfo every xudlibc instance carries: XUD_INSTANCE_NAME in both name
@@ -99,10 +98,8 @@ XudResult xud_instance_fill_application_info(VkApplicationInfo* outApplicationIn
 /// Rewrites enabledExtensionCount/Storage on every call, including when nothing matches. XUD_INVA
 /// LID_ARG when `advertised` is NULL while advertisedCount is not 0, or `extraNames` is NULL while
 /// extraCount is not 0.
-XudResult xud_instance_select_extensions(XudInstance* outInstance,
-    const VkExtensionProperties* advertised, uint32_t advertisedCount,
-    const char* const extraNames[XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX],
-    uint32_t extraCount);
+XudResult xud_instance_select_extensions(XudInstance* outInstance, const VkExtensionProperties* advertised, uint32_t advertisedCount,
+    const char* const extraNames[XUD_DIAGNOSTICS_WANTED_MAX + XUD_INSTANCE_EXTRA_MAX], uint32_t extraCount);
 
 /// Assemble the VkInstanceCreateInfo for an XudInstance: sType, pNext NULL when `diagnostics` is
 /// NULL, -> &diagnostics->validationFeatures when it is not **and every extension the
@@ -122,9 +119,8 @@ XudResult xud_instance_select_extensions(XudInstance* outInstance,
 /// Pure. XUD_INVALID_ARG on a NULL instance, NULL nameSlots array, NULL out-param, or a
 /// diagnostics struct whose layer count does not fit its own storage; the accessor's own
 /// XUD_INVALID_ARG (NULL out-params) can only come from a bug in this file, and is passed through.
-XudResult xud_instance_fill_create_info(const XudInstance* instance,
-    const char* nameSlots[XUD_MAX_INSTANCE_EXTENSIONS], const XudDiagnostics* diagnostics,
-    VkInstanceCreateInfo* outCreateInfo);
+XudResult xud_instance_fill_create_info(const XudInstance* instance, const char* nameSlots[XUD_MAX_INSTANCE_EXTENSIONS],
+    const XudDiagnostics* diagnostics, VkInstanceCreateInfo* outCreateInfo);
 
 /// Create the instance. `loader` must be open (xud_loader_open filled the global-level slots
 /// this needs). `diagnostics` is the diagnostics layer's answer (see xud_diagnostics.h) or NULL:
@@ -150,9 +146,8 @@ XudResult xud_instance_fill_create_info(const XudInstance* instance,
 /// answers NULL for it without a live handle (verified here), and a failure to resolve it after a
 /// successful create would leave an instance nothing could free - so it is resolved by
 /// xud_instance_destroy(), through the instance it frees.
-XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader,
-    XudDiagnostics* diagnostics, const char* extraNames[XUD_INSTANCE_EXTRA_MAX],
-    uint32_t extraCount);
+XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader, XudDiagnostics* diagnostics,
+    const char* extraNames[XUD_INSTANCE_EXTRA_MAX], uint32_t extraCount);
 
 /// Destroy the instance and clear the out pointer. The arguments are checked before the state:
 /// XUD_INVALID_ARG when the pointer itself is NULL or the loader is missing/not open, and
@@ -168,7 +163,6 @@ XudResult xud_instance_create(XudInstance** outInstance, XudLoader* loader,
 /// the loader cannot resolve vkDestroyDebugUtilsMessengerEXT or vkDestroyInstance, what it owns
 /// leaks and the failure is returned - that is a broken loader, not something this layer papers
 /// over.
-XudResult xud_instance_destroy(
-    XudInstance** instance, XudLoader* loader, XudDiagnostics* diagnostics);
+XudResult xud_instance_destroy(XudInstance** instance, XudLoader* loader, XudDiagnostics* diagnostics);
 
 #endif /* XUD_XUD_INSTANCE_H_ */

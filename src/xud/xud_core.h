@@ -90,8 +90,7 @@ struct XudContext {
        st). The caps inside are what VkDeviceCreateInfo's ppEnabled* arrays are intersected with a
        t S6, and what xud_vulkan_supported() reads.
      */
-    XudPhysicalDevice*
-        physicalDevice; /* the chosen VkPhysicalDevice plus the caps recorded from it */
+    XudPhysicalDevice* physicalDevice; /* the chosen VkPhysicalDevice plus the caps recorded from it */
 
     /* Owned from the device layer on: opened by xud_init_context() through xud_device_open(),
        closed by xud_close_context() through xud_device_close() - the wait-idle guard, then

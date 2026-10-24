@@ -44,8 +44,7 @@ static const VkFormat XUD_SWAPCHAIN_WANTED_FORMATS[] = {
     VK_FORMAT_R8G8B8A8_SRGB,
     VK_FORMAT_R8G8B8A8_UNORM,
 };
-#define XUD_SWAPCHAIN_WANTED_COUNT                                                                 \
-    ((uint32_t)(sizeof(XUD_SWAPCHAIN_WANTED_FORMATS) / sizeof(XUD_SWAPCHAIN_WANTED_FORMATS[0])))
+#define XUD_SWAPCHAIN_WANTED_COUNT ((uint32_t)(sizeof(XUD_SWAPCHAIN_WANTED_FORMATS) / sizeof(XUD_SWAPCHAIN_WANTED_FORMATS[0])))
 
 static_assert(XUD_SWAPCHAIN_WANTED_COUNT <= XUD_SWAPCHAIN_MAX_SURFACE_FORMATS,
     "xud_swapchain.c: the wanted list must fit inside the storage the caps' advertised list has, "
@@ -55,8 +54,7 @@ static_assert(XUD_SWAPCHAIN_WANTED_COUNT <= XUD_SWAPCHAIN_MAX_SURFACE_FORMATS,
  * The image count, the format, the present mode - the three selection rules, pure
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_swapchain_choose_image_count(
-    uint32_t* outImageCount, const VkSurfaceCapabilitiesKHR* capabilities) {
+XudResult xud_swapchain_choose_image_count(uint32_t* outImageCount, const VkSurfaceCapabilitiesKHR* capabilities) {
     uint32_t count;
 
     if ((outImageCount == NULL) || (capabilities == NULL)) {
@@ -74,8 +72,7 @@ XudResult xud_swapchain_choose_image_count(
     /* An inconsistent answer - a non-zero upper limit below the lower one. The clamp order below
        cannot fix that (it would raise then cut, and the cut would win), and no layer above this
        one produced it, so it is reported rather than repaired. */
-    if ((capabilities->maxImageCount != 0u)
-        && (capabilities->maxImageCount < capabilities->minImageCount)) {
+    if ((capabilities->maxImageCount != 0u) && (capabilities->maxImageCount < capabilities->minImageCount)) {
         return XUD_UNSUPPORTED;
     }
 
@@ -93,13 +90,12 @@ XudResult xud_swapchain_choose_image_count(
     return XUD_OK;
 }
 
-XudResult xud_swapchain_select_format(VkSurfaceFormatKHR* outFormat, uint32_t* outIndex,
-    const VkSurfaceFormatKHR* advertised, uint32_t advertisedCount) {
+XudResult xud_swapchain_select_format(
+    VkSurfaceFormatKHR* outFormat, uint32_t* outIndex, const VkSurfaceFormatKHR* advertised, uint32_t advertisedCount) {
     uint32_t wanted;
     uint32_t row;
 
-    if ((outFormat == NULL) || (outIndex == NULL)
-        || ((advertisedCount != 0u) && (advertised == NULL))) {
+    if ((outFormat == NULL) || (outIndex == NULL) || ((advertisedCount != 0u) && (advertised == NULL))) {
         return XUD_INVALID_ARG;
     }
 
@@ -146,8 +142,7 @@ XudResult xud_swapchain_select_format(VkSurfaceFormatKHR* outFormat, uint32_t* o
     return XUD_OK;
 }
 
-XudResult xud_swapchain_select_present_mode(
-    VkPresentModeKHR* outMode, const VkPresentModeKHR* advertised, uint32_t advertisedCount) {
+XudResult xud_swapchain_select_present_mode(VkPresentModeKHR* outMode, const VkPresentModeKHR* advertised, uint32_t advertisedCount) {
     uint32_t row;
 
     if ((outMode == NULL) || ((advertisedCount != 0u) && (advertised == NULL))) {
@@ -189,9 +184,8 @@ XudResult xud_swapchain_select_present_mode(
  * The create-info, assembled from the caps and the extent above this layer
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo,
-    const XudSurfaceCaps* surfaceCaps, VkSurfaceKHR surface, uint32_t width, uint32_t height,
-    VkSwapchainKHR oldSwapchain) {
+XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo, const XudSurfaceCaps* surfaceCaps, VkSurfaceKHR surface,
+    uint32_t width, uint32_t height, VkSwapchainKHR oldSwapchain) {
     VkSurfaceFormatKHR format;
     VkPresentModeKHR presentMode;
     VkSwapchainCreateInfoKHR info;
@@ -217,13 +211,11 @@ XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo
     if (guard != XUD_OK) {
         return guard;
     }
-    guard = xud_swapchain_select_format(
-        &format, &chosenIndex, surfaceCaps->surfaceFormats, surfaceCaps->surfaceFormatCount);
+    guard = xud_swapchain_select_format(&format, &chosenIndex, surfaceCaps->surfaceFormats, surfaceCaps->surfaceFormatCount);
     if (guard != XUD_OK) {
         return guard;
     }
-    guard = xud_swapchain_select_present_mode(
-        &presentMode, surfaceCaps->presentModes, surfaceCaps->presentModeCount);
+    guard = xud_swapchain_select_present_mode(&presentMode, surfaceCaps->presentModes, surfaceCaps->presentModeCount);
     if (guard != XUD_OK) {
         return guard;
     }
@@ -231,10 +223,8 @@ XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo
     /* The extent is checked against the surface's own answer, not against GLFW's int bound: the
        two are different gates, and a window inside GLFW's bound but outside this surface's is a
        window this surface cannot present to - the surface's answer, XUD_UNSUPPORTED. */
-    if ((width < surfaceCaps->capabilities.minImageExtent.width)
-        || (height < surfaceCaps->capabilities.minImageExtent.height)
-        || (width > surfaceCaps->capabilities.maxImageExtent.width)
-        || (height > surfaceCaps->capabilities.maxImageExtent.height)) {
+    if ((width < surfaceCaps->capabilities.minImageExtent.width) || (height < surfaceCaps->capabilities.minImageExtent.height)
+        || (width > surfaceCaps->capabilities.maxImageExtent.width) || (height > surfaceCaps->capabilities.maxImageExtent.height)) {
         return XUD_UNSUPPORTED;
     }
 
@@ -248,8 +238,7 @@ XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo
        asserted: there is no VK_IMAGE_USAGE_PRESENT_BIT in these headers (see the note in the
        header above), so presentation is not a flag to ask for and COLOR_ATTACHMENT is the only
        bit this library's one use of a swapchain requires. */
-    if ((surfaceCaps->capabilities.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)
-        != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
+    if ((surfaceCaps->capabilities.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
         return XUD_UNSUPPORTED;
     }
 
@@ -260,8 +249,7 @@ XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo
        and a surface supporting none at all is a broken query, refused. */
     for (bit = 0u; bit < 4u; bit++) {
         const VkCompositeAlphaFlagBitsKHR candidate = (VkCompositeAlphaFlagBitsKHR)(1u << bit);
-        if ((compositeAlpha == 0u)
-            && ((surfaceCaps->capabilities.supportedCompositeAlpha & candidate) == candidate)) {
+        if ((compositeAlpha == 0u) && ((surfaceCaps->capabilities.supportedCompositeAlpha & candidate) == candidate)) {
             compositeAlpha = candidate;
         }
     }
@@ -302,8 +290,8 @@ XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo
  * The three surface queries - instance-level rows, because they take a physical device
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_swapchain_query_surface(XudSurfaceCaps* outSurfaceCaps, const XudLoader* loader,
-    VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
+XudResult xud_swapchain_query_surface(
+    XudSurfaceCaps* outSurfaceCaps, const XudLoader* loader, VkPhysicalDevice physicalDevice, VkSurfaceKHR surface) {
     VkSurfaceFormatKHR formats[XUD_SWAPCHAIN_MAX_SURFACE_FORMATS];
     VkPresentModeKHR modes[XUD_SWAPCHAIN_MAX_PRESENT_MODES];
     VkSurfaceCapabilitiesKHR capabilities;
@@ -311,8 +299,7 @@ XudResult xud_swapchain_query_surface(XudSurfaceCaps* outSurfaceCaps, const XudL
     uint32_t modeCount = XUD_SWAPCHAIN_MAX_PRESENT_MODES;
     VkResult vk;
 
-    if ((outSurfaceCaps == NULL) || (loader == NULL) || (physicalDevice == VK_NULL_HANDLE)
-        || (surface == VK_NULL_HANDLE)) {
+    if ((outSurfaceCaps == NULL) || (loader == NULL) || (physicalDevice == VK_NULL_HANDLE) || (surface == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
 
@@ -336,8 +323,7 @@ XudResult xud_swapchain_query_surface(XudSurfaceCaps* outSurfaceCaps, const XudL
        of a struct it embedded in its own swapchain. */
     memset(outSurfaceCaps, 0, sizeof(XudSurfaceCaps));
 
-    vk = loader->instanceTable.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(
-        physicalDevice, surface, &capabilities);
+    vk = loader->instanceTable.vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &capabilities);
     if (xud_result_from_vk(vk) != XUD_OK) {
         return xud_result_from_vk(vk);
     }
@@ -347,20 +333,16 @@ XudResult xud_swapchain_query_surface(XudSurfaceCaps* outSurfaceCaps, const XudL
        PLETE at that capacity, or claims success while writing more than it was given, is refused
        rather than retried or truncated: unlike the extension lists these two bounds are the
        storage of the struct being filled, not a heap array that can grow. */
-    vk = loader->instanceTable.vkGetPhysicalDeviceSurfaceFormatsKHR(
-        physicalDevice, surface, &formatCount, formats);
-    if ((vk == VK_INCOMPLETE)
-        || ((vk == VK_SUCCESS) && (formatCount > XUD_SWAPCHAIN_MAX_SURFACE_FORMATS))) {
+    vk = loader->instanceTable.vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats);
+    if ((vk == VK_INCOMPLETE) || ((vk == VK_SUCCESS) && (formatCount > XUD_SWAPCHAIN_MAX_SURFACE_FORMATS))) {
         return XUD_OUT_OF_RESOURCES;
     }
     if (xud_result_from_vk(vk) != XUD_OK) {
         return xud_result_from_vk(vk);
     }
 
-    vk = loader->instanceTable.vkGetPhysicalDeviceSurfacePresentModesKHR(
-        physicalDevice, surface, &modeCount, modes);
-    if ((vk == VK_INCOMPLETE)
-        || ((vk == VK_SUCCESS) && (modeCount > XUD_SWAPCHAIN_MAX_PRESENT_MODES))) {
+    vk = loader->instanceTable.vkGetPhysicalDeviceSurfacePresentModesKHR(physicalDevice, surface, &modeCount, modes);
+    if ((vk == VK_INCOMPLETE) || ((vk == VK_SUCCESS) && (modeCount > XUD_SWAPCHAIN_MAX_PRESENT_MODES))) {
         return XUD_OUT_OF_RESOURCES;
     }
     if (xud_result_from_vk(vk) != XUD_OK) {
@@ -379,8 +361,8 @@ XudResult xud_swapchain_query_surface(XudSurfaceCaps* outSurfaceCaps, const XudL
  * The image query - a device-level row, and the one list here that CAN grow
  *-----------------------------------------------------------------------------------------------*/
 
-static XudResult xud_swapchain_query_images(VkImage** outImages, uint32_t* outCount,
-    uint32_t* outCapacity, const XudLoader* loader, VkDevice device, VkSwapchainKHR swapchain) {
+static XudResult xud_swapchain_query_images(
+    VkImage** outImages, uint32_t* outCount, uint32_t* outCapacity, const XudLoader* loader, VkDevice device, VkSwapchainKHR swapchain) {
     uint32_t capacity = XUD_SWAPCHAIN_QUERY_MIN_CAPACITY;
 
     while (capacity <= XUD_SWAPCHAIN_QUERY_MAX_CAPACITY) {
@@ -421,8 +403,8 @@ static XudResult xud_swapchain_query_images(VkImage** outImages, uint32_t* outCo
  * Bring-up - the whole ladder for one surface, or nothing
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader,
-    const XudPhysicalDevice* physicalDevice, const XudWindow* window, const XudDevice* device) {
+XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader, const XudPhysicalDevice* physicalDevice,
+    const XudWindow* window, const XudDevice* device) {
     XudSwapchain* swapchain;
     VkSwapchainCreateInfoKHR createInfo;
     VkSwapchainKHR created = VK_NULL_HANDLE;
@@ -432,8 +414,7 @@ XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader,
     VkResult vk;
     XudResult guard;
 
-    if ((outSwapchain == NULL) || (loader == NULL) || (window == NULL) || (physicalDevice == NULL)
-        || (device == NULL)) {
+    if ((outSwapchain == NULL) || (loader == NULL) || (window == NULL) || (physicalDevice == NULL) || (device == NULL)) {
         return XUD_INVALID_ARG;
     }
     /* The slot must be empty before the call, not after a failure: a struct this rung frees on a
@@ -471,8 +452,7 @@ XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader,
     /* The destroy row BEFORE the create row: a swapchain this layer cannot destroy is a swapchain
        it must not create, the same rule xud_window.c applies to a surface. The two query rows are
        checked before the calls that need them. */
-    if ((loader->deviceTable.vkDestroySwapchainKHR == NULL)
-        || (loader->deviceTable.vkCreateSwapchainKHR == NULL)
+    if ((loader->deviceTable.vkDestroySwapchainKHR == NULL) || (loader->deviceTable.vkCreateSwapchainKHR == NULL)
         || (loader->deviceTable.vkGetSwapchainImagesKHR == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceSurfaceCapabilitiesKHR == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceSurfaceFormatsKHR == NULL)
@@ -485,15 +465,14 @@ XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader,
         return XUD_OUT_OF_MEMORY;
     }
 
-    guard = xud_swapchain_query_surface(
-        &swapchain->surfaceCaps, loader, physicalDevice->physicalDevice, window->surface);
+    guard = xud_swapchain_query_surface(&swapchain->surfaceCaps, loader, physicalDevice->physicalDevice, window->surface);
     if (guard != XUD_OK) {
         free(swapchain);
         return guard;
     }
 
-    guard = xud_swapchain_fill_create_info(&createInfo, &swapchain->surfaceCaps, window->surface,
-        window->width, window->height, VK_NULL_HANDLE);
+    guard = xud_swapchain_fill_create_info(
+        &createInfo, &swapchain->surfaceCaps, window->surface, window->width, window->height, VK_NULL_HANDLE);
     if (guard != XUD_OK) {
         free(swapchain);
         return guard;
@@ -510,8 +489,7 @@ XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader,
     }
     swapchain->swapchain = created;
 
-    guard = xud_swapchain_query_images(
-        &images, &imageCount, &imageCapacity, loader, device->device, created);
+    guard = xud_swapchain_query_images(&images, &imageCount, &imageCapacity, loader, device->device, created);
     if (guard != XUD_OK) {
         /* A swapchain nobody can get an image from is a swapchain nothing above can use, and
            leaving it alive would leak the one object this layer owns - so it is destroyed here,
@@ -538,9 +516,8 @@ XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader,
  * The resize path - the one place a swapchain is replaced, and the one place an old one dies
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
-    const XudPhysicalDevice* physicalDevice, const XudWindow* window, const XudDevice* device,
-    uint32_t width, uint32_t height) {
+XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader, const XudPhysicalDevice* physicalDevice,
+    const XudWindow* window, const XudDevice* device, uint32_t width, uint32_t height) {
     XudSwapchain* swapchain;
     XudSurfaceCaps surfaceCaps;
     VkSwapchainCreateInfoKHR createInfo;
@@ -552,8 +529,7 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
     VkResult vk;
     XudResult guard;
 
-    if ((ioSwapchain == NULL) || (loader == NULL) || (window == NULL) || (physicalDevice == NULL)
-        || (device == NULL)) {
+    if ((ioSwapchain == NULL) || (loader == NULL) || (window == NULL) || (physicalDevice == NULL) || (device == NULL)) {
         return XUD_INVALID_ARG;
     }
     /* There is nothing to replace - xud_swapchain_open() is the rung that creates one, and a
@@ -568,8 +544,7 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
     if ((physicalDevice->physicalDevice == VK_NULL_HANDLE) || (device->device == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
-    if ((width == 0u) || (height == 0u) || (width > XUD_WINDOW_MAX_EXTENT)
-        || (height > XUD_WINDOW_MAX_EXTENT)) {
+    if ((width == 0u) || (height == 0u) || (width > XUD_WINDOW_MAX_EXTENT) || (height > XUD_WINDOW_MAX_EXTENT)) {
         return XUD_INVALID_ARG;
     }
     if (!loader->open) {
@@ -585,8 +560,7 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
     /* Already at this size: recreating at the extent the swapchain was created for would retire
        images the renderer above is still holding and buy nothing, and "already at this size" is
        the state asked for, not an error. */
-    if ((width == swapchain->createInfo.imageExtent.width)
-        && (height == swapchain->createInfo.imageExtent.height)) {
+    if ((width == swapchain->createInfo.imageExtent.width) && (height == swapchain->createInfo.imageExtent.height)) {
         return XUD_ALREADY;
     }
 
@@ -596,8 +570,7 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
     if (!xud_loader_device_bound(loader, device->device)) {
         return XUD_UNSUPPORTED;
     }
-    if ((loader->deviceTable.vkDestroySwapchainKHR == NULL)
-        || (loader->deviceTable.vkCreateSwapchainKHR == NULL)
+    if ((loader->deviceTable.vkDestroySwapchainKHR == NULL) || (loader->deviceTable.vkCreateSwapchainKHR == NULL)
         || (loader->deviceTable.vkGetSwapchainImagesKHR == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceSurfaceCapabilitiesKHR == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceSurfaceFormatsKHR == NULL)
@@ -609,14 +582,12 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
        with it the whole answer moves - the extent bounds, the format list, the present modes.
        The query goes into a LOCAL struct, not into the record: a creation that then fails must
        leave the record describing the swapchain that is still alive. */
-    guard = xud_swapchain_query_surface(
-        &surfaceCaps, loader, physicalDevice->physicalDevice, window->surface);
+    guard = xud_swapchain_query_surface(&surfaceCaps, loader, physicalDevice->physicalDevice, window->surface);
     if (guard != XUD_OK) {
         return guard;
     }
 
-    guard = xud_swapchain_fill_create_info(
-        &createInfo, &surfaceCaps, window->surface, width, height, old);
+    guard = xud_swapchain_fill_create_info(&createInfo, &surfaceCaps, window->surface, width, height, old);
     if (guard != XUD_OK) {
         return guard;
     }
@@ -642,8 +613,7 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
     loader->deviceTable.vkDestroySwapchainKHR(device->device, old, NULL);
     swapchain->swapchain = VK_NULL_HANDLE;
 
-    guard = xud_swapchain_query_images(
-        &images, &imageCount, &imageCapacity, loader, device->device, created);
+    guard = xud_swapchain_query_images(&images, &imageCount, &imageCapacity, loader, device->device, created);
     if (guard != XUD_OK) {
         /* The old swapchain is already gone - the create succeeded and destroyed it - so the new
            one is destroyed here too, and the struct is left in the no-swapchain state with its
@@ -675,8 +645,7 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader,
  * The image accessor - pure, and the reason a caller above holds an index and not a handle
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_swapchain_images_get(
-    const XudSwapchain* swapchain, uint32_t index, VkImage* outImage) {
+XudResult xud_swapchain_images_get(const XudSwapchain* swapchain, uint32_t index, VkImage* outImage) {
     if ((outImage == NULL) || (swapchain == NULL)) {
         return XUD_INVALID_ARG;
     }
@@ -699,8 +668,7 @@ XudResult xud_swapchain_images_get(
  * Teardown - the guard, the destroy, the free
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_swapchain_close(
-    XudSwapchain** swapchain, const XudDevice* device, const XudLoader* loader) {
+XudResult xud_swapchain_close(XudSwapchain** swapchain, const XudDevice* device, const XudLoader* loader) {
     XudSwapchain* victim;
     VkSwapchainKHR handle;
     XudResult guard;
@@ -735,8 +703,7 @@ XudResult xud_swapchain_close(
     if (!xud_loader_device_bound(loader, device->device)) {
         return XUD_UNSUPPORTED;
     }
-    if ((loader->deviceTable.vkDeviceWaitIdle == NULL)
-        || (loader->deviceTable.vkDestroySwapchainKHR == NULL)) {
+    if ((loader->deviceTable.vkDeviceWaitIdle == NULL) || (loader->deviceTable.vkDestroySwapchainKHR == NULL)) {
         return XUD_UNSUPPORTED;
     }
 

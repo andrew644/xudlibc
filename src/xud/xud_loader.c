@@ -126,9 +126,7 @@ XudResult xud_loader_close(XudLoader** loader) {
  * The three invariants the layers above check
  *-----------------------------------------------------------------------------------------------*/
 
-bool xud_loader_is_open(const XudLoader* loader) {
-    return (loader != NULL) && (loader->open == true);
-}
+bool xud_loader_is_open(const XudLoader* loader) { return (loader != NULL) && (loader->open == true); }
 
 bool xud_loader_instance_bound(const XudLoader* loader, VkInstance instance) {
     if (loader == NULL)
@@ -187,8 +185,7 @@ XudResult xud_loader_bind_device(XudLoader* loader, VkDevice device) {
        n in between; vkGetDeviceProcAddr is device-level for resolution (it needs the VkDevice) b
        ut instance-level for lookup, which is why Volk puts it in VolkInstanceTable. A NULL row m
        eans the instance above did not answer it, and no device table can be filled without it. */
-    if ((loader->boundInstance == VK_NULL_HANDLE)
-        || (loader->instanceTable.vkGetDeviceProcAddr == NULL))
+    if ((loader->boundInstance == VK_NULL_HANDLE) || (loader->instanceTable.vkGetDeviceProcAddr == NULL))
         return XUD_UNSUPPORTED;
     vkGetDeviceProcAddr = loader->instanceTable.vkGetDeviceProcAddr;
 

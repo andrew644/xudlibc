@@ -37,10 +37,8 @@
 #include <assert.h> /* Required for: static_assert, the two handle-shape checks below */
 #include <stdlib.h> /* Required for: calloc, free */
 
-static_assert(sizeof(PFN_vkDestroySurfaceKHR) == sizeof(void*),
-    "xud_window.c: the surface teardown row is one pointer-wide slot");
-static_assert(sizeof(VkSurfaceKHR) == sizeof(void*),
-    "xud_window.c: a surface handle is a pointer, so clearing it is clearing one word");
+static_assert(sizeof(PFN_vkDestroySurfaceKHR) == sizeof(void*), "xud_window.c: the surface teardown row is one pointer-wide slot");
+static_assert(sizeof(VkSurfaceKHR) == sizeof(void*), "xud_window.c: a surface handle is a pointer, so clearing it is clearing one word");
 
 /*-----------------------------------------------------------------------------------------------
  * A leak this layer does not own, and does not paper over
@@ -94,8 +92,7 @@ static bool xud_window_all_required_enabled(const XudWindow* window, const XudIn
         uint32_t enabled = 0u;
 
         for (enabled = 0u; enabled < instance->enabledExtensionCount; enabled++) {
-            if (xud_name_equal(window->requiredInstanceExtensionNameStorage[row],
-                    instance->enabledExtensionNameStorage[enabled])) {
+            if (xud_name_equal(window->requiredInstanceExtensionNameStorage[row], instance->enabledExtensionNameStorage[enabled])) {
                 found = true;
                 break;
             }
@@ -125,8 +122,7 @@ XudResult xud_window_required_instance_extensions(
 }
 
 /// See xud_window.h: the pure half of the surface gate.
-XudResult xud_window_check_instance_support(
-    bool* outSupports, const XudWindow* window, const XudInstance* instance) {
+XudResult xud_window_check_instance_support(bool* outSupports, const XudWindow* window, const XudInstance* instance) {
     if ((outSupports == NULL) || (window == NULL) || (instance == NULL))
         return XUD_INVALID_ARG;
 
@@ -145,9 +141,8 @@ XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height
     XudResult result = XUD_INVALID_ARG;
     uint32_t row = 0u;
 
-    if ((outWindow == NULL) || (*outWindow != NULL) || (width < XUD_WINDOW_MIN_EXTENT)
-        || (width > XUD_WINDOW_MAX_EXTENT) || (height < XUD_WINDOW_MIN_EXTENT)
-        || (height > XUD_WINDOW_MAX_EXTENT))
+    if ((outWindow == NULL) || (*outWindow != NULL) || (width < XUD_WINDOW_MIN_EXTENT) || (width > XUD_WINDOW_MAX_EXTENT)
+        || (height < XUD_WINDOW_MIN_EXTENT) || (height > XUD_WINDOW_MAX_EXTENT))
         return XUD_INVALID_ARG;
 
     window = calloc(1, sizeof(XudWindow));
@@ -185,9 +180,7 @@ XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height
         goto fail;
     }
     for (row = 0u; row < requiredCount; row++) {
-        if (xud_name_copy(window->requiredInstanceExtensionNameStorage[row],
-                VK_MAX_EXTENSION_NAME_SIZE, requiredNames[row])
-            != XUD_OK) {
+        if (xud_name_copy(window->requiredInstanceExtensionNameStorage[row], VK_MAX_EXTENSION_NAME_SIZE, requiredNames[row]) != XUD_OK) {
             result = XUD_INTERNAL_ERROR; /* a GLFW name longer than the buffer: reported, not trun
                                           cated */
             goto fail;
@@ -221,11 +214,10 @@ fail:
 /// glfwGetPhysicalDevicePresentationSupport asserts both are live (vulkan.c 6470) and resolves the
 /// window system's own query through GLFW's vkGetInstanceProcAddr, against the instance it is hand
 /// ed.
-XudResult xud_window_presentation_support(bool* outSupports, const XudWindow* window,
-    const XudInstance* instance, const XudPhysicalDevice* physicalDevice) {
-    if ((outSupports == NULL) || (window == NULL) || (instance == NULL) || (physicalDevice == NULL)
-        || (window->glfwWindow == NULL) || (instance->instance == VK_NULL_HANDLE)
-        || (physicalDevice->physicalDevice == VK_NULL_HANDLE))
+XudResult xud_window_presentation_support(
+    bool* outSupports, const XudWindow* window, const XudInstance* instance, const XudPhysicalDevice* physicalDevice) {
+    if ((outSupports == NULL) || (window == NULL) || (instance == NULL) || (physicalDevice == NULL) || (window->glfwWindow == NULL)
+        || (instance->instance == VK_NULL_HANDLE) || (physicalDevice->physicalDevice == VK_NULL_HANDLE))
         return XUD_INVALID_ARG;
 
     /* The queue family the physical layer chose is what presentation is asked about, and a physica
@@ -238,8 +230,8 @@ XudResult xud_window_presentation_support(bool* outSupports, const XudWindow* wi
         return XUD_UNSUPPORTED; /* the call is refused, not made: GLFW would answer GLFW_FALSE thr
                                   ough a NULL row */
 
-    *outSupports = (glfwGetPhysicalDevicePresentationSupport(instance->instance,
-                        physicalDevice->physicalDevice, physicalDevice->caps.queueFamilyIndex)
+    *outSupports = (glfwGetPhysicalDevicePresentationSupport(
+                        instance->instance, physicalDevice->physicalDevice, physicalDevice->caps.queueFamilyIndex)
         == GLFW_TRUE);
     return XUD_OK;
 }
@@ -248,15 +240,13 @@ XudResult xud_window_presentation_support(bool* outSupports, const XudWindow* wi
 /// layer cannot destroy is a surface it must not create, and unlike vkDestroyInstance - which xud_i
 /// nstance.c resolves at destroy time because vkGetInstanceProcAddr answers NULL for it until an in
 /// stance exists - this row is filled in bulk by xud_loader_bind_instance, so checking it is free.
-XudResult xud_window_surface_create(
-    XudWindow* window, XudLoader* loader, const XudInstance* instance) {
+XudResult xud_window_surface_create(XudWindow* window, XudLoader* loader, const XudInstance* instance) {
     VkSurfaceKHR surface = VK_NULL_HANDLE;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_SUCCESS;
 
-    if ((window == NULL) || (loader == NULL) || (instance == NULL) || (window->glfwWindow == NULL)
-        || (window->surface != VK_NULL_HANDLE) || (instance->instance == VK_NULL_HANDLE)
-        || (!xud_loader_is_open(loader)))
+    if ((window == NULL) || (loader == NULL) || (instance == NULL) || (window->glfwWindow == NULL) || (window->surface != VK_NULL_HANDLE)
+        || (instance->instance == VK_NULL_HANDLE) || (!xud_loader_is_open(loader)))
         return XUD_INVALID_ARG;
 
     if (!xud_window_all_required_enabled(window, instance))

@@ -125,13 +125,11 @@ static_assert(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO != VK_STRUCTURE_TYPE_DE
     "the two create-info stamps of this layer must be distinct");
 static_assert(VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO != 0u,
     "a stamp of zero is the unstamped state, and neither struct may ever be stamped zero");
-static_assert(VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO != 0u,
-    "a stamp of zero is the unstamped state, and neither struct may ever be stamped zero");
-
-static_assert(XUD_DEVICE_QUEUE_MAX_COUNT >= 1u,
-    "a device with no queue row is not a device this layer can create");
 static_assert(
-    XUD_DEVICE_MAX_DEVICE_EXTENSIONS >= 1u, "the extension storage must hold at least one name");
+    VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO != 0u, "a stamp of zero is the unstamped state, and neither struct may ever be stamped zero");
+
+static_assert(XUD_DEVICE_QUEUE_MAX_COUNT >= 1u, "a device with no queue row is not a device this layer can create");
+static_assert(XUD_DEVICE_MAX_DEVICE_EXTENSIONS >= 1u, "the extension storage must hold at least one name");
 
 /*-----------------------------------------------------------------------------------------------
  * The records this layer keeps
@@ -155,25 +153,22 @@ typedef struct XudDevice XudDevice;
 struct XudDevice {
     VkDevice device; /* VK_NULL_HANDLE until xud_device_open() creates it, and destroyed by
                         xud_device_close() - this is the one Vulkan object the layer owns */
-    VkDeviceQueueCreateInfo
-        queueRow; /* the one row vkCreateDevice was handed, kept as this layer's own record of what
-                     it asked for: the accessor below checks a queue request against this row, and
-                     the physical layer's caps are queried once, so nothing above re-queries the
-                     families */
+    VkDeviceQueueCreateInfo queueRow; /* the one row vkCreateDevice was handed, kept as this layer's own record of what
+                                         it asked for: the accessor below checks a queue request against this row, and
+                                         the physical layer's caps are queried once, so nothing above re-queries the
+                                         families */
     float queuePriorities[XUD_DEVICE_QUEUE_MAX_COUNT]; /* what queueRow.pQueuePriorities points at -
                                                           the row's pointer must stay valid as long
                                                           as the record is read, which is why the
                                                           array lives beside it in the same heap
                                                           block rather than on a frame that ends */
-    VkPhysicalDeviceFeatures
-        enabledFeatures; /* what was enabled: the physical layer's wanted-intersection, copied here
-                            so the record says what the device was created with, not what the caps
-                            say the driver can do */
+    VkPhysicalDeviceFeatures enabledFeatures; /* what was enabled: the physical layer's wanted-intersection, copied here
+                                                 so the record says what the device was created with, not what the caps
+                                                 say the driver can do */
     uint32_t enabledExtensionCount; /* how many rows of enabledExtensionNameStorage are live */
-    char enabledExtensionNameStorage[XUD_DEVICE_MAX_DEVICE_EXTENSIONS]
-                                    [VK_MAX_EXTENSION_NAME_SIZE]; /* the names, copied into fixed
-                                                                     buffers, the instance layer's
-                                                                     shape */
+    char enabledExtensionNameStorage[XUD_DEVICE_MAX_DEVICE_EXTENSIONS][VK_MAX_EXTENSION_NAME_SIZE]; /* the names, copied into fixed
+                                                                                                       buffers, the instance layer's
+                                                                                                       shape */
     XudQueue graphicsQueue; /* the XUD_QUEUE_ROLE_GRAPHICS queue, resolved once at open */
     XudQueue presentQueue; /* the XUD_QUEUE_ROLE_PRESENT queue, resolved once at open - the same
                               handle when the family rowed one queue */
@@ -201,8 +196,7 @@ struct XudDevice {
 /// that shape are not a usable input); on caps whose chosen row says queueCount 0 (a family with no
 /// queue in it is not a family this layer can ask for - the physical layer's rule already insists a
 /// chosen row has at least one).
-XudResult xud_device_fill_queue_create_info(
-    VkDeviceQueueCreateInfo* outQueueRow, const float* priorities, const XudDeviceCaps* caps);
+XudResult xud_device_fill_queue_create_info(VkDeviceQueueCreateInfo* outQueueRow, const float* priorities, const XudDeviceCaps* caps);
 
 /// Pure: which of the driver's advertised device-level extensions this layer enables - the ones
 /// xudlibc wants that the caps actually advertise, in wanted order (the wanted list itself lives
@@ -218,8 +212,7 @@ XudResult xud_device_fill_queue_create_info(
 /// OF_RESOURCES when the wanted set does not fit XUD_DEVICE_MAX_DEVICE_EXTENSIONS (the assert in x
 /// ud_device.c is what keeps that from happening today, and the arm is here so a future wanted lis
 /// t that overflows is a refusal rather than an overflow).
-XudResult xud_device_select_extensions(
-    XudDevice* outDevice, const VkExtensionProperties* advertised, uint32_t advertisedCount);
+XudResult xud_device_select_extensions(XudDevice* outDevice, const VkExtensionProperties* advertised, uint32_t advertisedCount);
 
 /// Pure: the VkDeviceCreateInfo the device will be created with, assembled from the device's own
 /// record - stamped, pNext NULL (this layer chains nothing into the device's pNext: the caps' thre
@@ -237,8 +230,8 @@ XudResult xud_device_select_extensions(
 /// queueRow is not a t the state this layer's own fill helper produces (unstamped, or a
 /// pQueuePriorities that does not point at the struct's own priorities array - a row whose pointer
 /// points at a frame that ended is exactly the bug this struct layout exists to prevent).
-XudResult xud_device_fill_create_info(VkDeviceCreateInfo* outCreateInfo,
-    const char* nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS], const XudDevice* device);
+XudResult xud_device_fill_create_info(
+    VkDeviceCreateInfo* outCreateInfo, const char* nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS], const XudDevice* device);
 
 /// Pure: the queue a caller above this layer submits to, for one of the two roles - a lookup into
 /// what xud_device_open() resolved, no driver call, so the headless run covers it. The answer is th
@@ -282,8 +275,7 @@ XudResult xud_device_queue_get(XudQueue* outQueue, const XudDevice* device, XudQ
 /// XUD_UNSUPPORTED through xud_result_from_vk - a driver that will not create th e device for a
 /// feature or a name we asked for is unsupported, not broken, and this layer asks only for w hat
 /// the caps verified, so reaching that arm means the caps and the driver disagree).
-XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader,
-    const XudPhysicalDevice* physical, VkInstance instance);
+XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader, const XudPhysicalDevice* physical, VkInstance instance);
 
 /// Driver: the teardown guard the plan names as xud_wait_idle (named with this layer's prefix here,
 /// the repo's rule that every function is xudSnakeCase and layer-prefixed - xud_wait_idle would be
