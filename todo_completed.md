@@ -2,6 +2,69 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S10 Handle layer — the one `XudHandle` type + per-kind slot arrays, one step, landed as one commit 2026-10-24)
+
+- [x] ~~**S10 Handle layer**: the one `XudHandle` type — `{ uint32_t index; uint32_t generation; uint32_t kind; }` (12 B,
+  no padding, `static_assert(sizeof == 12u, "…")`) + per-kind slot arrays (textures, fonts, meshes, materials, models) +
+  the `XUD_HANDLE_KIND_*` tag (`XUD_HANDLE_KIND_NONE = 0u` never stored in a live slot) + validation in order index-bounds
+  → generation → kind, failure `XUD_INVALID_ARG`; slot allocation, generation bump on reuse, stale-handle rejection and
+  cross-kind rejection; the pure half is headless-testable by construction, the Vulkan handles stay inside the slot
+  records~~ — **done 2026-10-24**: `src/xud/xud_handle.h`/`src/xud/xud_handle.c` land as the rung **above the swapchain
+  and below the renderer**, and `xud_core.c` now opens one table as the last rung of the bring-up ladder and closes it
+  as the first rung of the teardown order. See AGENTS.md's **Verified handle layer facts (2026-10-24)** block for the
+  ground (the three-part validation order and why the live bit is checked last, the capacity bound and why it is this
+  layer's own ceiling, the reuse-first/generation-bump rule, and the fact that no slot record exists yet).
+
+  **What landed**: `xud.h` grows the public currency — `XudHandle` is three `uint32_t` (12 B, no padding, asserted
+  beside the type), `XUD_HANDLE_KIND_NONE`/`TEXTURE`/`FONT`/`MESH`/`MATERIAL`/`MODEL`/`MAX`/`COUNT` are the tag values
+  and the array bound, and the ownership comment says the handle is the one thing a caller holds while the table behind
+  it is internal. `xud_handle.h` owns the storage: `XudHandleSlot` is `{ occupied, generation, kind, record }` — the
+  live bit, the value a handle must carry to name the slot at all, the tag that makes the check exact, and the sentinel
+  of the rung that is not in the tree yet (`record` is NULL on every live slot for as long as this layer is the top of
+  the tree, so `xud_handle_table_close()` frees a table without walking it because there is nothing in it to close); and
+  `XudHandleTable` is one array per kind, indexed by the kind value itself, so row 0 (`NONE`) exists and stays NULL
+  forever, and an array is NULL until the first allocation of that kind — the "no object of that kind was ever created
+  in this context" state, which is what keeps a context that draws only meshes from paying for a font array. The
+  contract is seven pure functions: `xud_handle_table_open()` / `xud_handle_validate()` / `xud_handle_equal()` /
+  `xud_handle_alloc()` / `xud_handle_free()` / `xud_handle_table_live_count()` / `xud_handle_table_close()`, plus one
+  static growth helper (`xud_handle_reserve()`). **The validation order is the load-bearing half**: expected-kind range
+  → array exists → index below the high mark → generation equality → tag equality → live bit, and the expected kind is
+  the **entry point's** kind rather than the handle's, which is what makes a cross-kind handle a caught error instead
+  of a read of the wrong array; the live bit is checked last because generation and tag can both match a **free** slot
+  for a handle a caller fabricated, and a decoded handle must always name a live slot. `xud_handle_alloc()` is reuse-
+  first (first free slot below the high mark, generation bumped so every handle that named it before the release that
+  freed it stops naming it) or the high mark itself, growing that kind's array by the doubling sequence the rest of
+  this tree uses (`XUD_HANDLE_SLOT_MIN_CAPACITY` 16 → `XUD_HANDLE_SLOT_MAX_CAPACITY` 4096, with the two asserts that
+  make the sequence land on the bound exactly rather than stepping past it and refusing a slot one row too early); at
+  the bound a wanted slot is `XUD_OUT_OF_RESOURCES`, not a quiet cut, and on every error path the out-handle is left
+  untouched. `xud_handle_free()` validates against the handle's **own** tag, so a stale handle, a cross-kind handle
+  and a fabricated one are all refused there rather than double-releasing a slot or bumping a generation twice. `xud_core.h`
+  grows a typed `XudHandleTable*` field and its teardown comment grows a handle-table step **before** the swapchain
+  (the handle table is the top of the tree: a live table can name objects the rungs below are about to retire), and
+  `xud_core.c` opens the table after the swapchain and closes it first — `allocator` stays the one sentinel field left.
+  `CMakeLists.txt` adds `xud_handle.c` to the archive (**32** objects).
+
+  **Bar met** (2026-10-24, gcc 16.2.1 + clang 22.1.8): `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` clean
+  over the whole tree, `./scripts/format.sh --check` clean, headless **1739/0** (was 1642) and GPU **2068/0** (was 1969)
+  validation-clean with `VK_INSTANCE_LAYERS` unset **and** forced to `VK_LAYER_KHRONOS_validation` (the only `ERROR/validation`
+  line in either run is still the diagnostics layer's own synthetic headless probe), sanitizers reporting **only** the
+  external allocations AGENTS.md records — headless **72 B / 3 allocations** and GPU **1136 B / 58**, byte-for-byte the
+  S9 step's numbers, so the handle layer leaks nothing (and note that with leak detection on the sanitizer binary's
+  buffered stdout is discarded by LSan's exit path, so the check counts were read with `ASAN_OPTIONS=detect_leaks=0`, which
+  answers 1739/0 headless and 2068/0 GPU); the clang build (`-DCMAKE_C_COMPILER=clang`) is warning-free and answers the
+  same counts, `ar -t build/libxud.a` lists **32** objects with `xud_handle.c.o` among them, and `nm -u build/xud_test`
+  still lists no `vk*`/`glfw*` symbol while `ldd` lists no `libvulkan`/`libglfw`/`libGL`/`libEGL` — the handle layer
+  includes no Vulkan header and calls no driver function at all, which is what makes the whole rung headless-testable
+  by construction. The GPU context test grows two checks of its own: the context owns a table, and the table's per-kind
+  arrays are all NULL in a context that created no object — the empty-table state, asserted rather than assumed.
+
+  **Honest boundary**: the handle currency and the per-kind slot arrays are in the archive and tested, but a slot's
+  `record` field is the NULL sentinel of a rung that does not exist — there is still no allocator, no render pass, no
+  framebuffer and no batch, so **no handle names an object yet**. `xud.h` still declares no create/close function that
+  takes a handle (the public API stays narrow on purpose: the handle type and its tag values are public because a caller
+  holds them, the table and these seven functions are internal like every layer below the public API). That is the
+  *Next* item above: the first triangle end to end on the explicit `VkRenderPass` + `VkFramebuffer` path.
+
 ## Steps complete (S9 Swapchain rung + context wiring — one step, landed as one commit 2026-10-24)
 
 - [x] ~~**S9 Swapchain**: create the `VkSwapchainKHR` for the surface, recreate it on window resize, never leak the old

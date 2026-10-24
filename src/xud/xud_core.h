@@ -9,16 +9,16 @@
  *          that fills it on: loader from bring-up, diagnostics from the diagnostics step (NULL in
  *          a release build), window from the window step, instance from the instance layer,
  *          physical device from the physical layer, device from the device layer, swapchain from
- *          the swapchain step - all of them filled by xud_init_context() now, so a context that
- *          comes back XUD_OK owns a live GLFW window, a VkInstance carrying that window's required
- *          extensions, a physical device queried through it, a VkDevice created from that device's
- *          recorded caps, a VkSurfaceKHR for the window and a VkSwapchainKHR for that surface. The
- *          allocator field is the only sentinel left, filled by the steps after this one (see
- *          todo.md). There is deliberately no queue field: XudQueue is a record of a queue, not an
- *          owning type (there is no vkDestroyQueue - grepped in these headers, the name does not
- *          exist), and both role records live inside the XudDevice that owns the handles, so a
- *          context field beside it would be a copy of a record with nothing of its own to tear
- *          down - read them through xud_device_queue_get().
+ *          the swapchain step, handle table from the handle step - all of them filled by xud_init_
+ *          context() now, so a context that comes back XUD_OK owns a live GLFW window, a VkInstan
+ *          ce carrying that window's required extensions, a physical device queried through it, a
+ *          VkDevice created from that device's recorded caps, a VkSwapchainKHR for that surface and
+ *          the one table the public handle currency indexes. The allocator field is the only sentin
+ *          el left, filled by the steps after this one (see todo.md). There is deliberately no queue
+ *          field: XudQueue is a record of a queue, not an owning type (there is no vkDestroyQueue -
+ *          grepped in these headers, the name does not exist), and both role records live inside the
+ *          XudDevice that owns the handles, so a context field beside it would be a copy of a record
+ *          with nothing of its own to tear down - read them through xud_device_queue_get().
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -29,6 +29,7 @@
 
 #include "xud_device.h" /* Required for: XudDevice, the VkDevice plus its queue row, its enabled features/extensions and its two role queue records - the context owns one from the device layer on */
 #include "xud_diagnostics.h" /* Required for: XudDiagnostics, the diagnostics struct the context owns once validation is on */
+#include "xud_handle.h" /* Required for: XudHandleTable, the per-kind slot arrays behind the public XudHandle currency - the context owns one from the handle step on, and it is the FIRST rung torn down because a handle records an object of every rung below it */
 #include "xud_instance.h" /* Required for: XudInstance, the VkInstance the context owns from the instance layer on */
 #include "xud_loader.h" /* Required for: XudLoader, the loader the context owns from bring-up on */
 #include "xud_physical.h" /* Required for: XudPhysicalDevice, the chosen handle plus the caps the context owns from the physical layer on */
@@ -38,10 +39,14 @@
 
 /* Completed here; xud.h keeps callers to an opaque handle. Every Vulkan field is a
    sentinel (NULL / 0) until the layer named beside it fills it, and is destroyed in the
-   reverse order of creation: swapchain -> device -> surface -> window -> physical -> instance ->
-   diagnostics -> loader. The device entry sits where it does because a VkDevice is created FROM the
-   physical device below it and everything that submits to it (a swapchain, a command buffer)
-   belongs to it, so it goes before the surface and the window whose swapchain would have used it -
+   reverse order of creation: handle table -> swapchain -> device -> surface -> window -> physical ->
+   instance -> diagnostics -> loader. The handle table goes FIRST because it is the top of the tree:
+   a handle records an object of every rung below it, so a table still holding live slots is a table
+   naming objects the rungs below are about to retire - and it is the last rung opened, since no
+   object of any kind can be created before the context that will own it exists. The device entry
+   sits where it does because a VkDevice is created FROM the physical device below it and everything
+   that submits to it (a swapchain, a command buffer) belongs to it, so it goes before the surface
+   and the window whose swapchain would have used it -
    and the surface goes before the window because a VkSurfaceKHR is destroyed by vkDestroySurfaceKHR
    through the instance that window's surface was created for, while glfwTerminate - GLFW's own
    teardown, which the window layer runs once no live window is left - must not run while a surface
@@ -124,10 +129,24 @@ struct XudContext {
        itself.
      */
 
+    /* Owned from the handle step on: opened by xud_init_context() through xud_handle_table_open()
+       and closed by xud_close_context() through xud_handle_table_close() FIRST in the teardown order
+       above. It is the table the public XudHandle of xud.h indexes, and it is per context for the
+       reason the handle layer's own note gives: two contexts have two tables, and a handle from one
+       is refused by the other rather than indexing the wrong array. It is the top of the tree today
+       - every slot record is still the sentinel the handle layer opens it with, because the rungs
+       that would fill it (the allocator, the renderer, the object steps) are not in the tree - so
+       closing it frees records and calls nothing, and it still goes first because a handle is a
+       request for an object of every rung below it.
+     */
+    XudHandleTable* handleTable; /* the per-kind slot arrays behind the public handle currency */
+
     /* Pending: filled by the bring-up layers below, NULL/0 until then. The allocator is the only
        sentinel left in this struct - the GPU-memory rung that owns every buffer and image below the
        swapchain is not in the tree yet (see todo.md), and unlike the swapchain above there is no
-       Vulkan object of that shape to name until it is.
+       Vulkan object of that shape to name until it is. The handle table above is NOT such a sentinel:
+       it is a typed field of a rung that IS in the tree, and its slots' record field is the sentinel
+       of the rungs that are not.
      */
     void* allocator; /* the single GPU-memory allocator (buffers + images)         */
 };

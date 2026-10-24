@@ -4,22 +4,26 @@
  *
  *   Owns : argument validation, the context shell allocation, the error-code names, the runtime
  *          Vulkan query, and teardown. Every layer below it is reached from here, and only through
- *          its own header: loader, diagnostics, window, instance, physical, device, swapchain.
- *          Nothing in this file calls a Vulkan or a GLFW entry point directly - each one of them
- *          is called by the rung that owns it, the Vulkan ones through a row of the loader's Volk
- *          tables - which is what keeps this file free of any Vulkan or GLFW symbol the linker
- *          could see, and what keeps a machine with no driver and a machine with no window system
- *          both only ever getting XUD_UNSUPPORTED, which is what keeps the headless test run
- *          green.
- *   Layer: core (bottom of the public API). Sees xud.h, xud_core.h and every layer below it
- *          (loader, diagnostics, window, instance, physical, device, swapchain). The diagnostics
+ *          its own header: loader, diagnostics, window, instance, physical, device, swapchain,
+ *          handle table. Nothing in this file calls a Vulkan or a GLFW entry point directly - each
+ *          one of them is called by the rung that owns it, the Vulkan ones through a row of the loa
+ *          der's Volk tables - which is what keeps this file free of any Vulkan or GLFW symbol the
+ *          linker could see, and what keeps a machine with no driver and a machine with no window
+ *          system both only ever getting XUD_UNSUPPORTED, which is what keeps the headless test run
+ *          green. The handle layer is the one rung here that calls nothing at all: a handle is an
+ *          index into this layer's own arrays, so opening and closing the table is host work.
+ *   Layer: core (bottom of the public API). Sees xud.h, xud_core.h and every layer below it (loader,
+ *          diagnostics, window, instance, physical, device, swapchain, handle table). The diagnostics
  *          struct is opened only when XUD_VALIDATE asked for validation, and it sits between the
  *          loader and the instance in both the open order and the teardown order for the reason
  *          the extension gives it: its messenger is destroyed through the VkInstance that owns it,
  *          which must still be alive at that call. The window sits above the instance for the same
  *          kind of reason - glfwCreateWindowSurface resolves the window system's surface command
  *          through vkGetInstanceProcAddr against the instance it is handed, so the instance cannot
- *          exist before the window says which extensions it needs.
+ *          exist before the window says which extensions it needs. The handle table sits ABOVE the
+ *          swapchain in the open order and therefore FIRST in the teardown order: it is the storage
+ *          rung for the objects a public handle names, and no such object can exist before the
+ *          context that will own it does, so the table is the last rung opened and the first closed.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -29,6 +33,7 @@
 #include "xud.h"
 #include "xud_device.h"
 #include "xud_diagnostics.h"
+#include "xud_handle.h"
 #include "xud_instance.h"
 #include "xud_loader.h"
 #include "xud_physical.h"
@@ -272,6 +277,23 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         goto fail;
 
+    /* The handle table, above the swapchain: it is the storage rung for the object kinds a public
+       XudHandle of xud.h names, and no such object can exist before the context that will own it
+       does, so this is the last rung opened and xud_close_context() closes it FIRST. It is pure -
+       one host allocation, no driver call, no Vulkan or GLFW symbol - so it cannot fail for a
+       driver reason: the only answer here is XUD_OUT_OF_MEMORY, and XUD_INVALID_ARG cannot happen
+       because the shell this bring-up allocated is fresh and its field is NULL. Opening it changes
+       nothing about what a caller can do: xud.h declares the handle TYPE and no function that takes
+       or fills one, so no handle exists in a caller's hands yet, and the object steps (textures,
+       fonts, meshes, materials, models) are what will hand one out. The table is opened now rather
+       than on the first object because it is per context - two contexts have two tables, and a
+       handle from one is refused by the other - and a table that only some contexts own would make
+       that refusal depend on which objects a context happened to create.
+     */
+    result = xud_handle_table_open(&context->handleTable);
+    if (result != XUD_OK)
+        goto fail;
+
     *outContext = context;
     return XUD_OK;
 
@@ -302,12 +324,18 @@ XudResult xud_close_context(XudContext** context) {
 
     victim = *context;
 
-    /* Destroy order is the reverse of creation: swapchain -> device -> surface -> window ->
-       physical -> instance -> diagnostics -> loader. The swapchain goes first because it is
+    /* Destroy order is the reverse of creation: handle table -> swapchain -> device -> surface ->
+       window -> physical -> instance -> diagnostics -> loader. The handle table goes FIRST because
+       it is the top of the tree: a handle records an object of every rung below it, so a table still
+       holding live slots is a table naming objects the rungs below are about to retire, and it is
+       the last rung opened. It calls nothing - a slot's record is still the sentinel the handle laye
+       r opens it with, because the rungs that would fill it are not in the tree - so freeing the
+       table frees records and retires nothing of the driver's, and the rungs below still have to
+       tear their own objects down after it. The swapchain goes next because it is
        presented through a queue of the device below it and its own close runs that device's
        wait-idle guard - a presentation may still be in flight against the swapchain's images, so
        the guarantee that nothing is in flight has to come before the images go, and it is the last
-       rung created, so it is the first torn down. The device goes next because a VkDevice is
+       Vulkan rung created, so it is the first torn down. The device goes next because a VkDevice is
        created FROM the physical device below it and everything that submits through it belongs to
        it, and its close is the wait-idle guard then vkDestroyDevice through a row of the loader's
        device table. The surface goes next because vkDestroySurfaceKHR takes the owning VkInstance,
@@ -326,6 +354,9 @@ XudResult xud_close_context(XudContext** context) {
        is XUD_ALREADY on a field that was never filled, which is why a context rejected part-way
        through bring-up is closed by this same code path, and every one of them clears its out
        handle before freeing, so a context torn down twice cannot double-free. */
+    rung = xud_handle_table_close(&victim->handleTable);
+    if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
+        first = rung;
     rung = xud_swapchain_close(&victim->swapchain, victim->device, victim->loader);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;

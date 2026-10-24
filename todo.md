@@ -6,19 +6,13 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] Handle layer: the one `XudHandle` type — the rung below the swapchain, see *Next* below
-
-## Next
-
 - [ ] First triangle end to end on the **explicit `VkRenderPass` + `VkFramebuffer` path** (decided 2026-10-22, see Decided
     below): SPIR-V built by `glslangValidator`, one graphics pipeline, one command buffer, one render pass + one
     framebuffer per image, acquire/submit/present with semaphores + per-image fence; `vkGetDeviceProcAddr` becomes a
     loader slot here (everything below the device resolves through it, not through the instance)
-- [ ] Handle layer: the one `XudHandle` type — `{ uint32_t index; uint32_t generation; uint32_t kind; }` (12 B, no padding,
-    `static_assert(sizeof == 12u, "…")`) + per-kind slot arrays (textures, fonts, meshes, materials, models) + the `XUD_HANDLE_KIND_*`
-    tag (`XUD_HANDLE_KIND_NONE = 0u` never stored in a live slot) + validation in order index-bounds → generation → kind, failure
-    `XUD_INVALID_ARG`; slot allocation, generation bump on reuse, stale-handle rejection and cross-kind rejection; the pure half is
-    headless-testable by construction, the Vulkan handles stay inside the slot records (decided 2026-10-23, see Decided below)
+
+## Next
+
 - [ ] Test scaffolding hardened: headless pure-logic tests green by default, GPU tests opt-in via `XUD_GPU_TESTS=1`,
     validation-layer output treated as a failure signal
 
@@ -34,7 +28,7 @@ step, just move it, so the active tracker stays short and the log stays complete
 - [ ] Camera + transform math (one perspective 3D camera; the 2D scope was settled out 2026-10-23, see Decided below)
 - [ ] Textures + samplers (create, upload via staging copies, mipmaps, sampler variants)
 - [ ] Mesh / vertex-buffer abstraction (**one buffer per attribute stream**, SoA, decided 2026-10-23) + handle table
-    (index+generation — the public-API currency, decided 2026-10-23)
+    (index+generation — the public-API currency, **landed 2026-10-24 as S10**, see Completed below)
 - [ ] 3D model loading (glTF 2.0 — format decision still open, see Blocked)
 - [ ] Text/font rendering
 - [ ] Audio wrapper
@@ -103,8 +97,9 @@ step, just move it, so the active tracker stays short and the log stays complete
   when audio lands, extended whenever a new caller-addressable kind lands); library-owned objects callers never name (batch VB/IB,
   per-frame ring, swapchain images, pipelines, descriptor sets) stay tag-less. Constant naming follows the layer convention already in
   the tree (`XUD_DEVICE_QUEUE_MAX_COUNT 2u` at `xud_device.h` 92, `XUD_DEVICE_MAX_DEVICE_EXTENSIONS 8u` at 110, both guarded by
-  message-carrying `static_assert`s at 128/131). **Not in the tree yet**: no `XudHandle`, no `XUD_HANDLE_KIND_*`, no slot array exists —
-  that is the `Next` "Handle layer" item above.
+  message-carrying `static_assert`s at 128/131). **Not in the tree yet** (until S10): no `XudHandle`, no `XUD_HANDLE_KIND_*`, no slot
+  array exists — that is the `Next` "Handle layer" item above. **In the tree since 2026-10-24**: all of it — see the
+  *Steps complete (S10 …)* section at the top of `todo_completed.md` and AGENTS.md's *Verified handle layer facts (2026-10-24)*.
 - 2026-10-23 — **Public API currency → index+generation slot handles, not raylib-style pointers**.
   **What raylib does** (re-read today in `reference/raylib/raylib.h`, 6.2): its public types are value structs that embed
   driver names and own sub-objects through pointer arrays — `Texture` (273–279) is `{ unsigned int id; int width, height,
@@ -129,9 +124,11 @@ step, just move it, so the active tracker stays short and the log stays complete
   is `typedef struct object##_T* object;` (vulkan_core.h 26), an opaque pointer, `VK_USE_64_BIT_PTR_DEFINES` defaults to 1 there
   (29–33) and `xud_loader.c:38` asserts `== 1`, so `VkImage`/`VkDevice`/`VkBuffer` are 64-bit pointers that stay **inside** the
   slot records (the existing rule:
-  callers never hold a `VkDevice`, `VkSwapchainKHR`, or raw `VkBuffer`). **Not in the tree yet**: `xud.h` exposes only
+  callers never hold a `VkDevice`, `VkSwapchainKHR`, or raw `VkBuffer`). **Not in the tree yet** (until S10): `xud.h` exposes only
   `XudContext**` + `XudResult` today, no handle type and no slot array exists — that is the `Next` item above, and the open
-  sub-question (kind tag in the handle vs naming discipline) was settled the same day — see the entry above.
+  sub-question (kind tag in the handle vs naming discipline) was settled the same day — see the entry above. **In the tree
+  since 2026-10-24**: `xud.h` declares `XudHandle` + the `XUD_HANDLE_KIND_*` values, and `src/xud/xud_handle.h` owns the
+  per-kind slot arrays — see the *Steps complete (S10 …)* section at the top of `todo_completed.md`.
 - 2026-10-23 — **GLFW backend → Wayland** and **vendored material → committed with its license files**.
   **Wayland**: `GLFW_BUILD_WAYLAND` (glfw/CMakeLists.txt 30, `cmake_dependent_option` ON for `UNIX;NOT APPLE`; the removed
   `GLFW_USE_WAYLAND` switch is a hard error on a stale cache at line 24) → `-D_GLFW_WAYLAND` (glfw/src/CMakeLists.txt 54–55),
@@ -233,32 +230,46 @@ See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-s
 detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
 whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
 the same day)**, and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
-**2026-10-24 — S9, the swapchain rung** (the `xud_swapchain.h`/`xud_swapchain.c` pair, the three surface
-queries, the selection rules, the recreate-on-resize path and the one teardown order that now runs through
-it). One step before it: **2026-10-24 — S8, the context ownership step** (`xud_init_context()` completes to
-the surface, `xud_close_context()` is the one teardown order), and before that **2026-10-23 — S7, the GLFW
-window + surface rung**. Nothing is finished after S9.
+**2026-10-24 — S10, the handle layer** (`src/xud/xud_handle.h`/`xud_handle.c`: the one `XudHandle` type in
+`xud.h`, the per-kind slot arrays, the three-part validation, reuse-first allocation with a generation bump
+and the empty-table state the context owns). One step before it: **2026-10-24 — S9, the swapchain rung** (the
+`xud_swapchain.h`/`xud_swapchain.c` pair, the three surface queries, the selection rules, the recreate-on-resize
+path and the one teardown order that now runs through it). One step before that: **2026-10-24 — S8, the context
+ownership step** (`xud_init_context()` completes to the surface, `xud_close_context()` is the one teardown order),
+and before that **2026-10-23 — S7, the GLFW window + surface rung**. Nothing is finished after S10.
 
-- 2026-10-24 — **S9 the swapchain rung** (`src/xud/xud_swapchain.h` + `src/xud/xud_swapchain.c`, and the
-    context wiring that makes it owned) — see the *Steps complete (S9 …)* section at the top of
-    `todo_completed.md` for the full note: `XudSurfaceCaps` records the three surface queries' answers
-    (`vkGetPhysicalDeviceSurfaceCapabilitiesKHR` / `…FormatsKHR` / `…PresentModesKHR`, all three **instance-level**
-    rows because they take a `VkPhysicalDevice`), `XudSwapchain` owns the one `VkSwapchainKHR` this layer creates
-    plus the `VkImage*` array `vkGetSwapchainImagesKHR` handed it (its only heap member — freed, never destroyed,
-    there is no `vkDestroyImage` call in this layer), the three selection rules are pure and `xud_swapchain_fill_create_info()`
-    calls them so the create-info and the record of it cannot disagree, `xud_swapchain_open()` is the whole ladder for
-    one surface or nothing, `xud_swapchain_recreate()` is the one place a swapchain is replaced (create carrying
-    `oldSwapchain` → destroy the old explicitly → query the new images → swap the record), `xud_swapchain_close()` is
-    guard (`xud_device_wait_idle()`) → destroy → free, and `xud_core.c`'s bring-up now completes through the swapchain
-    while `xud_close_context()`'s one teardown order starts with it. Bar: gcc **and** clang syntax-clean over the whole
-    tree, headless **1642/0** (was 1529), GPU **1969/0** (was 1786) and validation-clean with `VK_INSTANCE_LAYERS` unset
-    **and** forced to `VK_LAYER_KHRONOS_validation` (the only `ERROR/validation` line in either run is still the diagnostics
-    layer's own synthetic headless probe), sanitizers reporting **only** the external allocations AGENTS.md records (see
-    *Verified swapchain facts*), `ar -t build/libxud.a` lists **31** objects with `xud_swapchain.c.o` among them, `nm -u`
-    lists no `vk*`/`glfw*` symbol and `ldd` lists no `libvulkan`. **Honest boundary**: the swapchain is created, recreated
-    and destroyed, and the context owns it — but nothing is **drawn** into its images yet: no command buffer, no render
-    pass, no framebuffer, no acquire/present pair. That is the *Next* item above, and `xud_core.h`'s `allocator` field is
-    the one rung still not in the tree.
+- 2026-10-24 — **S10 the handle layer** (`src/xud/xud_handle.h` + `src/xud/xud_handle.c`, and the context wiring
+    that makes it owned) — see the *Steps complete (S10 …)* section at the top of `todo_completed.md` for the full
+    note: `xud.h` grows the public currency (`XudHandle` = three `uint32_t`, 12 B no padding, asserted beside the
+    type; `XUD_HANDLE_KIND_NONE`/`TEXTURE`/`FONT`/`MESH`/`MATERIAL`/`MODEL`/`MAX`/`COUNT`), and `xud_handle.h` owns
+    the storage (`XudHandleSlot` = `{ occupied, generation, kind, record }` with `record` still the NULL sentinel of
+    a rung that is not in the tree, and `XudHandleTable` = one array per kind indexed by the kind value, each array
+    NULL until that kind's first allocation). Seven pure functions — `xud_handle_table_open()` / `xud_handle_validate()`
+    / `xud_handle_equal()` / `xud_handle_alloc()` / `xud_handle_free()` / `xud_handle_table_live_count()` /
+    `xud_handle_table_close()` — and the load-bearing half is the **validation order**: expected-kind range → array
+    exists → index below the high mark → generation equality → tag equality → live bit, with the expected kind being
+    the *entry point's* kind (that is what makes a cross-kind handle a caught error rather than a read of the wrong
+    array) and the live bit last (generation and tag can both match a **free** slot for a handle a caller fabricated).
+    Allocation is reuse-first with a generation bump, growth is the doubling sequence the rest of this tree uses
+    (`XUD_HANDLE_SLOT_MIN_CAPACITY` 16 → `XUD_HANDLE_SLOT_MAX_CAPACITY` 4096, two asserts make it land on the bound
+    exactly) and a slot wanted at the bound is `XUD_OUT_OF_RESOURCES`, not a quiet cut; `xud_handle_free()` validates
+    against the handle's **own** tag, so a stale/cross-kind/fabricated handle is refused rather than double-released.
+    `xud_core.h` grows a typed `XudHandleTable*` field and its teardown comment grows a handle-table step **before**
+    the swapchain (the table is the top of the tree: a live table can name objects the rungs below are about to retire),
+    `xud_core.c` opens it after the swapchain and closes it first, and `allocator` stays the one sentinel field left.
+    Bar: gcc **and** clang syntax-clean over the whole tree, `./scripts/format.sh --check` clean, headless **1739/0**
+    (was 1642) and GPU **2068/0** (was 1969) validation-clean with `VK_INSTANCE_LAYERS` unset **and** forced to
+    `VK_LAYER_KHRONOS_validation`, sanitizers reporting **only** the external allocations AGENTS.md records (headless
+    72 B / 3, GPU 1136 B / 58 — byte-for-byte the S9 step's numbers, so nothing here leaks; with leak detection on,
+    LSan's exit path discards the test binary's buffered stdout, so the counts were read with
+    `ASAN_OPTIONS=detect_leaks=0`), `ar -t build/libxud.a` lists **32** objects with `xud_handle.c.o` among them, and
+    `nm -u` lists no `vk*`/`glfw*` symbol while `ldd` lists no `libvulkan`/`libglfw`/`libGL`/`libEGL` — the layer
+    includes no Vulkan header and calls no driver function at all. **Honest boundary**: the handle currency and the
+    slot arrays are in the archive and tested, but a slot's `record` is the NULL sentinel of a rung that does not
+    exist — no allocator, no render pass, no framebuffer, no batch, so **no handle names an object yet** — and `xud.h`
+    still declares no create/close function that takes a handle (the public API stays narrow on purpose: the type and
+    its tag values are public because a caller holds them, the table and these seven functions are internal). That is
+    the *Now* item above.
 
 - 2026-10-23 — **S6.6 the vendored GLFW tree built into the archive (Wayland backend)** — see the *Steps complete
     (S6.6 …)* section at the top of `todo_completed.md` for the full note: `CMakeLists.txt` reads upstream's
