@@ -21,11 +21,20 @@ Licenses (both stay in the tree, next to the code):
 
 What is decided about them (see AGENTS.md *Settled decisions*, 2026-10-23):
 
-- **Loader**: Volk replaces the hand-rolled `xud_loader.c` PFN table — the rework is still open work in `todo.md`.
-- **Window/input**: GLFW, **Wayland** backend (`GLFW_BUILD_WAYLAND` → `_GLFW_WAYLAND` in `glfw/src/CMakeLists.txt`
-  54–55, protocol code generated from `deps/wayland/*.xml` by `wayland-scanner`, 75–107), not the system package.
+- **Loader**: Volk **is built in** (S6.5, 2026-10-23) — `src/external/volk.c` is compiled into the `xud` archive and
+  `src/xud/xud_loader.c` is now a thin per-context wrapper over Volk's `VolkInstanceTable`/`VolkDeviceTable`; the
+  hand-rolled PFN table it replaced is gone.
+- **Window/input**: GLFW, **Wayland** backend, **built in** (S6.6, 2026-10-23) — the repo-root `CMakeLists.txt` compiles
+  upstream's Wayland source set as the OBJECT target `glfw_vendor` (`-D_GLFW_WAYLAND`, `-D_DEFAULT_SOURCE`, `HAVE_MEMFD_CREATE`
+  from `check_function_exists`), generates the 9 `deps/wayland/*.xml` protocol pairs with `wayland-scanner` into
+  `build/glfw-wayland/` (never next to these sources), compiles the vendored TUs with `-Wall -Werror` but **without**
+  `-Wextra`/`-Wpedantic` (GLFW 3.5.1 is a hard error under both), and links the four Wayland libs PUBLIC into `xud` —
+  no `-lglfw` anywhere. `x11_*.c`/`xkb_unicode.c` and the win32/cocoa/macos/nsgl/glx halves are not in the build.
+  Nothing in `src/xud/` includes `GLFW/glfw3.h` yet, so there is still no window and no surface (that is S7).
 - **Git policy**: this bucket is committed with its license files; `reference/` is never committed.
 
-**Not yet true** (fix when the build lands): the repo-root `CMakeLists.txt` references neither `src/external/volk.*`
-nor `src/external/glfw`, and nothing in `src/xud/` includes `volk.h` — the landed `xud_loader.c` table is still what
-runs. Nothing here is built into `build/libxud.a` today.
+**Built into `build/libxud.a` today**: `volk.c.o` + the 21 GLFW objects (`context.c.o` … `wl_window.c.o`) + the 7 xud
+module objects = **29** objects (verified 2026-10-23 with `ar -t`). The generated `-client-protocol-code.h` files are
+not separate objects — CMake does not compile a `.h` source, and `glfw/src/wl_init.c` 59–91 `#include`s them into its
+own body, so the protocol stubs are local symbols inside `wl_init.c.o`. Neither `nm -u build/xud_test` nor `nm -u
+build/hello_context` lists a `vk*` or `glfw*` symbol, and `ldd` lists no `libvulkan`, no `libglfw` and no `libGL`/`libEGL`.

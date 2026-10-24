@@ -1,6 +1,6 @@
-# Build output
+# Build output (build/, build-san/ for sanitizers, build-clang/ for the clang second opinion)
 build/
-build-san/
+build-*/
 bin/
 
 # Third-party reference material (read-only, never part of the library)

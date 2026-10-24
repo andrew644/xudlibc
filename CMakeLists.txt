@@ -33,6 +33,131 @@ if (XUD_SANITIZERS)
 endif()
 
 #-------------------------------------------------------------------------------------
+# Vendored GLFW 3.5.1 (src/external/glfw, see src/external/PROVENANCE.md): Wayland backend
+#-------------------------------------------------------------------------------------
+
+# The window/input rung is the vendored GLFW tree, built here rather than linked from the
+# system package (decided 2026-10-23, see AGENTS.md *Settled decisions*): that keeps a -lglfw
+# off every link line and makes the library build on a machine without the Arch glfw package.
+# The backend is Wayland (GLFW_BUILD_WAYLAND -> -D_GLFW_WAYLAND, upstream's own switch, glfw/src
+# CMakeLists.txt 54-55); GLFW_BUILD_X11 stays off, so x11_*.c and xkb_unicode.c are not in the
+# build and there is still no X11 path of our own.
+#
+# The source set below is upstream's glfw/src/CMakeLists.txt read for GLFW_BUILD_WAYLAND=ON,
+# GLFW_BUILD_X11/COCOA/WIN32=OFF on Linux: its always-compiled base set (context.c init.c input.c
+# monitor.c platform.c vulkan.c window.c + the null_* backend halves, which the GLFW_PLATFORM init
+# hint can select at runtime), the Linux/POSIX time-thread-module-poll bits (upstream 12-16 and
+# the X11-or-Wayland posix_poll half), the Wayland half (wl_init.c wl_monitor.c wl_window.c + wl
+# _platform.h, upstream 44-48) and linux_joystick.c (upstream 50, gated on (X11 or Wayland) and
+# __linux__). The win32_*/cocoa_*/macos_*/nsgl_* halves and glx_context.c are excluded; egl_cont
+# ext.c and osmesa_context.c are NOT: they are in upstream's always-compiled base set and wl_win
+# dow.c, wl_init.c and null_init.c/null_window.c reference _glfwInitEGL/_glfwCreateContextEGL/_glfw
+# InitOSMesa/_glfwTerminateEGL by name, so leaving them out is a link error, not a smaller binary.
+# Neither pulls a GL or EGL library: GLFW dlopen()s those at runtime (verified with ldd below),
+# and glfwCreateWindowSurface refuses a window whose client API is not GLFW_NO_API, so the Vulkan
+# path never runs through them.
+#
+# The Wayland protocol headers/sources are generated at build time from the 9 XMLs GLFW ships in
+# deps/wayland, by wayland-scanner (upstream's own find_program + FATAL_ERROR at 75-77 and its
+# generate_wayland_protocol macro at 81-107, same 9 files). They are generated into build/glfw-
+# wayland/ so nothing generated lands next to the vendored sources, which are never edited in place.
+#
+# The vendored TUs are NOT compiled in the library's warning mode. GLFW 3.5.1 does not compile
+# under -Wextra or -Wpedantic (verified: -Wpedantic is a hard error on the dlsym object-pointer
+# <-> function-pointer casts in posix_module.c 50, the same ISO C rule AGENTS.md records for our
+# own loader; -Wextra is a hard error on the unused parameters every null_* half and every Wayland
+# protocol callback carries). Upstream asks for -Wall only (glfw/src/CMakeLists.txt 130) and C99;
+# here the tree is compiled as C11 (the project's standard, verified clean with gcc 16.2.1 and
+# clang 22.1.8) with -Wall -Werror kept and -Wextra/-Wpedantic switched off per target, so the
+# vendored bucket still has to be warning-clean under -Wall. -D_DEFAULT_SOURCE is upstream's own
+# Linux define (glfw/src/CMakeLists.txt 141): -std=c11 sets __STRICT_ANSI__, which is what would
+# otherwise hide the glibc POSIX extensions wl_init.c/wl_window.c need.
+
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GLFW_WAYLAND REQUIRED
+    wayland-client>=0.2.7
+    wayland-cursor>=0.2.7
+    wayland-egl>=0.2.7
+    xkbcommon>=0.5.0)
+
+find_program(GLFW_WAYLAND_SCANNER NAMES wayland-scanner)
+if (NOT GLFW_WAYLAND_SCANNER)
+    message(FATAL_ERROR "wayland-scanner not found; the vendored GLFW Wayland backend cannot be generated")
+endif()
+
+set(GLFW_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/external/glfw")
+set(GLFW_WAYLAND_PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/glfw-wayland")
+
+foreach(GLFW_WAYLAND_PROTO wayland.xml viewporter.xml xdg-shell.xml idle-inhibit-unstable-v1.xml
+                          pointer-constraints-unstable-v1.xml relative-pointer-unstable-v1.xml
+                          fractional-scale-v1.xml xdg-activation-v1.xml xdg-decoration-unstable-v1.xml)
+    string(REGEX REPLACE "\\.xml$" "-client-protocol.h" GLFW_PROTO_HEADER "${GLFW_WAYLAND_PROTO}")
+    string(REGEX REPLACE "\\.xml$" "-client-protocol-code.h" GLFW_PROTO_CODE "${GLFW_WAYLAND_PROTO}")
+    set(GLFW_PROTO_XML "${GLFW_DIR}/deps/wayland/${GLFW_WAYLAND_PROTO}")
+    set(GLFW_PROTO_HEADER "${GLFW_WAYLAND_PROTO_DIR}/${GLFW_PROTO_HEADER}")
+    set(GLFW_PROTO_CODE "${GLFW_WAYLAND_PROTO_DIR}/${GLFW_PROTO_CODE}")
+    add_custom_command(
+        OUTPUT "${GLFW_PROTO_HEADER}"
+        COMMAND "${GLFW_WAYLAND_SCANNER}" client-header "${GLFW_PROTO_XML}" "${GLFW_PROTO_HEADER}"
+        DEPENDS "${GLFW_PROTO_XML}"
+        VERBATIM)
+    add_custom_command(
+        OUTPUT "${GLFW_PROTO_CODE}"
+        COMMAND "${GLFW_WAYLAND_SCANNER}" private-code "${GLFW_PROTO_XML}" "${GLFW_PROTO_CODE}"
+        DEPENDS "${GLFW_PROTO_XML}"
+        VERBATIM)
+    list(APPEND GLFW_WAYLAND_GENERATED "${GLFW_PROTO_HEADER}" "${GLFW_PROTO_CODE}")
+endforeach()
+
+# Upstream's HAVE_MEMFD_CREATE probe (glfw/src/CMakeLists.txt 66-70, check_function_exists):
+# wl_window.c 105-106 uses memfd_create for the shared-memory window hint when it is there.
+include(CheckFunctionExists)
+check_function_exists(memfd_create GLFW_HAVE_MEMFD_CREATE)
+
+add_library(glfw_vendor OBJECT
+    # base set, always compiled by upstream
+    ${GLFW_DIR}/src/context.c
+    ${GLFW_DIR}/src/init.c
+    ${GLFW_DIR}/src/input.c
+    ${GLFW_DIR}/src/monitor.c
+    ${GLFW_DIR}/src/platform.c
+    ${GLFW_DIR}/src/vulkan.c
+    ${GLFW_DIR}/src/window.c
+    ${GLFW_DIR}/src/egl_context.c
+    ${GLFW_DIR}/src/osmesa_context.c
+    ${GLFW_DIR}/src/null_init.c
+    ${GLFW_DIR}/src/null_monitor.c
+    ${GLFW_DIR}/src/null_window.c
+    ${GLFW_DIR}/src/null_joystick.c
+    # Linux/POSIX time, thread, module (upstream 12-16, the non-APPLE non-WIN32 branch)
+    ${GLFW_DIR}/src/posix_module.c
+    ${GLFW_DIR}/src/posix_time.c
+    ${GLFW_DIR}/src/posix_thread.c
+    # Wayland backend + the halves (X11 or Wayland) share on Linux
+    ${GLFW_DIR}/src/wl_init.c
+    ${GLFW_DIR}/src/wl_monitor.c
+    ${GLFW_DIR}/src/wl_window.c
+    ${GLFW_DIR}/src/linux_joystick.c
+    ${GLFW_DIR}/src/posix_poll.c
+    # generated by wayland-scanner from deps/wayland/*.xml, above
+    ${GLFW_WAYLAND_GENERATED}
+)
+
+target_compile_definitions(glfw_vendor PRIVATE _GLFW_WAYLAND _DEFAULT_SOURCE)
+if (GLFW_HAVE_MEMFD_CREATE)
+    target_compile_definitions(glfw_vendor PRIVATE HAVE_MEMFD_CREATE)
+endif()
+
+target_compile_options(glfw_vendor PRIVATE -Wno-extra -Wno-pedantic)
+
+target_include_directories(glfw_vendor PRIVATE
+    "${GLFW_DIR}/src"
+    "${GLFW_DIR}/include"
+    "${GLFW_WAYLAND_PROTO_DIR}"
+    ${GLFW_WAYLAND_INCLUDE_DIRS}
+)
+
+#-------------------------------------------------------------------------------------
 # Library: one static archive, one public header, one TU per module
 #-------------------------------------------------------------------------------------
 
@@ -68,6 +193,25 @@ add_library(xud STATIC
     src/xud/xud_physical.c
     src/xud/xud_device.c
 )
+
+# glfw_vendor is an OBJECT library, so its objects go into this archive rather than into a
+# second archive: `ar -t build/libxud.a` lists the vendored volk.c.o and the GLFW Wayland objects
+# among the library's own module objects, and there is still exactly one library to link. The
+# Wayland libraries the wl_* halves call are named on this link, PUBLIC, beside it: an object
+# library's own link dependencies are not propagated to the targets that use it (verified both
+# ways here: glfw_vendor PRIVATE and glfw_vendor PUBLIC both left every executable's link line a
+# t libxud.a only, with ldd listing libc and nothing else, so a GLFW call would have failed to l
+# ink) and a static archive records no dependencies of its own. PUBLIC on xud is what makes Way
+# land a property of the library: ldd now lists libwayland-client.so.0, libwayland-cursor.so.0,
+# libwayland-egl.so.1, libxkbcommon.so.0 and libffi.so.8 (wayland-client's own dependency) for bo
+# th executables, while nm -u still lists no vk* or glfw* symbol and ldd still lists no libvulkan,
+# no libglfw and no libGL/libEGL - GLFW dlopen()s the Vulkan loader and the GL/EGL backends at ru
+# ntime, so there is still no -lglfw and no -ldl.
+# The link flags come from pkg_check_modules' GLFW_WAYLAND_LDFLAGS, not its GLFW_WAYLAND_LIBS: t
+# he LIBS form is only filled for the _DEBUG/_RELEASE variants (verified here, GLFW_WAYLAND_LIBS
+# expanded to nothing and left the link line at libxud.a), and the _STATIC_LDFLAGS form would ad
+# d -lrt, which is not a library on this machine.
+target_link_libraries(xud PUBLIC glfw_vendor ${GLFW_WAYLAND_LDFLAGS})
 
 target_include_directories(xud PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/xud"

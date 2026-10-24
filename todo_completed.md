@@ -2,6 +2,81 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S6.6 The vendored GLFW tree built into the archive — Wayland backend, one step, landed as one commit 2026-10-23)
+
+- [x] ~~Build the **vendored GLFW** tree (`src/external/glfw`, 3.5.1) into the library on the **Wayland** backend~~ —
+  **done 2026-10-23**: `CMakeLists.txt` gains a **Vendored GLFW 3.5.1 (Wayland backend)** section between the flags and
+  the `xud` target, and the window/input rung is now compiled **in** rather than linked from the Arch package. **The
+  source set is upstream's `glfw/src/CMakeLists.txt` read for `GLFW_BUILD_WAYLAND=ON`, `GLFW_BUILD_X11`/COCOA/WIN32=OFF
+  on Linux** — we use none of upstream's CMake, we transcribe what it would compile: the always-compiled base set
+  (`context.c init.c input.c monitor.c platform.c vulkan.c window.c` + the four `null_*` halves the `GLFW_PLATFORM` init
+  hint can select at runtime), the Linux/POSIX time/thread/module bits (upstream 12–16, the non-APPLE non-WIN32 branch)
+  and the `posix_poll.c` half upstream shares between X11 and Wayland, the Wayland half (`wl_init.c wl_monitor.c wl_window.c`
+  + `wl_platform.h`, upstream 44–48) and `linux_joystick.c` (upstream 50, gated on `(X11 or Wayland) and __linux__`).
+  `win32_*`/`cocoa_*`/`macos_*`/`nsgl_*`/`glx_context.c`/`x11_*`/`xkb_unicode.c` are not in the build — **`GLFW_BUILD_X11`
+  stays OFF, so there is still no X11 path of our own and no RGFW**.
+
+  **`egl_context.c` and `osmesa_context.c` are in, not out** — the trap that decided this: `wl_window.c` and the `null_*`
+  halves reference `_glfwInitEGL`/`_glfwCreateContextEGL`/`_glfwInitOSMesa`/`_glfwTerminateEGL` **by name**, so leaving
+  them out is a link error, not a smaller binary (probed: dropping them fails the link, keeping them does not pull in a
+  GL or EGL library — GLFW `dlopen`s those at runtime, `ldd` lists no `libGL`/`libEGL`). `glfwCreateWindowSurface`
+  refuses a window whose client API is not `GLFW_NO_API`, so the Vulkan path never runs through them either: they are
+  there because the linker needs the symbols, not because the library wants GL.
+
+  **The Wayland protocol pairs are generated at build time**, from the 9 XMLs GLFW ships in `deps/wayland/`, by
+  `wayland-scanner` (`find_program` + a `FATAL_ERROR` when missing — upstream's own rule, upstream 75–77) into
+  `build/glfw-wayland/`, so **nothing generated lands next to the vendored sources**, which are never edited in place
+  (see *Settled decisions*: a version bump is a re-vendor commit). **Naming trap found while landing this**: the
+  `-client-protocol-code.h` files are **not compiled as their own TUs** — CMake classifies a `.h` source as a header and
+  does not compile it, which is also why upstream's `target_sources(glfw PRIVATE ${header_file} ${code_file})` exists
+  only to force generation — and `wl_init.c` 59–91 `#include`s each `-code.h` inside its own body, so the protocol stubs
+  (`wp_viewporter_destroy`, `xdg_wm_base_add_listener`, `zwp_pointer_constraints_v1_destroy`, …) are local `t` symbols
+  **inside `wl_init.c.o`**, which is what `nm` shows there.
+
+  **The vendored TUs are not compiled in the library's warning mode**, and that is a fact about GLFW, not a shortcut:
+  GLFW 3.5.1 is a hard error under `-Wpedantic` (the `dlsym` object-pointer ↔ function-pointer casts in `posix_module.c`
+  50, the same ISO C rule AGENTS.md records for our own replaced loader) and under `-Wextra` (the unused parameters every
+  `null_*` half and every Wayland protocol callback carries). Upstream asks for `-Wall` only, as C99 (`glfw/src/CMakeLists.txt`
+  130); here the tree is compiled as **C11** — the project's standard, verified clean with gcc 16.2.1 **and** clang 22.1.8 —
+  with `-Wall -Werror` kept and `-Wextra`/`-Wpedantic` switched off per target (`-Wno-extra -Wno-pedantic`), so the vendored
+  bucket still has to be warning-clean under `-Wall`. `-D_DEFAULT_SOURCE` is upstream's own Linux define (`glfw/src/CMakeLists.txt`
+  141): `-std=c11` sets `__STRICT_ANSI__`, which is what would otherwise hide the glibc POSIX extensions `wl_init.c`/`wl_window.c`
+  need; `-D_GLFW_WAYLAND` is upstream's backend define (54–55) — the `GLFW_BUILD_WAYLAND` **option** itself exists only in
+  upstream's build, so our target sets the define it produces; `HAVE_MEMFD_CREATE` comes from CMake's own
+  `check_function_exists(memfd_create)` (upstream 66–70) and is present here, so `wl_window.c` 105–106's `memfd_create`
+  shared-memory hint is compiled in.
+
+  **`glfw_vendor` is an OBJECT library, so its objects go into `libxud.a` rather than into a second archive** — `ar -t
+  build/libxud.a` lists **29** objects (`volk.c.o` + 21 GLFW objects + the 7 xud module objects) and there is still
+  exactly one library to link. **The Wayland link flags are a property of `xud`, not of `glfw_vendor`**, and that is the
+  second trap: an object library's own link dependencies are not propagated to the targets that use it, and a static
+  archive records no dependencies of its own — verified both ways here, `target_link_libraries(glfw_vendor PRIVATE …)`
+  and `PUBLIC …` both left every executable's link line at `libxud.a` only with `ldd` at libc only, so a GLFW call would
+  have failed to link. The four libs are therefore named on `target_link_libraries(xud PUBLIC glfw_vendor …)`, from
+  pkg-config's `GLFW_WAYLAND_LDFLAGS` and **not** its `GLFW_WAYLAND_LIBS` (verified: that form expanded to nothing — it is
+  only filled for the `_DEBUG`/`_RELEASE` variants — and `_STATIC_LDFLAGS` would add `-lrt`, not a library on this machine).
+  `ldd` now lists `libwayland-client.so.0`, `libwayland-cursor.so.0`, `libwayland-egl.so.1`, `libxkbcommon.so.0` and
+  `libffi.so.8` (wayland-client's own dependency) for both executables.
+
+  **The Vulkan-free link rule is unchanged and still holds**: `nm -u build/xud_test` and `nm -u build/hello_context` list
+  no `vk*` and no `glfw*` symbol, and `ldd` lists no `libvulkan`, no `libglfw` and no `libGL`/`libEGL` — there is still no
+  `-lglfw` and no `-ldl` anywhere (`.gitignore` gained `build-*/` so the clang second-opinion build directory stays out of
+  git alongside `build-san/`).
+
+  **Bar met**: gcc **and** clang (`-DCMAKE_C_COMPILER=clang`, `build-clang/`) build everything from scratch with no warning
+  line; `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror -I src/xud -I src/external` clean over `src/xud`; headless
+  **472 checks / 0 failures** and `XUD_GPU_TESTS=1` **623 / 0** — **unchanged from S6.5, because no test calls GLFW yet** —
+  validation-clean with `VK_INSTANCE_LAYERS` unset and forced to `VK_LAYER_KHRONOS_validation` (the only `ERROR/validation`
+  line is still the diagnostics layer's own synthetic headless probe), `-DXUD_SANITIZERS=ON` green both ways (472 / 623, no
+  report), `./scripts/format.sh --check` clean (it covers `src/xud tests examples` only, never `src/external/`), and AGENTS.md
+  gains the *Verified GLFW Wayland build* block, a new *Second opinion (clang)* command row, the corrected *Present today*
+  / *Repo layout* / *Toolchain* rows and the two GLFW *Settled decisions* bullets.
+
+  **Honest boundary**: the vendored tree **builds and links**, and nothing uses it yet — nothing in `src/xud/` includes
+  `GLFW/glfw3.h`, no test calls a GLFW function, and there is still no window, no `VkSurfaceKHR` and no presentation check.
+  That is the S7 `Now` item (`glfwCreateWindowSurface` / `glfwGetRequiredInstanceExtensions` / `glfwGetPhysicalDevicePresentationSupport`
+  / `vkDestroySurfaceKHR`), and the reason the test counts did not move.
+
 ## Steps complete (S6.5 Loader rework onto vendored Volk — one step, landed as one commit 2026-10-23)
 
 - [x] ~~Loader rework onto **vendored Volk** (`src/external/volk.h` + `volk.c`)~~ — **done 2026-10-23**: the hand-maintained 20-slot `XudLoader` and its `xud_loader_open`/`resolve`/`bind`/`is_open` are replaced by a **thin per-context wrapper over Volk's tables** — the wrapper is kept, the per-name machinery is dropped. **The decision and its reason**: Volk's own entry points are process-wide `extern PFN_vkXxx vkXxx;` globals, so a layer that called them directly could not run two contexts side by side (one context's `volkFinalize()` would clear rows another context is still calling through), and Volk's `volkLoadInstance`/`volkLoadDevice` write exactly those globals. `XudLoader` therefore stays the context's one mutable table, but its contents are now **Volk's two tables plus three loader-level rows**, not 20 hand-picked slots: `struct VolkInstanceTable instanceTable` (127 entries as compiled here, filled by `xud_loader_bind_instance`) + `struct VolkDeviceTable deviceTable` (710 entries, filled by `xud_loader_bind_device`) + `createInstance`/`enumerateInstanceExtensionProperties`/`enumerateInstanceLayerProperties` copied out of Volk's globals at open time (that copy is what makes the wrapper per-context: the globals are Volk's, the rows the loader layer calls are ours). The loader-level row count is still `XUD_LOADER_GLOBAL_SLOT_COUNT` 3 and `xud_loader_open()` still refuses a loader that did not answer all three. **Contract now**: `xud_loader_open` / `xud_loader_close` / `xud_loader_is_open` / `xud_loader_instance_bound(loader, instance)` / `xud_loader_device_bound(loader, device)` / `xud_loader_bind_instance(loader, instance)` / `xud_loader_bind_device(loader, device)`; **gone**: `XUD_LOADER_SLOT_COUNT`, `XUD_LOADER_NAMES`, `XudPfnBits`, `xud_loader_resolve()`, the per-name `xud_loader_bind()`, `resolvedCount`, `getInstanceProcAddr`. **Bound state is handle equality, not a boolean**: the loader records `VkInstance boundInstance` + `VkDevice boundDevice`, and a bound-check is `loader->boundInstance == instance` (plus non-NULL) — so a stale handle across an instance recreation fails the compare before any row is read, which is the same guarantee the old resolve-on-demand rule gave the messenger pair, now for every instance-level row at once. `xud_loader_bind_instance()` is a **rung**: it clears the device table and nulls `boundDevice` when it re-binds, because a device table filled for a dead instance is a table of pointers into a dead layer. `xud_loader_bind_device()` requires `boundInstance != VK_NULL_HANDLE` and a non-NULL `instanceTable.vkGetDeviceProcAddr` row, and sets Volk's global `vkGetDeviceProcAddr` from **this loader's** instance table before `volkLoadDeviceTable()` — that call resolves through the global, so without the set a second context would fill the first context's device table with the second instance's rows. `xud_loader_close()` calls `volkFinalize()` and `memset`s both tables before freeing, so a closed loader has no live row anywhere. **The guards the headless run covers**: a bind with no handle is `XUD_INVALID_ARG`, a device bind with no instance bound — or with a NULL `instanceTable.vkGetDeviceProcAddr` row — is `XUD_UNSUPPORTED` (the rung cannot resolve, that is not a bad argument), and a refused bind leaves every table row NULL.
