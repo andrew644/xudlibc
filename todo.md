@@ -6,21 +6,23 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] First triangle end to end on the **explicit `VkRenderPass` + `VkFramebuffer` path** (decided 2026-10-22, see Decided
-    below): SPIR-V built by `glslangValidator`, one graphics pipeline, one command buffer, one render pass + one
-    framebuffer per image, acquire/submit/present with semaphores + per-image fence; `vkGetDeviceProcAddr` becomes a
-    loader slot here (everything below the device resolves through it, not through the instance)
+- [ ] GPU memory allocator + suballocation (**ours**, ring for transient; no `vkCreateBuffer` per frame — the VMA
+    question is settled out 2026-10-23, see Decided below) — the **one rung still not in the tree** after S11, and
+    the one `void*` sentinel left in `xud_core.h`
+    - 2026-10-25 note: S11 committed, so this is the next implementation target. The caps' memory rows (`VkPhysical
+      DeviceMemoryProperties2`, 3 heap types / 3 heaps here, smallest `UNIFORM_BUFFER` 16384 / largest 4294967295,
+      `VK_MEMORY_HEAP_DEVICE_LOCAL` ~4 GB) are already recorded, so the allocator's pure half — the free list over
+      `(memoryTypeIndex, size, alignment)` triples, the ring for transient, the `VkMemoryAllocateInfo` assembly —
+      is headless-testable by construction, and `vkAllocateMemory`/`vkFreeMemory` are two rows of Volk's device
+      table, already filled in bulk by `xud_loader_bind_device()`; nothing adds a loader slot. `vkFreeMemory`
+      returns **void**, so it follows the zero-state-then-check rule `vkDestroyDevice`/`vkGetDeviceQueue` do.
 
 ## Next
 
-- [ ] Test scaffolding hardened: headless pure-logic tests green by default, GPU tests opt-in via `XUD_GPU_TESTS=1`,
-    validation-layer output treated as a failure signal
+- [ ] Descriptor layout: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix + material/texture index
 
 ## Later
 
-- [ ] GPU memory allocator + suballocation (**ours**, ring for transient; no `vkCreateBuffer` per frame — the VMA
-    question is settled out 2026-10-23, see Decided below)
-- [ ] Descriptor layout: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix + material/texture index
 - [ ] Batch layer (`xudrl`): dynamic per-attribute **stream** buffers + one index buffer (SoA, decided 2026-10-23 — see
     Decided below), flush on pipeline/material change (flush is per stream), fixed pipeline set
 - [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
@@ -230,15 +232,44 @@ See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-s
 detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
 whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
 the same day)**, and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
-**2026-10-24 — S10, the handle layer** (`src/xud/xud_handle.h`/`xud_handle.c`: the one `XudHandle` type in
-`xud.h`, the per-kind slot arrays, the three-part validation, reuse-first allocation with a generation bump
-and the empty-table state the context owns). One step before it: **2026-10-24 — S9, the swapchain rung** (the
-`xud_swapchain.h`/`xud_swapchain.c` pair, the three surface queries, the selection rules, the recreate-on-resize
-path and the one teardown order that now runs through it). One step before that: **2026-10-24 — S8, the context
-ownership step** (`xud_init_context()` completes to the surface, `xud_close_context()` is the one teardown order),
-and before that **2026-10-23 — S7, the GLFW window + surface rung**. Nothing is finished after S10.
+**2026-10-25 — S11, the first triangle end to end** (`src/xud/xud_shader.h`/`xud_shader.c` + `xud_pipeline.h`/`xud_pipeline.c`
++ `xud_renderpass.h`/`xud_renderpass.c` + `xud_frame.h`/`xud_frame.c` + `xud_renderer.h`/`xud_renderer.c`: the built-in
+SPIR-V, one graphics pipeline, one `VkRenderPass` + one `VkFramebuffer` per swapchain image, one command buffer, acquire/submit/present
+with an acquire semaphore + one fence per image, and the renderer rung `xud_init_context()` wires). One step before it:
+**2026-10-24 — S10, the handle layer** (`src/xud/xud_handle.h`/`xud_handle.c`: the one `XudHandle` type in `xud.h`, the
+per-kind slot arrays, the three-part validation, reuse-first allocation with a generation bump and the empty-table state
+the context owns). One step before that: **2026-10-24 — S9, the swapchain rung** (the `xud_swapchain.h`/`xud_swapchain.c`
+pair, the three surface queries, the selection rules, the recreate-on-resize path and the one teardown order that now runs
+through it). One step before that: **2026-10-24 — S8, the context ownership step** (`xud_init_context()` completes to the
+surface, `xud_close_context()` is the one teardown order), and before that **2026-10-23 — S7, the GLFW window + surface
+rung**. Nothing is finished after S11 — and the test-scaffolding item that was open in `Now` before it (headless
+pure-logic tests green by default, GPU tests opt-in via `XUD_GPU_TESTS=1`, validation-layer output treated as a
+failure signal) completed with S11 rather than as a step of its own: the in-run gate is the diagnostics layer's
+message counter read as an assertion (`errorMessages == 0` on the context's own struct), and the failure shapes of
+the frame loop are asserted against the live objects of the GPU run — see the S11 entry above for both.
 
-- 2026-10-24 — **S10 the handle layer** (`src/xud/xud_handle.h` + `src/xud/xud_handle.c`, and the context wiring
+- 2026-10-25 — **S11 the first triangle end to end** (`src/xud/xud_shader.h` + `src/xud/xud_pipeline.h` + `src/xud/xud_renderpass.h`
+    + `src/xud/xud_frame.h` + `src/xud/xud_renderer.h`, their five `.c` files, `shaders/solid.vert`/`shaders/solid.frag` and the
+    CMake shader step) — see the *Steps complete (S11 …)* section at the top of `todo_completed.md` for the full note: five new
+    rungs land between the device and the public API and the context wires the top one. `shaders/` is built, never committed
+    (`glslangValidator -V` → `build/gen/*.spv` → `spirv-val` in the same rule → `scripts/spv_to_header.cmake` → `build/gen/xud_solid_spv.h`
+    of two `uint32_t` arrays, and a missing tool is a `FATAL_ERROR`); the shader rung checks the SPIR-V header against the **spec's**
+    rule (fixed 24 bits + a version byte in `0x00..0x0B`, not glslang's exact magic) and owns one `VkShaderModule` per stage with the
+    words **borrowed**; the pipeline rung owns the two modules + `VkPipelineLayout` + `VkPipeline` (dying pipeline → layout → modules,
+    `pName` = `"main"`, zero descriptor sets / push-constant ranges / vertex bindings because those rungs are below it and the shaders
+    generate their three vertices from `gl_VertexIndex`); the render-pass rung is the **explicit** path the 2026-10-22 decision settles
+    — one `VkRenderPass` of one subpass with **one colour attachment row** (no depth attachment: that needs a `VkImage` + `VkDeviceMemory`,
+    i.e. the allocator rung that is still not in the tree, which is why depth test/write are `VK_FALSE`) and one `XudFramebuffer` + `VkImageView`
+    **per swapchain image**; the frame-loop rung owns one `VkCommandPool` + one `VkCommandBuffer`, one acquire semaphore and **one `VkFence`
+    per swapchain image** (not per frame), records the acquire gate as the submit's `pWaitSemaphores` + `pWaitDstStageMask` pair — `vkWaitSemaphores`
+    is core 1.2 and this library's instance is at the core-1.0 floor, so that row is nil here — and tracks one `VkImageLayout` per image so the
+    layout-transition barrier before `vkCmdBeginRenderPass` names a real `oldLayout`; the renderer rung owns all four and is what `xud_init_context()`
+    opens (after the swapchain) and `xud_close_context()` closes (second, after the handle table). **No loader slot was added** — the renderer's names
+    are rows of Volk's `VolkDeviceTable`, already filled in bulk by `xud_loader_bind_device()` (which requires the `instanceTable.vkGetDeviceProcAddr`
+    row it resolves them through), so the plan's "`vkGetDeviceProcAddr` becomes a loader slot here" was satisfied by the Volk step and what this step
+    adds is the row check before every call. Bar met: headless **1916 checks / 0 failures** (was 1739), GPU **2272 / 0** (was 2068), validation-clean
+    with `VK_INSTANCE_LAYERS` unset and forced, sanitizers reporting **only** the external allocations the S7/S8/S9/S10 blocks record, clang build
+    warning-free at the same counts, `ar -t build/libxud.a` at **37** objects, `nm -u`/`ldd` still Vulkan- and GLFW-free, `scripts/format.sh --check` clean.
     that makes it owned) — see the *Steps complete (S10 …)* section at the top of `todo_completed.md` for the full
     note: `xud.h` grows the public currency (`XudHandle` = three `uint32_t`, 12 B no padding, asserted beside the
     type; `XUD_HANDLE_KIND_NONE`/`TEXTURE`/`FONT`/`MESH`/`MATERIAL`/`MODEL`/`MAX`/`COUNT`), and `xud_handle.h` owns

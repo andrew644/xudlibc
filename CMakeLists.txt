@@ -158,6 +158,76 @@ target_include_directories(glfw_vendor PRIVATE
 )
 
 #-------------------------------------------------------------------------------------
+# Shaders: GLSL -> SPIR-V at build time, SPIR-V -> a C array of uint32_t words
+#          (AGENTS.md: "Shaders are SPIR-V shipped as bytes, compiled offline
+#           (glslangValidator/glslc) and validated in CI (spirv-val). No runtime
+#           GLSL compilation path.")
+#
+#   Nothing here is optional: a missing tool is a FATAL_ERROR, the same rule wayland-scanner's
+#   find_program uses, because a build that skipped the step would have no SPIR-V for xud_pipeline.c
+#   to compile against. spirv-val runs in the SAME rule as the compile rather than as a separate
+#   target: the repo's rule is that a .spv is validated, not just compiled, and a rule that only
+#   compiled it would be a rule whose output the library is allowed to link.
+#
+#   The array names and the include guard are PASSED IN, never derived: this machine's CMake 4.4.4
+#   rejects string(UPPERCASE), string(LOWERCASE) and string(SPLIT) outright (probed today: "string
+#   does not recognize sub-command UPPERCASE"/"SPLIT"), so nothing here can turn shaders/solid.vert
+#   into xudSolidVertSpv, and the same build rejects cmake -P positional arguments (ARGS and ARGV
+#   both come back empty), so scripts/spv_to_header.cmake takes its inputs as -D variables. ONE -D
+#   VARIABLE PER INPUT rather than one list-valued -D as well: inside add_custom_command a list can
+#   be passed neither way safely, with VERBATIM the escaped semicolon survives as a literal backsl
+#   ash-semicolon (the script then sees one two-path filename) and without it the semicolon reaches
+#   the shell unquoted and splits the command line (verified both ways today). SPV_COUNT plus SPV_
+#   ARRAY_<i>/SPV_INPUT_<i> is the one form that is safe under both, and a second shader family is
+#   one more block of the three rules below plus one more name on XUD_GENERATED_HEADERS.
+#-------------------------------------------------------------------------------------
+find_program(GLSLANG_VALIDATOR NAMES glslangValidator PATHS /usr/bin NOFOLLOW_STRINGS OPTIONAL)
+if (NOT GLSLANG_VALIDATOR)
+    message(FATAL_ERROR "glslangValidator not found; shaders/solid.vert and shaders/solid.frag cannot be compiled")
+endif()
+find_program(XUD_SPIRV_VAL NAMES spirv-val PATHS /usr/bin NOFOLLOW_STRINGS OPTIONAL)
+if (NOT XUD_SPIRV_VAL)
+    message(FATAL_ERROR "spirv-val not found; the repo's rule is that every .spv is validated, not just compiled")
+endif()
+
+set(XUD_GEN_DIR "${CMAKE_CURRENT_BINARY_DIR}/gen")
+
+add_custom_command(
+    OUTPUT "${XUD_GEN_DIR}/solid_vert.spv"
+    COMMAND "${GLSLANG_VALIDATOR}" -V -o "${XUD_GEN_DIR}/solid_vert.spv" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/solid.vert"
+    COMMAND "${XUD_SPIRV_VAL}" "${XUD_GEN_DIR}/solid_vert.spv"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/solid.vert"
+    VERBATIM)
+add_custom_command(
+    OUTPUT "${XUD_GEN_DIR}/solid_frag.spv"
+    COMMAND "${GLSLANG_VALIDATOR}" -V -o "${XUD_GEN_DIR}/solid_frag.spv" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/solid.frag"
+    COMMAND "${XUD_SPIRV_VAL}" "${XUD_GEN_DIR}/solid_frag.spv"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/solid.frag"
+    VERBATIM)
+add_custom_command(
+    OUTPUT "${XUD_GEN_DIR}/xud_solid_spv.h"
+    COMMAND "${CMAKE_COMMAND}"
+        -DSPV_OUT_HEADER=${XUD_GEN_DIR}/xud_solid_spv.h
+        -DSPV_GUARD=XUD_SOLID_SPV_H_
+        -DSPV_COUNT=2
+        -DSPV_ARRAY_0=xudSolidVertSpv
+        -DSPV_ARRAY_1=xudSolidFragSpv
+        -DSPV_INPUT_0=${XUD_GEN_DIR}/solid_vert.spv
+        -DSPV_INPUT_1=${XUD_GEN_DIR}/solid_frag.spv
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/spv_to_header.cmake"
+    DEPENDS "${XUD_GEN_DIR}/solid_vert.spv" "${XUD_GEN_DIR}/solid_frag.spv"
+    VERBATIM)
+set(XUD_GENERATED_HEADERS "${XUD_GEN_DIR}/xud_solid_spv.h")
+
+# The ordering rule the generated header needs, and the reason it is explicit: the dependency
+# scanner cannot see an include of a file that does not exist yet, so on a clean build the
+# compile of xud_pipeline.c would be ordered before the rule that writes its header. A
+# custom target over the generated headers, made a dependency of xud, is what makes the SPIR-V
+# a build dependency of the library rather than a step a developer has to remember to run
+# (and it is not an ALL target, so it runs only when xud is asked for).
+add_custom_target(xud_generated_headers DEPENDS ${XUD_GENERATED_HEADERS})
+
+#-------------------------------------------------------------------------------------
 # Library: one static archive, one public header, one TU per module
 #-------------------------------------------------------------------------------------
 
@@ -195,7 +265,14 @@ add_library(xud STATIC
     src/xud/xud_window.c
     src/xud/xud_swapchain.c
     src/xud/xud_handle.c
+    src/xud/xud_shader.c
+    src/xud/xud_pipeline.c
+    src/xud/xud_renderpass.c
+    src/xud/xud_frame.c
+    src/xud/xud_renderer.c
 )
+
+add_dependencies(xud xud_generated_headers)
 
 # glfw_vendor is an OBJECT library, so its objects go into this archive rather than into a
 # second archive: `ar -t build/libxud.a` lists the vendored volk.c.o and the GLFW Wayland objects
@@ -220,6 +297,7 @@ target_include_directories(xud PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/src/xud"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/external"
     "${GLFW_DIR}/include"
+    "${XUD_GEN_DIR}"
 )
 
 # src/external is Volk's home (xud_loader.h includes "volk.h", which must come before <vulkan/vul

@@ -2,6 +2,75 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S11 First triangle end to end — five rungs from SPIR-V bytes to a drawn frame, one step, landed as one commit, 2026-10-25)
+
+- [x] ~~**First triangle end to end on the explicit `VkRenderPass` + `VkFramebuffer` path**: SPIR-V built by
+  `glslangValidator`, one graphics pipeline, one command buffer, one render pass + one framebuffer per image,
+  acquire/submit/present with semaphores + per-image fence; `vkGetDeviceProcAddr` becomes a loader slot here~~ —
+  **done 2026-10-25**: five new module pairs land between the device and the public API — `xud_shader.h`/`xud_shader.c`
+  (the shader rung), `xud_pipeline.h`/`xud_pipeline.c` (the pipeline rung), `xud_renderpass.h`/`xud_renderpass.c`
+  (the render-pass + framebuffer rung), `xud_frame.h`/`xud_frame.c` (the frame loop) and `xud_renderer.h`/`xud_renderer.c`
+  (the **renderer rung**, the owner of all four and the rung `xud_init_context()` wires) — plus `shaders/solid.vert` +
+  `shaders/solid.frag` and the CMake step that builds them. See AGENTS.md's **Verified first-triangle facts (2026-10-25)**
+  block for the ground (the renderer's open/close order and why the pass must exist before the pipeline, the SPIR-V header
+  rule, the `pName`/`renderPass`/`subpass` VUIDs, the extension-gated `*_OP_NONE` stencil values, the attachment-layout
+  pattern and its reference VUID, the `vkDestroyRenderPass` IN-parameter, the core-1.2 `vkWaitSemaphores` row that is nil
+  at this library's core-1.0 floor, `clearValueCount`, the per-image layout transition and its four barrier facts, the
+  no-depth-attachment reason depth test/write are off, and the CMake 4.4.4 quirks the shader step works around).
+
+  **Bar met, dated one-liner**: headless **1916 checks / 0 failures** (was 1739), `XUD_GPU_TESTS=1` **2284 / 0** (was 2068),
+  validation-clean with `VK_INSTANCE_LAYERS` unset **and** forced to `VK_LAYER_KHRONOS_validation` (the only `ERROR/validation`
+  line in either run is still the diagnostics layer's own synthetic headless probe), `-DXUD_SANITIZERS=ON` reporting **only**
+  the external allocations the S7/S8/S9/S10 blocks record (headless 72 B / 3 allocations, byte-for-byte the S10 step's; GPU
+  1272 B / 61 — one more libdecor 8 B and one more validation-layer 32 B than the S10 step's 1136 B / 58 because the
+  GPU draw test opens one more context, plus one 96 B allocation inside `libwayland-client.so.0` (`wl_display_read_events
+  ← wl_display_dispatch_queue_timeout ← wl_display_dispatch_queue ← wl_display_roundtrip_queue`, under `xud_swapchain_close`,
+  i.e. the compositor traffic the present step generates), `ASAN_OPTIONS=detect_leaks=0` answering 1916 / 2284 with 0 failures
+  and no `runtime error`
+  line, the clang build (`-DCMAKE_C_COMPILER=clang`) warning-free at the same counts, `ar -t build/libxud.a` at **37** objects
+  (the five new `.c.o` among them), `nm -u build/xud_test`/`nm -u build/hello_context` still listing no `vk*` and no `glfw*`
+  symbol and `ldd` still listing no `libvulkan`/`libglfw`/`libGL`/`libEGL`, `scripts/format.sh --check` clean, and `./build/hello_context`
+  now completing (`xud_init_context(640, 480) -> XUD_OK`, `xud_close_context -> XUD_OK`) instead of refusing.
+
+  **What landed, and the four things this step had to learn from the validation layer rather from the driver**: the driver
+  accepts almost every wrong shape here silently — a pipeline with `renderPass = VK_NULL_HANDLE`, a pass whose stencil ops
+  are the extension-gated `*_OP_NONE`, an attachment whose both layouts are `PRESENT_SRC_KHR`, a `clearValueCount` of 0, an
+  image left in `UNDEFINED` — so the debug GPU run is the test signal, not the release GPU run (the release run passed the
+  whole time while the debug run aborted). The four: (1) **the core-1.4 pipeline binding names the pass**
+  (`VUID-VkGraphicsPipelineCreateInfo-dynamicRendering-06576`) — which is why the renderer opens the **pass before the
+  pipeline** and destroys it after, and why `XudPipeline` carries a **borrowed** `VkRenderPass`; (2) **`vkWaitSemaphores`
+  is core 1.2** and the instance is at the core-1.0 floor, so its device-table row is nil here and the acquire gate moves to
+  the submit's `pWaitSemaphores` + `pWaitDstStageMask` pair (the `VkSemaphoreWaitInfo` field and the host-side wait are gone
+  from the frame contract); (3) **the swapchain image has no layout until something gives it one**, so `XudFrame` records one
+  `VkImageLayout` per image and issues a `vkCmdPipelineBarrier` carrying one `VkImageMemoryBarrier` before the pass — and that
+  barrier's members are `oldLayout`/`newLayout` (not `srcLayout`/`dstLayout`, no `flags`), its queue-family indices must both be
+  set and equal on a `VK_SHARING_MODE_EXCLUSIVE` image, and its stage masks must support the colour-attachment access bits
+  (`ALL_GRAPHICS`; `TOP_OF_PIPE` and `VERTEX|FRAGMENT` are both refused for `COLOR_ATTACHMENT_WRITE`); (4) **`clearValueCount`
+  must be at least the highest cleared attachment index + 1** (`VUID-VkRenderPassBeginInfo-clearValueCount-00902`). Two more
+  were bugs found before the first GPU run rather than by the layer: the **out-param guard pattern** — an open function must
+  refuse a pointer that already owns the object (`*out != NULL` → `XUD_INVALID_ARG`), and the inverted form was in all six new
+  entry points, which is what made `xud_init_context()` answer `XUD_INVALID_ARG` for valid extents; and `xud_framebuffer_fill_create_info()`
+  had to take the **owning framebuffer** rather than a bare `VkImageView`, because `pAttachments` is read after the call returns
+  and must point at storage that outlives it. **Honest boundary**: a triangle is drawn — four frames acquired/recorded/submitted/presented,
+  image index moving, per-image fence waited and reset — but it is **one hard-coded `vkCmdDraw` of three vertices generated from
+  `gl_VertexIndex`**, with no vertex buffer, no push constant, no descriptor set, no camera, no batch and no depth buffer above or
+  beside it; `xud.h` still declares no draw call and no object handle, so nothing a caller can name is drawn yet.
+
+  **Test scaffolding hardened as part of this step** (the item that was still open in `todo.md` before it — "headless
+  pure-logic tests green by default, GPU tests opt-in via `XUD_GPU_TESTS=1`, validation-layer output treated as a
+  failure signal"): all three halves are in place and all three are exercised by this step at once. The headless run
+  stays green with no device present, because the five new rungs' pure halves (the SPIR-V header check, the pipeline /
+  renderpass / framebuffer create-info assembly, the submit and present rows) call no driver function. The GPU run is
+  opt-in. And the validation-clean rule is now read **in run**, not only as a log grep: the diagnostics layer's log
+  callback counts every message it is handed into the struct it was given, and the GPU checks assert that the context's
+  own `errorMessages` is still 0, so a validation complaint anywhere in a GPU run fails the run rather than going unn
+  oticed (the shell grep is still run alongside, as a second opinion). The 12 GPU checks this step adds over the S10
+  step's count are the failure shapes of the frame loop against **this** context's live objects rather than against
+  synthetic ones — a NULL out-index, a NULL pipeline, a NULL pass, a NULL framebuffer array, a zero row count, a row
+  count that is not the swapchain's, a NULL renderer, and the renderer's own count-vs-array rule — plus the two state
+  checks that say every one of those refusals fired **before** the acquire (`framesDrawn` still 0, `lastFrameFence`
+  still `VK_NULL_HANDLE`) and the two that say a refused renderer draw added no frame.
+
 ## Steps complete (S10 Handle layer — the one `XudHandle` type + per-kind slot arrays, one step, landed as one commit 2026-10-24)
 
 - [x] ~~**S10 Handle layer**: the one `XudHandle` type — `{ uint32_t index; uint32_t generation; uint32_t kind; }` (12 B,

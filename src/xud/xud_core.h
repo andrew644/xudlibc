@@ -9,10 +9,12 @@
  *          that fills it on: loader from bring-up, diagnostics from the diagnostics step (NULL in
  *          a release build), window from the window step, instance from the instance layer,
  *          physical device from the physical layer, device from the device layer, swapchain from
- *          the swapchain step, handle table from the handle step - all of them filled by xud_init_
- *          context() now, so a context that comes back XUD_OK owns a live GLFW window, a VkInstan
- *          ce carrying that window's required extensions, a physical device queried through it, a
- *          VkDevice created from that device's recorded caps, a VkSwapchainKHR for that surface and
+ *          the swapchain step, renderer from the first-triangle step, handle table from the handle
+ *          step - all of them filled by xud_init_context() now, so a context that comes back XUD_OK
+ *          owns a live GLFW window, a VkInstance carrying that window's required extensions, a
+ *          physical device queried through it, a VkDevice created from that device's recorded caps,
+ *          a VkSwapchainKHR for that surface, the renderer rung that draws one triangle into its
+ *          images (one pipeline, one render pass, one framebuffer per image, one frame loop) and
  *          the one table the public handle currency indexes. The allocator field is the only sentin
  *          el left, filled by the steps after this one (see todo.md). There is deliberately no queue
  *          field: XudQueue is a record of a queue, not an owning type (there is no vkDestroyQueue -
@@ -33,17 +35,22 @@
 #include "xud_instance.h" /* Required for: XudInstance, the VkInstance the context owns from the instance layer on */
 #include "xud_loader.h" /* Required for: XudLoader, the loader the context owns from bring-up on */
 #include "xud_physical.h" /* Required for: XudPhysicalDevice, the chosen handle plus the caps the context owns from the physical layer on */
+#include "xud_renderer.h" /* Required for: XudRenderer, the renderer rung - the pipeline, the render pass, the framebuffer per swapchain image and the frame loop the context owns from the first-triangle step on, and the rung that goes SECOND in the teardown order */
 #include "xud_swapchain.h" /* Required for: XudSwapchain, the VkSwapchainKHR plus the images vkGetSwapchainImagesKHR handed it - the context owns one from the swapchain step on, and the teardown order below makes it die before the device whose queue it used */
 #include "xud_window.h" /* Required for: XudWindow, the GLFW window plus the VkSurfaceKHR it was handed - the context will own one, and the teardown order below is what makes the surface die before the window and the window before the instance */
 #include <stdint.h>
 
 /* Completed here; xud.h keeps callers to an opaque handle. Every Vulkan field is a
    sentinel (NULL / 0) until the layer named beside it fills it, and is destroyed in the
-   reverse order of creation: handle table -> swapchain -> device -> surface -> window -> physical ->
+   reverse order of creation: handle table -> renderer -> swapchain -> device -> surface -> window -> physical ->
    instance -> diagnostics -> loader. The handle table goes FIRST because it is the top of the tree:
    a handle records an object of every rung below it, so a table still holding live slots is a table
    naming objects the rungs below are about to retire - and it is the last rung opened, since no
-   object of any kind can be created before the context that will own it exists. The device entry
+   object of any kind can be created before the context that will own it exists. The renderer entry
+   sits where it does because the frame loop inside it records a draw that binds a pipeline and pres
+   ents an image of the swapchain below it, and its own close is the fence guard that retires a pres
+   entation still in flight - so the renderer must be gone before the swapchain whose images it pres
+   ented is. The device entry
    sits where it does because a VkDevice is created FROM the physical device below it and everything
    that submits to it (a swapchain, a command buffer) belongs to it, so it goes before the surface
    and the window whose swapchain would have used it -
@@ -112,13 +119,30 @@ struct XudContext {
        closed by xud_close_context() through xud_swapchain_close() FIRST in the teardown order
        below - a swapchain is presented through a queue of the device above, so it must be gone
        before that device is, and its close is the device's own wait-idle guard then
-       vkDestroySwapchainKHR. It is the last field created in bring-up (the surface has to exist
-       before a swapchain can be made for it) and the first torn down, which is what the order
-       comment above states. The images it holds are the swapchain's, not the context's: there is
+       vkDestroySwapchainKHR. It is the last Vulkan rung created before the renderer above it (the
+       surface has to exist before a swapchain can be made for it, and the renderer needs this one's
+       chosen format and image count), and it goes before the device in teardown, which is what the
+       order comment above states. The images it holds are the swapchain's, not the context's: there is
        no vkDestroyImage call anywhere in this tree, and xud_swapchain_close() frees the array
        rather than destroying it. */
     XudSwapchain* swapchain; /* the VkSwapchainKHR plus the images it was handed, recreated on
                                 window resize */
+
+    /* Owned from the renderer step on: opened by xud_init_context() through xud_renderer_open() and
+       closed by xud_close_context() through xud_renderer_close() SECOND in the teardown order below,
+       right after the handle table and before the swapchain. It is the owner of the four rungs that
+       make a frame possible - the pipeline (with its layout and its two shader modules inside it),
+       the one explicit VkRenderPass of the repo's settled render-pass decision, one VkFramebuffer
+       (and one VkImageView) per swapchain image, and the frame loop's command pool, command buffer,
+       acquire semaphore and per-image fences - and it goes where it does because a frame records a
+       draw that binds a pipeline and presents an image of the swapchain below it, so the fences insi
+       de it are the last thing that can still be in flight against those very images. Its close runs
+       that fence guard before it destroys anything. The order inside it is the plan's dependency
+       direction read both ways: pipeline -> render pass -> framebuffer array -> frame on the way in,
+       the exact reverse on the way out (see xud_renderer.h).
+     */
+    XudRenderer* renderer; /* the pipeline, the render pass, the framebuffer per swapchain image
+                              and the frame loop that draws one triangle into them */
 
     /* Deliberately absent: the graphics and present queues. XudQueue is a record of a queue, not an
        owning type (grepped in these headers: there is no vkDestroyQueue), and xud_device_open() res
@@ -134,19 +158,20 @@ struct XudContext {
        above. It is the table the public XudHandle of xud.h indexes, and it is per context for the
        reason the handle layer's own note gives: two contexts have two tables, and a handle from one
        is refused by the other rather than indexing the wrong array. It is the top of the tree today
-       - every slot record is still the sentinel the handle layer opens it with, because the rungs
-       that would fill it (the allocator, the renderer, the object steps) are not in the tree - so
-       closing it frees records and calls nothing, and it still goes first because a handle is a
+       - every slot record is still the sentinel the handle layer opens it with, because the object
+       steps that would fill it (a texture, a font, a mesh, a material, a model) are not in the tree
+       even though the renderer rung below it is - so closing it frees records and calls nothing, and
+       it still goes first because a handle is a
        request for an object of every rung below it.
      */
     XudHandleTable* handleTable; /* the per-kind slot arrays behind the public handle currency */
 
     /* Pending: filled by the bring-up layers below, NULL/0 until then. The allocator is the only
        sentinel left in this struct - the GPU-memory rung that owns every buffer and image below the
-       swapchain is not in the tree yet (see todo.md), and unlike the swapchain above there is no
-       Vulkan object of that shape to name until it is. The handle table above is NOT such a sentinel:
-       it is a typed field of a rung that IS in the tree, and its slots' record field is the sentinel
-       of the rungs that are not.
+       swapchain is not in the tree yet (see todo.md), and unlike the swapchain above and the renderer
+       above it there is no Vulkan object of that shape to name until it is. The handle table above is
+       NOT such a sentinel: it is a typed field of a rung that IS in the tree, and its slots' record
+       field is the sentinel of the rungs that are not.
      */
     void* allocator; /* the single GPU-memory allocator (buffers + images)         */
 };

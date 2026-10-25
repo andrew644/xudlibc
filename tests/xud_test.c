@@ -5,8 +5,10 @@
  *   Owns : the test runner and the checks for every public function in xud.h plus the internal
  *          layers under it - the loader layer, the diagnostics layer, the shared Vulkan vocabulary,
  *          the instance layer, the physical layer, the device layer, the window layer, the swapchain
- *          layer, the handle layer - and the ownership step in xud_core.c, which is about what a
- *          context owns and about the one order that hands it back.
+ *          layer, the handle layer, the five rungs of the first-triangle path (the shader rung, the
+ *          pipeline rung, the render-pass + framebuffer-array rung, the frame loop and the renderer
+ *          that owns them) - and the ownership step in xud_core.c, which is about what a context
+ *          owns and about the one order that hands it back.
  *          The pure halves run headless: the physical layer's selection, feature intersection,
  *          queue-family rule, apiVersion read-back and free-only teardown; the device layer's queue-
  *          row assembly, device-extension selection, create-info assembly, queue lookup and argument
@@ -15,27 +17,34 @@
  *          its create-info assembly and its argument guards; the handle layer's slot allocation, its
  *          generation bump on reuse, its validation order, its reuse-first rule, its live count and
  *          its teardown - that layer calls no driver function at all and includes no Vulkan header,
- *          so the headless run covers it completely; and the context's argument guards, its teardown-
- *          order contract and its refusal state. None of those calls the driver, so they run with no
- *          device present. Headless by default: this run must stay green on a machine with no Vulkan
- *          driver - the loader checks degrade to a note when dlopen fails, they never fail because of
- *          a missing driver, and no driver half is reached at all. GPU checks are opt-in via XUD_GPU_
- *          TESTS=1 and they exist now: the instance layer, the physical layer, the device layer, the
- *          window layer (a real GLFW window on this machine's Wayland session, a real surface created
- *          and destroyed), the swapchain layer (a real VkSwapchainKHR created, recreated at a second
- *          extent and destroyed) and the whole-context lifecycle all need a device. Every GPU test runs
- *          inside the one instance the test opens, so the physical device, the device and the window's
- *          surface are created and destroyed while their owner is alive, in the order xud_close_context()
- *          uses - and xud_test_gpu_context() is the one place in the run that creates a CONTEXT, so it
- *          is the one place that can say what a context owns: a loader, a diagnostics struct when
- *          validation was asked for, a GLFW window, an instance carrying that window's required
- *          extensions, a physical device queried through THAT instance, a VkDevice with both role
- *          queues resolved, a surface inside the window, a swapchain with its images, and an empty
- *          handle table - the empty-table state asserted rather than assumed, since a context that
- *          created no object of any kind allocates no slot array at all. Layer: tests. Sees xud.h and
- *          the internal module headers of the layers under the public API (xud_loader.h, xud_vulkan.h,
- *          xud_diagnostics.h, xud_instance.h, xud_physical.h, xud_device.h, xud_window.h, xud_swapchain.h,
- *          xud_handle.h) so the layers can be unit-tested on their own; user code includes xud.h only.
+ *          so the headless run covers it completely; the shader rung's SPIR-V header check and its
+ *          two-module assembly; the pipeline rung's create-info assembly, its zero vertex bindings and
+ *          its entry-point name; the render-pass rung's one-attachment pass, its layout pair, its
+ *          clear-value count and its framebuffer create-info; and the frame loop's submit and present
+ *          rows, its core-1.0 acquire gate and its per-image layout record. None of those calls the
+ *          driver, so they run with no device present - which is what makes the headless run the
+ *          place the create-info shapes of the whole first-triangle path are checked. Headless by default: this run must stay green on a
+ * machine with no Vulkan driver - the loader checks degrade to a note when dlopen fails, they never fail because of a missing driver, and
+ * no driver half is reached at all. GPU checks are opt-in via XUD_GPU_ TESTS=1 and they exist now: the instance layer, the physical layer,
+ * the device layer, the window layer (a real GLFW window on this machine's Wayland session, a real surface created and destroyed), the
+ * swapchain layer (a real VkSwapchainKHR created, recreated at a second extent and destroyed), the renderer rung (four real frames
+ * acquired, recorded, submitted, presented and waited through it, and the failure shapes of the frame loop refused against those very live
+ * objects before one of them was touched) and the whole-context lifecycle all need a device. Every GPU test runs inside the one instance
+ * the test opens, so the physical device, the device and the window's surface are created and destroyed while their owner is alive, in the
+ * order xud_close_context() uses - and xud_test_gpu_context() is the one place in the run that creates a CONTEXT, so it is the one place
+ * that can say what a context owns: a loader, a diagnostics struct when validation was asked for, a GLFW window, an instance carrying that
+ * window's required extensions, a physical device queried through THAT instance, a VkDevice with both role queues resolved, a surface
+ * inside the window, a swapchain with its images, a renderer holding a pipeline, a render pass, one framebuffer per swapchain image and a
+ * frame loop, and an empty handle table - the empty-table state asserted rather than assumed, since a context that created no object of any
+ * kind allocates no slot array at all. The validat ion-clean rule is read IN RUN, not only as a log grep: the diagnostics layer's log
+ *          callback counts every message it is handed into the struct it was given, and the GPU
+ *          checks assert that the context's own counter is still zero, so a validation complaint
+ *          anywhere in a GPU run fails the run rather than going unnoticed. Layer: tests. Sees xud.h
+ *          and the internal module headers of the layers under the public API (xud_loader.h, xud_vul
+ *          kan.h, xud_diagnostics.h, xud_instance.h, xud_physical.h, xud_device.h, xud_window.h,
+ *          xud_swapchain.h, xud_handle.h, xud_shader.h, xud_pipeline.h, xud_renderpass.h, xud_frame.h,
+ *          xud_renderer.h) so the layers can be unit-tested on their own; user code includes xud.h
+ *          only.
  *          xud_core.h is included here too from S8 on: the ownership step is about what the context
  *          owns, and the only way to say that in a test is to read the fields it owns them through -
  *          user code still never sees them.
@@ -54,9 +63,14 @@
 #include "xud_core.h"
 #include "xud_device.h"
 #include "xud_diagnostics.h"
+#include "xud_frame.h"
 #include "xud_instance.h"
 #include "xud_loader.h"
 #include "xud_physical.h"
+#include "xud_pipeline.h"
+#include "xud_renderer.h"
+#include "xud_renderpass.h"
+#include "xud_shader.h"
 #include "xud_swapchain.h"
 #include "xud_vulkan.h"
 #include "xud_window.h"
@@ -2766,6 +2780,576 @@ static void xud_test_handle(void) {
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The shader rung, headless: the SPIR-V header rule read as a check rather than as a toolchain
+ * assumption, and the create-info assembly. The blob below is the header glslangValidator writ
+ * eS here (magic 0x07230203 = SPIR-V 1.3, version word 0x00010000 = 1.0, generator 0x0008000b
+ * = Khronos glslang, id bound 52, instruction count 0) followed by one filler word, so every r
+ * efusal tested is one word changed in that same header.
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_shader_pure(void) {
+    const uint32_t good[] = { 0x07230203u, 0x00010000u, 0x0008000Bu, 52u, 0u, 1u };
+    const uint32_t notSpv[] = { 0x474f5245u, 0x00010000u, 0u, 52u, 0u };
+    const uint32_t tooSmall[] = { 0x07230203u, 0x00010000u, 0u };
+    const uint32_t badBound[] = { 0x07230203u, 0x00010000u, 0u, 1u, 0u };
+    const uint32_t badMajor[] = { 0x07230203u, 0x00020000u, 0u, 52u, 0u };
+    const uint32_t versionHigh[] = { 0x072302FFu, 0x00010000u, 0u, 52u, 0u };
+    VkShaderModuleCreateInfo info = (VkShaderModuleCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    XudResult result = XUD_OK;
+
+    result = xud_shader_check_spv(NULL, 0u);
+    xud_check(result == XUD_INVALID_ARG, "shader/check-null-code", "no words at all is a bad argument, not a bad shader");
+    result = xud_shader_check_spv(good, 0u);
+    xud_check(result == XUD_INVALID_ARG, "shader/check-zero-size", "a zero length is a bad argument: there is nothing to check");
+    result = xud_shader_check_spv(good, sizeof(good));
+    xud_check(result == XUD_OK, "shader/check-good",
+        "the header glslangValidator writes here passes, which is the whole point of the rule b"
+        "eing the spec's form rather than one exact magic");
+
+    xud_check(xud_shader_check_spv(notSpv, sizeof(notSpv)) == XUD_UNSUPPORTED, "shader/check-not-spirv",
+        "not SPIR-V at all is reported as not-a-shader, not as a bad argument: a caller that embe"
+        "ds a blob of its own gets the reason, not a driver-side validation failure it cannot read");
+    xud_check(xud_shader_check_spv(tooSmall, sizeof(tooSmall)) == XUD_UNSUPPORTED, "shader/check-short",
+        "shorter than the 5-word header cannot be a module");
+    xud_check(xud_shader_check_spv(good, sizeof(good) - 1u) == XUD_UNSUPPORTED, "shader/check-not-word-multiple",
+        "a byte count that is not a multiple of 4 is not a module, because the words are 32-bit");
+    xud_check(xud_shader_check_spv(badBound, sizeof(badBound)) == XUD_UNSUPPORTED, "shader/check-bound",
+        "an id upper bound below 2 declares no id at all, so no entry point and no pipeline");
+    xud_check(xud_shader_check_spv(badMajor, sizeof(badMajor)) == XUD_UNSUPPORTED, "shader/check-major",
+        "a SPIR-V 2.x module is not one these headers take");
+    xud_check(xud_shader_check_spv(versionHigh, sizeof(versionHigh)) == XUD_UNSUPPORTED, "shader/check-version-byte",
+        "a version byte above the highest the spec defines is refused, while the fixed 24 bits b"
+        "elow it are the same as a good module's");
+
+    xud_check(xud_shader_fill_create_info(NULL, good, sizeof(good)) == XUD_INVALID_ARG, "shader/fill-null-out", "refused");
+    xud_check(xud_shader_fill_create_info(&info, notSpv, sizeof(notSpv)) == XUD_UNSUPPORTED, "shader/fill-not-spirv",
+        "the create-info and the check share one derivation path, so a blob the check refuses nev"
+        "er reaches an assembled create-info");
+    xud_check(xud_shader_fill_create_info(&info, good, sizeof(good)) == XUD_OK, "shader/fill-ok", "the create-info is assembled");
+    xud_check(info.sType == VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, "shader/fill-stamped", "stamped");
+    xud_check(info.pNext == NULL, "shader/fill-pnext-clear", "nothing is chained in");
+    xud_check(info.flags == 0u, "shader/fill-flags-clear", "no module flag is asked for");
+    xud_check(info.codeSize == sizeof(good), "shader/fill-size",
+        "the byte count is handed over as it was, so the record and the create-info cannot disagr"
+        "ee about length");
+    xud_check(info.pCode == good, "shader/fill-code-row",
+        "the words are borrowed, not copied: the create-info points at the caller's own array, wh"
+        "ich is what keeps the built-in set in static storage and lets xud_shader_close() free no"
+        "thing beside the module");
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The pipeline rung, headless: the fixed state, the two shader-stage rows, the empty layout and
+ * the create-info assembly. Nothing here calls the driver, which is what makes the whole of thi
+ * s rung testable with no device present - the assembly is the half the repo's headless rule lea
+ * ns on, and the create-info it writes is the exact bytes vkCreateGraphicsPipelines is handed.
+ * The two module handles are synthetic on purpose: the pure half never dereferences one, it only
+ * copies it into a row.
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_pipeline_pure(void) {
+    XudPipeline pipeline = (XudPipeline) { 0 };
+    XudPipeline bare = (XudPipeline) { 0 };
+    const VkShaderModule vertModule = (VkShaderModule)0x1000u;
+    const VkShaderModule fragModule = (VkShaderModule)0x2000u;
+    VkPipelineLayoutCreateInfo layout = (VkPipelineLayoutCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkGraphicsPipelineCreateInfo out = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+
+    xud_check(
+        xud_pipeline_fill_state(NULL) == XUD_INVALID_ARG, "pipeline/fill-state-null-out", "an out-param that cannot be filled is refused");
+    xud_check(xud_pipeline_fill_state(&pipeline) == XUD_OK, "pipeline/fill-state-ok", "the assembly completes");
+
+    xud_check(pipeline.vertexInput.sType == VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, "pipeline/vertex-input-stamped",
+        "every row is stamped, which is the same rule the physical layer records for a driver");
+    xud_check(pipeline.vertexInput.vertexBindingDescriptionCount == 0u, "pipeline/zero-bindings",
+        "zero vertex bindings: the allocator rung that owns a VkBuffer is not in the tree, so the "
+        "vertex shader generates its vertices from gl_VertexIndex instead");
+    xud_check(pipeline.vertexInput.vertexAttributeDescriptionCount == 0u, "pipeline/zero-attributes",
+        "and zero attributes, the other half of the same rule");
+    xud_check((pipeline.vertexInput.pVertexBindingDescriptions == NULL) && (pipeline.vertexInput.pVertexAttributeDescriptions == NULL),
+        "pipeline/binding-arrays-null",
+        "both counts are paired with a NULL array, so a driver that reads past a count reads "
+        "nothing");
+    xud_check(pipeline.inputAssembly.topology == XUD_PIPELINE_TOPOLOGY, "pipeline/topology",
+        "a triangle list, which is what vkCmdDraw's vertexCount means");
+    xud_check(pipeline.inputAssembly.primitiveRestartEnable == VK_FALSE, "pipeline/no-primitive-restart",
+        "no restart index, so every vertex of the count is a vertex of the triangle");
+    xud_check((pipeline.viewportState.viewportCount == 1u) && (pipeline.viewportState.scissorCount == 1u),
+        "pipeline/one-viewport-one-scissor", "one viewport and one scissor, both dynamic");
+    xud_check((pipeline.viewportState.pViewports == NULL) && (pipeline.viewportState.pScissors == NULL), "pipeline/viewport-arrays-null",
+        "the arrays are NULL because the state is dynamic - but the ROW is not, which is the spec's "
+        "own rule for a fragment stage that reads gl_FragCoord");
+    xud_check(pipeline.rasterizer.cullMode == XUD_PIPELINE_CULL_MODE, "pipeline/cull-mode",
+        "nothing is culled, which is what makes a triangle of any winding visible and the rule a "
+        "stated one");
+    xud_check(pipeline.rasterizer.frontFace == XUD_PIPELINE_FRONT_FACE, "pipeline/front-face",
+        "the winding the shaders are written for, recorded even though nothing is culled");
+    xud_check((pipeline.rasterizer.polygonMode == VK_POLYGON_MODE_FILL) && (pipeline.rasterizer.rasterizerDiscardEnable == VK_FALSE),
+        "pipeline/fill-and-no-discard",
+        "filled, and rasterizerDiscardEnable false, which is the one bit that would discard every "
+        "fragment");
+    xud_check(pipeline.rasterizer.lineWidth == 1.0f, "pipeline/line-width", "one, the only honest value in that field of this row today");
+    xud_check(pipeline.rasterizer.depthBiasEnable == VK_FALSE, "pipeline/no-depth-bias",
+        "no depth bias, and the three factors beside it are written as zeros rather than left at "
+        "whatever calloc left");
+    xud_check(pipeline.multisample.rasterizationSamples == XUD_PIPELINE_SAMPLE_COUNT, "pipeline/sample-count",
+        "one sample, which is the only sample count the framebuffer of a swapchain image is asked "
+        "for today");
+    xud_check((pipeline.multisample.alphaToCoverageEnable == VK_FALSE) && (pipeline.multisample.alphaToOneEnable == VK_FALSE)
+            && (pipeline.multisample.pSampleMask == NULL),
+        "pipeline/no-msaa",
+        "no MSAA at all, which is the gate the framebuffer's sample-count limits would open and "
+        "this rung does not take");
+    xud_check((pipeline.depthStencil.depthTestEnable == VK_FALSE) && (pipeline.depthStencil.depthWriteEnable == VK_FALSE),
+        "pipeline/depth-pair-off",
+        "the honest half of the depth note: no depth ATTACHMENT exists in this tree, so no test "
+        "is enabled - an enabled test against an undefined depth buffer is implementation-dependen"
+        "t");
+    xud_check(pipeline.depthStencil.depthCompareOp == XUD_PIPELINE_DEPTH_COMPARE_OP, "pipeline/depth-compare-op",
+        "LESS recorded anyway, so the constant is not dead state: it is the rule the depth buffer "
+        "will use the day the attachment lands");
+    xud_check(pipeline.depthStencil.stencilTestEnable == VK_FALSE, "pipeline/no-stencil-test",
+        "no stencil anywhere in this library, and both stencil rows are written as the disabled se"
+        "t rather than left at zero");
+    xud_check((pipeline.depthStencil.minDepthBounds == 0.0f) && (pipeline.depthStencil.maxDepthBounds == 1.0f),
+        "pipeline/depth-bounds-full", "the full range, which is what a disabled depth-bounds test has to say beside it");
+    xud_check(pipeline.blendAttachment.blendEnable == VK_FALSE, "pipeline/attachment-blend-disabled",
+        "blend disabled at the attachment, which is the plan's opaque variant and the only varian"
+        "t there is today");
+    xud_check((pipeline.blendAttachment.srcColorBlendFactor == VK_BLEND_FACTOR_ONE)
+            && (pipeline.blendAttachment.dstColorBlendFactor == VK_BLEND_FACTOR_ZERO),
+        "pipeline/blend-factors-overwrite",
+        "ONE/ZERO, the identity of an overwrite, written even though blending is off so that the "
+        "day a variant enables it the factors are already the right pair");
+    xud_check((pipeline.blendAttachment.srcAlphaBlendFactor == VK_BLEND_FACTOR_ONE)
+            && (pipeline.blendAttachment.dstAlphaBlendFactor == VK_BLEND_FACTOR_ZERO),
+        "pipeline/blend-alpha-factors-overwrite",
+        "the alpha half says the same: leaving it at ZERO/ZERO would be a blend that writes 0 alph"
+        "a into the swapchain the moment a later variant enables blending");
+    xud_check(pipeline.blendAttachment.colorWriteMask
+            == (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT),
+        "pipeline/color-write-mask",
+        "every component is written, alpha included, which is what a swapchain with OPAQUE composi"
+        "te needs");
+    xud_check(pipeline.blending.attachmentCount == 1u, "pipeline/blend-attachment-count",
+        "one blend attachment, which is the pass's one colour attachment read from the other side");
+    xud_check(pipeline.blending.pAttachments == &pipeline.blendAttachment, "pipeline/blend-attachment-row",
+        "the row points at the record's own attachment, so the record and the create-info the drive"
+        "r is handed cannot disagree");
+    xud_check((pipeline.blending.logicOpEnable == VK_FALSE) && (pipeline.blending.logicOp == XUD_PIPELINE_LOGIC_OP), "pipeline/no-logic-op",
+        "no logic op, with the enum's own COPY value written beside it because the field has to ho"
+        "ld a valid enum");
+    xud_check((pipeline.blending.blendConstants[0] == 0.0f) && (pipeline.blending.blendConstants[3] == 0.0f),
+        "pipeline/blend-constants-zero",
+        "the four blend constants are written as zeros, which is what a blend that does not use th"
+        "em still says");
+    xud_check(pipeline.dynamicState.dynamicStateCount == XUD_PIPELINE_DYNAMIC_STATE_COUNT, "pipeline/dynamic-count", "two dynamic states");
+    xud_check(pipeline.dynamicState.pDynamicStates == pipeline.dynamicStates, "pipeline/dynamic-array",
+        "the row points into the owning struct, which is what keeps it valid past the call");
+    xud_check((pipeline.dynamicStates[XUD_PIPELINE_VIEWPORT_STATE] == VK_DYNAMIC_STATE_VIEWPORT)
+            && (pipeline.dynamicStates[XUD_PIPELINE_SCISSOR_STATE] == VK_DYNAMIC_STATE_SCISSOR),
+        "pipeline/dynamic-two",
+        "viewport and scissor, which is what makes one pipeline serve every window extent instead "
+        "of one pipeline per size");
+
+    xud_check(xud_pipeline_fill_shader_stages(NULL, vertModule, fragModule) == XUD_INVALID_ARG, "pipeline/stages-null-out",
+        "an out-param that cannot be filled is refused");
+    xud_check(xud_pipeline_fill_shader_stages(pipeline.shaderStages, vertModule, fragModule) == XUD_OK, "pipeline/stages-ok",
+        "the two rows are filled");
+    xud_check(pipeline.shaderStages[XUD_PIPELINE_VERTEX_STAGE].stage == VK_SHADER_STAGE_VERTEX_BIT, "pipeline/vertex-stage-bit",
+        "the vertex row carries the vertex stage");
+    xud_check(
+        pipeline.shaderStages[XUD_PIPELINE_VERTEX_STAGE].module == vertModule, "pipeline/vertex-module", "and the module handed for it");
+    xud_check(pipeline.shaderStages[XUD_PIPELINE_FRAGMENT_STAGE].stage == VK_SHADER_STAGE_FRAGMENT_BIT, "pipeline/fragment-stage-bit",
+        "the fragment row carries the fragment stage");
+    xud_check(pipeline.shaderStages[XUD_PIPELINE_FRAGMENT_STAGE].module == fragModule, "pipeline/fragment-module", "and its module");
+    xud_check((strcmp(pipeline.shaderStages[XUD_PIPELINE_VERTEX_STAGE].pName, XUD_PIPELINE_ENTRY_POINT) == 0)
+            && (strcmp(pipeline.shaderStages[XUD_PIPELINE_FRAGMENT_STAGE].pName, XUD_PIPELINE_ENTRY_POINT) == 0),
+        "pipeline/stages-entry-main",
+        "both rows name the entry point by name rather than leaving it NULL: the validation layer o"
+        "n this machine reports a NULL pName as a hard error against both pName VUIDs (probed tod"
+        "ay), so the honest form is the name glslangValidator writes");
+    xud_check(pipeline.shaderStages[XUD_PIPELINE_VERTEX_STAGE].pSpecializationInfo == NULL, "pipeline/no-specialization",
+        "no specialization info, so the pipeline is built from the shaders exactly as compiled");
+
+    xud_check(xud_pipeline_fill_layout_info(NULL) == XUD_INVALID_ARG, "pipeline/layout-null-out", "refused");
+    xud_check(xud_pipeline_fill_layout_info(&layout) == XUD_OK, "pipeline/layout-ok", "the empty layout is assembled");
+    xud_check(layout.sType == VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, "pipeline/layout-stamped", "stamped");
+    xud_check((layout.setLayoutCount == 0u) && (layout.pSetLayouts == NULL), "pipeline/layout-no-sets",
+        "zero descriptor sets with a NULL array beside it, which is the first triangle's honesty a"
+        "bout the set layout being a later item");
+    xud_check((layout.pushConstantRangeCount == 0u) && (layout.pPushConstantRanges == NULL), "pipeline/layout-no-push-constants",
+        "and no push-constant range, for the same reason - the plan's 128-byte model matrix lands "
+        "with the batch");
+
+    xud_check(xud_pipeline_fill_create_info(NULL, &out) == XUD_INVALID_ARG, "pipeline/create-no-record",
+        "a create-info with no record to assemble from is refused");
+    xud_check(xud_pipeline_fill_create_info(&pipeline, NULL) == XUD_INVALID_ARG, "pipeline/create-null-out",
+        "and so is one with nowhere to be written");
+    xud_check(xud_pipeline_fill_create_info(&bare, &out) == XUD_INVALID_ARG, "pipeline/create-no-layout-handle",
+        "a record with no layout handle is a bad argument, because the layout is an argument of the "
+        "create call");
+    bare.layout = (VkPipelineLayout)0x9000u;
+    xud_check(xud_pipeline_fill_create_info(&bare, &out) == XUD_INVALID_ARG, "pipeline/create-no-pass-handle",
+        "and so is a record that names no render pass: the core-1.4 binding makes the pass an argu"
+        "ment of the create as well, so a record that cannot name one is a bad argument of this f"
+        "unction, not a create-info that happens to carry VK_NULL_HANDLE");
+    bare.renderPass = (VkRenderPass)0x3000u;
+    xud_check(xud_pipeline_fill_create_info(&bare, &out) == XUD_UNSUPPORTED, "pipeline/create-unstamped-rows",
+        "a record whose rows were never stamped is a bad state of THIS layer, reported as such rat"
+        "her than assembled from calloc's zeros");
+    pipeline.layout = (VkPipelineLayout)0x9000u;
+    pipeline.renderPass = (VkRenderPass)0x3000u;
+    xud_check(
+        xud_pipeline_fill_create_info(&pipeline, &out) == XUD_OK, "pipeline/create-ok", "the create-info is assembled from the record");
+    xud_check(out.sType == VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, "pipeline/create-stamped", "stamped");
+    xud_check((out.pNext == NULL) && (out.flags == 0u), "pipeline/create-chain-clear", "nothing is chained into it");
+    xud_check((out.stageCount == XUD_PIPELINE_STAGE_COUNT) && (out.pStages == pipeline.shaderStages), "pipeline/create-two-stages",
+        "two stages, and the row is the record's own");
+    xud_check(out.pTessellationState == NULL, "pipeline/create-no-tessellation",
+        "no tessellation row at all, which is the stage array's own shape read from the other side");
+    xud_check((out.pVertexInputState == &pipeline.vertexInput) && (out.pInputAssemblyState == &pipeline.inputAssembly)
+            && (out.pViewportState == &pipeline.viewportState) && (out.pRasterizationState == &pipeline.rasterizer)
+            && (out.pMultisampleState == &pipeline.multisample) && (out.pDepthStencilState == &pipeline.depthStencil)
+            && (out.pColorBlendState == &pipeline.blending) && (out.pDynamicState == &pipeline.dynamicState),
+        "pipeline/create-rows-in-record",
+        "every state pointer names the record's own row, so the record and the create-info the "
+        "driver is handed are the same bytes and cannot disagree");
+    xud_check(out.layout == pipeline.layout, "pipeline/create-layout-handle",
+        "the layout handle the pipeline was created with is recorded in the record, which is what "
+        "makes the teardown order (pipeline first, layout second) the only one that is safe");
+    xud_check((out.renderPass == pipeline.renderPass) && (out.subpass == XUD_PIPELINE_FIRST_SUBPASS), "pipeline/create-pass-binding",
+        "the core-1.4 pair that ties a pipeline to a render pass at creation time IS set, to the "
+        "handle recorded in the record: VUID-VkGraphicsPipelineCreateInfo-dynamicRendering-06576 "
+        "makes it required while dynamicRendering is not enabled, and the validation layer on thi"
+        "s machine reports VK_NULL_HANDLE there as a hard error (probed today)");
+    xud_check((out.basePipelineHandle == VK_NULL_HANDLE) && (out.basePipelineIndex == -1), "pipeline/create-no-base-pipeline",
+        "the spec's own pairing for a pipeline that is not derived from another: a null handle wit"
+        "h -1, because 0 would name pipeline row 0 of a derivation this rung does not take");
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The render pass and the framebuffer array, headless: the one attachment's description, the one
+ * subpass that reads it, the one dependency that orders the clear before the write, and the per-
+ * image view + framebuffer assembly. The dependency's access masks are attachment-specific name
+ * s because these headers carry no VK_ACCESS_CLEAR_AND_WRITE_BIT at all (probed today: zero hits
+ * for CLEAR_AND_WRITE across the whole Vulkan include tree), which is the same reason the pipeli
+ * ne layer's note gives for the depth pair. The two handles a framebuffer create-info needs are
+ * synthetic on purpose: the pure half refuses a handle-less one and dereferences nothing, which i
+ * s what makes the refusal testable at all.
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_renderpass_pure(void) {
+    XudRenderPass pass = (XudRenderPass) { 0 };
+    XudRenderPass bare = (XudRenderPass) { 0 };
+    XudFramebuffer framebuffer = (XudFramebuffer) { 0 };
+    VkRenderPassCreateInfo passInfo = (VkRenderPassCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkImageViewCreateInfo viewInfo = (VkImageViewCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkFramebufferCreateInfo fbInfo = (VkFramebufferCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    const VkFormat chosen = VK_FORMAT_B8G8R8A8_UNORM;
+
+    xud_check(xud_renderpass_fill_state(NULL, chosen) == XUD_INVALID_ARG, "renderpass/state-null-out", "refused");
+    xud_check(xud_renderpass_fill_state(&pass, VK_FORMAT_UNDEFINED) == XUD_UNSUPPORTED, "renderpass/state-no-format",
+        "an attachment description with no format is not a description, so it is reported as suc"
+        "h rather than written");
+    xud_check(xud_renderpass_fill_state(&pass, chosen) == XUD_OK, "renderpass/state-ok", "the rows are filled");
+
+    xud_check(pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].format == chosen, "renderpass/attachment-format",
+        "the attachment is the swapchain's CHOSEN format, which is the half of the agreement the s"
+        "pec requires between a pass and the framebuffer under it");
+    xud_check(pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].samples == XUD_PIPELINE_SAMPLE_COUNT, "renderpass/attachment-samples",
+        "one sample, and it is the SAME constant the pipeline's rasterization row carries, which i"
+        "s the other half of that agreement - one name, two layers, no way to disagree");
+    xud_check(pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].loadOp == VK_ATTACHMENT_LOAD_OP_CLEAR, "renderpass/load-clear",
+        "the pass clears the attachment rather than loading whatever the previous frame left in it"
+        ", which is what makes a frame's output not depend on the frame before it");
+    xud_check(pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].storeOp == VK_ATTACHMENT_STORE_OP_STORE, "renderpass/store-store",
+        "STORE is the whole point: the image is presented");
+    xud_check((pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].stencilLoadOp == VK_ATTACHMENT_LOAD_OP_LOAD)
+            && (pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].stencilStoreOp == VK_ATTACHMENT_STORE_OP_STORE),
+        "renderpass/stencil-core-ops",
+        "the stencil pair is the CORE LOAD/STORE pair, because NONE is an extension-gated enum (l"
+        "oad_store_op_none / dynamic_rendering / render_pass_store_ops, none enabled here) and th"
+        "e validation layer on this machine rejects it as a hard error, probed today; both halves"
+        " are ignored when there is no stencil attachment");
+    xud_check((pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].initialLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL)
+            && (pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout == VK_IMAGE_LAYOUT_PRESENT_SRC_KHR),
+        "renderpass/attachment-layouts",
+        "COLOR_ATTACHMENT_OPTIMAL in, PRESENT_SRC_KHR out: the pass transitions the swapchain imag"
+        "e into the layout it is drawn in and back out to the one the compositor reads, which is "
+        "the textbook swapchain pattern and the only pair that lets the same image be both drawn "
+        "into and presented");
+    xud_check(pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].flags == 0u, "renderpass/attachment-flags-clear",
+        "no attachment flag is asked for");
+    xud_check(pass.colorReferences[XUD_RENDERPASS_FIRST_SUBPASS].attachment == XUD_RENDERPASS_COLOR_ATTACHMENT,
+        "renderpass/color-reference-index",
+        "the subpass's colour reference names attachment 0, which is the index rule VkRenderPassB"
+        "eginInfo's pClearValues array is read by");
+    xud_check(pass.colorReferences[XUD_RENDERPASS_FIRST_SUBPASS].layout == pass.attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].initialLayout,
+        "renderpass/color-reference-layout",
+        "the reference names the layout the attachment is in AT THE SUBPASS, which is the descript"
+        "ion's initialLayout and not its finalLayout - VUID-VkAttachmentReference-layout-03077 na"
+        "mes PRESENT_SRC_KHR (with UNDEFINED, PREINITIALIZED and ZERO_INITIALIZED_EXT) as layouts "
+        "a reference may never carry, and the validation layer on this machine fires that VUID a"
+        "gainst a PRESENT_SRC_KHR reference, probed today");
+    xud_check(pass.subpasses[XUD_RENDERPASS_FIRST_SUBPASS].pipelineBindPoint == VK_PIPELINE_BIND_POINT_GRAPHICS,
+        "renderpass/graphics-bind-point",
+        "a graphics subpass, which is what makes the pipeline this rung is created under a graphi"
+        "cs pipeline and not a compute one");
+    xud_check(pass.subpasses[XUD_RENDERPASS_FIRST_SUBPASS].colorAttachmentCount == 1u, "renderpass/subpass-one-colour",
+        "one colour attachment for the subpass, and the pass has one attachment in total, so the "
+        "two counts agree exactly");
+    xud_check(pass.subpasses[XUD_RENDERPASS_FIRST_SUBPASS].pColorAttachments == pass.colorReferences, "renderpass/subpass-colour-row",
+        "the row points at the pass's own colour reference, which is the only place in the struct "
+        "that can hold it");
+    xud_check((pass.subpasses[XUD_RENDERPASS_FIRST_SUBPASS].pInputAttachments == NULL)
+            && (pass.subpasses[XUD_RENDERPASS_FIRST_SUBPASS].inputAttachmentCount == 0u),
+        "renderpass/no-input-attachments",
+        "no input attachments: subpass discipline is about reading what an earlier subpass wrote, "
+        "and this rung has one subpass");
+    xud_check(pass.subpasses[XUD_RENDERPASS_FIRST_SUBPASS].pResolveAttachments == NULL, "renderpass/no-resolve-attachment",
+        "no resolve attachment, which is the MSAA gate AGENTS.md's render-pass note says this dr"
+        "iver could open (framebuffer*SampleCounts answer 0x1f) and this rung does not take");
+    xud_check(pass.subpasses[XUD_RENDERPASS_FIRST_SUBPASS].pDepthStencilAttachment == NULL, "renderpass/no-depth-attachment",
+        "no depth-stencil attachment, which is the half of the depth note that makes the pipeline'"
+        "s depth pair an OFF pair - the VkImage + VkDeviceMemory a depth buffer needs belongs to t"
+        "he allocator rung, which is not in the tree");
+    xud_check(pass.subpasses[XUD_RENDERPASS_FIRST_SUBPASS].preserveAttachmentCount == 0u, "renderpass/no-preserve-attachments",
+        "nothing is preserved: every attachment of this pass is written by it");
+    xud_check((pass.dependencies[XUD_RENDERPASS_FIRST_SUBPASS].srcSubpass == VK_SUBPASS_EXTERNAL)
+            && (pass.dependencies[XUD_RENDERPASS_FIRST_SUBPASS].dstSubpass == XUD_RENDERPASS_FIRST_SUBPASS),
+        "renderpass/dependency-external-to-zero",
+        "the spec's required external -> 0 pair, which is what makes the clear of the attachment "
+        "happen before the draw writes it");
+    xud_check(pass.dependencies[XUD_RENDERPASS_FIRST_SUBPASS].srcStageMask == VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        "renderpass/dependency-source-stage",
+        "the colour-attachment-output stage on the source half, which is the stage the CLEAR belon"
+        "gs to");
+    xud_check((pass.dependencies[XUD_RENDERPASS_FIRST_SUBPASS].dstStageMask & VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT) != 0u,
+        "renderpass/dependency-destination-stage",
+        "the vertex and the colour-attachment-output stages on the destination half, which is the "
+        "pair that orders the clear before both the vertex shader and the write");
+    xud_check((pass.dependencies[XUD_RENDERPASS_FIRST_SUBPASS].srcAccessMask == VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT)
+            && (pass.dependencies[XUD_RENDERPASS_FIRST_SUBPASS].dstAccessMask == VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT),
+        "renderpass/dependency-access-masks",
+        "the attachment-specific pair, because these headers carry no VK_ACCESS_CLEAR_AND_WRITE_BI"
+        "T at all (probed today: zero hits for CLEAR_AND_WRITE across the whole include tree), whi"
+        "ch is the same reason the pipeline layer's note gives for the depth pair");
+    xud_check(pass.dependencies[XUD_RENDERPASS_FIRST_SUBPASS].dependencyFlags == 0u, "renderpass/dependency-flags-clear",
+        "no flag: the dependency is a full execution-and-memory barrier, which is the conservative "
+        "half of the repo's classic-synchronization rule");
+    xud_check((pass.clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[0] == XUD_RENDERPASS_CLEAR_COLOR_R)
+            && (pass.clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[3] == XUD_RENDERPASS_CLEAR_COLOR_A),
+        "renderpass/clear-colour",
+        "the clear colour, in attachment order, so VkRenderPassBeginInfo's pClearValues index matc"
+        "hes the attachment index - the spec's own rule for that pair");
+    xud_check(pass.clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[3] == 1.0f, "renderpass/clear-alpha-opaque",
+        "alpha 1, which is what the surface's OPAQUE composite answer needs: a clear with 0 alpha "
+        "would be a window the compositor could see through");
+
+    xud_check(xud_renderpass_fill_create_info(NULL, &passInfo) == XUD_INVALID_ARG, "renderpass/create-no-record", "refused");
+    xud_check(
+        xud_renderpass_fill_create_info(&pass, NULL) == XUD_INVALID_ARG, "renderpass/create-null-out", "and so is a NULL create-info");
+    xud_check(xud_renderpass_fill_create_info(&bare, &passInfo) == XUD_UNSUPPORTED, "renderpass/create-unstamped-rows",
+        "a record whose rows were never filled is a bad state of this layer, reported as such rat"
+        "her than assembled from calloc's zeros");
+    xud_check(xud_renderpass_fill_create_info(&pass, &passInfo) == XUD_OK, "renderpass/create-ok",
+        "the create-info is assembled from the record");
+    xud_check(passInfo.sType == VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, "renderpass/create-stamped", "stamped");
+    xud_check((passInfo.pNext == NULL) && (passInfo.flags == 0u), "renderpass/create-chain-clear", "nothing is chained into it");
+    xud_check((passInfo.attachmentCount == XUD_RENDERPASS_ATTACHMENT_COUNT) && (passInfo.pAttachments == pass.attachments),
+        "renderpass/create-attachment-row",
+        "the attachment row points into the pass's own storage, so the record and the create-info "
+        "cannot disagree");
+    xud_check((passInfo.subpassCount == XUD_RENDERPASS_SUBPASS_COUNT) && (passInfo.pSubpasses == pass.subpasses),
+        "renderpass/create-subpass-row", "and so is the subpass row");
+    xud_check((passInfo.dependencyCount == XUD_RENDERPASS_DEPENDENCY_COUNT) && (passInfo.pDependencies == pass.dependencies),
+        "renderpass/create-dependency-row", "and so is the dependency row");
+
+    xud_check(xud_framebuffer_fill_view_info(NULL, (VkImage)0x1000u, chosen) == XUD_INVALID_ARG, "framebuffer/view-null-out", "refused");
+    xud_check(
+        xud_framebuffer_fill_view_info(&viewInfo, (VkImage)0x1000u, chosen) == XUD_OK, "framebuffer/view-ok", "the view is assembled");
+    xud_check(viewInfo.sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, "framebuffer/view-stamped", "stamped");
+    xud_check((viewInfo.pNext == NULL) && (viewInfo.flags == 0u), "framebuffer/view-chain-clear", "chain empty, no flag");
+    xud_check(viewInfo.image == (VkImage)0x1000u, "framebuffer/view-image",
+        "the image handle in hand is recorded as the argument it was, which is the swapchain's own "
+        "image - borrowed, this layer never destroys it");
+    xud_check(
+        viewInfo.viewType == VK_IMAGE_VIEW_TYPE_2D, "framebuffer/view-type-2d", "a 2D view, the only view kind a swapchain image has");
+    xud_check(viewInfo.format == chosen, "framebuffer/view-format",
+        "the view names the SAME format the pass's attachment description gives, which is the half "
+        "of the agreement the spec requires between a pass and the framebuffer under it");
+    xud_check((viewInfo.components.r == VK_COMPONENT_SWIZZLE_IDENTITY) && (viewInfo.components.g == VK_COMPONENT_SWIZZLE_IDENTITY)
+            && (viewInfo.components.b == VK_COMPONENT_SWIZZLE_IDENTITY) && (viewInfo.components.a == VK_COMPONENT_SWIZZLE_IDENTITY),
+        "framebuffer/view-swizzle-identity",
+        "an identity swizzle written on all four channels rather than left at zero, because the fi"
+        "eld is a value the driver reads and not an optional one");
+    xud_check(viewInfo.subresourceRange.aspectMask == VK_IMAGE_ASPECT_COLOR_BIT, "framebuffer/view-range-aspect",
+        "the colour aspect, and it lives only in the subresource range - VkImageViewCreateInfo has "
+        "no aspectMask of its own, which is the member-path trap of this create-info");
+    xud_check((viewInfo.subresourceRange.baseMipLevel == 0u) && (viewInfo.subresourceRange.levelCount == 1u), "framebuffer/view-one-mip",
+        "one mip from the first, which is all a swapchain image has");
+    xud_check((viewInfo.subresourceRange.baseArrayLayer == 0u) && (viewInfo.subresourceRange.layerCount == 1u),
+        "framebuffer/view-one-layer", "one layer, the surface's own maxImageArrayLayers answer");
+
+    pass.renderPass = (VkRenderPass)0x1000u;
+    framebuffer.view = (VkImageView)0x2000u;
+
+    xud_check(xud_framebuffer_fill_create_info(NULL, &framebuffer, pass.renderPass, 320u, 240u) == XUD_INVALID_ARG,
+        "framebuffer/create-null-out", "refused");
+    xud_check(xud_framebuffer_fill_create_info(&fbInfo, NULL, pass.renderPass, 320u, 240u) == XUD_INVALID_ARG,
+        "framebuffer/create-no-framebuffer",
+        "a create-info with no framebuffer to point at is refused, because the attachment row has "
+        "to point at that struct's own view - the create-info is read after this call returns, so a "
+        "copy of a handle would already be dead by then, which is why this function takes the struct "
+        "at all");
+    xud_check(xud_framebuffer_fill_create_info(&fbInfo, &framebuffer, VK_NULL_HANDLE, 320u, 240u) == XUD_INVALID_ARG,
+        "framebuffer/create-no-pass",
+        "a framebuffer that names no pass is refused, because the attachment count it writes is th"
+        "e pass's");
+    xud_check(xud_framebuffer_fill_create_info(&fbInfo, &framebuffer, pass.renderPass, 0u, 240u) == XUD_INVALID_ARG,
+        "framebuffer/create-zero-extent", "and so is a zero extent");
+    framebuffer.view = VK_NULL_HANDLE;
+    xud_check(xud_framebuffer_fill_create_info(&fbInfo, &framebuffer, pass.renderPass, 320u, 240u) == XUD_INVALID_ARG,
+        "framebuffer/create-no-view", "and so is a framebuffer whose view is not live yet - it has nothing to attach");
+    framebuffer.view = (VkImageView)0x2000u;
+    xud_check(xud_framebuffer_fill_create_info(&fbInfo, &framebuffer, pass.renderPass, 320u, 240u) == XUD_OK, "framebuffer/create-ok",
+        "the create-info is assembled");
+    xud_check(fbInfo.sType == VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, "framebuffer/create-stamped",
+        "stamped, and the stamp is a different constant from the view's, so the two create-infos ca"
+        "nnot be confused");
+    xud_check(fbInfo.pNext == NULL, "framebuffer/create-pnext-clear", "and its chain stays empty");
+    xud_check(fbInfo.renderPass == pass.renderPass, "framebuffer/create-pass-handle",
+        "the pass this framebuffer was created FOR is handed over as the handle in hand, which is t"
+        "he argument vkCreateFramebuffer takes");
+    xud_check(fbInfo.attachmentCount == 1u, "framebuffer/create-attachment-count",
+        "one attachment, which is the pass's own attachmentCount - the spec requires the two counts "
+        "to agree exactly");
+    xud_check(fbInfo.pAttachments == &framebuffer.view, "framebuffer/create-attachment-row",
+        "the row points at the framebuffer's OWN view field, not at a copy of a handle: the create-"
+        "info is read after this call returns, so the only storage that can still be alive is the "
+        "struct's, and that is why this function takes the struct");
+    xud_check((fbInfo.width == 320u) && (fbInfo.height == 240u), "framebuffer/create-extent",
+        "the extent the swapchain was created at, copied rather than re-queried");
+    xud_check(fbInfo.layers == 1u, "framebuffer/create-layers", "one layer, the same answer as the view's and the pass's");
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The frame loop, headless: the four create-info assemblies the driver calls below are written f
+ * rom, and the argument guards. The acquire semaphore's wait stage and the all-ones timeout are
+ * both load-bearing constants of this rung, which is why the header declares them rather than lea
+ * ving the calls to spell them.
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_frame_pure(void) {
+    VkCommandPoolCreateInfo pool = (VkCommandPoolCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkCommandBufferAllocateInfo alloc = (VkCommandBufferAllocateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkCommandBufferBeginInfo begin = (VkCommandBufferBeginInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkViewport viewport = (VkViewport) { 0 };
+    VkRect2D scissor = (VkRect2D) { 0 };
+    VkSubmitInfo submit = (VkSubmitInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkPresentInfoKHR present = (VkPresentInfoKHR) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    const VkCommandPool poolHandle = (VkCommandPool)0x1000u;
+    const VkCommandBuffer bufferHandle = (VkCommandBuffer)0x2000u;
+    const VkSwapchainKHR swapchainHandle = (VkSwapchainKHR)0x3000u;
+
+    xud_check(xud_frame_fill_pool_info(NULL, 0u) == XUD_INVALID_ARG, "frame/pool-null-out", "refused");
+    xud_check(xud_frame_fill_pool_info(&pool, XUD_PHYSICAL_NO_QUEUE_FAMILY) == XUD_INVALID_ARG, "frame/pool-no-family",
+        "a pool for a queue family that was never chosen is a bad argument, because the family is "
+        "an argument of the create call");
+    xud_check(xud_frame_fill_pool_info(&pool, 0u) == XUD_OK, "frame/pool-ok", "the pool create-info is assembled");
+    xud_check(pool.sType == VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, "frame/pool-stamped", "stamped");
+    xud_check(pool.pNext == NULL, "frame/pool-pnext-clear", "and its chain stays empty");
+    xud_check(pool.flags == VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, "frame/pool-reset-flag",
+        "the reset bit, which is what lets the buffer be recorded again next frame without recreat"
+        "ing the pool - the frame loop records one buffer per frame, forever");
+    xud_check(pool.queueFamilyIndex == 0u, "frame/pool-family",
+        "the family the physical layer chose is handed over as the argument it was, which is what k"
+        "eeps the pool on the same family the device's queues came from");
+
+    xud_check(xud_frame_fill_allocation(NULL, poolHandle) == XUD_INVALID_ARG, "frame/alloc-null-out", "refused");
+    xud_check(xud_frame_fill_allocation(&alloc, VK_NULL_HANDLE) == XUD_UNSUPPORTED, "frame/alloc-no-pool",
+        "an allocation for no pool is reported as unsupported rather than assembled, because the po"
+        "ol handle is the argument the driver takes");
+    xud_check(xud_frame_fill_allocation(&alloc, poolHandle) == XUD_OK, "frame/alloc-ok", "the allocation is assembled");
+    xud_check(alloc.sType == VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, "frame/alloc-stamped", "stamped");
+    xud_check(alloc.commandPool == poolHandle, "frame/alloc-pool-handle", "the pool handle in hand is recorded as the argument it was");
+    xud_check(alloc.level == VK_COMMAND_BUFFER_LEVEL_PRIMARY, "frame/alloc-primary-level",
+        "a primary buffer, which is the only kind that can be submitted directly - and this tree h"
+        "as no secondary buffer anywhere");
+    xud_check(alloc.commandBufferCount == XUD_FRAME_COMMAND_BUFFER_COUNT, "frame/alloc-count",
+        "ONE buffer, which is the plan's one batch per frame read at the allocation as well as at t"
+        "he submit, so the two cannot disagree");
+
+    xud_check(xud_frame_fill_recording(NULL, &viewport, &scissor, 320u, 240u) == XUD_INVALID_ARG, "frame/record-null-begin", "refused");
+    xud_check(xud_frame_fill_recording(&begin, NULL, &scissor, 320u, 240u) == XUD_INVALID_ARG, "frame/record-null-viewport",
+        "and so is a viewport that cannot be written");
+    xud_check(xud_frame_fill_recording(&begin, &viewport, NULL, 320u, 240u) == XUD_INVALID_ARG, "frame/record-null-scissor",
+        "and so is a scissor that cannot be written");
+    xud_check(xud_frame_fill_recording(&begin, &viewport, &scissor, 0u, 240u) == XUD_INVALID_ARG, "frame/record-zero-extent",
+        "and so is a zero extent");
+    xud_check(xud_frame_fill_recording(&begin, &viewport, &scissor, 320u, 240u) == XUD_OK, "frame/record-ok",
+        "the recording create-info is assembled");
+    xud_check(begin.sType == VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, "frame/record-stamped", "stamped");
+    xud_check(begin.flags == VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, "frame/record-one-time",
+        "ONE_TIME_SUBMIT, which is what makes the buffer re-recorded every frame rather than reall"
+        "ed - the pool's reset bit above is the other half of that pair");
+    xud_check(begin.pInheritanceInfo == NULL, "frame/record-no-inheritance",
+        "no inheritance info, which is the spec's rule for a ONE_TIME_SUBMIT primary buffer: a non"
+        "-NULL one would name a render pass this rung has not begun yet");
+    xud_check((viewport.x == 0.0f) && (viewport.y == 0.0f), "frame/viewport-origin", "the viewport starts at the origin");
+    xud_check((viewport.width == 320.0f) && (viewport.height == 240.0f), "frame/viewport-extent",
+        "the full extent, which is what the pipeline's dynamic VIEWPORT state is set to every frame"
+        " - and the swapchain's extent, not the surface's, whose currentExtent is the undefined ans"
+        "wer here");
+    xud_check((viewport.minDepth == 0.0f) && (viewport.maxDepth == 1.0f), "frame/viewport-depth-range",
+        "the full depth range, written even though this rung has no depth attachment, because the f"
+        "ield is a value the driver reads");
+    xud_check((scissor.offset.x == 0) && (scissor.offset.y == 0), "frame/scissor-origin", "the scissor starts at the origin");
+    xud_check((scissor.extent.width == 320u) && (scissor.extent.height == 240u), "frame/scissor-extent",
+        "the scissor is the full extent, so nothing outside the image is written - a scissor bigge"
+        "r than the image is what the spec forbids, not allows");
+
+    xud_check(xud_frame_fill_submit(NULL, &present, bufferHandle, swapchainHandle) == XUD_INVALID_ARG, "frame/submit-null-out", "refused");
+    xud_check(xud_frame_fill_submit(&submit, NULL, bufferHandle, swapchainHandle) == XUD_INVALID_ARG, "frame/present-null-out",
+        "and so is the present row that cannot be written");
+    xud_check(xud_frame_fill_submit(&submit, &present, VK_NULL_HANDLE, swapchainHandle) == XUD_INVALID_ARG, "frame/submit-no-buffer",
+        "a submit with nothing to execute is refused");
+    xud_check(xud_frame_fill_submit(&submit, &present, bufferHandle, VK_NULL_HANDLE) == XUD_INVALID_ARG, "frame/present-no-swapchain",
+        "and so is a present of no swapchain");
+    xud_check(
+        xud_frame_fill_submit(&submit, &present, bufferHandle, swapchainHandle) == XUD_OK, "frame/submit-ok", "the two rows are assembled");
+    xud_check((submit.sType == VK_STRUCTURE_TYPE_SUBMIT_INFO) && (present.sType == VK_STRUCTURE_TYPE_PRESENT_INFO_KHR),
+        "frame/submit-two-stamped", "both rows are stamped, and the two stamps are two different constants, so no caller can confuse them");
+    xud_check((submit.pNext == NULL) && (present.pNext == NULL), "frame/submit-chains-clear", "and both chains stay empty");
+    xud_check(submit.waitSemaphoreCount == 1u, "frame/submit-wait-count",
+        "one wait, which is the acquire semaphore: the image may not be written until it has been "
+        "acquired");
+    xud_check((submit.pWaitSemaphores == NULL) && (submit.pWaitDstStageMask == NULL), "frame/submit-wait-rows-null",
+        "both rows beside that count are left empty by the pure half, which has no semaphore handle "
+        "in hand; the driver half points them at the frame's own semaphore and its own stage row, w"
+        "hich is the storage that outlives the call");
+    xud_check((submit.commandBufferCount == XUD_FRAME_COMMAND_BUFFER_COUNT) && (submit.pCommandBuffers == NULL), "frame/submit-command-row",
+        "one buffer, and the row itself is the driver half's, because the buffer is what the drive"
+        "r allocated");
+    xud_check((submit.signalSemaphoreCount == 0u) && (submit.pSignalSemaphores == NULL), "frame/submit-no-signal",
+        "no signal semaphore, because the fence is what says a frame finished, and a second mecha"
+        "nism for the same boundary would be two owners of one fact");
+    xud_check(present.swapchainCount == 1u, "frame/present-swapchain-count", "one swapchain presented");
+    xud_check((present.waitSemaphoreCount == 0u) && (present.pWaitSemaphores == NULL), "frame/present-no-wait",
+        "the presentation waits nothing: the fence at the end of the frame is what bounds it, and a "
+        "wait semaphore here would be a second channel for the same boundary");
+    xud_check((present.pSwapchains == NULL) && (present.pImageIndices == NULL), "frame/present-rows-null",
+        "the swapchain row and the image-index row are both the driver half's: the index is what vkA"
+        "cquireNextImageKHR WRITES, so the pure half has no index to point at, which is what makes "
+        "the row a driver-half detail rather than a constant this half could invent");
+    xud_check(present.pResults == NULL, "frame/present-no-results",
+        "the per-swapchain VkResult out-array is refused here rather than asked for: the rung's own "
+        "return code is the report, and a pResults array would be a second channel for the same ans"
+        "wer that a caller above would have to read");
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The swapchain layer against the driver: a real surface (a real GLFW window on this machine's Wa
  * yland session) and a real VkDevice, and a real VkSwapchainKHR created for that surface on that
  * device - then recreated at a new extent and destroyed, with the old swapchain never leaked. The
@@ -3003,6 +3587,11 @@ static void xud_test_gpu_swapchain(void) {
    d a screen-flicker budget, not a coverage one - the verdict it exists for is the sanitizer report
    o ver the run, and 25 cycles of the whole ladder is 25 chances to catch a leak in it. */
 #define XUD_TEST_GPU_CONTEXT_CYCLES 25
+/* How many frames xud_test_gpu_draw() draws. More than one, because the point of drawing several i
+   s to exercise a REUSED command buffer, a reused acquire semaphore and a fence that has been waite
+   d and reset rather than a first-use path, and the swapchain here has at least two images, so the
+   indices acquire hands back are expected to move. */
+#define XUD_TEST_GPU_DRAW_FRAMES 4
 
 /* GPU-gated: the whole context lifecycle against the real driver - S8's ownership step, grown by
    the swapchain rung. This is the one place in the run that creates a context, so it is the one
@@ -3157,6 +3746,158 @@ static void xud_test_gpu_context(void) {
     xud_check(1, "gpu-context/cycles-ran", "the create+destroy cycles completed");
 }
 
+/*-----------------------------------------------------------------------------------------------
+ * GPU-gated: the first triangle end to end. A completed context carries the renderer rung, and the
+ * renderer is the only thing a caller above names - no pipeline, no render pass, no framebuffer ro
+ * w, no fence, no command buffer appears in this test's calls at all, which is the point of the ru
+ * ng. What a draw can answer is checked rather than assumed: the image index acquire wrote, the co
+ * unter that says the loop ran more than once (a reused command buffer and a reused acquire semaph
+ * ore are only exercised if it did), the swapchain the presentation named, and the fact that the l
+ * ast frame's fence is back in the not-signalled state. The validation-clean rule is read again aft
+ * er the frames, because a draw is where a validation complaint about a render pass, a pipeline or
+ * a present would land.
+ *-----------------------------------------------------------------------------------------------*/
+static void xud_test_gpu_draw(void) {
+    XudContext* context = NULL;
+    XudResult result = XUD_OK;
+    uint32_t frame = 0u;
+    uint32_t previousIndex = 0u;
+    uint32_t probeIndex = 0u;
+    bool indexMoved = false;
+
+    result = xud_init_context(&context, 256u, 256u);
+    xud_check(result == XUD_OK, "gpu-draw/context-completes", "the ladder has to complete before anything can be drawn");
+    if (context == NULL)
+        return;
+
+    xud_check(context->renderer != NULL, "gpu-draw/renderer-owned",
+        "a completed context owns the renderer rung, so the first-triangle path is wired");
+    if (context->renderer == NULL) {
+        (void)xud_close_context(&context);
+        return;
+    }
+
+    xud_check((context->renderer->pipeline != NULL) && (context->renderer->renderPass != NULL) && (context->renderer->framebuffers != NULL)
+            && (context->renderer->frame != NULL),
+        "gpu-draw/four-rungs-live", "the renderer owns all four rungs, none of them a sentinel");
+    xud_check((context->renderer->pipeline->pipeline != VK_NULL_HANDLE) && (context->renderer->renderPass->renderPass != VK_NULL_HANDLE),
+        "gpu-draw/handles-live", "the VkPipeline and the VkRenderPass inside the two rungs are live handles");
+    xud_check(context->renderer->framebufferCount == context->swapchain->imageCount, "gpu-draw/count-is-image-count",
+        "the renderer recorded one framebuffer per swapchain image, and the count it hands the draw matches");
+    xud_check((context->renderer->framebuffers->count == context->swapchain->imageCount)
+            && (context->renderer->frame->imageFenceCount == context->swapchain->imageCount),
+        "gpu-draw/arrays-match-swapchain",
+        "the framebuffer array and the fence array both match the swapchain, which is the pair the "
+        "draw compares against the swapchain in hand");
+    xud_check((context->renderer->frame->commandPool != VK_NULL_HANDLE) && (context->renderer->frame->commandBuffer != VK_NULL_HANDLE)
+            && (context->renderer->frame->imageAcquired != VK_NULL_HANDLE),
+        "gpu-draw/frame-loop-live", "the command pool, the command buffer and the acquire semaphore are live");
+    xud_check(context->renderer->frame->imageFences[0u] != VK_NULL_HANDLE, "gpu-draw/first-fence-live",
+        "and so is at least one of the per-image fences");
+    xud_check((context->renderer->framebuffers->rows[0u]->framebuffer != VK_NULL_HANDLE)
+            && (context->renderer->framebuffers->rows[0u]->view != VK_NULL_HANDLE),
+        "gpu-draw/first-row-live", "the first framebuffer row and the image view of the swapchain image it was built for are live");
+    xud_check(context->renderer->framebuffers->rows[0u]->createInfo.width == 256u, "gpu-draw/row-extent",
+        "the row was built at the context's extent, copied from the swapchain rather than re-queried");
+    xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/nothing-in-flight-before",
+        "no frame has been drawn, so no fence is in flight");
+
+    /* The failure shapes of the frame loop, against THIS context's live objects rather than against
+       synthetic ones: a synthetic struct could not tell a nil row from a dead handle, and the whole
+       point of the guards is that they fire before the acquire, because an acquire that had already
+       run would have signalled a semaphore nobody was going to wait. The two state checks below the
+       block are what say so - framesDrawn is the counter the loop below is about to move, and last
+       FrameFence is the one field a frame that had started would have filled.
+    */
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, NULL)
+            == XUD_INVALID_ARG,
+        "gpu-draw/refuse-no-out-index", "a frame with nowhere to write the acquired index is a bad argument");
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, NULL,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, &probeIndex)
+            == XUD_INVALID_ARG,
+        "gpu-draw/refuse-no-pipeline", "a frame with no pipeline to bind is a bad argument, not a draw with no pipeline");
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  NULL, context->renderer->framebuffers, context->swapchain->imageCount, &probeIndex)
+            == XUD_INVALID_ARG,
+        "gpu-draw/refuse-no-pass", "a frame with no render pass to begin is a bad argument");
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, NULL, context->swapchain->imageCount, &probeIndex)
+            == XUD_INVALID_ARG,
+        "gpu-draw/refuse-no-rows", "a frame with no framebuffer rows has no attachment to draw into");
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, 0u, &probeIndex)
+            == XUD_INVALID_ARG,
+        "gpu-draw/refuse-zero-count", "a frame told it has no rows to attach is a bad argument");
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount + 1u, &probeIndex)
+            == XUD_UNSUPPORTED,
+        "gpu-draw/refuse-count-disagrees",
+        "a count that is not the swapchain's is a frame this rung "
+        "cannot run, and XUD_UNSUPPORTED is the code for a rung that cannot, not for a bad argument");
+    xud_check(xud_renderer_draw(NULL, context->loader, context->device, context->swapchain, &probeIndex) == XUD_INVALID_ARG,
+        "gpu-draw/refuse-no-renderer", "no renderer means no frame at all");
+    xud_check(xud_renderer_draw(context->renderer, context->loader, context->device, context->swapchain, NULL) == XUD_INVALID_ARG,
+        "gpu-draw/refuse-renderer-no-out-index", "a renderer with nowhere to write the index is a bad argument");
+
+    xud_check(context->renderer->frame->framesDrawn == 0u, "gpu-draw/refusals-drew-nothing",
+        "not one of the refusals above acquired, recorded or submitted - the counter is still zero, "
+        "which is the whole point of checking the rows and their owners before the acquire");
+    xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/refusals-in-flight-still-none",
+        "and no fence was signalled, so a refused frame leaves nothing in flight to be waited");
+
+    for (frame = 0u; frame < XUD_TEST_GPU_DRAW_FRAMES; frame++) {
+        uint32_t imageIndex = 0u;
+        result = xud_renderer_draw(context->renderer, context->loader, context->device, context->swapchain, &imageIndex);
+        xud_check(result == XUD_OK, "gpu-draw/frame-draws",
+            "acquire, record, submit with the image's own fence, present, wait and reset that fence");
+        xud_check(imageIndex < context->swapchain->imageCount, "gpu-draw/index-in-range",
+            "the index acquire wrote names an image this swapchain has");
+        if (frame > 0u)
+            indexMoved = indexMoved || (imageIndex != previousIndex);
+        previousIndex = imageIndex;
+    }
+
+    xud_check(indexMoved, "gpu-draw/index-moves",
+        "the presented index moved at least once over the loop, which is what says acquire is cycling "
+        "through the images rather than handing one constant back");
+    xud_check(context->renderer->frame->framesDrawn == XUD_TEST_GPU_DRAW_FRAMES, "gpu-draw/frames-counted",
+        "the counter says every frame of the loop completed, so the command buffer and the acquire "
+        "semaphore were each reused, which a single draw could not show");
+    xud_check(context->renderer->frame->presentedSwapchain == context->swapchain->swapchain, "gpu-draw/presented-own-swapchain",
+        "the last present named this context's own swapchain");
+    xud_check(context->renderer->frame->lastImageIndex < context->swapchain->imageCount, "gpu-draw/last-index-recorded",
+        "the index the last acquire wrote is recorded in the frame loop");
+    xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/nothing-in-flight-after",
+        "the last frame waited and reset its fence, so the teardown's fence guard has nothing left to wait");
+
+    /* The renderer's own count-vs-array rule, read on the live renderer: the count it hands the frame
+       loop is the one it recorded at open, and a draw asked with a count that is not its array's is
+       refused one rung ABOVE xud_frame_draw(). The field is tampered and restored here because this
+       is the only way to ask the question at all - a real recreate replaces the swapchain and every
+       row with it, which is a resize the context above would have to act on, and the refusal is the
+       half that matters without one.
+    */
+    context->renderer->framebufferCount = context->swapchain->imageCount + 1u;
+    xud_check(xud_renderer_draw(context->renderer, context->loader, context->device, context->swapchain, &probeIndex) == XUD_UNSUPPORTED,
+        "gpu-draw/renderer-count-disagrees", "a renderer whose recorded count is not its array's refuses the draw");
+    xud_check(context->renderer->frame->framesDrawn == XUD_TEST_GPU_DRAW_FRAMES, "gpu-draw/refusal-did-not-draw",
+        "and the refused draw added no frame, so the refusal was "
+        "made before the frame loop was reached at all");
+    context->renderer->framebufferCount = context->swapchain->imageCount;
+
+    if (context->validate != 0u) {
+        xud_check(context->diagnostics->errorMessages == 0u, "gpu-draw/validation-clean",
+            "the frames drew validation-clean, not just crash-free");
+    }
+
+    result = xud_close_context(&context);
+    xud_check(result == XUD_OK, "gpu-draw/close-clean",
+        "a context that drew frames tears back down with nothing refused, which is the renderer's "
+        "close retiring a frame whose presentations have all been waited");
+    xud_check(context == NULL, "gpu-draw/close-clears", "and the out-param is cleared");
+}
+
 int main(void) {
     const int gpu = xud_gpu_tests_enabled();
 
@@ -3175,6 +3916,10 @@ int main(void) {
     xud_test_window_pure();
     xud_test_swapchain_pure();
     xud_test_handle();
+    xud_test_shader_pure();
+    xud_test_pipeline_pure();
+    xud_test_renderpass_pure();
+    xud_test_frame_pure();
     xud_test_physical_negative();
     xud_test_vulkan_supported();
     xud_test_init_arg_validation();
@@ -3192,6 +3937,7 @@ int main(void) {
         xud_test_gpu_window();
         xud_test_gpu_swapchain();
         xud_test_gpu_context();
+        xud_test_gpu_draw();
     } else
         printf("gpu checks: skipped (set XUD_GPU_TESTS=1 to run them)\n");
 
