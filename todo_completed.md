@@ -2,6 +2,49 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S14 The test split — `tests/` from one 5092-line file to a harness, a runner and 17 area TUs, one step, landed as one commit, 2026-10-25)
+
+- [x] ~~**Test split**: `tests/xud_test.c` is 5092 lines and one file — split it into one TU per area, with a
+  shared harness and a runner, so an area can be read and built on its own~~ — **done 2026-10-25**: `tests/` is
+  **19 files** now. `tests/xud_test_harness.h` declares the two counters as `extern`, the one named check,
+  the GPU gate and the 17 area entry points; `tests/xud_test_harness.c` **defines** `xudChecks`/`xudFailures`
+  once and keeps `xud_check()` and `xud_gpu_tests_enabled()` byte-for-byte as they were (the gate is still the
+  compile-time `XUD_GPU_TESTS` default from `xud.h` overridden by the `XUD_ENV_GPU_TESTS` environment name);
+  `tests/xud_test_main.c` is the runner — one call per area, in layer-ladder order, returning `xudFailures == 0`.
+  The 17 areas are `xud_test_vocabulary`/`loader`/`diagnostics`/`instance`/`physical`/`device`/`gpu_bringup`/`window`
+  /`swapchain`/`handle`/`shader`/`pipeline`/`renderpass`/`frame`/`allocator`/`descriptor`/`core`, the GPU bring-up
+  area keeping `xud_test_gpu_instance()` → `xud_test_gpu_physical()` → `xud_test_device_gpu()` **nested in one TU**
+  because that nesting is the ownership proof (a `VkDevice` is created from a `VkPhysicalDevice` handle and a
+  `VkPhysicalDevice` is a query result of an instance, so each teardown must run while its owner is alive) and
+  passing those handles through globals would be a second owner of the same state. `xud_test_handle()` is both
+  the area entry point and that area's only test function. `CMakeLists.txt` names the 19 sources **explicitly, in
+  that order** — no glob — so the area order is readable where it is set. **No file under `src/xud/` was touched
+  and no check was added, changed or removed**: the archive is still 39 objects and the counts are still 2108
+  headless / 2588 GPU. See AGENTS.md's **Verified test split (2026-10-25)** block for the ground (the harness
+  ownership, the runner order, the per-area include rule and the two areas that needed a header beyond their own
+  rung — `xud_core.h` for the frame area because `xud.h` only forward-declares `XudContext`, `xud_pipeline.h`
+  for the renderpass area because `XUD_PIPELINE_SAMPLE_COUNT` is the pipeline layer's constant — the one real
+  uninitialized-record bug the split exposed and the clang build caught, and the unchanged counts/linkage under
+  gcc, clang, the validation layer and the sanitizers).
+
+  **Bar met, dated one-liner**: headless **2108 checks / 0 failures** (unchanged) and `XUD_GPU_TESTS=1` **2588 / 0**
+  (unchanged), under gcc **and** under `-DCMAKE_C_COMPILER=clang` after one fix the clang build demanded —
+  `XudSurfaceCaps queried` in `xud_test_swapchain_pure()` was never zeroed while
+  `swapchain/query-refusal-clears-caps` asserts `queried.surfaceFormatCount == 0u` after a **refused** query, so
+  that check was reading uninitialized memory: gcc's stack happened to be zero and the single-file run passed,
+  clang 22 answered **2588 / 1** and the FAIL was exactly that check, fixed by `memset(&queried, 0, sizeof queried)`.
+  Validation-clean with `VK_INSTANCE_LAYERS` unset **and** forced to `VK_LAYER_KHRONOS_validation` (exactly one
+  `ERROR/validation` line in either run, still the diagnostics layer's own synthetic headless probe), `-DXUD_SANITIZERS=ON`
+  reporting **only** the external allocations the S7–S13 blocks record — headless **72 B / 3 allocations**, byte-for-byte
+  S13's numbers, so the split moved no allocation, and GPU **1256 B / 64** (S13's 1352 B / 65 minus one 96 B
+  `wl_display_roundtrip_queue` allocation inside `libwayland-client.so.0`, the compositor traffic the present step
+  generates, which is variable run to run and nothing in xudlibc allocates, frees or can see), with
+  `ASAN_OPTIONS=detect_leaks=0` answering **2108 / 2588 with 0 failures and no `runtime error` line**; `ar -t build/libxud.a`
+  still lists **39** objects (the split adds no library object — the 19 test files are sources of the `xud_test`
+  executable), `nm -u build/xud_test` still lists no `vk*` and no `glfw*` symbol and `ldd` still lists no
+  `libvulkan`, no `libglfw` and no `libGL`/`libEGL`; `./scripts/format.sh --check` is green over the whole tree
+  after formatting the new files with the existing `./scripts/format.sh` (it already covers `tests`).
+
 ## Steps complete (S13 The descriptor-layout rung — two set layouts, a pool, set 0, a uniform buffer bound to the allocator's first block, a push-constant range, one step, landed as one commit, 2026-10-25)
 
 - [x] ~~**Descriptor layout**: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix +

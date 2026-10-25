@@ -238,6 +238,10 @@ See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-s
 detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
 whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
 the same day)**, and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
+**2026-10-25 — S14, the test split** (`tests/` is 19 files now, not one: `xud_test_harness.h`/`xud_test_harness.c`
++ `xud_test_main.c` + 17 area TUs, one per layer rung; the old 5092-line `tests/xud_test.c` is gone, no `src/xud/`
+file was touched, and the counts are unchanged at 2108 headless / 2588 GPU — and the clang build caught one real
+uninitialized-record bug the single-file run had been passing by luck, see the entry below). One step before it:
 **2026-10-25 — S13, the descriptor-layout rung** (`src/xud/xud_descriptor.h`/`xud_descriptor.c`: the two set layouts and
 their create-infos inside one record, the pool sized for both descriptor types, set 0 allocated and the per-frame
 uniform buffer bound into the allocator's first block, the push-constant range, and the one teardown order that now
@@ -254,7 +258,7 @@ the context owns). One step before that: **2026-10-24 — S9, the swapchain rung
 pair, the three surface queries, the selection rules, the recreate-on-resize path and the one teardown order that now runs
 through it). One step before that: **2026-10-24 — S8, the context ownership step** (`xud_init_context()` completes to the
 surface, `xud_close_context()` is the one teardown order), and before that **2026-10-23 — S7, the GLFW window + surface
-rung**. Nothing is finished after S13 — and the test-scaffolding item that was open in `Now` before S11 completed with
+rung**. Nothing is finished after S14 — and the test-scaffolding item that was open in `Now` before S11 completed with
 S11 rather than as a step of its own: the in-run gate is the diagnostics layer's
 message counter read as an assertion (`errorMessages == 0` on the context's own struct), and the failure shapes of
 the frame loop are asserted against the live objects of the GPU run — see the S11 entry above for both.

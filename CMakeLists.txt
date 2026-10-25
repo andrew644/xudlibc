@@ -316,13 +316,38 @@ target_include_directories(xud PUBLIC
 # Tests: headless by default, must stay green with no Vulkan driver present
 #-------------------------------------------------------------------------------------
 
-# The test links the archive, nothing else: every layer under the public API is in it, so the test
-# TU is one main() plus the checks, and there is no second executable to duplicate the harness for.
-# The physical layer joined the archive with the rest when its driver half landed (S5.4) and the device lay
-# er joined with it at S6 - both headers' contracts are complete, every declaration in them is defined, so no u
-# ndefined declaration is left in the TU and nothing has to be compiled into the test binary specially.
+# The test links the archive, nothing else: every layer under the public API is in it, so the
+# test side is checks only, and there is no second executable to duplicate the harness for.
+# The physical layer joined the archive with the rest when its driver half landed (S5.4) and the
+# device layer joined with it at S6 - both headers' contracts are complete, every declaration in
+# them is defined, so no undefined declaration is left anywhere and nothing has to be compiled
+# into the test binary specially.
+#
+#   The test side is split by area (one TU per area of the layer ladder, plus the runner and the
+#   harness the areas share) so no test file grows to thousands of lines again. The list is
+#   explicit - runner, harness, then the areas bottom of the ladder up - because a glob would
+#   make the run's order a filesystem order, and the order is what makes the GPU ladder of the
+#   bring-up run before the rungs above it are tested at all.
 add_executable(xud_test
-    tests/xud_test.c
+    tests/xud_test_main.c
+    tests/xud_test_harness.c
+    tests/xud_test_vocabulary.c
+    tests/xud_test_loader.c
+    tests/xud_test_diagnostics.c
+    tests/xud_test_instance.c
+    tests/xud_test_physical.c
+    tests/xud_test_device.c
+    tests/xud_test_gpu_bringup.c
+    tests/xud_test_window.c
+    tests/xud_test_swapchain.c
+    tests/xud_test_handle.c
+    tests/xud_test_shader.c
+    tests/xud_test_pipeline.c
+    tests/xud_test_renderpass.c
+    tests/xud_test_frame.c
+    tests/xud_test_allocator.c
+    tests/xud_test_descriptor.c
+    tests/xud_test_core.c
 )
 
 target_link_libraries(xud_test PRIVATE xud)
