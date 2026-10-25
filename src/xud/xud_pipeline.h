@@ -15,10 +15,11 @@
  *   descriptor-layout step's, and a layout with zero sets is the honest answer for a
  *   shader that reads no binding), no push-constant range (the first triangle's shaders
  *   take no uniform in at all - the model matrix arrives with the batch step), and no
- *   vertex input (the allocator rung that owns a VkBuffer is not in the tree, so the
- *   pipeline declares zero bindings and zero attributes and the vertex shader generates
- *   its three vertices from gl_VertexIndex). Each of those three is a rung below this one
- *   that has not landed, not a decision taken here.
+ *   vertex input (the allocator rung IS in the tree now (S12) but owns no VkBuffer at all -
+ *   nothing above it has asked it for memory - so the pipeline declares zero bindings and
+ *   zero attributes and the vertex shader generates its three vertices from gl_VertexIndex).
+ *   The descriptor-layout and batch rungs above the allocator have not landed; the allocator
+ *   has, and it is the rung that will hand this one the memory a VkBuffer sits in.
  ***********************************************************************************************/
 
 #ifndef XUD_PIPELINE_H_
@@ -152,8 +153,9 @@ static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_POINT
 /// property of this file's own assembly).
 ///
 /// The decisions, each with its reason: zero vertex bindings and zero attributes (the
-/// allocator rung that owns a VkBuffer is not in the tree, and the SoA streams land with
-/// the batch - the vertex shader generates its vertices from gl_VertexIndex instead);
+/// allocator rung IS in the tree now (S12) but owns no VkBuffer at all - nothing above it has
+/// asked it for memory - and the SoA streams land with the batch, so the vertex shader
+/// generates its vertices from gl_VertexIndex instead);
 /// TRIANGLE_LIST with no primitive restart (restart is a degenerate-index convention the
 /// batch step owns); viewportCount 1 and scissorCount 1 with NULL pViewports/pScissors
 /// (both are dynamic - and pViewportState may not be NULL at all, because a fragment
@@ -164,8 +166,8 @@ static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_POINT
 /// only honest value in it); VK_SAMPLE_COUNT_1_BIT with no sample shading and no alpha-
 /// to-coverage (see the note above); depth test and depth write BOTH OFF with LESS recorded and
 /// no depth bounds and no stencil (the render pass under this pipeline has NO depth attachment -
-/// the VkImage + VkDeviceMemory a depth buffer needs belongs to the allocator rung, which is not
-/// in the tree - and the spec makes the depth buffer UNDEFINED in that case, so an enabled test
+/// the VkImage + VkDeviceMemory a depth buffer needs belongs to the allocator rung, which holds
+/// no image yet - and the spec makes the depth buffer UNDEFINED in that case, so an enabled test
 /// would be an implementation-dependent result rather than a first triangle that draws every ti
 /// me; XUD_PIPELINE_DEPTH_COMPARE_OP is the rule the depth buffer will use the day that attach
 /// ment lands, and stencil does not exist in this library at all); one blend attachment with blen

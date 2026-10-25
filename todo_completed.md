@@ -2,6 +2,81 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S12 The GPU-memory allocator rung — one owner of every `VkDeviceMemory`, a free list, a transient ring, one step, landed as one commit, 2026-10-25)
+
+- [x] ~~**GPU memory allocator + suballocation** (**ours**, ring for transient; no `vkCreateBuffer` per frame — the
+  VMA question is settled out 2026-10-23, see Decided below) — the **one rung still not in the tree** after S11, and
+  the one `void*` sentinel left in `xud_core.h`~~ — **done 2026-10-25**: `src/xud/xud_allocator.h`/`xud_allocator.c`
+  land between the swapchain and the renderer, `xud_core.h`'s `allocator` field becomes a typed `XudAllocator*` —
+  **the last `void*` sentinel in `XudContext`, so no field of it is a sentinel any more** — `xud_init_context()` opens
+  the allocator after the swapchain and `xud_close_context()` closes it after the renderer and before the swapchain
+  (a `VkDeviceMemory` is created from a `VkDevice`, so it must die before it, and a submission or a presentation may
+  still be reading the blocks), and the CMake source list grows the new `.c`. See AGENTS.md's **Verified allocator
+  facts (2026-10-25)** block for the ground (the header facts and the `VkMemoryHeap.flags`/`VkMemoryType.propertyFlags`
+  naming trap, the driver's memory rows today vs the S5.4 note's, every validation VUID the layer refuses here and
+  the shape the driver accepts silently, the protected-memory rule and the chained-feature reason behind it, the
+  block policy and why a request above the bound is a refusal rather than a bigger block, the free list and its
+  coalesce, the ring as one recorded block that bump-allocates and never frees, and the teardown guard).
+
+  **Bar met, dated one-liner**: headless **2020 checks / 0 failures** (was 1916), `XUD_GPU_TESTS=1` **2460 / 0** (was
+  2284) and validation-clean with `VK_INSTANCE_LAYERS` unset **and** forced to `VK_LAYER_KHRONOS_validation` (the only
+  `ERROR/validation` line in either run is still the diagnostics layer's own synthetic headless probe), `-DXUD_SANITIZERS=ON`
+  reporting **only** the external allocations the S7/S8/S9/S10/S11 blocks record — headless **72 B / 3 allocations**,
+  byte-for-byte the S11 step's numbers, so the allocator's pure half leaks nothing, and GPU **1312 B / 63** (was 1272 B
+  / 61: one more libdecor 8 B and one more validation-layer 32 B whose four frames between `malloc` and `xud_device_open`
+  are `<unknown module>`, i.e. inside `vkCreateDevice` and not inside lavvk and not inside xudlibc — the GPU allocator
+  test opens one more context), `ASAN_OPTIONS=detect_leaks=0` answering 2020 / 2460 with 0 failures and no `runtime error`
+  line, the clang build (`-DCMAKE_C_COMPILER=clang`) warning-free at the same counts (it needed one test fix: an all-zero
+  `VkMemoryRequirements` handed to a `const VkMemoryRequirements*` parameter is a `-Wuninitialized-const-pointer` error
+  there, so the synthetic `ask` is `memset` like every other synthetic in the file), `ar -t build/libxud.a` at **38** objects
+  (`xud_allocator.c.o` among them), `nm -u build/xud_test` still listing no `vk*` and no `glfw*` symbol and `ldd` still
+  listing no `libvulkan`/`libglfw`/`libGL`/`libEGL` (the allocator calls no Vulkan entry point except through a row of
+  Volk's device table), `scripts/format.sh --check` clean, and `./build/hello_context` still completing
+  (`xud_init_context(640, 480) -> XUD_OK`, `xud_close_context -> XUD_OK`).
+
+  **What landed, and the split that makes the rung testable with no device present**: the rung is two halves and the
+  headless run covers the pure one completely — `xud_allocator_open`/`xud_allocator_select_memory_type`/`xud_allocator_fill_allocate_info`/`xud_allocator_find_range`/`xud_allocator_release`/`xud_allocator_range_get`/`xud_allocator_ring_reset`/`xud_allocator_stats` call no driver function at all, and the driver half's guards (`xud_allocator_acquire`/`xud_allocator_ring_acquire`/`xud_allocator_close`) are read headless too, because every one of them fires **before** a loader row is read. The pure test drives them against **synthetic** caps and synthetic rows (two heaps, seven type rows, one of them protected, one of them naming a heap index that does not exist) so the rules are exercised as facts rather than as driver answers: device-local preference, a host-visible-only request, a heap too small, a protected row skipped, a broken row skipped, `memoryTypeBits == 0` unsupported, the stamp/`pNext`/size/type-index of the create-info, a free-list scan that skips a retired row, a live row, a wrong-type row, a too-big request, the accessor on a live row, the release + coalesce (the survivor is the released row, the merged-away row keeps its tag and bumps its generation twice), a stale release, a stale accessor, a fabricated generation, a cross-block release, the ring rewind, the stats, and the empty-allocator teardown that must not `free()` a host array that was never allocated (`free(NULL)` is undefined, not a no-op — the one bug this step found in its own teardown before the first GPU run).
+
+  **What the GPU test adds against the driver**, and why each half is load-bearing rather than decorative: the heap size
+  the caps actually report (23.3 GB, not the S5.4 note's ~4 GB — the machine's Vulkan driver moved, so every number here
+  is read off the caps), a device-local type chosen from the caps' seven rows, a first 4 KiB request that creates the
+  layer's first block at offset 0, a second 1024-byte request that **suballocates inside that same `VkDeviceMemory`**
+  (same block index, same handle, offset at least 4096 and aligned to 256 — the point of the rung, read as a fact), a
+  request at `XUD_ALLOCATOR_BLOCK_MAX_SIZE` that opens a **second** block with a different handle and block index 1,
+  the stats that say two blocks / three live ranges / exactly `MAX + 4096 + 1024` reserved bytes, a release of two of
+  them, a stale release and a stale accessor both refused with `XUD_INVALID_ARG`, a 4 KiB request that **reuses** the
+  hole it just freed (same block, same handle, offset 0, generation 1 — the reuse-first rule and the generation bump
+  read together), a stats check that the reserved bytes moved by exactly the 1024-byte range that was released and not
+  asked for again, three refusals against real caps (above the block bound → `XUD_OUT_OF_RESOURCES`, above the heap →
+  `XUD_UNSUPPORTED`, `memoryTypeBits == 0` → `XUD_UNSUPPORTED`, each leaving its out-range untouched), the ring's first
+  request creating its one block and recording it in the block array so the teardown frees it with the rest, three
+  ring requests moving the cursor 0 → 256 → 1280, a wrap request rewinding to offset 0 in the same block, a request
+  larger than the ring refused, `xud_allocator_ring_reset()` rewinding the cursor and the next frame's request reusing
+  the first offset, the final stats (three blocks, cursor 256), the validation-clean check on the context's own
+  `errorMessages`, and a context close that comes back `XUD_OK` and clears the pointer.
+
+  **Comment sweep, same day**: the step's own bar item 4 ("the file-top comments describe exactly what is in the tree")
+  was not met the moment the allocator landed — ten files still said the allocator rung was "not in the tree" or that
+  there was "no GPU-memory allocator": `xud_pipeline.h`/`xud_pipeline.c` (the zero-vertex-input reason and the no-depth-attachment
+  reason), `xud_renderpass.h`/`xud_renderpass.c` (the same reason), `xud_renderer.h`/`xud_renderer.c` (the "does NOT own"
+  list), `xud_handle.h`/`xud_handle.c` (the `record` sentinel's reason) and `xud_core.h`/`xud_core.c` (the swapchain's
+  place in the teardown order). Every one now says the allocator IS in the tree (S12) and owns no `VkBuffer` and holds
+  no image — nothing above it has asked it for memory — and the reason a slot's `record` is still NULL moved from
+  "the allocator and renderer rungs have not landed" to "the batch and object rungs ABOVE them have not", and the
+  swapchain's teardown reason from "the last Vulkan rung created below the renderer" to "below the allocator". One
+  factual correction came out of the sweep rather than a wording preference: `xud_renderpass.h` had claimed the depth
+  TEST and the depth WRITE were on in the pipeline, and `xud_pipeline.c` sets both to `VK_FALSE` — the comment now says
+  both are OFF, which is what `xud_pipeline.h` already stated and what makes the first triangle's depth behaviour not
+  implementation-dependent. Rebuild after the sweep: headless 2020 / 0 and GPU 2460 / 0, unchanged, format clean.
+
+  **Honest boundary**: `VkDeviceMemory` is allocated, suballocated, grown, released, reused, wrapped and freed against
+  real caps with the validation layer clean — but **nothing above the allocator has asked it for anything**. There is
+  still no `VkBuffer`, no `VkImage`, no vertex stream, no descriptor set and no batch, so a context that comes back
+  `XUD_OK` owns an allocator with **no block in it at all** (`blockCount == 0`, `ringBlockIndex == XUD_ALLOCATOR_NO_BLOCK`,
+  both asserted by the GPU context test), no `XudMemoryRange` is held by any rung, no handle names an object, and `xud.h`
+  still declares no create/close function that takes one. The descriptor-layout step is what makes the first range a
+  rung above the allocator actually holds.
+
 ## Steps complete (S11 First triangle end to end — five rungs from SPIR-V bytes to a drawn frame, one step, landed as one commit, 2026-10-25)
 
 - [x] ~~**First triangle end to end on the explicit `VkRenderPass` + `VkFramebuffer` path**: SPIR-V built by

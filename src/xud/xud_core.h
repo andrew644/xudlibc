@@ -9,18 +9,19 @@
  *          that fills it on: loader from bring-up, diagnostics from the diagnostics step (NULL in
  *          a release build), window from the window step, instance from the instance layer,
  *          physical device from the physical layer, device from the device layer, swapchain from
- *          the swapchain step, renderer from the first-triangle step, handle table from the handle
- *          step - all of them filled by xud_init_context() now, so a context that comes back XUD_OK
- *          owns a live GLFW window, a VkInstance carrying that window's required extensions, a
- *          physical device queried through it, a VkDevice created from that device's recorded caps,
- *          a VkSwapchainKHR for that surface, the renderer rung that draws one triangle into its
- *          images (one pipeline, one render pass, one framebuffer per image, one frame loop) and
- *          the one table the public handle currency indexes. The allocator field is the only sentin
- *          el left, filled by the steps after this one (see todo.md). There is deliberately no queue
- *          field: XudQueue is a record of a queue, not an owning type (there is no vkDestroyQueue -
- *          grepped in these headers, the name does not exist), and both role records live inside the
- *          XudDevice that owns the handles, so a context field beside it would be a copy of a record
- *          with nothing of its own to tear down - read them through xud_device_queue_get().
+ *          the swapchain step, the allocator from the allocator step, renderer from the first-triangle
+ *          step, handle table from the handle step - all of them filled by xud_init_context() now, so
+ *          a context that comes back XUD_OK owns a live GLFW window, a VkInstance carrying that windo
+ *          w's required extensions, a physical device queried through it, a VkDevice created from that
+ *          device's recorded caps, a VkSwapchainKHR for that surface, one block allocator over the memo
+ *          ry rows the physical layer recorded, the renderer rung that draws one triangle into its image
+ *          s (one pipeline, one render pass, one framebuffer per image, one frame loop) and the one table
+ *          the public handle currency indexes. No field below the shell is a sentinel any more - the all
+ *          ocator rung that was the last one is in the tree (see todo.md and todo_completed.md). There is
+ *          deliberately no queue field: XudQueue is a record of a queue, not an owning type (there is no
+ *          vkDestroyQueue - grepped in these headers, the name does not exist), and both role records live
+ *          inside the XudDevice that owns the handles, so a context field beside it would be a copy of a
+ *          record with nothing of its own to tear down - read them through xud_device_queue_get().
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -29,6 +30,7 @@
 #ifndef XUD_XUD_CORE_H_
 #define XUD_XUD_CORE_H_
 
+#include "xud_allocator.h" /* Required for: XudAllocator, the GPU-memory rung that owns every VkDeviceMemory this tree creates - the context owns one from the allocator step on, and the teardown order below makes it die before the device it was allocated from */
 #include "xud_device.h" /* Required for: XudDevice, the VkDevice plus its queue row, its enabled features/extensions and its two role queue records - the context owns one from the device layer on */
 #include "xud_diagnostics.h" /* Required for: XudDiagnostics, the diagnostics struct the context owns once validation is on */
 #include "xud_handle.h" /* Required for: XudHandleTable, the per-kind slot arrays behind the public XudHandle currency - the context owns one from the handle step on, and it is the FIRST rung torn down because a handle records an object of every rung below it */
@@ -42,15 +44,18 @@
 
 /* Completed here; xud.h keeps callers to an opaque handle. Every Vulkan field is a
    sentinel (NULL / 0) until the layer named beside it fills it, and is destroyed in the
-   reverse order of creation: handle table -> renderer -> swapchain -> device -> surface -> window -> physical ->
-   instance -> diagnostics -> loader. The handle table goes FIRST because it is the top of the tree:
-   a handle records an object of every rung below it, so a table still holding live slots is a table
-   naming objects the rungs below are about to retire - and it is the last rung opened, since no
-   object of any kind can be created before the context that will own it exists. The renderer entry
-   sits where it does because the frame loop inside it records a draw that binds a pipeline and pres
-   ents an image of the swapchain below it, and its own close is the fence guard that retires a pres
-   entation still in flight - so the renderer must be gone before the swapchain whose images it pres
-   ented is. The device entry
+   reverse order of creation: handle table -> renderer -> allocator -> swapchain -> device -> surface
+   -> window -> physical -> instance -> diagnostics -> loader. The handle table goes FIRST because it
+   is the top of the tree: a handle records an object of every rung below it, so a table still holding
+   live slots is a table naming objects the rungs below are about to retire - and it is the last rung
+   opened, since no object of any kind can be created before the context that will own it exists. The
+   renderer entry sits where it does because the frame loop inside it records a draw that binds a pipe
+   line and presents an image of the swapchain below it, and its own close is the fence guard that ret
+   ires a presentation still in flight - so the renderer must be gone before the swapchain whose image
+   s it presented is. The allocator entry sits where it does because a VkDeviceMemory is created FROM
+   the VkDevice below it and the renderer above it is what will name the buffers and images carved out
+   of it, so it dies after the renderer and before the swapchain and the device; its own close guards
+   with xud_device_wait_idle() first, for the same reason xud_swapchain_close() gives. The device entry
    sits where it does because a VkDevice is created FROM the physical device below it and everything
    that submits to it (a swapchain, a command buffer) belongs to it, so it goes before the surface
    and the window whose swapchain would have used it -
@@ -166,14 +171,20 @@ struct XudContext {
      */
     XudHandleTable* handleTable; /* the per-kind slot arrays behind the public handle currency */
 
-    /* Pending: filled by the bring-up layers below, NULL/0 until then. The allocator is the only
-       sentinel left in this struct - the GPU-memory rung that owns every buffer and image below the
-       swapchain is not in the tree yet (see todo.md), and unlike the swapchain above and the renderer
-       above it there is no Vulkan object of that shape to name until it is. The handle table above is
-       NOT such a sentinel: it is a typed field of a rung that IS in the tree, and its slots' record
-       field is the sentinel of the rungs that are not.
+    /* The allocator, the GPU-memory rung below the renderer and above the device: one block alloca
+       tor over the memory rows the physical layer already recorded, and the ONE owner of every
+       VkDeviceMemory this tree creates - nothing above it may call vkAllocateMemory for itself, wh
+       ich is what makes "allocate once, suballocate always" a rule rather than a wish. It is fille
+       d by xud_init_context() after the swapchain and torn down by xud_close_context() BEFORE the
+       swapchain and before the device, because a VkDeviceMemory is created from a VkDevice and a
+       submission or a presentation may still be reading the very blocks being freed (xud_allocator_
+       close() guards with xud_device_wait_idle() for exactly that reason). What is NOT in the tree
+       yet is what the allocator would hand out: there is still no buffer, no vertex stream, no desc
+       riptor set and no batch, so a context that comes back XUD_OK owns an allocator with no block
+       in it, and the field below is typed rather than a sentinel because this rung IS in the tree
+       - the last sentinel this struct had.
      */
-    void* allocator; /* the single GPU-memory allocator (buffers + images)         */
+    XudAllocator* allocator; /* the single GPU-memory allocator (buffers + images)         */
 };
 
 #endif /* XUD_XUD_CORE_H_ */

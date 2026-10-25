@@ -279,6 +279,25 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         goto fail;
 
+    /* The allocator, above the device and below the renderer: the one GPU-memory rung, and the one
+       owner of every VkDeviceMemory this tree creates. It sits here because its whole input is alrea
+       dy above it - the memory rows the physical layer recorded (VkPhysicalDeviceMemoryProperties is
+       embedded in the caps, so the type rule and the heap-size rule are read off a record, not asked
+       of the driver) and the device whose table the allocate/free rows come from. It is opened befor
+       e the renderer because the renderer is what will name the buffers and images carved out of it,
+       and it is opened here rather than on the first buffer because it is per context: two contexts
+       have two allocators, and a range from one must be refused by the other rather than index the
+       wrong block array - the same reason the handle table above is opened eagerly. Opening it costs
+       nothing: xud_allocator_open() is one host allocation, calls no driver function, and creates no
+       block, so a context that comes back XUD_OK owns an allocator with no VkDeviceMemory in it at
+       all - there is still no buffer, no vertex stream, no descriptor set and no batch above it, and
+       this rung is the storage and the rules those steps will ask for, not their allocation. A refus
+       al here is XUD_OUT_OF_MEMORY only, for the same reason xud_handle_table_open() refuses.
+     */
+    result = xud_allocator_open(&context->allocator);
+    if (result != XUD_OK)
+        goto fail;
+
     /* The renderer, above the swapchain: the pipeline, the render pass, one framebuffer per swap
        chain image and the frame loop that draws one triangle into them. It sits here because every
        thing it needs is above it already - the device whose queues it submits through, and the swap
@@ -343,9 +362,9 @@ XudResult xud_close_context(XudContext** context) {
 
     victim = *context;
 
-    /* Destroy order is the reverse of creation: handle table -> renderer -> swapchain -> device ->
-       surface -> window -> physical -> instance -> diagnostics -> loader. The handle table goes FIR
-       ST because it is the top of the tree: a handle records an object of every rung below it, so a
+    /* Destroy order is the reverse of creation: handle table -> renderer -> allocator -> swapchain
+       -> device -> surface -> window -> physical -> instance -> diagnostics -> loader. The handle
+       table goes FIRST because it is the top of the tree: a handle records an object of every rung below it, so a
        table still holding live slots is a table naming objects the rungs below are about to retire,
        and it is the last rung opened. It calls nothing - a slot's record is still the sentinel the h
        andle layer opens it with, because the object steps that would fill it (a texture, a font, a
@@ -355,11 +374,16 @@ XudResult xud_close_context(XudContext** context) {
        side it is the one thing in this context that can still have a presentation in flight: its ow
        n close waits the fence of the image that presentation used before it destroys the command bu
        ffer, the semaphore and the fences, and only then can the swapchain whose images were presen
-       ted go. The swapchain goes next because it is presented through a queue of the device below i
-       t and its own close runs that device's wait-idle guard - a presentation may still be in fligh
+       ted go. The allocator goes next because the renderer above it is what will name the buffers and
+       images carved out of it, and a VkDeviceMemory is created FROM the VkDevice below it - so it die
+       s after the renderer and before the swapchain and the device, and its own close runs that device
+       's wait-idle guard first for the same reason the swapchain's close gives it: a submission or a
+       presentation may still be reading the very blocks being freed. The swapchain goes next because
+       it is presented through a queue of the device below it, and its own close runs that device's
+       wait-idle guard - a presentation may still be in fligh
        t against the swapchain's images, so the guarantee that nothing is in flight has to come befo
-       re the images go, and it is the last Vulkan rung created below the renderer, so it is the firs
-       t torn down. The device goes next because a VkDevice is created FROM the physical device below
+       re the images go, and it is the last Vulkan rung created below the allocator, so it is the fi
+       rst of the swapchain/device pair torn down. The device goes next because a VkDevice is created FROM the physical device below
        which is still alive at this point; the window goes after its surface because
        xud_window_close() refuses a window whose surface is live and may run glfwTerminate(), GLFW's
        own teardown, which walks GLFW's window list and must not do that while a surface still names
@@ -379,6 +403,9 @@ XudResult xud_close_context(XudContext** context) {
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
     rung = xud_renderer_close(&victim->renderer, victim->device, victim->loader);
+    if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
+        first = rung;
+    rung = xud_allocator_close(&victim->allocator, victim->loader, victim->device);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
     rung = xud_swapchain_close(&victim->swapchain, victim->device, victim->loader);

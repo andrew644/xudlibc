@@ -10,14 +10,16 @@
  *   Layer: the public API's currency, and the storage rung for the object kinds a caller can
  *          name (textures, fonts, meshes, materials, models). It sits above the swapchain and
  *          below the renderer and the feature modules: a handle addresses an object that lives
- *          in GPU memory the allocator rung owns and that the renderer rung draws, and neither
- *          rung is in the tree yet. That is why nothing here calls a driver function and why
- *          every slot's record field is still the sentinel it opens with - the Vulkan handles
- *          the decision says a record holds land inside it when the object steps land, and
- *          until then there is no VkImage, VkBuffer or VkPipeline of any of these kinds to put
- *          one there. The type itself is public (xud.h declares it, because it is the one thing
- *          a caller holds); the table and these functions are internal like every layer below
- *          the public API: tests may include this header, user code must not.
+ *          in GPU memory the allocator rung owns (S12, landed) and that the renderer rung draws
+ *          (S11, landed) - but the rungs ABOVE them that would ask the allocator for a VkImage
+ *          or a VkBuffer and hand it to the renderer have not landed, and that is why nothing
+ *          here calls a driver function and why every slot's record field is still the sentinel
+ *          it opens with: the Vulkan handles the decision says a record holds land inside it when
+ *          the object steps land, and until then there is no VkImage, VkBuffer or VkPipeline of
+ *          any of these kinds to put one there. The type itself is public (xud.h declares it,
+ *          because it is the one thing a caller holds); the table and these functions are internal
+ *          like every layer below the public API: tests may include this header, user code must
+ *          not.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
@@ -91,17 +93,19 @@ static_assert(XUD_HANDLE_SLOT_MAX_CAPACITY % XUD_HANDLE_SLOT_MIN_CAPACITY == 0u,
    the live bit, `generation` is what a handle must carry to name this slot at all, and `kind` is
    the tag that makes the check exact (a texture handle's (index, generation) pair could otherwise
    match a live model slot by coincidence - see the note in xud.h). `record` is the sentinel of
-   the rung that is not in the tree yet: the object record - the Vulkan handles and the caps-gated
-   variant info the decision says a record holds - cannot exist before the allocator and the
-   renderer rungs do, so this field is NULL on every live slot for as long as this layer is the
-   top of the tree, and xud_handle_table_close() frees a table without walking it because there is
-   nothing in it to close yet. When the object steps land, this is the field they fill and the
-   field their teardown rung has to close before the slot goes free. */
+   the rungs that have not landed yet: the object record - the Vulkan handles and the caps-gated
+   variant info the decision says a record holds - cannot exist before the batch and the object
+   rungs ABOVE the allocator (S12) and the renderer (S11) do, so this field is NULL on every live
+   slot for as long as this layer is the top of the tree, and xud_handle_table_close() frees a
+   table without walking it because there is nothing in it to close yet. When the object steps
+   land, this is the field they fill and the field their teardown rung has to close before the
+   slot goes free. */
 typedef struct XudHandleSlot {
     uint32_t occupied; /* 0 = free (never used, or released), 1 = live                                  */
     uint32_t generation; /* bumped when a released slot is taken again, so a handle kept across a release stops naming it */
     uint32_t kind; /* the tag this slot was last allocated for, XUD_HANDLE_KIND_NONE until it was ever used */
-    void* record; /* the object record: NULL until the allocator and renderer rungs land, and the only Vulkan state a slot will ever own */
+    void* record; /* the object record: NULL until the batch and object rungs above the allocator (S12) and the renderer (S11) land, and the
+                     only Vulkan state a slot will ever own */
 } XudHandleSlot;
 
 typedef struct XudHandleTable XudHandleTable;

@@ -12,8 +12,8 @@
  *          e (AGENTS.md).
  *          The attachment set is ONE row today, and the reason is written at the top of the
  *          header: there is no depth attachment because a depth attachment would need a VkIma
- *          ge and a VkDeviceMemory of its own, which is the allocator rung that is not in the
- *          tree. The validation layer's rules for these create-infos (attachment count equal
+ *          ge and a VkDeviceMemory of its own, which is the allocator rung that is in the tree
+ *          now (S12) and holds no image at all. The validation layer's rules for these create-infos (attachment count equal
  *          between the pass and every framebuffer created from it, the framebuffer's extent e
  *          qual to the images', the initial/final layout pair of a swapchain image) are enfor
  *          ced by this file's own assembly rather than by a driver that says no.
@@ -110,8 +110,8 @@ XudResult xud_renderpass_fill_state(XudRenderPass* pass, VkFormat format) {
     /* --- the one subpass: one colour attachment, nothing else. No input attachments (no subpass
        reads a previous one), no resolve attachment (MSAA is a framebuffer*SampleCounts gate this
        rung does not take, see AGENTS.md's render-pass note), no depth-stencil attachment (see the
-       note at the top of the header - the allocator rung that would own that image is not in the
-       tree), no preserved attachments (nothing is read and left alone). --- */
+       note at the top of the header - the allocator rung that would own that image is in the tree
+       and holds no image at all), no preserved attachments (nothing is read and left alone). --- */
     pass->subpasses[XUD_RENDERPASS_FIRST_SUBPASS].flags = 0u;
     pass->subpasses[XUD_RENDERPASS_FIRST_SUBPASS].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     pass->subpasses[XUD_RENDERPASS_FIRST_SUBPASS].inputAttachmentCount = 0u;

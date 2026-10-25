@@ -11,11 +11,13 @@
  *   The attachment set is ONE row today: the swapchain colour attachment. There is no depth
  *   attachment, and that is not an omission - a VkAttachmentDescription for a depth attach
  *   ment would need a VkImage and a VkDeviceMemory of its own, which is the allocator rung
- *   that is not in the tree yet. The depth TEST is on in the pipeline and depth WRITE is on
- *   in the rasterizer, which is harmless against a colour-only attachment (the spec says a
- *   subpass with no depth-stencil attachment does not write depth), but it is why the first
- *   triangle has no hidden-surface behaviour. The depth attachment lands with the allocator
- *   step, and this file says so rather than pretending the depth buffer exists.
+ *   that IS in the tree now (S12) and holds no image at all - nothing above it has asked it
+ *   for memory yet. The depth TEST and depth WRITE are both OFF in the pipeline for exactly
+ *   that reason (xud_pipeline.h states it: a depth test against no depth buffer is implementa
+ *   tion-dependent rather than a first triangle that draws every time), and it is why the first
+ *   triangle has no hidden-surface behaviour. The depth attachment lands with the rung above
+ *   the allocator that will ask it for an image, and this file says so rather than pretending
+ *   the depth buffer exists.
  ***********************************************************************************************/
 
 #ifndef XUD_RENDERPASS_H_

@@ -6,20 +6,26 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] GPU memory allocator + suballocation (**ours**, ring for transient; no `vkCreateBuffer` per frame — the VMA
-    question is settled out 2026-10-23, see Decided below) — the **one rung still not in the tree** after S11, and
-    the one `void*` sentinel left in `xud_core.h`
-    - 2026-10-25 note: S11 committed, so this is the next implementation target. The caps' memory rows (`VkPhysical
-      DeviceMemoryProperties2`, 3 heap types / 3 heaps here, smallest `UNIFORM_BUFFER` 16384 / largest 4294967295,
-      `VK_MEMORY_HEAP_DEVICE_LOCAL` ~4 GB) are already recorded, so the allocator's pure half — the free list over
-      `(memoryTypeIndex, size, alignment)` triples, the ring for transient, the `VkMemoryAllocateInfo` assembly —
-      is headless-testable by construction, and `vkAllocateMemory`/`vkFreeMemory` are two rows of Volk's device
-      table, already filled in bulk by `xud_loader_bind_device()`; nothing adds a loader slot. `vkFreeMemory`
-      returns **void**, so it follows the zero-state-then-check rule `vkDestroyDevice`/`vkGetDeviceQueue` do.
+- [ ] Descriptor layout: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix + material/texture
+    index — the rung above the allocator and below the batch: the allocator now owns the memory a uniform buffer would
+    be carved out of, and the pipeline rung below it has **zero** descriptor sets and **zero** push-constant ranges on
+    purpose, because the shaders it was built with generate their three vertices from `gl_VertexIndex` and take no
+    uniform in
+    - 2026-10-25 note: the allocator rung landed the same day (S12), so this is the next implementation target. The
+      caps already record what this step needs — `maxPushConstantsSize` (the guaranteed floor is 128 B, and the S5.4
+      note's 128-vs-today's-256 disagreement is recorded in the SoA decision: read it off the caps, never off that
+      note) and `maxDescriptorSetUniformBuffers` sit inside the caps' recorded `VkPhysicalDeviceLimits`, so the set
+      count and the push-constant size are caps-gated and never assumed. `VkDescriptorSetLayout`/`VkWriteDescriptorSet`
+      and the `VkUniformBuffer`-shaped rows are the pure half this step assembles headless; the `VkDescriptorSet` itself
+      is created/destroyed through device-table rows already filled in bulk by `xud_loader_bind_device()`, so nothing
+      adds a loader slot. The allocator's `xud_allocator_acquire()` is what a uniform buffer's `VkMemoryRequirements`
+      is handed to, so this step is the first rung above the allocator that will actually hold a range.
 
 ## Next
 
-- [ ] Descriptor layout: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix + material/texture index
+- [ ] Pipeline variants for the shapes the API carries (the opaque/transparent pair: blend off + depth write vs blend
+    on + depth test, sorted), and the depth attachment the render pass does not have yet — a `VkImage` + `VkDeviceMemory`
+    of its own, i.e. the first thing the allocator's rules exist for
 
 ## Later
 
@@ -232,21 +238,35 @@ See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-s
 detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
 whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
 the same day)**, and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
+**2026-10-25 — S12, the GPU-memory allocator rung** (`src/xud/xud_allocator.h`/`xud_allocator.c`: the block
+array, the free list over `(memoryTypeIndex, size, alignment)`, the transient ring, the memory-type rule read
+off the caps' recorded memory rows, and the one teardown order that now runs through it). One step before it:
 **2026-10-25 — S11, the first triangle end to end** (`src/xud/xud_shader.h`/`xud_shader.c` + `xud_pipeline.h`/`xud_pipeline.c`
 + `xud_renderpass.h`/`xud_renderpass.c` + `xud_frame.h`/`xud_frame.c` + `xud_renderer.h`/`xud_renderer.c`: the built-in
 SPIR-V, one graphics pipeline, one `VkRenderPass` + one `VkFramebuffer` per swapchain image, one command buffer, acquire/submit/present
-with an acquire semaphore + one fence per image, and the renderer rung `xud_init_context()` wires). One step before it:
+with an acquire semaphore + one fence per image, and the renderer rung `xud_init_context()` wires). One step before that:
 **2026-10-24 — S10, the handle layer** (`src/xud/xud_handle.h`/`xud_handle.c`: the one `XudHandle` type in `xud.h`, the
 per-kind slot arrays, the three-part validation, reuse-first allocation with a generation bump and the empty-table state
 the context owns). One step before that: **2026-10-24 — S9, the swapchain rung** (the `xud_swapchain.h`/`xud_swapchain.c`
 pair, the three surface queries, the selection rules, the recreate-on-resize path and the one teardown order that now runs
 through it). One step before that: **2026-10-24 — S8, the context ownership step** (`xud_init_context()` completes to the
 surface, `xud_close_context()` is the one teardown order), and before that **2026-10-23 — S7, the GLFW window + surface
-rung**. Nothing is finished after S11 — and the test-scaffolding item that was open in `Now` before it (headless
-pure-logic tests green by default, GPU tests opt-in via `XUD_GPU_TESTS=1`, validation-layer output treated as a
-failure signal) completed with S11 rather than as a step of its own: the in-run gate is the diagnostics layer's
+rung**. Nothing is finished after S12 — and the test-scaffolding item that was open in `Now` before S11 completed with
+S11 rather than as a step of its own: the in-run gate is the diagnostics layer's
 message counter read as an assertion (`errorMessages == 0` on the context's own struct), and the failure shapes of
 the frame loop are asserted against the live objects of the GPU run — see the S11 entry above for both.
+
+- 2026-10-25 — **S12 the GPU-memory allocator rung** (`src/xud/xud_allocator.h` + `src/xud/xud_allocator.c`, and the
+    `xud_core.h`/`xud_core.c` integration) — see the *Steps complete (S12 …)* section at the top of `todo_completed.md`
+    for the full note: the one GPU-memory owner lands between the swapchain and the renderer and the last `void*` sentinel
+    in `XudContext` becomes a typed `XudAllocator*`. The **pure** half (open, memory-type selection against the caps'
+    recorded memory rows, `VkMemoryAllocateInfo` assembly, the free-list search, release + coalesce, the range accessor,
+    the ring rewind, the stats) calls no driver function and is exercised completely by the headless run; the driver half
+    is `xud_allocator_acquire`/`xud_allocator_ring_acquire`/`xud_allocator_close`, and `vkAllocateMemory`/`vkFreeMemory`
+    are two rows of Volk's device table, already filled in bulk by `xud_loader_bind_device()`, so **no loader slot was
+    added**. `vkFreeMemory` returns **void**, so teardown follows the zero-state-before-call rule `vkDestroyDevice`/`vkGetDeviceQueue`
+    do, and `xud_allocator_close()` runs `xud_device_wait_idle()` first because a submission or a presentation may still be
+    reading the very blocks being freed.
 
 - 2026-10-25 — **S11 the first triangle end to end** (`src/xud/xud_shader.h` + `src/xud/xud_pipeline.h` + `src/xud/xud_renderpass.h`
     + `src/xud/xud_frame.h` + `src/xud/xud_renderer.h`, their five `.c` files, `shaders/solid.vert`/`shaders/solid.frag` and the

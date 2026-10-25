@@ -264,6 +264,7 @@ add_library(xud STATIC
     src/xud/xud_device.c
     src/xud/xud_window.c
     src/xud/xud_swapchain.c
+    src/xud/xud_allocator.c
     src/xud/xud_handle.c
     src/xud/xud_shader.c
     src/xud/xud_pipeline.c

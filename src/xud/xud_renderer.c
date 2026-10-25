@@ -33,8 +33,9 @@
  *
  *   What this rung does NOT own, and why: no swapchain (the context owns it, one rung below), no
  *          VkImage of a swapchain image (the swapchain owns its images - xud_swapchain.c's note
- *          about vkDestroyImage), no vertex buffer and no GPU-memory allocator (the allocator rung
- *          is still not in the tree, see todo.md, which is why the pipeline declares zero vertex
+ *          about vkDestroyImage), no vertex buffer and no GPU-memory allocator of its own (the
+ *          allocator rung IS in the tree now (S12) and is owned by the context rather than by
+ *          this rung - which is why the pipeline declares zero vertex
  *          bindings and the draw's whole geometry is a vertex count). The batch, the descriptor
  *          layout and the object kinds a public XudHandle names are steps above this one that
  *          have not landed; this rung is the smallest one that can draw a triangle.

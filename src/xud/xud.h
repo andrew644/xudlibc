@@ -9,20 +9,27 @@
  *          lifecycle pair, and the runtime Vulkan query xud_vulkan_supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
  *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
- *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c - and user code
- *          includes this header only; tests may include the internal ones. Every layer below this
- *          one is in the tree now and stays internal like the rest, so nothing about a VkDevice,
- *          its queues, a GLFW window, a VkSurfaceKHR or a VkSwapchainKHR is public API yet; the
- *          context owns all of them (S8's ownership step is landed and S9's swapchain rung sits on
- *          top of it, so xud_init_context() completes to the swapchain and xud_close_context() tears
- *          it all back), and the steps after it (the allocator, the renderer) are tracked in todo.md
- *          and do not exist yet. The window layer and the swapchain layer are internal for the same
- *          reason every layer below the public API is: xud.h declares no window type, no swapchain
+ *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
+ *          xud_pipeline.h/.c, xud_renderpass.h/.c, xud_frame.h/.c, xud_renderer.h/.c and xud_alloca
+ *          tor.h/.c - and user code includes this header only; tests may include the internal ones.
+ *          Every layer below this one is in the tree now and stays internal like the rest, so no
+ *          rung below the public API is public API yet: nothing about a VkDevice, its queues, a
+ *          GLFW window, a VkSurfaceKHR, a VkSwapchainKHR, a VkPipeline, a VkRenderPass, a
+ *          VkFramebuffer, a VkCommandBuffer or a VkDeviceMemory is reachable from here; the context
+ *          owns all of them (S8's ownership step is landed, S9's swapchain rung sits on top of it,
+ *          S10's handle layer and S11's five render rungs on top of that, and S12's allocator rung
+ *          sits above the swapchain and below the renderer, so xud_init_context() completes to the
+ *          renderer and the allocator and xud_close_context() tears all of it back and NO field of
+ *          XudContext is a sentinel any more). The window layer, the swapchain layer, the render
+ *          rungs and the allocator are internal for the same reason every layer below the public
+ *          API is: xud.h declares no window type, no swapchain type, no render type, no allocator
  *          type and calls no GLFW function, and the VkSurfaceKHR a context owns lives inside the
  *          XudWindow it owns rather than in a field of its own. The handle is the ONE exception to
  *          that rule, and is public for the reason the note below states: it is the currency a
  *          caller holds, and the slot arrays behind it are internal - xud.h declares no table type
- *          and no handle function, so no public call takes or fills a handle today.
+ *          and no handle function, so no public call takes or fills a handle today, and what is
+ *          still missing above the allocator is the batch, the shapes and the descriptor rungs, so
+ *          no handle names an object yet and nothing of a caller's concern can be drawn.
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -31,8 +38,8 @@
  *   Rules every declaration here obeys:
  *     - every function returns XudResult, or fills an out-param; nothing is ignored
  *     - out-params must be NULL on entry, and are NULL on every failure path
- *     - one XudContext owns instance/device/swapchain/renderer and the handle tables behind
- *       the public currency; callers hold a handle and nothing else
+ *     - one XudContext owns instance/device/swapchain/allocator/renderer and the handle tables
+ *       behind the public currency; callers hold a handle and nothing else
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -189,19 +196,32 @@ XudResult xud_vulkan_supported(void);
 /// the recorded caps and the chosen queue family, resolve the two role queues, create the
 /// VkSurfaceKHR for the window, and create the VkSwapchainKHR for that surface on that device (the
 /// three surface queries' answers decide its image count, its format and its present mode -
-/// nothing about it is a constant this layer hoped for). On entry *outContext must be NULL; it is
-/// NULL on every failure path, and every failure path tears down what was built - a refused
-/// request leaks nothing and a valid one never hands back a half-built context. XUD_UNSUPPORTED
-/// means this machine cannot host a context at all (no Vulkan loader, no window system, no device
-/// this layer can take, a window system this device cannot present to, a surface this layer cannot
-/// get a swapchain for); the allocator is the only field still unfilled, which is why nothing can
-/// be drawn yet.
+/// nothing about it is a constant this layer hoped for), then the allocator rung (one host
+/// allocation, calls no driver function and creates no block, so a context that comes back XUD_OK
+/// owns an allocator with no VkDeviceMemory in it at all), then the renderer rung above it (one
+/// pass, one pipeline, one framebuffer per swapchain image, one frame loop, and its own open runs
+/// the pass/pipeline/framebuffer/frame ladder), then the handle table as the top rung. On entry
+/// *outContext must be NULL; it is NULL on every failure path, and every failure path tears down
+/// what was built - a refused request leaks nothing and a valid one never hands back a half-built
+/// context. XUD_UNSUPPORTED means this machine cannot host a context at all (no Vulkan loader, no
+/// window system, no device this layer can take, a window system this device cannot present to,
+/// a surface this layer cannot get a swapchain for, a renderer or an allocator this layer cannot
+/// open); no field of XudContext is a sentinel any more, and what is missing is not a field but a
+/// rung above the allocator - the batch, the shapes and the descriptor rungs - which is why nothing
+/// of a caller's concern can be drawn yet and no handle names an object.
 XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height);
 
-/// Tear the context down in the reverse order of creation - swapchain -> device -> surface ->
-/// window -> physical -> instance -> diagnostics -> loader - and free it. The swapchain goes first
-/// because it is presented through a queue of the device below it, its own close runs that
-/// device's wait-idle guard, and it is the last rung created. The device goes next because a
+/// Tear the context down in the reverse order of creation - handle table -> renderer -> allocator
+/// -> swapchain -> device -> surface -> window -> physical -> instance -> diagnostics -> loader -
+/// and free it. The handle table goes first because it is the TOP of the tree: a live table can
+/// name objects the rungs below it are about to retire, so it must die before them. The renderer
+/// goes next because it is the owner of the four render rungs and every submission that reads a
+/// pipeline, a pass, a framebuffer or a command buffer is its submission. The allocator goes next
+/// because a VkDeviceMemory is created FROM the VkDevice below it and a submission or a presentation
+/// may still be reading the very blocks its own close frees (that close runs the device's wait-idle
+/// guard first, for exactly that reason). The swapchain goes next because it is presented through a
+/// queue of the device below it, its own close runs that device's wait-idle guard, and it is the
+/// last rung the bring-up ladder built below the allocator. The device goes next because a
 /// VkDevice is created FROM the physical device below it and everything that submits through it
 /// belongs to it; the surface goes next because vkDestroySurfaceKHR takes the owning VkInstance,
 /// which is still alive there; the window goes after its surface because the window layer refuses

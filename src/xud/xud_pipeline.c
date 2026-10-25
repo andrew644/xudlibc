@@ -67,9 +67,10 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
         return XUD_INVALID_ARG;
     }
 
-    /* --- vertex input: zero bindings, zero attributes. The allocator rung that owns a VkBuffer
-       is not in the tree, and the SoA streams land with the batch, so the vertex shader
-       generates its vertices from gl_VertexIndex instead. The row itself must still be present
+    /* --- vertex input: zero bindings, zero attributes. The allocator rung IS in the tree now
+       (S12) but owns no VkBuffer at all - nothing above it has asked it for memory - and the
+       SoA streams land with the batch, so the vertex shader generates its vertices from
+       gl_VertexIndex instead. The row itself must still be present
        and stamped: pVertexInputState may not be NULL when any fragment stage is present,
        because a fragment stage that writes gl_FragColor reads gl_FragCoord, and that is the
        spec's own rule for this pointer. --- */
@@ -129,7 +130,7 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     /* --- depth stencil: depth test and depth write OFF, LESS recorded, no depth bounds, no
        stencil at all. The OFF pair is the honest half of the depth note: the render pass under
        this pipeline has NO depth attachment (xud_renderpass.h says so, and the VkImage + VkDevi
-       ceMemory a depth buffer needs belongs to the allocator rung, which is not in the tree), a
+       ceMemory a depth buffer needs belongs to the allocator rung, which holds no image yet), a
        nd the spec makes the depth buffer UNDEFINED in that case - so an enabled test would be a
        n implementation-dependent result, which is the opposite of a first triangle that has to
        draw every time. depthCompareOp is still recorded, because the field has to hold a valid

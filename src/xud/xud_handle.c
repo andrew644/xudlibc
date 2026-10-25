@@ -5,8 +5,10 @@
  *         live count and teardown.
  *   Layer: above the swapchain, below the renderer. It calls no driver function and includes no
  *         Vulkan header: a handle is an index into this layer's own arrays, and the Vulkan handles
- *         a slot will eventually hold are created by the rungs below it, which are not in the tree
- *         yet. Everything here is therefore pure and headless-testable by construction.
+ *         a slot will eventually hold are created by the rungs ABOVE this one - the allocator is
+ *         in the tree now (S12) and the renderer too (S11), but nothing above them has asked the
+ *         allocator for a VkImage or a VkBuffer yet, so no slot's record field is filled. Every
+ *         thing here is therefore pure and headless-testable by construction.
  ***********************************************************************************************/
 
 #include "xud_handle.h"
