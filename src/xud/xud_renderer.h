@@ -31,9 +31,13 @@
  *   about vkDestroyImage), no vertex buffer and no GPU-memory allocator of its own (the allocator
  *   rung IS in the tree now (S12), one rung below the renderer in the ownership tree and owned by
  *   the context rather than by this rung - which is why the pipeline declares zero vertex
- *   bindings and the draw's whole geometry is a vertex count). The batch, the descriptor
- *   layout and the object kinds a public XudHandle names are all steps above this one that
- *   have not landed; this rung is the smallest one that can draw a triangle.
+ *   bindings and the draw's whole geometry is a vertex count). The batch and the object kinds a
+ *   public XudHandle names are steps above this one that have not landed. The DESCRIPTOR rung,
+ *   though, is in the tree and sits BELOW this one (allocator -> descriptor -> renderer, because
+ *   a VkBuffer carved from allocator-owned memory is named by the pipeline layout above): the re
+ *   nderer is handed the descriptor record so the pipeline it builds is built against the two set
+ *   layouts and the push-constant range that per-frame data was written into, and it does not own
+ *   it - the context does, and it closes after this rung has retired the pipeline that names them.
  ***********************************************************************************************/
 
 #ifndef XUD_RENDERER_H_
@@ -42,6 +46,7 @@
 #include "volk.h" /* Required for: the loader's entry-point tables - and it must come before
                      <vulkan/vulkan.h>, which the header below it includes; volk.h errors when
                      VULKAN_H_ is already in (AGENTS.md, include-order trap) */
+#include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_frame.h"
 #include "xud_loader.h"
@@ -88,7 +93,8 @@ struct XudRenderer {
 /// n with no handle and no images; XUD_UNSUPPORTED when the loader is closed, its device rows
 /// are not this device's, a row one of the four rungs needs is nil, or the swapchain has no
 /// chosen format. XUD_OUT_OF_MEMORY when a host allocation of one of the rungs fails.
-XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain);
+XudResult xud_renderer_open(
+    XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor, const XudSwapchain* swapchain);
 
 /// Driver: one frame through the four rungs this rung owns - the caller above names no pipeline,
 /// no pass, no framebuffer array and no fence, which is what keeps the whole Vulkan half of the

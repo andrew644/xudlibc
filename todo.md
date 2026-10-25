@@ -6,31 +6,31 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] Descriptor layout: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix + material/texture
-    index — the rung above the allocator and below the batch: the allocator now owns the memory a uniform buffer would
-    be carved out of, and the pipeline rung below it has **zero** descriptor sets and **zero** push-constant ranges on
-    purpose, because the shaders it was built with generate their three vertices from `gl_VertexIndex` and take no
-    uniform in
-    - 2026-10-25 note: the allocator rung landed the same day (S12), so this is the next implementation target. The
-      caps already record what this step needs — `maxPushConstantsSize` (the guaranteed floor is 128 B, and the S5.4
-      note's 128-vs-today's-256 disagreement is recorded in the SoA decision: read it off the caps, never off that
-      note) and `maxDescriptorSetUniformBuffers` sit inside the caps' recorded `VkPhysicalDeviceLimits`, so the set
-      count and the push-constant size are caps-gated and never assumed. `VkDescriptorSetLayout`/`VkWriteDescriptorSet`
-      and the `VkUniformBuffer`-shaped rows are the pure half this step assembles headless; the `VkDescriptorSet` itself
-      is created/destroyed through device-table rows already filled in bulk by `xud_loader_bind_device()`, so nothing
-      adds a loader slot. The allocator's `xud_allocator_acquire()` is what a uniform buffer's `VkMemoryRequirements`
-      is handed to, so this step is the first rung above the allocator that will actually hold a range.
-
-## Next
-
 - [ ] Pipeline variants for the shapes the API carries (the opaque/transparent pair: blend off + depth write vs blend
     on + depth test, sorted), and the depth attachment the render pass does not have yet — a `VkImage` + `VkDeviceMemory`
     of its own, i.e. the first thing the allocator's rules exist for
+    - 2026-10-25 note: the descriptor rung landed the same day (S13), so the pipeline layout the renderer creates already
+      names two set layouts and one push-constant range. What the pipeline still does **not** have is a depth attachment:
+      the render pass is one colour row and `xud_pipeline_fill_state()` says so where it writes
+      `depthWriteEnable`/`depthTestEnable` `VK_FALSE`. The depth `VkImage` is the first thing above the allocator that
+      needs an **image** rather than a buffer, so it exercises `VkImageCreateInfo`/`VkImageSubresourceRange` against the
+      allocator's `VkMemoryRequirements` path and the layout-transition rule the frame loop already states. The
+      transparent variant is the pair that makes the sorted-batch rule mean anything, and the batch is what sorts — so
+      the pair lands with the batch, not before it.
 
-## Later
+## Next
 
 - [ ] Batch layer (`xudrl`): dynamic per-attribute **stream** buffers + one index buffer (SoA, decided 2026-10-23 — see
     Decided below), flush on pipeline/material change (flush is per stream), fixed pipeline set
+    - 2026-10-25 note: sits above the descriptor rung that landed the same day (S13) — the batch's streams are the
+      allocator's second thing ever asked for (the descriptor's uniform buffer was the first), and its draws are the
+      first thing that binds set 0 and pushes the range that rung already wrote. `vkCmdBindVertexBuffers` and
+      `vkCmdBindDescriptorSets` are rows of Volk's device table, already filled in bulk, so no loader slot is added —
+      the row check before the call is what remains. This is also the first time the tree writes
+      `VkPipelineVertexInputStateCreateInfo` at all: today's pipeline writes zero bindings and zero attributes.
+
+## Later
+
 - [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
     shape family in the API)
 - [ ] Camera + transform math (one perspective 3D camera; the 2D scope was settled out 2026-10-23, see Decided below)
@@ -238,9 +238,12 @@ See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-s
 detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
 whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
 the same day)**, and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
-**2026-10-25 — S12, the GPU-memory allocator rung** (`src/xud/xud_allocator.h`/`xud_allocator.c`: the block
-array, the free list over `(memoryTypeIndex, size, alignment)`, the transient ring, the memory-type rule read
-off the caps' recorded memory rows, and the one teardown order that now runs through it). One step before it:
+**2026-10-25 — S13, the descriptor-layout rung** (`src/xud/xud_descriptor.h`/`xud_descriptor.c`: the two set layouts and
+their create-infos inside one record, the pool sized for both descriptor types, set 0 allocated and the per-frame
+uniform buffer bound into the allocator's first block, the push-constant range, and the one teardown order that now
+runs through it). One step before it: **2026-10-25 — S12, the GPU-memory allocator rung** (`src/xud/xud_allocator.h`/`xud_allocator.c`:
+the block array, the free list over `(memoryTypeIndex, size, alignment)`, the transient ring, the memory-type rule read
+off the caps' recorded memory rows, and the one teardown order that now runs through it). One step before that:
 **2026-10-25 — S11, the first triangle end to end** (`src/xud/xud_shader.h`/`xud_shader.c` + `xud_pipeline.h`/`xud_pipeline.c`
 + `xud_renderpass.h`/`xud_renderpass.c` + `xud_frame.h`/`xud_frame.c` + `xud_renderer.h`/`xud_renderer.c`: the built-in
 SPIR-V, one graphics pipeline, one `VkRenderPass` + one `VkFramebuffer` per swapchain image, one command buffer, acquire/submit/present
@@ -251,10 +254,24 @@ the context owns). One step before that: **2026-10-24 — S9, the swapchain rung
 pair, the three surface queries, the selection rules, the recreate-on-resize path and the one teardown order that now runs
 through it). One step before that: **2026-10-24 — S8, the context ownership step** (`xud_init_context()` completes to the
 surface, `xud_close_context()` is the one teardown order), and before that **2026-10-23 — S7, the GLFW window + surface
-rung**. Nothing is finished after S12 — and the test-scaffolding item that was open in `Now` before S11 completed with
+rung**. Nothing is finished after S13 — and the test-scaffolding item that was open in `Now` before S11 completed with
 S11 rather than as a step of its own: the in-run gate is the diagnostics layer's
 message counter read as an assertion (`errorMessages == 0` on the context's own struct), and the failure shapes of
 the frame loop are asserted against the live objects of the GPU run — see the S11 entry above for both.
+
+- 2026-10-25 — **S13 the descriptor-layout rung** (`src/xud/xud_descriptor.h` + `src/xud/xud_descriptor.c`, and the
+    `xud_pipeline.h`/`xud_pipeline.c` + `xud_renderer.h`/`xud_renderer.c` + `xud_core.h`/`xud_core.c` integration) — see the
+    *Steps complete (S13 …)* section at the top of `todo_completed.md` for the full note: the design sketch's descriptor
+    discipline becomes a rung **above the allocator and below the renderer**, and it is **context-owned**, because a
+    `VkBuffer` is created from memory the allocator owns and is named by the pipeline layout the renderer builds — the
+    order in is allocator → descriptor → renderer and the order out is the exact reverse. The **pure** half (the caps gate,
+    the two `VkDescriptorSetLayoutCreateInfo` rows and the binding rows they point at, the push-constant range, the pool
+    info and its two `VkDescriptorPoolSize` rows, the set-0 allocate info, the buffer info, the write that binds the
+    buffer, the uniform block's bytes) calls no driver function and is what the headless run exercises completely; the
+    driver half is `xud_descriptor_open`/`xud_descriptor_close` over ten rows of Volk's device table, **no loader slot
+    added**. Set 1's **layout** is declared and its **set** is not allocated — the texture step owns the samplers it
+    would hold — and nothing calls `vkCmdBindDescriptorSets` or `vkCmdPushConstants` yet: the built-in SPIR-V still
+    reads no binding and takes no push constant, so the first triangle is still three vertices from `gl_VertexIndex`.
 
 - 2026-10-25 — **S12 the GPU-memory allocator rung** (`src/xud/xud_allocator.h` + `src/xud/xud_allocator.c`, and the
     `xud_core.h`/`xud_core.c` integration) — see the *Steps complete (S12 …)* section at the top of `todo_completed.md`

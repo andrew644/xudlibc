@@ -11,21 +11,23 @@
  *   line, glyph, opaque/transparent) land beside this one in this same file, not as a
  *   pipeline-per-draw path anywhere above it.
  *
- *   What this rung does NOT have, and why: no descriptor set (set 0 and set 1 are the
- *   descriptor-layout step's, and a layout with zero sets is the honest answer for a
- *   shader that reads no binding), no push-constant range (the first triangle's shaders
- *   take no uniform in at all - the model matrix arrives with the batch step), and no
- *   vertex input (the allocator rung IS in the tree now (S12) but owns no VkBuffer at all -
- *   nothing above it has asked it for memory - so the pipeline declares zero bindings and
- *   zero attributes and the vertex shader generates its three vertices from gl_VertexIndex).
- *   The descriptor-layout and batch rungs above the allocator have not landed; the allocator
- *   has, and it is the rung that will hand this one the memory a VkBuffer sits in.
+ *   What this rung does NOT have, and why: no vertex input (the allocator rung and the
+ *   descriptor rung ARE in the tree now, but the allocator still owns no VkBuffer that holds a
+ *   vertex stream - no batch above the descriptor rung has asked it for one - so the pipeline
+ *   declares zero bindings and zero attributes and the vertex shader generates its three
+ *   vertices from gl_VertexIndex). What it DOES have is the layout: the descriptor rung below
+ *   it owns the two set layouts, the push-constant range and the uniform buffer, and this rung
+ *   names them, because a pipeline whose layout declares zero sets is a pipeline that cannot
+ *   be bound to the set that per-frame data was written into. The pipeline stays descriptor-
+ *   free in its SHADERS (the built-in SPIR-V reads no binding and takes no push constant), so
+ *   the layout is a declaration this rung makes and the batch step above is what binds it.
  ***********************************************************************************************/
 
 #ifndef XUD_PIPELINE_H_
 #define XUD_PIPELINE_H_
 
 #include "volk.h"
+#include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_loader.h"
 #include "xud_shader.h"
@@ -195,12 +197,18 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline);
 XudResult xud_pipeline_fill_shader_stages(
     VkPipelineShaderStageCreateInfo* outStages, VkShaderModule vertexModule, VkShaderModule fragmentModule);
 
-/// Pure: the VkPipelineLayoutCreateInfo the layout will be created with. Zero descriptor
-/// sets and zero push-constant ranges, with both arrays NULL - the honest answer for the
-/// two shaders this rung builds, which read no binding and take no push constant. The
-/// descriptor-layout step grows this to set 0 (per-frame) and set 1 (per-material) and
-/// the batch step grows the push-constant range; neither is a placeholder here.
-XudResult xud_pipeline_fill_layout_info(VkPipelineLayoutCreateInfo* outCreateInfo);
+/// Pure: the VkPipelineLayoutCreateInfo the layout will be created with, read off the
+/// descriptor record below this rung. TWO set layouts, the record's own array - the pipeline
+/// layout does not copy them, it points at the descriptor rung's storage, which is what makes
+/// the layout and the sets the pool allocated from those same layouts agree by construction -
+/// and ONE push-constant range, the record's own row. Zero of either would be a layout that
+/// cannot be bound to: the per-frame uniform buffer lives in set 0 and the model matrix the
+/// batch step above writes is a push constant, so a pipeline built against a layout that decl
+/// ares neither is a pipeline that will never see its own camera. XUD_INVALID_ARG on a NULL
+/// out-create-info or a NULL descriptor, or one whose set 0 layout or uniform buffer handle
+/// is not live - set 1's layout is created but its SET is not (the texture step allocates it),
+/// so only set 0's layout is required to be a handle here.
+XudResult xud_pipeline_fill_layout_info(const XudDescriptor* descriptor, VkPipelineLayoutCreateInfo* outCreateInfo);
 
 /// Pure: the VkGraphicsPipelineCreateInfo the pipeline will be created with, assembled
 /// from the rows above. Refuses XUD_UNSUPPORTED when any row of the struct in hand is
@@ -232,7 +240,8 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, VkGraphicsP
 /// XUD_UNSUPPORTED when the loader is closed, its device rows are not this device's, a row this rung needs is nil, or the SPI R-V is not
 /// SPIR-V; XUD_OUT_OF_MEMORY/XUD_OUT_OF_RESOURCES when the driver refuses on host or device memory; XUD_VULKAN_ERROR otherwise (a pipeline
 /// that fails to compile is the common one, VK_ERROR_PIPELINE_COMPILE_SHADER_INTERNAL_ERROR and its neighbours).
-XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, VkRenderPass renderPass);
+XudResult xud_pipeline_open(
+    XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor, VkRenderPass renderPass);
 
 /// Driver: the teardown - vkDestroyPipeline, then vkDestroyPipelineLayout, then the two
 /// modules through xud_shader_close(), then free. That order is load-bearing: the pipeline

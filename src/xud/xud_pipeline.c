@@ -22,6 +22,7 @@
 
 #include "xud_pipeline.h"
 #include "xud.h"
+#include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_loader.h"
 #include "xud_shader.h"
@@ -237,20 +238,32 @@ XudResult xud_pipeline_fill_shader_stages(
  * The layout create-info - pure
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_pipeline_fill_layout_info(VkPipelineLayoutCreateInfo* outCreateInfo) {
-    if (outCreateInfo == NULL) {
+XudResult xud_pipeline_fill_layout_info(const XudDescriptor* descriptor, VkPipelineLayoutCreateInfo* outCreateInfo) {
+    if ((outCreateInfo == NULL) || (descriptor == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    /* The three handles the layout is built from must be live: the set layouts are the two the po
+       ol allocated set 0 from, and the uniform buffer is what makes the per-frame data have a sour
+       ce. A record that cannot name them is a bad state of the rung below, reported as a bad argu
+       ment here - the rule xud_pipeline_fill_create_info() applies to a record that owns no layout
+       and no render pass, one row up.
+     */
+    if ((descriptor->setLayouts[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE)
+        || (descriptor->setLayouts[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE) || (descriptor->uniformBuffer == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
 
     outCreateInfo->sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     outCreateInfo->pNext = NULL;
     outCreateInfo->flags = 0u;
-    outCreateInfo->setLayoutCount = 0u;
-    outCreateInfo->pSetLayouts = NULL; /* set 0 (per-frame) and set 1 (per-material) are the
-                                         descriptor-layout step's; zero is the honest answer
-                                         for two shaders that read no binding */
-    outCreateInfo->pushConstantRangeCount = 0u;
-    outCreateInfo->pPushConstantRanges = NULL; /* the model matrix arrives with the batch step */
+    outCreateInfo->setLayoutCount = XUD_DESCRIPTOR_SET_COUNT;
+    outCreateInfo->pSetLayouts = descriptor->setLayouts; /* the descriptor rung's own array,
+                        not a copy: the pool allocated set 0 from these same two handles, so
+                        the layout and the set cannot disagree by construction */
+    outCreateInfo->pushConstantRangeCount = 1u;
+    outCreateInfo->pPushConstantRanges = &descriptor->pushRange; /* the one range the one
+                        pipeline of this rung declares - the spec's "at most one push-constant
+                        range in the entire layout", read as a bound on this rung's own row */
 
     return XUD_OK;
 }
@@ -327,7 +340,8 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, VkGraphicsP
  * The create rung - the driver half
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, VkRenderPass renderPass) {
+XudResult xud_pipeline_open(
+    XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor, VkRenderPass renderPass) {
     XudPipeline* pipeline = NULL;
     XudShader* vertexShader = NULL;
     XudShader* fragmentShader = NULL;
@@ -341,7 +355,7 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     if ((outPipeline == NULL) || (*outPipeline != NULL)) {
         return XUD_INVALID_ARG;
     }
-    if ((loader == NULL) || (device == NULL)) {
+    if ((loader == NULL) || (device == NULL) || (descriptor == NULL)) {
         return (loader == NULL) ? XUD_INVALID_ARG : XUD_UNSUPPORTED;
     }
     if (!loader->open) {
@@ -411,7 +425,7 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
         return result;
     }
 
-    result = xud_pipeline_fill_layout_info(&layoutInfo);
+    result = xud_pipeline_fill_layout_info(descriptor, &layoutInfo);
     if (result != XUD_OK) {
         (void)xud_shader_close(&fragmentShader, device, loader);
         (void)xud_shader_close(&vertexShader, device, loader);

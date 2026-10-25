@@ -31,6 +31,7 @@
 #define XUD_XUD_CORE_H_
 
 #include "xud_allocator.h" /* Required for: XudAllocator, the GPU-memory rung that owns every VkDeviceMemory this tree creates - the context owns one from the allocator step on, and the teardown order below makes it die before the device it was allocated from */
+#include "xud_descriptor.h" /* Required for: XudDescriptor, the descriptor-layout rung the context owns between the allocator and the renderer - its bring-up carves the per-frame uniform buffer out of the allocator, and the teardown order makes this rung die after the renderer and before the allocator */
 #include "xud_device.h" /* Required for: XudDevice, the VkDevice plus its queue row, its enabled features/extensions and its two role queue records - the context owns one from the device layer on */
 #include "xud_diagnostics.h" /* Required for: XudDiagnostics, the diagnostics struct the context owns once validation is on */
 #include "xud_handle.h" /* Required for: XudHandleTable, the per-kind slot arrays behind the public XudHandle currency - the context owns one from the handle step on, and it is the FIRST rung torn down because a handle records an object of every rung below it */
@@ -185,6 +186,17 @@ struct XudContext {
        - the last sentinel this struct had.
      */
     XudAllocator* allocator; /* the single GPU-memory allocator (buffers + images)         */
+
+    /* Owned from the descriptor-layout step on: opened by xud_init_context() through xud_descrip
+       tor_open() AFTER the allocator and closed by xud_close_context() through xud_descriptor_clos
+       e() BEFORE it and after the renderer. The position is the ownership ladder this rung sits on:
+       a VkBuffer is created from memory the allocator owns and is named by the pipeline layout the
+       renderer builds, so the order in is allocator -> descriptor -> renderer and the order out is
+       its exact reverse. What is live here today is the two set layouts, the pool, set 0, the per-
+       frame uniform buffer bound into the allocator's first block and the write that binds it; set
+       1's layout exists and its SET does not, because the texture step is what allocates it.
+     */
+    XudDescriptor* descriptor; /* the layouts, the pool, set 0 and the uniform buffer inside it  */
 };
 
 #endif /* XUD_XUD_CORE_H_ */

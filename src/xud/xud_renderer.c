@@ -46,6 +46,7 @@
 
 #include "xud_renderer.h"
 #include "xud.h"
+#include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_frame.h"
 #include "xud_loader.h"
@@ -92,14 +93,15 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
  * The bring-up - the four rungs, in the one order that is correct
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain) {
+XudResult xud_renderer_open(
+    XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor, const XudSwapchain* swapchain) {
     XudRenderer* renderer = NULL;
     XudResult result = XUD_INVALID_ARG;
 
     if ((outRenderer == NULL) || (*outRenderer != NULL)) {
         return XUD_INVALID_ARG;
     }
-    if ((loader == NULL) || (device == NULL) || (swapchain == NULL)) {
+    if ((loader == NULL) || (device == NULL) || (descriptor == NULL) || (swapchain == NULL)) {
         return (loader == NULL) ? XUD_INVALID_ARG : XUD_UNSUPPORTED;
     }
     if (!loader->open) {
@@ -141,8 +143,15 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
     /* 2. the pipeline, which names the pass above it: the core-1.4 binding makes the render pass
        an argument of vkCreateGraphicsPipelines (VUID-VkGraphicsPipelineCreateInfo-dynamicRenderi
        ng-06576, and the validation layer on this machine reports VK_NULL_HANDLE there as a hard
-       error, probed today), so the pass has to exist before the pipeline does. */
-    result = xud_pipeline_open(&renderer->pipeline, loader, device, renderer->renderPass->renderPass);
+       error, probed today), so the pass has to exist before the pipeline does. The descriptor re
+       cord is an argument too, and not a field of this rung: the pipeline's create-info names the
+       two set layouts and the push-constant range the rung below this one created, so a pipeline
+       built without them is a pipeline that can never be bound to the set its per-frame data was
+       written into. The renderer borrows the record rather than owning it - the context owns it, a
+       bove the allocator and below this rung, and closes it after this rung's teardown has retired
+       the pipeline that names those handles.
+     */
+    result = xud_pipeline_open(&renderer->pipeline, loader, device, descriptor, renderer->renderPass->renderPass);
     if (result != XUD_OK) {
         xud_renderer_retire(renderer, device, loader);
         free(renderer);

@@ -2,6 +2,83 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S13 The descriptor-layout rung — two set layouts, a pool, set 0, a uniform buffer bound to the allocator's first block, a push-constant range, one step, landed as one commit, 2026-10-25)
+
+- [x] ~~**Descriptor layout**: set 0 per-frame uniforms, set 1 sampler array, push constants for model matrix +
+  material/texture index — the rung above the allocator and below the batch~~ — **done 2026-10-25**: `src/xud/xud_descriptor.h`/`xud_descriptor.c`
+  land **above the allocator and below the renderer**, `xud_core.h` grows a typed `XudDescriptor*` field, `xud_init_context()`
+  opens it **after the allocator and before the renderer** and `xud_close_context()` closes it **after the renderer and
+  before the allocator** — the order is load-bearing because a `VkBuffer` is created from memory the allocator owns and
+  is named by the pipeline layout the renderer builds, so the order in is allocator → descriptor → renderer and the order
+  out is the exact reverse. `xud_renderer_open()` and `xud_pipeline_open()` both take the `const XudDescriptor*` and
+  **borrow** it: the renderer draws against these sets, it does not own them. `xud_pipeline_fill_layout_info()` grows from
+  zero sets and zero ranges to `setLayoutCount = XUD_DESCRIPTOR_SET_COUNT` and `pushConstantRangeCount = 1u` read off
+  that record (and it refuses a record whose two set layouts or uniform buffer are not live, so the layout and the handles
+  cannot disagree), and the CMake source list grows the new `.c`. See AGENTS.md's **Verified descriptor-layout facts
+  (2026-10-25)** block for the ground (the stamps, the `VkDescriptorPoolSize.descriptorCount` and
+  `VkWriteDescriptorSet.pBufferInfo` naming traps that bit the build, the two `void` rows and their zero-state rule,
+  the caps gate and why a refusal is not a shrink, the sampler array as a layout ceiling rather than a caps read,
+  set 1's layout-without-a-set split and the `VK_EXT_descriptor_indexing` reason the partially-bound form stays a gate,
+  the zero push-constant range the validation layer refuses and the driver accepts silently, the std140 byte layouts,
+  and the teardown order with the no-`vkDestroyDescriptorSet` reason behind the pool-first step).
+
+  **Bar met, dated one-liner**: headless **2108 checks / 0 failures** (was 2020), `XUD_GPU_TESTS=1` **2588 / 0** (was
+  2460) and validation-clean with `VK_INSTANCE_LAYERS` unset **and** forced to `VK_LAYER_KHRONOS_validation` (the only
+  `ERROR/validation` line in either run is still the diagnostics layer's own synthetic headless probe), `-DXUD_SANITIZERS=ON`
+  reporting **only** the external allocations the S7/S8/S9/S10/S11/S12 blocks record — headless **72 B / 3 allocations**,
+  byte-for-byte the S12 step's numbers, so the descriptor's pure half leaks nothing, and GPU **1352 B / 65** (was 1312 B
+  / 63: one more libdecor 8 B and one more validation-layer 32 B whose four frames between `malloc` and `xud_device_open`
+  are `<unknown module>`, i.e. inside `vkCreateDevice` and not inside lavvk and not inside xudlibc — the GPU descriptor
+  test opens one more context), `ASAN_OPTIONS=detect_leaks=0` answering 2108 / 2588 with 0 failures and no `runtime error`
+  line, the clang build (`-DCMAKE_C_COMPILER=clang`) warning-free at the same counts, `ar -t build/libxud.a` at **39** objects
+  (`xud_descriptor.c.o` among them), `nm -u build/xud_test` still listing no `vk*` and no `glfw*` symbol and `ldd` still
+  listing no `libvulkan`/`libglfw`/`libGL`/`libEGL` (the rung calls no Vulkan entry point except through a row of Volk's
+  device table), `scripts/format.sh --check` clean, and `./build/hello_context` still completing
+  (`xud_init_context(640, 480) -> XUD_OK`, `xud_close_context -> XUD_OK`).
+
+  **What landed, and the split that makes the rung testable with no device present**: the rung is two halves and the
+  headless run covers the pure one completely — `xud_descriptor_caps_support`/`fill_set_layouts`/`fill_push_range`/`fill_pool_info`/`fill_set_allocate_info`/`fill_buffer_info`/`fill_write_info`/`fill_uniform_block`
+  call no driver function at all, and every guard of the driver half fires **before** a loader row is read. The pure test
+  drives them against **synthetic** caps (one row per refusal: too few bound sets, no per-stage uniform buffer, no per-set
+  uniform buffer, too few per-stage samplers, too few per-set samplers, too few push bytes, a uniform-buffer range too
+  small — and one row that fits, to show the gate is a compare rather than sticky) and against synthetic **live** handles
+  (a pool, a set-0 layout, a set, a buffer), so the rows are exercised as facts: both layout create-infos stamped and
+  `pNext`-cleared with one binding each and both bindings numbered 0 (the contiguous-binding-list rule the create-info
+  states for `pBindings`), set 0 one `UNIFORM_BUFFER` of 1 read by both stages, set 1 one `COMBINED_IMAGE_SAMPLER` of
+  `XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE` read by the fragment stage only, both `pImmutableSamplers` NULL because the texture
+  step owns the samplers, the push range stamped with `stageFlags`/`offset`/`size` and a refusal leaving the row at zero
+  rather than half-written, the pool stamped with `maxSets = XUD_DESCRIPTOR_SET_COUNT` and one `VkDescriptorPoolSize` row
+  per descriptor type, the set-0 allocate info naming the record's own pool and the record's own set-0 layout (a record
+  with a pool and no layout is a refusal — an allocate info that names a pool but no layout names nothing), the buffer
+  info stamped with `XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE`/`XUD_DESCRIPTOR_BUFFER_USAGE`/`VK_SHARING_MODE_EXCLUSIVE` and no
+  queue-family row, the write stamped with `dstSet`/`dstBinding`/`descriptorCount`/`descriptorType` and its `pBufferInfo`
+  pointing at the record's own `VkDescriptorBufferInfo` row (the create-info-read-after-the-call rule, one rung up), and
+  the uniform block's bytes (identity `viewProj`, zeros elsewhere, no lights) — plus the pipeline-layout checks that now
+  run against a synthetic descriptor record rather than against nothing.
+
+  **What the GPU test adds against the driver**, and why each half is load-bearing rather than decorative: the caps gate
+  answers `XUD_OK` against the **real** caps and the test reads the limits it depends on off them (`maxBoundDescriptorSets`,
+  `maxPerStageDescriptorSamplers`, `maxPushConstantsSize`) rather than assuming them; both set layouts, the pool, set 0 and
+  the uniform buffer are live, and set 1's set is asserted `VK_NULL_HANDLE`, which is the point of the split; the uniform
+  buffer's `XudMemoryRange` is the allocator's first block at offset 0 with its own generation, its `uniformBindOffset`
+  equals the range's own offset (the bind is into what the allocator actually handed, not into what was asked for), and
+  the write's `pBufferInfo` still points inside the record after the driver call; the allocator's stats after bring-up
+  read one block / one live range / the range's own size / a ring cursor still 0, which is the first time anything above
+  the allocator has ever held a range; the renderer's pipeline layout is live, i.e. the layout the renderer created
+  **names** this rung's handles; and the teardown closes clean and clears. The GPU allocator test's numbers are now a
+  **delta on the context's own baseline** (`baseBlocks`/`baseLive`/`baseBytes` read before the test's own requests, the
+  first fresh request landing **past** the descriptor's carve, the reuse-after-release check still exactly the coalesced
+  free range) — the descriptor's uniform buffer is the first thing the allocator was ever asked for, so the old absolute
+  expectations were stale about the tree, not about the allocator.
+
+  **Honest boundary after this step**: the layout exists, set 0 exists, the buffer is bound and the write binds it, and
+  the pipeline layout the renderer created names all of it — but **no command binds it**: `xud_frame.c` calls neither
+  `vkCmdBindDescriptorSets` nor `vkCmdPushConstants`, the built-in SPIR-V still reads no binding and takes no push
+  constant, so the first triangle is still three vertices from `gl_VertexIndex`. What this rung bought is that the batch
+  step's `vkCmdBindDescriptorSets` has a set to bind and the shapes step's push constants have a range to push into.
+  Set 1's set, every `VkImage` and every sampler are the texture step's, and `xud.h` still declares no create/close
+  function that takes an `XudHandle`.
+
 ## Steps complete (S12 The GPU-memory allocator rung — one owner of every `VkDeviceMemory`, a free list, a transient ring, one step, landed as one commit, 2026-10-25)
 
 - [x] ~~**GPU memory allocator + suballocation** (**ours**, ring for transient; no `vkCreateBuffer` per frame — the

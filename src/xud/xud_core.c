@@ -34,6 +34,7 @@
 
 #include "xud_core.h"
 #include "xud.h"
+#include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_diagnostics.h"
 #include "xud_handle.h"
@@ -298,6 +299,25 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         goto fail;
 
+    /* The descriptor rung, above the allocator and below the renderer: the two set layouts of the
+       plan's descriptor table (set 0 per-frame, set 1 per-material), the pool sized for both, set 0
+       itself, the uniform buffer that holds the per-frame block and the write that binds it into t
+       he set. It sits here because of what it needs and what needs it: the allocator below for the
+       memory the buffer is carved out of, the caps for the limits the layouts and the push range a
+       re gated on, and the renderer above for the pipeline layout that names them. It is opened eag
+       erly rather than on the first draw for the same reason the allocator and the handle table are
+       : the layouts and the pipeline layout are created ONCE at init (the repo's rule), so a set la
+       yout created per object would be a layout recreated per frame, and the sampler array's bound
+       is a ceiling that cannot grow without recreating the pipeline. What is live after this rung i
+       s set 0 and its buffer; set 1's layout is declared and its set is not, because the texture st
+       ep is what allocates it from the same pool. A refusal here is a driver refusal (a nil row, a
+       refused create) or the caps gate above refusing a layout this machine's limits cannot have.
+     */
+    result
+        = xud_descriptor_open(&context->descriptor, context->loader, context->device, &context->physicalDevice->caps, context->allocator);
+    if (result != XUD_OK)
+        goto fail;
+
     /* The renderer, above the swapchain: the pipeline, the render pass, one framebuffer per swap
        chain image and the frame loop that draws one triangle into them. It sits here because every
        thing it needs is above it already - the device whose queues it submits through, and the swap
@@ -310,7 +330,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        loader's device table for one of the create/destroy names this rung needs, or a swapchain wit
        h no chosen format.
      */
-    result = xud_renderer_open(&context->renderer, context->loader, context->device, context->swapchain);
+    result = xud_renderer_open(&context->renderer, context->loader, context->device, context->descriptor, context->swapchain);
     if (result != XUD_OK)
         goto fail;
 
@@ -403,6 +423,9 @@ XudResult xud_close_context(XudContext** context) {
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
     rung = xud_renderer_close(&victim->renderer, victim->device, victim->loader);
+    if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
+        first = rung;
+    rung = xud_descriptor_close(&victim->descriptor, victim->loader, victim->device, victim->allocator);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
     rung = xud_allocator_close(&victim->allocator, victim->loader, victim->device);
