@@ -2,6 +2,50 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S15 The depth attachment + the opaque pipeline variant — the first `VkImage` in the tree, its own
+`VkDeviceMemory` carve and view, the pipeline's depth pair ON against it, one step, landed as one commit, 2026-10-25)
+
+- [x] ~~**Pipeline variants + depth attachment**: the opaque/transparent pair (blend off + depth write vs blend on +
+  depth test, sorted) and the depth attachment the render pass does not have yet — a `VkImage` + `VkDeviceMemory` of
+  its own, i.e. the first thing the allocator's rules exist for~~ — **done 2026-10-25, half of it**: the depth
+  attachment and the **opaque** variant landed, the transparent variant did not, and that split is the point — the
+  transparent half is blend on + depth test **sorted**, and sorting is the batch's rule, so the second pipeline is the
+  batch step's to write, not this one's. `xud_renderpass.h` grows the second attachment row
+  (`XUD_RENDERPASS_DEPTH_ATTACHMENT`, `XUD_RENDERPASS_ATTACHMENT_COUNT` 2), the pass's own `VkImage` + `VkImageView` +
+  their create-infos + the `XudMemoryRange` the allocator handed the image, and the `VkAttachmentReference` row the
+  subpass's `pDepthStencilAttachment` points at; `xud_renderpass.c` grows the pure half
+  (`xud_renderpass_fill_depth_info`, `xud_renderpass_fill_depth_view_info`) and the driver half that creates the image
+  out of an `xud_allocator_acquire()` carve, creates the one view of it, and retires in one order
+  (`xud_renderpass_retire()`: pass → view → image → allocator release, every destroy handle read into a local and its
+  field cleared **before** the call). `xud_pipeline_fill_state()`'s depth pair went `VK_FALSE`/`VK_FALSE` →
+  `VK_TRUE`/`VK_TRUE` against that attachment — the ON pair is honest only because the pass under the pipeline has a
+  depth buffer, which is exactly what S11's note said and why it wrote the OFF pair. `xud_frame.h`/`.c` grow one
+  `VkImageLayout depthLayout` record and a `VkImageMemoryBarrier` **array** so the frame transitions both images per
+  frame, the depth barrier copied from the colour one and then overridden in four places (access masks, `oldLayout`,
+  `newLayout`, `image`/`subresourceRange`), and `xud_frame_draw()` refuses a pass with no depth image rather than
+  recording a barrier against `VK_NULL_HANDLE`. `xud_allocator.h`'s `XUD_ALLOCATOR_ALIGN_MAX` went 256 → **65536**:
+  that bound was a **buffer** fact and the depth image's `VkMemoryRequirements` answer `alignment 65536` here, so the
+  ceiling had to move with the fact rather than refuse the image. `xud_core.c` needed no ordering change — the pass was
+  already above the allocator in both the bring-up ladder and the teardown order. `tests/`: the pipeline area's
+  `depth-pair-off` check became `depth-pair-on`, the renderpass area was rewritten for two attachment rows (its own
+  depth image/view helpers, the dependency pair's stage/access masks, the GPU half asserting the live image, its carve,
+  its view's `VK_IMAGE_ASPECT_DEPTH_BIT` range and both layouts), and the allocator/descriptor/core GPU areas'
+  baselines moved from one block/one live range to **two**, because the depth image is the allocator's second block,
+  not a suballocation of the first.
+
+  **Bar met, dated one-liner**: headless **2147 checks / 0 failures** (was 2108) and `XUD_GPU_TESTS=1` **2675 / 0**
+  (was 2588), under gcc **and** under `-DCMAKE_C_COMPILER=clang`, validation-clean with `VK_INSTANCE_LAYERS` unset and
+  forced to `VK_LAYER_KHRONOS_validation` (still exactly one `ERROR/validation` line in either run, the diagnostics
+  layer's own synthetic headless probe), `-DXUD_SANITIZERS=ON` green headless (**72 B / 3 allocations**, byte-for-byte
+  S14's numbers, so the depth attachment's pure half allocates nothing) and GPU **1296 B / 66** (was 1352 B / 65)
+  reporting **only** the external allocations the S7-S14 blocks record — no leak stack names
+  `xud_renderpass_*`/`xud_frame_*`/`xud_allocator_*`/`xud_pipeline_*`, every one of them is the libdecor 8 B, a
+  validation-layer 32 B inside `vkCreateDevice`, or the `wl_display_*` compositor traffic inside
+  `libwayland-client.so.0` — and with `ASAN_OPTIONS=detect_leaks=0` answering 2147 / 2675 with 0 failures and no
+  `runtime error` line; `ar -t build/libxud.a` still lists **39** objects (no module added, two grown), `nm -u` lists
+  no `vk*`/`glfw*` symbol and `ldd` lists no `libvulkan`/`libglfw`/`libGL`/`libEGL` for either executable, and
+  `./scripts/format.sh --check` is green over the tree.
+
 ## Steps complete (S14 The test split — `tests/` from one 5092-line file to a harness, a runner and 17 area TUs, one step, landed as one commit, 2026-10-25)
 
 - [x] ~~**Test split**: `tests/xud_test.c` is 5092 lines and one file — split it into one TU per area, with a

@@ -257,10 +257,11 @@ static void xud_test_gpu_context(void) {
         "and set 1 is not allocated: the layout is declared and the set is the texture step's");
     xud_check(context->descriptor->uniformBuffer != VK_NULL_HANDLE, "context/descriptor-buffer-live",
         "the per-frame uniform buffer is live and bound to the allocator's memory");
-    xud_check(context->allocator->blockCount == 1u, "context/allocator-one-block-now",
-        "and the allocator owns one VkDeviceMemory now: the descriptor rung's uniform buffer is the "
-        "first thing above the allocator that asked it for a block, so this rung is no longer storage"
-        "-only");
+    xud_check(context->allocator->blockCount == 2u, "context/allocator-two-blocks-now",
+        "and the allocator owns two VkDeviceMemory now: the descriptor rung's uniform buffer and the "
+        "render pass's depth image - the image is the first thing above the allocator that asked for a"
+        "n IMAGE's requirements, and its alignment (65536 on this driver) does not fit a hole in the "
+        "buffer's block, so it is a second block rather than a suballocation");
     xud_check(context->allocator->ringBlockIndex == XUD_ALLOCATOR_NO_BLOCK, "context/allocator-no-ring-yet",
         "and no ring block either, because nothing has asked for transient memory");
 

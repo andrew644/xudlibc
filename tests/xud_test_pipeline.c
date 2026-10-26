@@ -3,7 +3,8 @@
  *   xud_test_pipeline.c - the pipeline rung: one graphics pipeline, its layout, its two modules
  *
  *   Owns : the layout assembly that refuses a descriptor record whose set layouts or uniform buffer are not live, the shader-stage rows,
- * the pipeline create-info assembly and the state assembly that writes zero vertex bindings and no depth attachment - and says why. Layer:
+ * the pipeline create-info assembly and the state assembly that writes zero vertex bindings and an
+ * ON depth pair against the pass's depth attachment - and says why. Layer:
  * tests. Sees xud_pipeline.h and xud_descriptor.h: the layout names the two set layouts and the push-constant range the descriptor rung
  * owns, so that record is an input to what is checked here.
  *
@@ -82,22 +83,29 @@ static void xud_test_pipeline_pure(void) {
         "pipeline/no-msaa",
         "no MSAA at all, which is the gate the framebuffer's sample-count limits would open and "
         "this rung does not take");
-    xud_check((pipeline.depthStencil.depthTestEnable == VK_FALSE) && (pipeline.depthStencil.depthWriteEnable == VK_FALSE),
-        "pipeline/depth-pair-off",
-        "the honest half of the depth note: no depth ATTACHMENT exists in this tree, so no test "
-        "is enabled - an enabled test against an undefined depth buffer is implementation-dependen"
-        "t");
+    xud_check((pipeline.depthStencil.depthTestEnable == VK_TRUE) && (pipeline.depthStencil.depthWriteEnable == VK_TRUE),
+        "pipeline/depth-pair-on",
+        "the ON pair, and it is honest now because the render pass under this pipeline HAS a depth"
+        " attachment (xud_renderpass.c's own depth row, its own VkImage): a depth test against no de"
+        "pth buffer is implementation-dependent, which is the same trap the no-vertex-input check na"
+        "mes for the other half of the same note. This is the OPAQUE variant of the plan's opaque/tran"
+        "sparent pair - blend off above, depth write here - and the transparent variant (blend on, de"
+        "pth test, sorted) is the batch step's, because sorting is a property of the batch and not of"
+        " a pipeline");
     xud_check(pipeline.depthStencil.depthCompareOp == XUD_PIPELINE_DEPTH_COMPARE_OP, "pipeline/depth-compare-op",
-        "LESS recorded anyway, so the constant is not dead state: it is the rule the depth buffer "
-        "will use the day the attachment lands");
+        "LESS, and it is the rule the enabled test above actually uses now: the pass clears the buffe"
+        "r to XUD_RENDERPASS_CLEAR_DEPTH 1.0, the far value of this very rule, so the first fragment"
+        " of a frame always wins against a defined buffer rather than against whatever the allocato"
+        "r handed back");
     xud_check(pipeline.depthStencil.stencilTestEnable == VK_FALSE, "pipeline/no-stencil-test",
         "no stencil anywhere in this library, and both stencil rows are written as the disabled se"
         "t rather than left at zero");
     xud_check((pipeline.depthStencil.minDepthBounds == 0.0f) && (pipeline.depthStencil.maxDepthBounds == 1.0f),
         "pipeline/depth-bounds-full", "the full range, which is what a disabled depth-bounds test has to say beside it");
     xud_check(pipeline.blendAttachment.blendEnable == VK_FALSE, "pipeline/attachment-blend-disabled",
-        "blend disabled at the attachment, which is the plan's opaque variant and the only varian"
-        "t there is today");
+        "blend disabled at the attachment, which is the OPAQUE variant of the plan's pair and the on"
+        "ly variant there is today - the transparent half is the batch step's, because the sort that"
+        " makes it correct is a property of the batch");
     xud_check((pipeline.blendAttachment.srcColorBlendFactor == VK_BLEND_FACTOR_ONE)
             && (pipeline.blendAttachment.dstColorBlendFactor == VK_BLEND_FACTOR_ZERO),
         "pipeline/blend-factors-overwrite",

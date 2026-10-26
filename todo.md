@@ -6,33 +6,62 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] Pipeline variants for the shapes the API carries (the opaque/transparent pair: blend off + depth write vs blend
-    on + depth test, sorted), and the depth attachment the render pass does not have yet — a `VkImage` + `VkDeviceMemory`
-    of its own, i.e. the first thing the allocator's rules exist for
-    - 2026-10-25 note: the descriptor rung landed the same day (S13), so the pipeline layout the renderer creates already
-      names two set layouts and one push-constant range. What the pipeline still does **not** have is a depth attachment:
-      the render pass is one colour row and `xud_pipeline_fill_state()` says so where it writes
-      `depthWriteEnable`/`depthTestEnable` `VK_FALSE`. The depth `VkImage` is the first thing above the allocator that
-      needs an **image** rather than a buffer, so it exercises `VkImageCreateInfo`/`VkImageSubresourceRange` against the
-      allocator's `VkMemoryRequirements` path and the layout-transition rule the frame loop already states. The
-      transparent variant is the pair that makes the sorted-batch rule mean anything, and the batch is what sorts — so
-      the pair lands with the batch, not before it.
-
-## Next
-
 - [ ] Batch layer (`xudrl`): dynamic per-attribute **stream** buffers + one index buffer (SoA, decided 2026-10-23 — see
     Decided below), flush on pipeline/material change (flush is per stream), fixed pipeline set
-    - 2026-10-25 note: sits above the descriptor rung that landed the same day (S13) — the batch's streams are the
-      allocator's second thing ever asked for (the descriptor's uniform buffer was the first), and its draws are the
+    - 2026-10-25 note: **nothing of this rung is in the tree** — no `xud_batch.h`/`xud_batch.c`, no batch field in
+      `XudContext`, no `tests/xud_test_batch.c`. What is left, itemised against what the tree says today:
+      - **The rung**: N stream `VkBuffer`s (`pos`/`uv`/`color`/`normal` = 36 B/vertex across four buffers) + one
+        index buffer, each carved out of the allocator — the allocator's **third** thing ever asked for, after the
+        descriptor's uniform buffer and the render pass's depth image.
+      - **The pure half** (headless-testable by construction): the "every stream holds the same vertex count"
+        invariant, the flush-on-pipeline/material-change decision (flush is per stream), the vertex/index
+        arithmetic, the capacity-doubling bounds.
+      - **The driver half**: staging the CPU-side attribute bytes into those buffers by `vkCmdCopyBuffer` off the
+        allocator's transient ring — `xud_allocator_ring_acquire`/`xud_allocator_ring_reset` are called by nothing
+        above the allocator today, and there is no `vkCmdCopyBuffer` anywhere in `src/xud/`.
+      - **The first three command-buffer bindings the tree would make**: `vkCmdBindVertexBuffers` (one call, whole
+        array, returns void → zero-state-then-check), `vkCmdBindDescriptorSets` for set 0, `vkCmdPushConstants`
+        into the range the descriptor rung already wrote — none of the three names appears anywhere today.
+      - **The per-frame uniform update**: `xud_descriptor_fill_uniform_block()` writes an identity `viewProj`
+        (`xud_descriptor.c:387-390`) and nothing else ever touches that row; the copy that puts the block's bytes
+        into the GPU buffer is the frame loop's, and is not in the tree.
+      - **The pipeline's vertex input**: `xud_pipeline_fill_state()` still writes
+        `vertexBindingDescriptionCount`/`vertexAttributeDescriptionCount` 0 (`xud_pipeline.c:80`/`82`) — the batch
+        writes four binding + four attribute rows, gated on the caps' `maxVertexInputBindings`/
+        `maxVertexInputAttributes`, and the built-in SPIR-V must be rewritten to read those bindings and take the
+        push constant (today's shaders generate their three vertices from `gl_VertexIndex`).
+      - **The draw**: `xud_frame.c:665` is a hard-coded `vkCmdDraw(commandBuffer, XUD_FRAME_DRAW_VERTEX_COUNT, 1u,
+        0u, 0u)`; the batch's is `vkCmdDrawIndexed` against a real index buffer and count.
+      - **The second pipeline variant**: the transparent one (blend on + depth test, sorted) — a second pipeline of
+        the pipeline rung, created once at init, plus the sorted-batch rule. Only the opaque variant exists today
+        (`xud_pipeline.c:178`, `blendEnable = VK_FALSE`).
+      - **The handle layer's `record`**: `XudHandleSlot.record` (`xud_handle.h:107`) is still the NULL sentinel and
+        `xud.h` still declares no create/close function that takes a handle — the batch/object rungs are what fill
+        it.
+      - **The frame loop's shape**: `xud_frame.h:50`'s one-`VkSubmitInfo`-per-submit "one batch flushed per frame"
+        assumption and `xud_frame_draw()`'s refusal shapes must grow to multi-draw recording.
+      - **The test area**: `tests/xud_test_batch.c` + one line in `tests/xud_test_main.c` and one in
+        `CMakeLists.txt`'s explicit source list (no globs), per the split's rules.
+    - 2026-10-25 note (the reasoning that note above assumes, kept for it): sits above the descriptor rung (S13) and
+      the depth-attachment step (S15), both landed the same day — the batch's streams are the allocator's **third
+      thing ever asked for (the descriptor's uniform buffer and the render pass's depth image were the first two,
+      and the image is a block of its own because an image's `VkMemoryRequirements` ask for an alignment of 65536
+      on this driver, not a buffer's 256), and its draws are the
       first thing that binds set 0 and pushes the range that rung already wrote. `vkCmdBindVertexBuffers` and
       `vkCmdBindDescriptorSets` are rows of Volk's device table, already filled in bulk, so no loader slot is added —
       the row check before the call is what remains. This is also the first time the tree writes
-      `VkPipelineVertexInputStateCreateInfo` at all: today's pipeline writes zero bindings and zero attributes.
+      `VkPipelineVertexInputStateCreateInfo` at all: today's pipeline writes zero bindings and zero attributes. **The
+      transparent pipeline variant lands here, not earlier**: the opaque variant (blend off + depth write against the
+      depth attachment) landed with S15, and the transparent half (blend on + depth test, sorted) is the sorted-batch
+      rule's, so it is the batch's to write.
 
-## Later
+## Next
 
 - [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
     shape family in the API)
+
+## Later
+
 - [ ] Camera + transform math (one perspective 3D camera; the 2D scope was settled out 2026-10-23, see Decided below)
 - [ ] Textures + samplers (create, upload via staging copies, mipmaps, sampler variants)
 - [ ] Mesh / vertex-buffer abstraction (**one buffer per attribute stream**, SoA, decided 2026-10-23) + handle table
@@ -238,10 +267,17 @@ See `todo_completed.md` — every finished step, newest first: the S1–S4 sub-s
 detail), the whole of **S5 (S5.1–S5.8 — the driver step S5.4 carried S5.5/S5.6/S5.7/S5.8 with it)**, the
 whole of **S6 (S6.1–S6.4, landed as one commit — the pure half met no separate bar before the driver half
 the same day)**, and the dated log entries (the "Bar met" / "Honest boundary" records). Newest entry:
-**2026-10-25 — S14, the test split** (`tests/` is 19 files now, not one: `xud_test_harness.h`/`xud_test_harness.c`
-+ `xud_test_main.c` + 17 area TUs, one per layer rung; the old 5092-line `tests/xud_test.c` is gone, no `src/xud/`
-file was touched, and the counts are unchanged at 2108 headless / 2588 GPU — and the clang build caught one real
-uninitialized-record bug the single-file run had been passing by luck, see the entry below). One step before it:
+**2026-10-25 — S15, the depth attachment and the opaque pipeline variant** (`src/xud/xud_renderpass.h`/`xud_renderpass.c`
+grew a second attachment row and the first `VkImage` in this tree — its own `VkDeviceMemory` carve, its own `VkImageView`,
+the pure `xud_renderpass_fill_depth_info`/`xud_renderpass_fill_depth_view_info` half and the `xud_renderpass_retire()`
+teardown order; `xud_pipeline_fill_state()`'s depth pair went OFF → ON against it, which makes that pipeline the opaque
+variant of the plan's pair; `xud_frame_draw()` now transitions TWO images per frame off one `depthLayout` record; and
+`XUD_ALLOCATOR_ALIGN_MAX` went 256 → 65536 because an image's `VkMemoryRequirements` are not a buffer's — the counts
+moved to 2147 headless / 2675 GPU, see the entry below). One step before it: **2026-10-25 — S14, the test split**
+(`tests/` is 19 files now, not one: `xud_test_harness.h`/`xud_test_harness.c` + `xud_test_main.c` + 17 area TUs, one
+per layer rung; the old 5092-line `tests/xud_test.c` is gone, no `src/xud/` file was touched, and the counts are
+unchanged at 2108 headless / 2588 GPU — and the clang build caught one real uninitialized-record bug the single-file
+run had been passing by luck, see the entry below). One step before it:
 **2026-10-25 — S13, the descriptor-layout rung** (`src/xud/xud_descriptor.h`/`xud_descriptor.c`: the two set layouts and
 their create-infos inside one record, the pool sized for both descriptor types, set 0 allocated and the per-frame
 uniform buffer bound into the allocator's first block, the push-constant range, and the one teardown order that now
@@ -258,7 +294,7 @@ the context owns). One step before that: **2026-10-24 — S9, the swapchain rung
 pair, the three surface queries, the selection rules, the recreate-on-resize path and the one teardown order that now runs
 through it). One step before that: **2026-10-24 — S8, the context ownership step** (`xud_init_context()` completes to the
 surface, `xud_close_context()` is the one teardown order), and before that **2026-10-23 — S7, the GLFW window + surface
-rung**. Nothing is finished after S14 — and the test-scaffolding item that was open in `Now` before S11 completed with
+rung**. Nothing is finished after S15 — and the test-scaffolding item that was open in `Now` before S11 completed with
 S11 rather than as a step of its own: the in-run gate is the diagnostics layer's
 message counter read as an assertion (`errorMessages == 0` on the context's own struct), and the failure shapes of
 the frame loop are asserted against the live objects of the GPU run — see the S11 entry above for both.

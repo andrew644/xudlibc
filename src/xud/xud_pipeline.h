@@ -166,21 +166,27 @@ static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_POINT
 /// fill polygon mode, no cull, CCW front face, no depth bias, lineWidth 1 (the line
 /// pipeline variant is a later rung's, but lineWidth is a field of THIS row and 1 is the
 /// only honest value in it); VK_SAMPLE_COUNT_1_BIT with no sample shading and no alpha-
-/// to-coverage (see the note above); depth test and depth write BOTH OFF with LESS recorded and
-/// no depth bounds and no stencil (the render pass under this pipeline has NO depth attachment -
-/// the VkImage + VkDeviceMemory a depth buffer needs belongs to the allocator rung, which holds
-/// no image yet - and the spec makes the depth buffer UNDEFINED in that case, so an enabled test
-/// would be an implementation-dependent result rather than a first triangle that draws every ti
-/// me; XUD_PIPELINE_DEPTH_COMPARE_OP is the rule the depth buffer will use the day that attach
-/// ment lands, and stencil does not exist in this library at all); one blend attachment with blen
+/// to-coverage (see the note above); depth test and depth write BOTH ON with LESS recorded and
+/// no depth bounds and no stencil (the render pass under this pipeline HAS a depth attachment now -
+/// xud_renderpass.c creates the VkImage and the allocator owns its memory, which is what the opa
+/// que variant of the plan's opaque/transparent pair needs: the spec makes the depth contents of a
+/// subpass with no depth attachment implementation-dependent, so the same two flags were VK_FALSE
+/// for the first-triangle step and are VK_TRUE against an attachment cleared to XUD_RENDERPASS_CLE
+/// AR_DEPTH; XUD_PIPELINE_DEPTH_COMPARE_OP is LESS, the one form that clear-to-1.0 convention need
+/// s, because a nearer fragment has the SMALLER depth and so passes against the larger one already
+/// in the buffer; and stencil does not exist in this library at all); one blend attachment with blen
 /// d DISABLED and both factor
 /// pairs ONE/ZERO - these headers spell the row as the core-1.0 form (srcColorBlendFactor
 /// / dstColorBlendFactor / colorBlendOp and the same three for the alpha half; grepped,
 /// srcAlpha, colorBlendFactor and useAlphaBlend do not exist in vulkan_core.h 1.4.363 at
 /// all), and leaving the alpha half at ZERO/ZERO would be a blend that writes 0 alpha
-/// into the swapchain the moment a later variant enables blending; colourWriteMask RGBA
+/// into the swapchain the moment a later variant enables blending; attachmentCount is the COLOUR
+/// attachment count of the subpass, not the pass's two-attachment count - the depth half of the
+/// pass is named by the depth-stencil row, not by this one; colourWriteMask RGBA
 /// and logicOp disabled (the opaque variant of the plan's opaque/transparent pair - trans
-/// parent is a second pipeline, not a flag on this one); and VIEWPORT + SCISSOR as the two
+/// parent is a second pipeline, not a flag on this one, and it lands with the batch, because sort
+/// ed transparency is a property of what the batch draws and there is no batch to sort yet); and
+/// VIEWPORT + SCISSOR as the two
 /// dynamic states. XUD_INVALID_ARG on a NULL pipeline.
 XudResult xud_pipeline_fill_state(XudPipeline* pipeline);
 

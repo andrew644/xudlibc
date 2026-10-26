@@ -128,20 +128,23 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     pipeline->multisample.alphaToCoverageEnable = VK_FALSE;
     pipeline->multisample.alphaToOneEnable = VK_FALSE;
 
-    /* --- depth stencil: depth test and depth write OFF, LESS recorded, no depth bounds, no
-       stencil at all. The OFF pair is the honest half of the depth note: the render pass under
-       this pipeline has NO depth attachment (xud_renderpass.h says so, and the VkImage + VkDevi
-       ceMemory a depth buffer needs belongs to the allocator rung, which holds no image yet), a
-       nd the spec makes the depth buffer UNDEFINED in that case - so an enabled test would be a
-       n implementation-dependent result, which is the opposite of a first triangle that has to
-       draw every time. depthCompareOp is still recorded, because the field has to hold a valid
-       enum and XUD_PIPELINE_DEPTH_COMPARE_OP is the rule the depth buffer will use the day the
-       attachment lands. Stencil does not exist in this library, so both stencil rows are writte
-       n as the disabled set rather than left at calloc's zero. --- */
+    /* --- depth stencil: depth test and depth write BOTH ON, LESS recorded, no depth bounds, no
+       stencil at all. The ON pair is the opaque variant of the plan's opaque/transparent pair, and i
+       t is only honest now because the render pass under this pipeline HAS a depth attachment (xud_r
+       endpass.c creates the VkImage and the allocator owns its memory) - the spec makes the depth co
+       ntents of a subpass with no depth attachment implementation-dependent, which is why the same t
+       wo flags were VK_FALSE for the first-triangle step. With the attachment present and cleared to
+       XUD_RENDERPASS_CLEAR_DEPTH by the pass, LESS plus a write is the rule that makes a nearer frag
+       ment replace a farther one, which is what a depth buffer is for. depthCompareOp is the rule th
+       e test uses, and XUD_PIPELINE_DEPTH_COMPARE_OP is LESS, the one form the clear-to-1.0 convention
+       needs: a nearer fragment has the SMALLER depth, so it passes against the larger one already in
+       the buffer. Stencil does not exist in this library, so both stencil rows are written as the di
+       sabled set rather than left at calloc's zero, and the depth-bounds pair is written as the full
+       [0,1] range rather than left at zero for the same reason. --- */
     pipeline->depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     pipeline->depthStencil.pNext = NULL;
-    pipeline->depthStencil.depthTestEnable = VK_FALSE;
-    pipeline->depthStencil.depthWriteEnable = VK_FALSE;
+    pipeline->depthStencil.depthTestEnable = VK_TRUE;
+    pipeline->depthStencil.depthWriteEnable = VK_TRUE;
     pipeline->depthStencil.depthCompareOp = XUD_PIPELINE_DEPTH_COMPARE_OP;
     pipeline->depthStencil.depthBoundsTestEnable = VK_FALSE;
     pipeline->depthStencil.stencilTestEnable = VK_FALSE;
@@ -163,7 +166,15 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
        alpha half, grepped: srcAlpha, colorBlendFactor and useAlphaBlend do not exist anywhere
        in vulkan_core.h 1.4.363), and leaving the alpha half at ZERO/ZERO would be a blend that
        writes 0 alpha into the swapchain the moment a later variant enables blending. srcAlpha
-       VK_TRUE is the spec's default form. --- */
+       VK_TRUE is the spec's default form. attachmentCount is the number of COLOUR attachments o
+       f the subpass this pipeline runs in, NOT the attachment count of the pass: the pass now ha
+       s two attachments, but only one of them has a colour aspect, and VUID-VkPipelineColorBlendS
+       tateCreateInfo-attachmentCount-00646 is about the colour half - the depth half of the pass i
+       s named by the depth-stencil row above, not by this one. The TRANSPARENT variant of the pa
+       ir is a second pipeline of this rung, not a flag on this one, and it lands with the batch: s
+       orted transparency is a property of what the batch draws, and there is no batch to sort yet,
+       so shipping a blend-enabled pipeline now would be a pipeline nothing can reach by any means
+       other than by being wrong. --- */
     pipeline->blendAttachment.blendEnable = VK_FALSE;
     pipeline->blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
     pipeline->blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;

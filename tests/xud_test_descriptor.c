@@ -421,16 +421,21 @@ static void xud_test_gpu_descriptor(void) {
     }
 
     /* The allocator below this rung is no longer storage-only: the descriptor's buffer made one blo
-       ck and one live range.
+       ck and one live range, and the render pass's depth image made a second of each - the image's
+       requirements ask for an alignment of 65536 on this driver, which no hole in the buffer's block
+       can satisfy, so the image is a second VkDeviceMemory rather than a suballocation.
      */
     xud_check(
         xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytes, &cursor) == XUD_OK, "gpu-desc/stats-answers", "answers");
-    xud_check(blockCount == 1u, "gpu-desc/one-block",
-        "one VkDeviceMemory, the descriptor's uniform buffer being the first thing the allocator was"
-        " ever asked for");
-    xud_check(liveCount == 1u, "gpu-desc/one-live-range", "and one live range, that one carve");
-    xud_check(bytes == context->descriptor->uniformRange.size, "gpu-desc/bytes-are-the-carve",
-        "the reserved bytes are exactly that carve, which is what makes the counter a fact");
+    xud_check(blockCount == 2u, "gpu-desc/two-blocks",
+        "two VkDeviceMemory, the descriptor's uniform buffer and the render pass's depth image - the"
+        " image is the first thing in this tree that asked for an image's requirements rather than a"
+        " buffer's, and an image's alignment is not a buffer's");
+    xud_check(liveCount == 2u, "gpu-desc/two-live-ranges", "and two live ranges, those two carves");
+    xud_check(bytes == context->descriptor->uniformRange.size + context->renderer->renderPass->depthRange.size,
+        "gpu-desc/bytes-are-both-carves",
+        "the reserved bytes are exactly the two carves added up, which is what makes the counter a fa"
+        "ct rather than an estimate");
     xud_check(cursor == 0u, "gpu-desc/cursor-untouched",
         "and the ring's cursor is still at the start: a per-frame uniform buffer is static, not tran"
         "sient, so it did not come from the ring");

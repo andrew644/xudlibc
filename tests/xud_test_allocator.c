@@ -465,16 +465,22 @@ static void xud_test_gpu_allocator(void) {
         return;
     }
 
-    /* The context's own bring-up already opened the descriptor rung, and that rung carved one range
-       out of one block: the per-frame uniform buffer is the first thing the allocator was ever
-       asked for. Every number below is therefore read as a delta on this baseline rather than as a
-       constant, which is what keeps the rung's rules about what moved rather than about absolute
-       offsets.
+    /* The context's own bring-up already opened the descriptor rung AND the render pass below the
+       renderer, and those two carved two ranges out of two blocks: the per-frame uniform buffer is
+       the first request the allocator ever saw (alignment 256, so it sits in the 64 KiB block this
+       layer opens first), and the depth image is the second - its requirements ask for an alignment
+       of 65536 on this driver, which no hole in the first block can satisfy, so the image's block is
+       a second VkDeviceMemory rather than a suballocation. Every number below is therefore read as a
+       delta on this baseline rather than as a constant, which is what keeps the rung's rules about
+       what moved rather than about absolute offsets.
      */
     xud_check(xud_allocator_stats(context->allocator, &baseBlocks, &baseLive, &baseBytes, &cursorBefore) == XUD_OK,
         "gpu-alloc/baseline-stats", "answers at the context's own state");
-    xud_check(baseBlocks == 1u, "gpu-alloc/baseline-one-block", "one block, the descriptor rung's");
-    xud_check(baseLive == 1u, "gpu-alloc/baseline-one-live", "and one live range, that one carve");
+    xud_check(baseBlocks == 2u, "gpu-alloc/baseline-two-blocks",
+        "two blocks, the descriptor rung's uniform buffer and the render pass's depth image - the image"
+        " is the first thing that ever asked for an IMAGE's requirements rather than a buffer's, and an"
+        " image's alignment is not a buffer's");
+    xud_check(baseLive == 2u, "gpu-alloc/baseline-two-live", "and two live ranges, those two carves");
     xud_check(baseBytes > 0u, "gpu-alloc/baseline-bytes", "and reserved bytes, so the descriptor rung really did ask the allocator");
     xud_check(cursorBefore == 0u, "gpu-alloc/baseline-cursor", "and the ring's cursor is still at the start");
 
@@ -523,9 +529,13 @@ static void xud_test_gpu_allocator(void) {
     xud_check(xud_allocator_acquire(&small2, context->allocator, context->loader, context->device, &context->physicalDevice->caps, &ask)
             == XUD_OK,
         "gpu-alloc/second", "completes");
-    xud_check(small2.memory == small1.memory, "gpu-alloc/one-block-two-ranges",
-        "the same VkDeviceMemory: the second request was suballocated out of the first block, which is the rule the rung exists for");
-    xud_check(small2.blockIndex == small1.blockIndex, "gpu-alloc/same-block-index", "and the same block row");
+    xud_check(small2.blockIndex < baseBlocks, "gpu-alloc/second-is-a-suballocation",
+        "the second request came out of a block that ALREADY existed rather than a new VkDeviceMemory -"
+        " which hole the scan picked is the free list's row order, not the block count's (here it is the"
+        " depth image's block, whose hole was the first free row), and the rule the rung exists for is t"
+        "hat a request a hole can hold makes no allocation at all");
+    xud_check(small2.memory != VK_NULL_HANDLE, "gpu-alloc/second-names-memory",
+        "and it names a real VkDeviceMemory, so the hole it came out of is a real one");
     xud_check(small2.offset >= 4096u, "gpu-alloc/second-offset-past-first", "at an offset past the first range, not at the start");
     xud_check((small2.offset % 256u) == 0u, "gpu-alloc/second-alignment",
         "and aligned to the request's alignment, which is what the scan computes rather than hopes");
@@ -538,7 +548,7 @@ static void xud_test_gpu_allocator(void) {
     xud_check(
         xud_allocator_acquire(&big, context->allocator, context->loader, context->device, &context->physicalDevice->caps, &ask) == XUD_OK,
         "gpu-alloc/big-opens-a-second-block", "completes, because the request is a block this layer will grow to rather than a refusal");
-    xud_check(big.blockIndex == 1u, "gpu-alloc/big-block-index", "a second block row, not the first one");
+    xud_check(big.blockIndex == baseBlocks, "gpu-alloc/big-block-index", "a block row past the baseline's two, not one of them");
     xud_check(big.memory != small1.memory, "gpu-alloc/big-different-memory", "and a different VkDeviceMemory");
     xud_check(big.size == (VkDeviceSize)XUD_ALLOCATOR_BLOCK_MAX_SIZE, "gpu-alloc/big-size-is-bound",
         "the block landed exactly on the growth ceiling, which is what says the doubling ladder reached the bound rather than stepping "
@@ -546,7 +556,8 @@ static void xud_test_gpu_allocator(void) {
 
     xud_check(xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytesBefore, &cursorBefore) == XUD_OK,
         "gpu-alloc/stats-answers", "answers");
-    xud_check(blockCount == 2u, "gpu-alloc/stats-two-blocks", "two blocks, which is the growth path rather than a refusal");
+    xud_check(blockCount == baseBlocks + 1u, "gpu-alloc/stats-one-block-more",
+        "one block more than the baseline's, which is the growth path rather than a refusal");
     xud_check(liveCount == baseLive + 3u, "gpu-alloc/stats-three-live",
         "three live ranges over them on top of the baseline the context's own bring-up left behind");
     xud_check(bytesBefore == (VkDeviceSize)XUD_ALLOCATOR_BLOCK_MAX_SIZE + 4096u + 1024u + baseBytes, "gpu-alloc/stats-bytes-exact",
@@ -583,8 +594,8 @@ static void xud_test_gpu_allocator(void) {
 
     xud_check(xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytesAfter, &cursor) == XUD_OK,
         "gpu-alloc/stats-after-reuse", "answers");
-    xud_check(
-        blockCount == 2u, "gpu-alloc/stats-still-two-blocks", "no third block was created, which is the whole cost argument of the rung");
+    xud_check(blockCount == baseBlocks + 1u, "gpu-alloc/stats-no-new-block-for-reuse",
+        "the count did not move again, which is the whole cost argument of the rung");
     xud_check(bytesAfter == (bytesBefore - 1024u), "gpu-alloc/stats-bytes-exact-after-reuse",
         "the reserved bytes moved by exactly the 1024-byte range that was released and not asked for again, which is what makes the "
         "counter a fact rather than an estimate");
@@ -679,7 +690,8 @@ static void xud_test_gpu_allocator(void) {
 
     xud_check(xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytesAfter, &cursor) == XUD_OK,
         "gpu-alloc/stats-after-ring", "answers");
-    xud_check(blockCount == 3u, "gpu-alloc/stats-three-blocks", "the two static blocks plus the ring's one block, and no more");
+    xud_check(blockCount == baseBlocks + 2u, "gpu-alloc/stats-plus-ring-block",
+        "the baseline's two static blocks plus the big request's plus the ring's one block, and no more");
     xud_check(cursor == 256u, "gpu-alloc/stats-cursor-moved", "the cursor says exactly what the ring handed out since the reset");
 
     if (context->validate != 0u) {

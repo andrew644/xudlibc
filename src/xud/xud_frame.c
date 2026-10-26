@@ -285,6 +285,13 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
         frame->imageLayouts[index] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
+    /* The depth image's layout row, written rather than left at zero: VK_IMAGE_LAYOUT_UNDEFINED happe
+       ns to be 0 and calloc would give it, but the field is state the first frame's barrier reads as
+       its oldLayout, and writing the constant is what says so to a reader rather than to a numerica
+       l coincidence. One field, not an array - see the note in xud_frame.h for why the colour half i
+       s an array and this half is not. */
+    frame->depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
     /* The fence and the semaphore create-infos are the empty forms: no initial fence state is asked for
        (VK_FENCE_CREATE_SIGNALED_BIT would be a fence that starts already signalled, which is the opposit
        e of what a fence that has to bound a submission means), and VkSemaphoreCreateInfo has nothing els
@@ -407,7 +414,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     VkViewport viewport;
     VkRect2D scissor;
     VkRenderPassBeginInfo passBegin;
-    VkImageMemoryBarrier imageBarrier;
+    VkImageMemoryBarrier imageBarriers[XUD_RENDERPASS_ATTACHMENT_COUNT];
     VkSubmitInfo submit;
     VkPresentInfoKHR present;
     uint32_t imageIndex = 0u;
@@ -426,6 +433,12 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         return XUD_INVALID_ARG;
     }
     if ((swapchain->imageCount == 0u) || (framebufferCount == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+    if (pass->depthImage == VK_NULL_HANDLE) {
+        /* The pass's second attachment is a depth image this frame has to give a layout, so a pass wi
+           th none is a pass this frame cannot run - the same rule xud_framebuffer_open() applies to a
+           framebuffer row one rung up. */
         return XUD_INVALID_ARG;
     }
 
@@ -573,26 +586,71 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        supported access types puts the write at the fragment-test stages, which a shader-stage-only mask
        does not cover (the validation layer says so, probed today). The barrier is outside the render
        pass, before vkCmdBeginRenderPass, so no subset-of-the-bound-pipeline rule reaches it. */
-    imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    imageBarrier.pNext = NULL;
-    imageBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    imageBarrier.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    imageBarrier.srcQueueFamilyIndex = 0u; /* the same family on both halves: this barrier is a LAYOUT
+    /* The layout transitions, and they have to happen BEFORE the pass begins: the image this frame wri
+       tes is in the layout the last frame left it in (VK_IMAGE_LAYOUT_UNDEFINED for an image that has ne
+       ver been drawn into, the pass's finalLayout for one that has), and the pass requires its attachme
+       nt to be in the attachment's initialLayout from the first sample. A barrier is the only way acros
+       s, and it names the source layout the image is actually in - which is why the frame loop records
+       one layout per colour image and one for the depth image rather than assuming one. ONE barrier ca
+       rrying TWO image-barrier entries rather than two barriers, because the entries are independent la
+       yout transitions of two images and one call is one dependency in the command buffer rather than t
+       wo: the array is indexed in the pass's attachment order, the same order the clear-value array abo
+       ve is, and the count beside it is the array's own constant so the two cannot disagree. Both stage
+       masks are XUD_FRAME_BARRIER_STAGES, ALL_GRAPHICS: the access flags this barrier names are a colou
+       r-attachment read AND a write AND the depth-stencil pair, and the spec's table of supported access
+       types puts the attachment writes at the fragment-test stages, which a shader-stage-only mask does
+       not cover (probed today: TOP_OF_PIPE alone and VERTEX|FRAGMENT alone are both refused for the colo
+       ur-write bit, and the depth-write bit has the same rule against VK_PIPELINE_STAGE_DEPTH_ATTACHMENT
+       _OUTPUT_BIT, which ALL_GRAPHICS covers). The barrier is outside the render pass, before vkCmdBeg
+       inRenderPass, so no subset-of-the-bound-pipeline rule reaches it.
+     */
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].pNext = NULL;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].srcAccessMask
+        = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].dstAccessMask
+        = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].srcQueueFamilyIndex = 0u; /* the same family on both halves: this barrier is a LAYOUT
                                               transition, not an ownership transfer, and the pair being
                                               equal is what says so - the spec's rule for an EXCLUSIVE
                                               image is that a non-equal pair must name EXTERNAL or a
                                               real family, and an unset pair is garbage the validation
                                               layer reads as an invalid family index */
-    imageBarrier.dstQueueFamilyIndex = 0u;
-    imageBarrier.oldLayout = frame->imageLayouts[imageIndex];
-    imageBarrier.newLayout = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].initialLayout;
-    imageBarrier.image = row->image; /* the swapchain's own image, borrowed into the framebuffer row - the
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].dstQueueFamilyIndex = 0u;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].oldLayout = frame->imageLayouts[imageIndex];
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].newLayout = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].initialLayout;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].image = row->image; /* the swapchain's own image, borrowed into the framebuffer row - the
                                         view of it and the framebuffer of it were built for this same image */
-    imageBarrier.subresourceRange = row->viewInfo.subresourceRange; /* the range the view was created for,
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].subresourceRange = row->viewInfo.subresourceRange; /* the range the view was created for,
                                         which is the range the framebuffer attaches: one colour aspect, one
                                         mip, one layer */
-    loader->deviceTable.vkCmdPipelineBarrier(
-        frame->commandBuffer, XUD_FRAME_BARRIER_STAGES, XUD_FRAME_BARRIER_STAGES, 0u, 0u, NULL, 0u, NULL, 1u, &imageBarrier);
+
+    /* The SECOND entry: the pass's depth image. The access masks are the DEPTH-STENCIL pair rather th
+       an the colour pair, because an access mask that names the colour bits against a depth image is a
+       barrier claiming an access the image cannot take (VUID-VkImageMemoryBarrier-srcAccessMask-03096 /
+       VUID-VkImageMemoryBarrier-dstAccessMask-03097 are the pair, and the validation layer reads the as
+       pect mask of the range against the bits). The subresource range is the one the depth VIEW was cre
+       ated for - VK_IMAGE_ASPECT_DEPTH_BIT alone - read off the pass's own depthViewInfo rather than re
+       assembled here, so a barrier and the view it guards cannot drift apart. oldLayout is the frame's
+       own record rather than a guess, exactly as the colour half's is; for the first frame it is UNDEFIN
+       ED and for every frame after it it is the pass's depth finalLayout, which equals the pass's depth
+       initialLayout, so the transition is a no-op from the second frame on - which is what a depth atta
+       chment being never presented buys. */
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT] = imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT];
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].srcAccessMask
+        = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].dstAccessMask
+        = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].oldLayout = frame->depthLayout;
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].newLayout = pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].initialLayout;
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].image = pass->depthImage; /* the pass's OWN image, not a row's:
+                                        one depth image for every framebuffer row, which is the reason th
+                                        e image and its one view belong to the pass rather than to a row
+                                        of the array */
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].subresourceRange = pass->depthViewInfo.subresourceRange;
+
+    loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, XUD_FRAME_BARRIER_STAGES, XUD_FRAME_BARRIER_STAGES, 0u, 0u, NULL, 0u,
+        NULL, XUD_RENDERPASS_ATTACHMENT_COUNT, imageBarriers);
 
     /* The layout this frame LEAVES the image in is recorded below, once the submission has run - see the
        note there. Nothing is recorded here, because a barrier that was recorded into a command buffer is
@@ -639,6 +697,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        refused submit leaves the record at the layout the image really is still in, which is what keeps
        the next frame's barrier's oldLayout a fact rather than a guess. */
     frame->imageLayouts[imageIndex] = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout;
+    frame->depthLayout = pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].finalLayout;
 
     /* --- 6. present on the present queue. Both role queues are the same handle on this machine (the devic
        e layer's note), and the rule is still written as two lookups rather than one, because the two roles

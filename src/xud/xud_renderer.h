@@ -46,10 +46,12 @@
 #include "volk.h" /* Required for: the loader's entry-point tables - and it must come before
                      <vulkan/vulkan.h>, which the header below it includes; volk.h errors when
                      VULKAN_H_ is already in (AGENTS.md, include-order trap) */
+#include "xud_allocator.h"
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_frame.h"
 #include "xud_loader.h"
+#include "xud_physical.h"
 #include "xud_pipeline.h"
 #include "xud_renderpass.h"
 #include "xud_swapchain.h"
@@ -87,14 +89,18 @@ struct XudRenderer {
 /// hands back, which is the repo's rule that a rung above the swapchain holds an INDEX rather
 /// than a VkImage), then the frame loop. Every rung's teardown is checked before its create,
 /// and a rung that refuses leaves everything created so far closed in reverse order, so a
-/// renderer that comes back NULL owns nothing. On XUD_OK the four fields above are live and
-/// framebufferCount == swapchain->imageCount. XUD_INVALID_ARG on a NULL out-pointer or one that
-/// already owns a renderer, a NULL loader/device/swapchain, a handle-less device, or a swapchai
-/// n with no handle and no images; XUD_UNSUPPORTED when the loader is closed, its device rows
-/// are not this device's, a row one of the four rungs needs is nil, or the swapchain has no
-/// chosen format. XUD_OUT_OF_MEMORY when a host allocation of one of the rungs fails.
-XudResult xud_renderer_open(
-    XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor, const XudSwapchain* swapchain);
+/// renderer that comes back NULL owns nothing. The render pass now takes the physical layer's
+/// recorded caps and the allocator below this rung, because the pass's second attachment is a
+/// depth image this rung creates and whose memory the allocator owns - the renderer does not own
+/// the allocator, the context does, one rung below, and closes it after this rung's teardown has
+/// released the range. On XUD_OK the four fields above are live and framebufferCount == swapcha
+/// in->imageCount. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a renderer, a
+/// NULL loader/device/swapchain, a handle-less device, or a swapchain with no handle and no imag
+/// es; XUD_UNSUPPORTED when the loader is closed, its device rows are not this device's, a row o
+/// ne of the four rungs needs is nil, or the swapchain has no chosen format. XUD_OUT_OF_MEMORY w
+/// hen a host allocation of one of the rungs fails.
+XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    const XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain);
 
 /// Driver: one frame through the four rungs this rung owns - the caller above names no pipeline,
 /// no pass, no framebuffer array and no fence, which is what keeps the whole Vulkan half of the
@@ -110,7 +116,7 @@ XudResult xud_renderer_draw(
 /// note gives. Every rung reports the first thing that refused, and the rungs after a refusal
 /// still run - the rule xud_close_context() states for its own rungs, one rung up. XUD_ALREADY
 /// when the pointer owns no renderer; XUD_INVALID_ARG on a NULL pointer-to-pointer or a NULL
-/// loader/device.
-XudResult xud_renderer_close(XudRenderer** ioRenderer, const XudDevice* device, XudLoader* loader);
+/// loader/device/allocator.
+XudResult xud_renderer_close(XudRenderer** ioRenderer, const XudDevice* device, XudLoader* loader, XudAllocator* alloc);
 
 #endif /* XUD_RENDERER_H_ */

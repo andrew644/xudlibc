@@ -330,7 +330,8 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        loader's device table for one of the create/destroy names this rung needs, or a swapchain wit
        h no chosen format.
      */
-    result = xud_renderer_open(&context->renderer, context->loader, context->device, context->descriptor, context->swapchain);
+    result = xud_renderer_open(&context->renderer, context->loader, context->device, &context->physicalDevice->caps, context->descriptor,
+        context->allocator, context->swapchain);
     if (result != XUD_OK)
         goto fail;
 
@@ -422,7 +423,7 @@ XudResult xud_close_context(XudContext** context) {
     rung = xud_handle_table_close(&victim->handleTable);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
-    rung = xud_renderer_close(&victim->renderer, victim->device, victim->loader);
+    rung = xud_renderer_close(&victim->renderer, victim->device, victim->loader, victim->allocator);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
     rung = xud_descriptor_close(&victim->descriptor, victim->loader, victim->device, victim->allocator);

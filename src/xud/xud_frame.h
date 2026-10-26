@@ -133,6 +133,17 @@ struct XudFrame {
                                     image is in NOW. The array is per image because acquire chooses the image, not this rung. */
     uint32_t imageLayoutCount; /* how many layout rows are live - always the swapchain's imageCount, allocated exactly by the same rule as
                                   the fence array above */
+    VkImageLayout depthLayout; /* the layout the pass's ONE depth image is in as this rung LEFT it, same
+                                  shape as the array above but one field rather than an array: the colour
+                                  images are one per swapchain image and acquire chooses among them, whi
+                                  le the depth image is one image the pass owns and every framebuffer ro
+                                  w attaches the same view of. It starts at VK_IMAGE_LAYOUT_UNDEFINED, th
+                                  e layout xud_renderpass_fill_depth_info() declares the image created in
+                                  , and the first frame's barrier is what moves it out of that layout an
+                                  d every later frame's is a no-op because the pass's initialLayout and f
+                                  inalLayout for a depth attachment are the same layout - a depth attachm
+                                  ent is never presented, so it has no PRESENT_SRC_KHR half to move back
+                                  out to. */
     VkFence lastFrameFence; /* borrowed: which fence the last xud_frame_draw() signalled, VK_NULL_
                                HANDLE when no frame is in flight. The wait-then-reset pair at the
                                end of a frame is what keeps every fence in the not-signalled state

@@ -132,11 +132,27 @@ static_assert(XUD_ALLOCATOR_RANGE_MAX_CAPACITY % XUD_ALLOCATOR_RANGE_MIN_CAPACIT
 
 /* The alignment ceiling. VkMemoryRequirements::alignment is a VkDeviceSize and a driver may answer
    anything, so the ceiling is this layer's own: rounding an offset up to an alignment is (offset +
-   align - 1) rounded down, and an alignment above this bound is not a property of any buffer this
-   tree will ever create (the largest element this library's own vertex streams name is 16 bytes),
-   so it is refused as a bad argument rather than rounded with an overflow-prone expression. The
-   overflow itself is still checked, on both sides of the rounding, in xud_allocator_align_up(). */
-#define XUD_ALLOCATOR_ALIGN_MAX (256u)
+   align - 1) rounded down, and an alignment above this bound is not rounded at all - it is refused
+   as a bad argument rather than honoured with an expression that can overflow. The bound used to be
+   256, which was a fact about the BUFFERS this tree creates (the largest element its own vertex st
+   reams name is 16 bytes, and the caps' minAlignmentForExtendedData is at or below 256); it is not
+   a fact about an IMAGE. Probed today on this machine: vkGetImageMemoryRequirements for the depth
+   attachment xud_renderpass.c creates - VK_FORMAT_D32_SFLOAT, VK_IMAGE_TILING_OPTIMAL, one use of
+   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, at the swapchain's extent - answers size 1397440,
+   alignment 65536, memoryTypeBits 0x7. 64 KiB is the tile-aligned form lavvk picks for a depth att
+   achment under OPTIMAL tiling, and it is a requirement, not a suggestion: an image bound at an off
+   set that does not satisfy it is an image whose texels the fixed-form depth hardware reads are no
+   t where the library thinks they are. So the bound is the largest alignment this layer will pad t
+   o, and 65536 is that answer with the headroom this driver's own answer gives it. A request above
+   it is REPORTED (XUD_INVALID_ARG from the acquire, XUD_UNSUPPORTED from the rung above that maps a
+   driver fact to that code), never quietly served at a smaller alignment - a depth buffer carved a
+   t 256 when the driver asked for 65536 is a depth buffer that works on this driver and is wrong o
+   n another, which is the opposite of the check-before-you-use rule. The overflow itself is still
+   checked on both sides of the rounding, in xud_allocator_align_up(). */
+#define XUD_ALLOCATOR_ALIGN_MAX (65536u)
+
+static_assert(XUD_ALLOCATOR_ALIGN_MAX >= XUD_ALLOCATOR_BLOCK_MIN_SIZE,
+    "xud_allocator.h: a block must be at least as large as the largest alignment this layer will pad to, or a padded carve is unreachable");
 
 static_assert(
     XUD_ALLOCATOR_ALIGN_MAX > 0u, "xud_allocator.h: an alignment of zero is not an alignment, and the rounding below divides by it");

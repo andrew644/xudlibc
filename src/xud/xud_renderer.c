@@ -46,10 +46,12 @@
 
 #include "xud_renderer.h"
 #include "xud.h"
+#include "xud_allocator.h"
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_frame.h"
 #include "xud_loader.h"
+#include "xud_physical.h"
 #include "xud_pipeline.h"
 #include "xud_renderpass.h"
 #include "xud_swapchain.h"
@@ -67,7 +69,7 @@ static_assert(
  * The one retirement order, shared by the teardown and by every failure path of the bring-up
  *-----------------------------------------------------------------------------------------------*/
 
-static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, XudLoader* loader) {
+static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, XudLoader* loader, XudAllocator* alloc) {
     XudResult rung = XUD_OK;
 
     if ((renderer == NULL) || (loader == NULL) || (device == NULL)) {
@@ -85,7 +87,7 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
     (void)rung;
     rung = xud_pipeline_close(&renderer->pipeline, device, loader);
     (void)rung;
-    rung = xud_renderpass_close(&renderer->renderPass, device, loader);
+    rung = xud_renderpass_close(&renderer->renderPass, device, loader, alloc);
     (void)rung;
 }
 
@@ -93,8 +95,8 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
  * The bring-up - the four rungs, in the one order that is correct
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_renderer_open(
-    XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor, const XudSwapchain* swapchain) {
+XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    const XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain) {
     XudRenderer* renderer = NULL;
     XudResult result = XUD_INVALID_ARG;
 
@@ -103,6 +105,14 @@ XudResult xud_renderer_open(
     }
     if ((loader == NULL) || (device == NULL) || (descriptor == NULL) || (swapchain == NULL)) {
         return (loader == NULL) ? XUD_INVALID_ARG : XUD_UNSUPPORTED;
+    }
+    if ((caps == NULL) || (alloc == NULL)) {
+        /* The render pass this rung opens now needs both: the caps are the memory rows the depth
+           image's allocation is chosen from, and the allocator is the one owner of that memory. Th
+           e renderer borrows both rather than owning either - the context owns them, one rung below
+           this one, and closes them after this rung's teardown has released the range - which is th
+           e same shape the descriptor record below is already borrowed in. */
+        return XUD_UNSUPPORTED;
     }
     if (!loader->open) {
         return XUD_UNSUPPORTED;
@@ -134,7 +144,7 @@ XudResult xud_renderer_open(
        is checked by the rung itself before its create - a pass this layer cannot destroy is a pas
        s it must not create, the rule xud_window.c applies to a surface and xud_swapchain.c to a
        swapchain, one rung below. */
-    result = xud_renderpass_open(&renderer->renderPass, loader, device, swapchain->createInfo.imageFormat);
+    result = xud_renderpass_open(&renderer->renderPass, loader, device, caps, alloc, swapchain);
     if (result != XUD_OK) {
         free(renderer);
         return result;
@@ -153,7 +163,7 @@ XudResult xud_renderer_open(
      */
     result = xud_pipeline_open(&renderer->pipeline, loader, device, descriptor, renderer->renderPass->renderPass);
     if (result != XUD_OK) {
-        xud_renderer_retire(renderer, device, loader);
+        xud_renderer_retire(renderer, device, loader, alloc);
         free(renderer);
         return result;
     }
@@ -164,7 +174,7 @@ XudResult xud_renderer_open(
        use a recreate replaces the whole array. */
     result = xud_framebuffer_array_open(&renderer->framebuffers, loader, device, renderer->renderPass, swapchain);
     if (result != XUD_OK) {
-        xud_renderer_retire(renderer, device, loader);
+        xud_renderer_retire(renderer, device, loader, alloc);
         free(renderer);
         return result;
     }
@@ -174,7 +184,7 @@ XudResult xud_renderer_open(
        y above, so it needs all three. */
     result = xud_frame_open(&renderer->frame, loader, device, swapchain);
     if (result != XUD_OK) {
-        xud_renderer_retire(renderer, device, loader);
+        xud_renderer_retire(renderer, device, loader, alloc);
         free(renderer);
         return result;
     }
@@ -213,7 +223,7 @@ XudResult xud_renderer_draw(
  * The teardown
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_renderer_close(XudRenderer** ioRenderer, const XudDevice* device, XudLoader* loader) {
+XudResult xud_renderer_close(XudRenderer** ioRenderer, const XudDevice* device, XudLoader* loader, XudAllocator* alloc) {
     XudRenderer* victim = NULL;
 
     if ((ioRenderer == NULL) || (*ioRenderer == NULL)) {
@@ -221,7 +231,7 @@ XudResult xud_renderer_close(XudRenderer** ioRenderer, const XudDevice* device, 
     }
     victim = *ioRenderer;
 
-    if ((loader == NULL) || (device == NULL)) {
+    if ((loader == NULL) || (device == NULL) || (alloc == NULL)) {
         return (loader == NULL) ? XUD_INVALID_ARG : XUD_UNSUPPORTED;
     }
     if (!loader->open) {
@@ -238,7 +248,7 @@ XudResult xud_renderer_close(XudRenderer** ioRenderer, const XudDevice* device, 
        so the handles are the leak that the refusal reports, and the rungs below still retire bec
        ause skipping them would leak them too. The rows are checked at open by the same rung, so
        this is the one state a broken loader can reach, and it is reported rather than hidden. */
-    xud_renderer_retire(victim, device, loader);
+    xud_renderer_retire(victim, device, loader, alloc);
 
     /* Every close above already freed and cleared the field it owned, so each free below is the
        no-op for a rung that retired and the last chance for one that refused; free(NULL) is a

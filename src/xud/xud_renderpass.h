@@ -8,24 +8,32 @@
  *   the create-info assembly below is the pure half the headless-test rule leans on, and the
  *   driver half is what makes it real against lavvk.
  *
- *   The attachment set is ONE row today: the swapchain colour attachment. There is no depth
- *   attachment, and that is not an omission - a VkAttachmentDescription for a depth attach
- *   ment would need a VkImage and a VkDeviceMemory of its own, which is the allocator rung
- *   that IS in the tree now (S12) and holds no image at all - nothing above it has asked it
- *   for memory yet. The depth TEST and depth WRITE are both OFF in the pipeline for exactly
- *   that reason (xud_pipeline.h states it: a depth test against no depth buffer is implementa
- *   tion-dependent rather than a first triangle that draws every time), and it is why the first
- *   triangle has no hidden-surface behaviour. The depth attachment lands with the rung above
- *   the allocator that will ask it for an image, and this file says so rather than pretending
- *   the depth buffer exists.
+ *   The attachment set is TWO rows now: the swapchain colour attachment and a depth attach
+ *   ment. The depth row is the first thing in this tree that needs an IMAGE rather than a buff
+ *   er, and that is the point of the allocator's rules - a VkAttachmentDescription for a depth
+ *   attachment would need a VkImage and a VkDeviceMemory of its own, so this rung creates the
+ *   image, asks the driver what it needs, carves that out of the allocator's blocks and binds
+ *   the two together. The depth TEST and depth WRITE are ON in the pipeline above for exactly
+ *   that reason now (xud_pipeline.h states the pair: blend off + depth write is the OPAQUE
+ *   variant of the plan's opaque/transparent pair, and it is only honest once a depth buffer
+ *   exists), which is why the first triangle has hidden-surface behaviour. The transparent
+ *   variant of the pair is the batch step's - the sort is what makes it mean anything.
+ *
+ *   The depth image and its one view are owned HERE, not in the framebuffer array: the pass is
+ *   what declares the attachment and every framebuffer row names the SAME view, so the view's
+ *   owner is the pass and the rows only borrow it. That is the opposite of the colour half, whe
+ *   re each swapchain image has its own view and that view belongs to the row that attaches it
+ *   (there is no way to retire a framebuffer while the view that names its image is alive).
  ***********************************************************************************************/
 
 #ifndef XUD_RENDERPASS_H_
 #define XUD_RENDERPASS_H_
 
 #include "volk.h"
+#include "xud_allocator.h"
 #include "xud_device.h"
 #include "xud_loader.h"
+#include "xud_physical.h"
 #include "xud_swapchain.h"
 #include "xud_vulkan.h"
 #include <assert.h>
@@ -38,9 +46,13 @@
  *-----------------------------------------------------------------------------------------------*/
 
 #define XUD_RENDERPASS_ATTACHMENT_COUNT                                                                                                    \
-    1u /* the swapchain colour attachment only - see the                                                                                   \
-          note at the top of the file about why there is no                                                                                \
-          depth attachment here yet */
+    2u /* the swapchain colour attachment AND a depth attachment: the                                                                      \
+          plan's "one perspective 3D scene: one camera, one depth                                                                          \
+          buffer, one render pass, one batch", read at the one place the                                                                   \
+          depth buffer has to be named. The two rows are in attachment                                                                     \
+          order, colour first, and that order is load-bearing - the subpass's                                                              \
+          colour reference and the framebuffer's attachment list both index                                                                \
+          it */
 #define XUD_RENDERPASS_SUBPASS_COUNT                                                                                                       \
     1u /* one subpass: the plan's subpass discipline is about                                                                              \
           ordering BETWEEN subpasses, and there is one subpass                                                                             \
@@ -49,6 +61,10 @@
           ing before it */
 #define XUD_RENDERPASS_DEPENDENCY_COUNT 1u
 #define XUD_RENDERPASS_COLOR_ATTACHMENT 0u /* which attachment the one subpass writes to */
+#define XUD_RENDERPASS_DEPTH_ATTACHMENT                                                                                                    \
+    1u /* which attachment row the depth buffer is in: the row AFTER                                                                       \
+          the colour one, and the index the subpass's pDepthStencilAttachment                                                              \
+          carries and a framebuffer's second attachment row points at */
 #define XUD_RENDERPASS_FIRST_SUBPASS 0u /* the subpass the one dependency row targets */
 
 /* The clear colour, in the sRGB non-linear space the swapchain's chosen format is in (the
@@ -60,8 +76,35 @@
 #define XUD_RENDERPASS_CLEAR_COLOR_B 0.05f
 #define XUD_RENDERPASS_CLEAR_COLOR_A 1.0f
 
-static_assert(XUD_RENDERPASS_ATTACHMENT_COUNT == (XUD_RENDERPASS_COLOR_ATTACHMENT + 1u),
+/* The depth the pass clears every attachment to, and the far side of the projection the camera
+   step will produce. 1.0 in a [0,1] depth buffer is "nothing has been drawn yet", which is what
+   a CLEAR load op has to mean: a clear to 0 would be a buffer that already holds the NEAREST
+   possible depth and would reject every fragment the draw produced, which is a pass that draws
+   nothing rather than a pass that draws the triangle. */
+#define XUD_RENDERPASS_CLEAR_DEPTH 1.0f
+
+/* The depth attachment's format. VK_FORMAT_D32_SFLOAT rather than D24_UNORM_S8_UINT because the
+   24-bit form is a PAIR of aspects and the 8-bit one drags stencil state (a stencil test, a
+   stencil op row, a stencil clear value) into a library that has no stencil at all; D32_SFLOAT
+   is one aspect, 4 bytes per texel, and the only cost is memory, which the allocator owns. The
+   format is NOT assumed to be available: this rung asks the driver what an image of exactly th
+   is (format, tiling, usage) tuple needs (vkGetImageMemoryRequirements) and creates it, and a
+   driver that cannot make one answers at vkCreateImage, which maps through xud_result_from_vk()
+   to XUD_UNSUPPORTED rather than to a pass whose attachment description names an image that wa
+   s never made. There is no VK_FORMAT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL in these headers at all
+   (grepped across /usr/include/vulkan/: zero hits), so the format is a name and not "whateve
+   r the hardware prefers", and vkGetPhysicalDeviceFormatProperties is not called here because
+   it is an INSTANCE-table row (it takes a VkPhysicalDevice) and this rung has no instance hand
+   le - the layer above it would have to hand one down for a check that vkCreateImage already
+   answers. */
+#define XUD_RENDERPASS_DEPTH_FORMAT VK_FORMAT_D32_SFLOAT
+#define XUD_RENDERPASS_DEPTH_USAGE VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT
+
+static_assert(XUD_RENDERPASS_ATTACHMENT_COUNT == (XUD_RENDERPASS_DEPTH_ATTACHMENT + 1u),
     "the attachment rows are contiguous from the colour attachment up");
+static_assert(XUD_RENDERPASS_DEPTH_FORMAT == VK_FORMAT_D32_SFLOAT, "one aspect, 4 bytes per texel, no stencil half to carry");
+static_assert(XUD_RENDERPASS_DEPTH_USAGE == VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+    "the one usage bit a depth image is asked for - it is never sampled in this tree");
 static_assert(VK_SUBPASS_EXTERNAL != XUD_RENDERPASS_FIRST_SUBPASS,
     "the external pseudo-subpass is not a real subpass index, which is what makes "
     "the one dependency row an external -> 0 pair rather than 0 -> 0");
@@ -83,14 +126,38 @@ struct XudRenderPass {
          xud_swapchain.c states for its create-info and its record, one rung up --- */
     VkAttachmentDescription attachments[XUD_RENDERPASS_ATTACHMENT_COUNT];
     VkAttachmentReference colorReferences[XUD_RENDERPASS_SUBPASS_COUNT];
+    VkAttachmentReference depthReferences[XUD_RENDERPASS_SUBPASS_COUNT];
     VkSubpassDescription subpasses[XUD_RENDERPASS_SUBPASS_COUNT];
     VkSubpassDependency dependencies[XUD_RENDERPASS_DEPENDENCY_COUNT];
-    VkClearValue clearValues[XUD_RENDERPASS_ATTACHMENT_COUNT]; /* the clear colour, in attach
+    VkClearValue clearValues[XUD_RENDERPASS_ATTACHMENT_COUNT]; /* the clear values, in attach
                                                                   ment order, so VkRenderPas
                                                                   sBeginInfo's pClearValues
                                                                   index matches the attach
                                                                   ment index - the spec's own
-                                                                  rule for that pair */
+                                                                  rule for that pair: row 0 is
+                                                                  the colour float4 and row 1
+                                                                  is the depth float */
+
+    /* --- the depth attachment's own objects, owned here for the reason stated at the top of
+       the header: the pass declares the attachment and every framebuffer row names the SAME
+       view, so the view cannot belong to a row. The image is the first VkImage in this tree -
+       the descriptor rung's uniform buffer is a VkBuffer, and a swapchain's images belong to
+       the swapchain - and it is the first thing the allocator was ever asked for an IMAGE for
+       (xud_descriptor.c asked for a buffer's memory at S13). --- */
+    VkImage depthImage; /* owned: VK_NULL_HANDLE until xud_renderpass_open() creates it, and
+                          vkDestroyImage retires it - unlike a swapchain image, which xud_swapchain.c
+                          notes has no destroy call at all */
+    VkImageView depthView; /* owned beside it: the ONE view every framebuffer row attaches. There
+                              is no vkDestroyImageView while a framebuffer still names it, which is
+                              why xud_renderpass_close() runs after every framebuffer row has been
+                              closed - the renderer's teardown order */
+    VkImageCreateInfo depthImageInfo; /* what vkCreateImage was handed */
+    VkImageViewCreateInfo depthViewInfo; /* what vkCreateImageView was handed */
+    XudMemoryRange depthRange; /* BORROWED from the allocator: (memory, offset, size) plus the
+                                { blockIndex, rangeIndex, generation } triple that makes a stale
+                                borrow a caught error. The allocator owns the VkDeviceMemory; this
+                                rung owns the release of the range, which is the one thing that
+                                makes the image's memory reachable from here */
 };
 
 /*-----------------------------------------------------------------------------------------------
@@ -105,6 +172,15 @@ struct XudFramebuffer {
                          that names its image is alive, and there is no vkDestroyImage for a
                          swapchain image (xud_swapchain.c's note), so the view is this row's
                          teardown half */
+    VkImageView attachmentViews[XUD_RENDERPASS_ATTACHMENT_COUNT]; /* the row's OWN attachment
+                     list, in attachment order: row 0 is a copy of the colour view above and
+                     row 1 is the pass's depth view, BORROWED. The list is a member rather
+                     than a local because the create-info below points at it and has to outlive
+                     the call - the rule xud_swapchain.c states for a create-info that points
+                     at the record it was assembled from, one rung up. It is a copy of the
+                     handles rather than an array of pointers to them because the colour half
+                     is this row's and the depth half is the pass's, and neither row may
+                     retire the other's */
     VkImage image; /* BORROWED: the swapchain's own image, owned by XudSwapchain's images
                       array and never destroyed here */
     VkFramebufferCreateInfo createInfo; /* what vkCreateFramebuffer was handed */
@@ -148,21 +224,29 @@ struct XudFramebufferArray {
 /// erence may never carry, and the validation layer on this machine fires exactly that VUID
 /// (probed today). The subpass reference therefore carries initialLayout, not finalLayout. The sub
 /// pass row is one colour attachment at index 0, no input attachments, no resolve attach
-/// ment (MSAA is a gate this rung does not take, see AGENTS.md's render-pass note), and no
-/// depth-stencil attachment (see the note at the top of the file). The dependency row is th
-/// e spec's required external -> 0 pair with the colour-attachment-output stage on the sou
-/// rce half and the vertex + colour-attachment-output stages on the destination half, and
-/// the attachment-specific access bits rather than the generic READ/WRITE pair (these head
-/// ers have no VK_ACCESS_CLEAR_AND_WRITE_BIT at all in 1.4.363, grepped, so the attachmen
-/// t-specific names are the only ones that can be written) - a pass whose first subpass cl
-/// ears an attachment has to say that the clear happens before the draw rather than rely o
-/// n implicit ordering, which is the repo's subpass discipline rule read at the one place i
-/// t can be read for one subpass. format is the swapchain's chosen format, written into th
-/// e attachment row here rather than at the create-info step, because the image view the f
-/// remebuffer below attaches has to name the SAME format and a mismatch is a validation er
-/// ror the driver is entitled to refuse. XUD_INVALID_ARG on a NULL pass; XUD_UNSUPPORTED o
-/// n VK_FORMAT_UNDEFINED (a swapchain that has no chosen format has no attachment descript
-/// ion either).
+/// ment (MSAA is a gate this rung does not take, see AGENTS.md's render-pass note), and the
+/// depth-stencil attachment the file-top note says now EXISTS (the subpass's pDepthStencilAtt
+/// achment is the attachment index of the depth row, not a description: a VkSubpassDescripti
+/// on names an attachment by INDEX into the pass's own attachment array, which is why the t
+/// wo rows' order is load-bearing). The dependency row is the spec's required external -> 0
+/// pair with the colour-attachment-output stage on the source half and the vertex + colour-a
+/// ttachment-output stages on the destination half, and the attachment-specific access bits r
+/// ather than the generic READ/WRITE pair (these headers have no VK_ACCESS_CLEAR_AND_WRITE_BI
+/// T at all in 1.4.363, grepped, so the attachment-specific names are the only ones that can
+/// be written) - a pass whose first subpass clears an attachment has to say that the clear h
+/// appens before the draw rather than rely on implicit ordering, which is the repo's subpass
+/// discipline rule read at the one place it can be read for one subpass. The DEPTH half of t
+/// hat pair is the depth-attachment-output stage on the source and the vertex + fragment + d
+/// epth-attachment-output stages on the destination: the pass clears the depth buffer to XUD_
+/// RENDERPASS_CLEAR_DEPTH and the draw writes it, and a dependency that only names the colour
+/// stages says nothing about the depth clear, which is a pass that may draw before its depth
+/// buffer holds 1.0. format is the swapchain's chosen format, written into the colour attach
+/// ment row here rather than at the create-info step, because the image view the framebuffer
+/// below attaches has to name the SAME format and a mismatch is a validation error the drive
+/// r is entitled to refuse; the depth row's format is XUD_RENDERPASS_DEPTH_FORMAT, which is
+/// this layer's own choice and not the swapchain's. XUD_INVALID_ARG on a NULL pass; XUD_UNSU
+/// PPORTED on VK_FORMAT_UNDEFINED (a swapchain that has no chosen format has no attachment d
+/// escription either).
 XudResult xud_renderpass_fill_state(XudRenderPass* pass, VkFormat format);
 
 /// Pure: the VkRenderPassCreateInfo the pass will be created with, assembled from the rows
@@ -170,6 +254,28 @@ XudResult xud_renderpass_fill_state(XudRenderPass* pass, VkFormat format);
 /// same rule xud_pipeline_fill_create_info() applies to its own rows. XUD_INVALID_ARG on a
 /// NULL out-create-info or a NULL pass.
 XudResult xud_renderpass_fill_create_info(const XudRenderPass* pass, VkRenderPassCreateInfo* outCreateInfo);
+
+/// Pure: the VkImageCreateInfo for the depth attachment - a 2D, OPTIMALLY-tiled image of
+/// XUD_RENDERPASS_DEPTH_FORMAT at the swapchain's extent, one array layer, one mip, whose only
+/// usage bit is VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT (the image is attached, never
+/// sampled, never copied and never mapped in this tree, and a usage mask that names more than
+/// the one use is a mask that asks the driver for a layout it does not need), whose subresource
+/// range is the DEPTH aspect alone (VK_IMAGE_ASPECT_DEPTH_BIT, never the stencil half - the
+/// format has one aspect and an aspect mask that names a second is a range that names an
+/// aspect the image does not have), and whose initialLayout is UNDEFINED with finalLayout
+/// DEPTH_STENCIL_ATTACHMENT_OPTIMAL: the image is created with no layout at all and the
+/// frame loop's layout-transition barrier is what gives it one, which is the same rule
+/// xud_frame.c states for a swapchain image. XUD_INVALID_ARG on a NULL out-create-info or a
+/// zero extent.
+XudResult xud_renderpass_fill_depth_info(VkImageCreateInfo* outCreateInfo, uint32_t width, uint32_t height);
+
+/// Pure: the VkImageViewCreateInfo for the depth image - a 2D view of the image handle in hand,
+/// in XUD_RENDERPASS_DEPTH_FORMAT, with an identity swizzle and a subresource range of the DEPTH
+/// aspect alone, one mip, one layer, starting at 0. The aspect mask is the whole reason this is
+/// a second view helper rather than xud_framebuffer_fill_view_info() with a different format:
+/// that one names VK_IMAGE_ASPECT_COLOR_BIT, and a view of a depth image whose range names the
+/// colour aspect is a view of nothing. XUD_INVALID_ARG on a NULL out-create-info.
+XudResult xud_renderpass_fill_depth_view_info(VkImageViewCreateInfo* outCreateInfo, VkImage image);
 
 /// Pure: the VkImageViewCreateInfo for one swapchain image - a 2D view of the image handle
 /// in hand, in the swapchain's chosen format, with an identity swizzle (VK_COMPONENT_SWI
@@ -183,47 +289,79 @@ XudResult xud_framebuffer_fill_view_info(VkImageViewCreateInfo* outCreateInfo, V
 
 /// Pure: the VkFramebufferCreateInfo for one image. renderPass is the handle in hand (the
 /// pass this framebuffer was created FOR - the spec requires the framebuffer's attachments
-/// to match the pass's descriptions exactly), attachmentCount 1 with pAttachments the ONE
-/// VIEW THE STRUCT HOLDS (&framebuffer->view, not a copy of a handle: the row has to point
-/// at storage that outlives the call, and the only storage that does is the framebuffer's o
-/// wn field - the same rule xud_swapchain.c states for a create-info that points at the str
-/// ict's own record, one rung up), width/height the extent the swapchain was created at (co
+/// to match the pass's descriptions exactly), attachmentCount XUD_RENDERPASS_ATTACHMENT_COUNT
+/// with pAttachments the ONE VIEW LIST THE STRUCT HOLDS (&framebuffer->attachmentViews, not
+/// a copy of a handle: the row has to point at storage that outlives the call, and the only
+/// storage that does is the framebuffer's own field - the same rule xud_swapchain.c states
+/// for a create-info that points at the record it was assembled from, one rung up), width/height
+/// the extent the swapchain was created at (co
 /// pied, not re-queried: a framebuffer whose extent is not the image's is a framebuffer who
 /// se viewport will be wrong, and the surface's currentExtent is the "undefined" answer her
 /// e, see xud_swapchain.c), layers 1 (the pass's attachments all have one layer). XUD_INVALI
-/// D_ARG on a NULL out-create-info, a NULL framebuffer, a framebuffer whose view is not lif
-/// e yet, a handle-less render pass or a zero extent.
+/// D_ARG on a NULL out-create-info, a NULL framebuffer, a framebuffer whose colour view is not lif
+/// e yet, a framebuffer whose depth view row is not filled yet (a row that attaches one attach
+/// ment of two is a row the pass will refuse), a handle-less render pass or a zero extent.
 XudResult xud_framebuffer_fill_create_info(
     VkFramebufferCreateInfo* outCreateInfo, const XudFramebuffer* framebuffer, VkRenderPass renderPass, uint32_t width, uint32_t height);
 
-/// Driver: vkCreateRenderPass through the device row. Before any call: the loader is open,
-/// its device rows are this device's rows, and the destroy row is checked BEFORE the create
-/// row (a pass this layer cannot destroy is a pass it must not create). Then the rows are
-/// filled into the struct, the create-info is assembled from them, and the pass is created.
-/// On XUD_OK *outPass owns a live pass whose rows say what it was created with; on any err
-/// or it stays NULL. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a pas
-/// s, a NULL loader/device, or a handle-less device; XUD_UNSUPPORTED when the loader is c
-/// losed, its rows are not this device's, a row is nil, or the format is VK_FORMAT_UNDEF
-/// INED (a swapchain that has no chosen format has no attachment description either).
-XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, VkFormat format);
+/// Driver: the whole rung - vkCreateImage + vkGetImageMemoryRequirements + vkBindImageMemor
+/// y (the memory itself comes from the allocator, which is the only owner of GPU memory here)
+/// + vkCreateImageView + vkCreateRenderPass, in that order, because the pass's attachment desc
+/// ription is what says an image of that format and that extent exists, the image's memory req
+/// uirements are what the allocator was asked for, and the framebuffer rows below attach the v
+/// iew this creates. Before any call: the loader is open, its device rows are this device's ro
+/// ws, and EVERY destroy row this teardown needs (image, view, pass) is checked BEFORE the crea
+/// te rows it would otherwise leak (a pass this layer cannot destroy is a pass it must not crea
+/// te, and so is an image or a view it cannot retire). Then the rows are filled into the struc
+/// t, the create-info assembled from them, the depth image asked about and created, its memory
+/// requirements carved out of the allocator's blocks and bound to it, its one view created, and
+/// the pass created. On XUD_OK *outPass owns a live pass whose rows say what it was created wit
+/// h AND a live depth image in allocator memory; on any error it stays NULL and everything crea
+/// ted so far is retired in the one reverse order (xud_renderpass_retire(), the same shape xud
+/// _descriptor.c's failure path uses). XUD_INVALID_ARG on a NULL out-pointer or one that alrea
+/// dy owns a pass, a NULL loader/device/caps/allocator/swapchain, a handle-less device, a swap
+/// chain with no handle or no images, or a zero extent; XUD_UNSUPPORTED when the loader is clo
+/// sed, its rows are not this device's, a row is nil, the format is VK_FORMAT_UNDEFINED, or the
+///  driver refuses this (format, tiling, usage) tuple at vkCreateImage; XUD_OUT_OF_RESOURCES wh
+/// en the allocator cannot serve the image's requirements (reported, not grown past the block c
+/// eiling - see xud_allocator.h).
+XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, const XudSwapchain* swapchain);
 
-/// Driver: vkDestroyRenderPass through the device row, then free. XUD_ALREADY when the poin
-/// ter owns no pass; XUD_INVALID_ARG on a NULL pointer-to-pointer, a NULL loader/device or
-/// a handle-less device; XUD_UNSUPPORTED when the rows are not this device's or the destro
-/// y row is nil while a handle is in hand (the struct is not freed, same rule as every oth
-/// er teardown rung here).
-XudResult xud_renderpass_close(XudRenderPass** ioPass, const XudDevice* device, XudLoader* loader);
+/// Driver: vkDestroyRenderPass, then vkDestroyImageView, then vkDestroyImage, then the alloca
+/// tor's release of the image's range, then free. That order is the only one that is correct
+/// and every step of it is load-bearing: the pass's attachment description names the depth i
+/// mage's layout, the framebuffer rows (closed above this rung, by xud_framebuffer_array_clo
+/// se()) name the view, and the image's memory belongs to the allocator, so the image's ran
+/// ge has to be released while the allocator is still open - the rule xud_descriptor_close()
+/// states for its uniform buffer, one rung over. xud_device_wait_idle() guards the whole thi
+/// ng first, and that guard is not decoration: the frame loop above may still have a submis
+/// sion or a presentation in flight, and the submission is the one that reads this very dept
+/// h buffer, so releasing the range under it is freeing memory a command buffer is still re
+/// ading - the same boundary xud_swapchain_close(), xud_allocator_close() and xud_descriptor
+/// _close() state, and a guard that cannot run (XUD_UNSUPPORTED) is a teardown this rung mus
+/// t not start, because freeing the struct would leak every handle the driver still holds, w
+/// hile a LOST device is still torn down and still reported, the rule xud_device_close() fol
+/// lows. XUD_ALREADY when the pointer owns no pass; XUD_INVALID_ARG on a NULL pointer-to-po
+/// inter; XUD_UNSUPPORTED on a NULL loader/device/allocator, a handle-less device, rows tha
+/// t are not this device's, or a nil destroy row while the object it would destroy is live.
+/// A refused step is reported, not hidden: the first non-OK answer is what the rung returns
+/// and the steps after it still run.
+XudResult xud_renderpass_close(XudRenderPass** ioPass, const XudDevice* device, XudLoader* loader, XudAllocator* alloc);
 
 /// Driver: one framebuffer for one swapchain image - vkCreateImageView, then vkCreateFrame
-/// buffer, in that order, because the framebuffer's attachment list is the view the create
-/// just made. The image is borrowed (it belongs to the swapchain, xud_swapchain.c's note a
-/// bout vkDestroyImage and swapchain-owned images) and is never destroyed here. On any err
-/// or *outFramebuffer stays NULL and a view that was created but whose framebuffer was no
-/// t is destroyed before the rung returns, because a view nobody attaches is a view that w
-/// ould otherwise leak. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a f
-/// reme... see below, a NULL loader/device, a handle-less device or render pass, a handle-
-/// less image, or an extent of 0; XUD_UNSUPPORTED when the loader is closed, its rows are
-/// not this device's, or a row this rung needs is nil.
+/// /// buffer, in that order, because the framebuffer's attachment list is the view the create
+/// just made AND the second row of that list is the pass's OWN depth view, which this rung o
+/// nly borrows (it is xud_renderpass_close() that retires it, after every row that names it
+/// has died). The image is borrowed (it belongs to the swapchain, xud_swapchain.c's note ab
+/// out vkDestroyImage and swapchain-owned images) and is never destroyed here. On any error
+/// *outFramebuffer stays NULL and a view that was created but whose framebuffer was not is
+/// destroyed before the rung returns, because a view nobody attaches is a view that would ot
+/// herwise leak. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a framebuff
+/// er, a NULL loader/device/pass, a handle-less device, render pass or image, a pass whose d
+/// epth view is not live yet (a row cannot attach an attachment that does not exist), or an
+/// extent of 0; XUD_UNSUPPORTED when the loader is closed, its rows are not this device's, o
+/// r a row this rung needs is nil.
 XudResult xud_framebuffer_open(XudFramebuffer** outFramebuffer, XudLoader* loader, const XudDevice* device, const XudRenderPass* pass,
     VkImage image, VkFormat format, uint32_t width, uint32_t height);
 
