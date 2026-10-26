@@ -28,16 +28,28 @@
  *
  *   What this rung does NOT own, and why: no swapchain (the context owns it, one rung below),
  *   no VkImage of a swapchain image (the swapchain owns its images, xud_swapchain.c's note
- *   about vkDestroyImage), no vertex buffer and no GPU-memory allocator of its own (the allocator
- *   rung IS in the tree now (S12), one rung below the renderer in the ownership tree and owned by
- *   the context rather than by this rung - which is why the pipeline declares zero vertex
- *   bindings and the draw's whole geometry is a vertex count). The batch and the object kinds a
- *   public XudHandle names are steps above this one that have not landed. The DESCRIPTOR rung,
- *   though, is in the tree and sits BELOW this one (allocator -> descriptor -> renderer, because
- *   a VkBuffer carved from allocator-owned memory is named by the pipeline layout above): the re
- *   nderer is handed the descriptor record so the pipeline it builds is built against the two set
- *   layouts and the push-constant range that per-frame data was written into, and it does not own
- *   it - the context does, and it closes after this rung has retired the pipeline that names them.
+ *   about vkDestroyImage), no GPU-memory allocator of its own (the allocator rung IS in the tree
+ *   now (S12), one rung below the renderer in the ownership tree and owned by the context rather
+ *   than by this rung - which is why the pipeline declares zero vertex bindings and the draw's
+ *   whole geometry is a vertex count). The batch and the object kinds a public XudHandle names
+ *   are steps above this one that have not landed. The DESCRIPTOR rung, though, is in the tree
+ *   and sits BELOW this one (allocator -> descriptor -> renderer, because a VkBuffer carved from
+ *   allocator-owned memory is named by the pipeline layout above): the renderer is handed the
+ *   descriptor record so the pipeline it builds is built against the two set layouts and the
+ *   push-constant range that per-frame data was written into, and it does not own it - the
+ *   context does, and it closes after this rung has retired the pipeline that names them.
+ *
+ *   THE BATCH RUNG IS NOW IN THE TREE, AND THIS RUNG OWNS IT. The batch opens AFTER the render
+ *   pass and BEFORE the pipeline, and closes in the reverse slot - after the pipeline has been
+ *   retired and before the pass - because the batch sits BELOW the pipeline in the ladder: the
+ *   pipeline's vertex-input state is the thing that will name the batch's buffers, so the buffers
+ *   have to exist before the pipeline is built against them and must outlive it. What is NOT yet
+ *   true of this tree, and is open work rather than a claim: the pipeline this rung builds still
+ *   declares zero vertex bindings and zero attributes, and the frame loop still records a vkCmdDra
+ *   w rather than an indexed one, so the batch's six buffers are created, uploaded through
+ *   xud_batch_upload() and not yet bound to a draw. The batch is handed to nothing in this open
+ *   order - it needs the caps and the allocator, both of which this rung is already handed - and
+ *   the pipeline create's taking of it is the step that lands the vertex-input state.
  ***********************************************************************************************/
 
 #ifndef XUD_RENDERER_H_
@@ -47,6 +59,7 @@
                      <vulkan/vulkan.h>, which the header below it includes; volk.h errors when
                      VULKAN_H_ is already in (AGENTS.md, include-order trap) */
 #include "xud_allocator.h"
+#include "xud_batch.h"
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_frame.h"
@@ -64,6 +77,13 @@
 
 typedef struct XudRenderer XudRenderer;
 struct XudRenderer {
+    XudBatch* batch; /* owned: the batch rung's five buffers - the four SoA attribute streams and
+                        the one index buffer - carved out of the allocator's memory, plus the one
+                        mapped staging arena the CPU-side bytes are written into. Opened BEFORE the
+                        pipeline sits before it because the pipeline's vertex-input state is the
+                        thing that will name these buffers, so they have to exist before the pipe
+                        line is built against them and must outlive it. Its buffers are created and
+                        uploaded, and not yet bound to a draw: see the batch note above. */
     XudPipeline* pipeline; /* owned: the one graphics pipeline of this rung, with its layout
                               and its two VkShaderModules inside it */
     XudRenderPass* renderPass; /* owned: the one explicit VkRenderPass of the repo's settled
@@ -83,8 +103,10 @@ struct XudRenderer {
 
 /// Driver: the whole renderer, in the one order that is correct - the render pass first (whose
 /// attachment format is the swapchain's CHOSEN format, read off the swapchain's own
-/// record rather than re-queried from a surface this rung cannot name), then the pipeline (hand
-/// ed the pass's handle, for the reason the file-top note gives), then the framebuffer
+/// record rather than re-queried from a surface this rung cannot name), then the BATCH rung (hand-
+/// ed the caps and the allocator, because the batch's buffers are carved out of allocator-owned
+/// memory and its vertex-input state is gated on the caps' vertex-input limits), then the pipeline
+/// (handed the pass's handle, for the reason the file-top note gives), then the framebuffer
 /// array (one row per swapchain image, each row built from the image xud_swapchain_images_get()
 /// hands back, which is the repo's rule that a rung above the swapchain holds an INDEX rather
 /// than a VkImage), then the frame loop. Every rung's teardown is checked before its create,
@@ -93,12 +115,13 @@ struct XudRenderer {
 /// recorded caps and the allocator below this rung, because the pass's second attachment is a
 /// depth image this rung creates and whose memory the allocator owns - the renderer does not own
 /// the allocator, the context does, one rung below, and closes it after this rung's teardown has
-/// released the range. On XUD_OK the four fields above are live and framebufferCount == swapcha
+/// released the range. On XUD_OK the five fields above are live and framebufferCount == swapcha
 /// in->imageCount. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a renderer, a
 /// NULL loader/device/swapchain, a handle-less device, or a swapchain with no handle and no imag
 /// es; XUD_UNSUPPORTED when the loader is closed, its device rows are not this device's, a row o
-/// ne of the four rungs needs is nil, or the swapchain has no chosen format. XUD_OUT_OF_MEMORY w
-/// hen a host allocation of one of the rungs fails.
+/// ne of the five rungs needs is nil, the caps cannot hold the batch's four vertex-input bindings
+/// and four attributes, or the swapchain has no chosen format. XUD_OUT_OF_MEMORY when a host
+/// allocation of one of the rungs fails.
 XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
     const XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain);
 

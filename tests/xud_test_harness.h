@@ -50,6 +50,7 @@ void xud_test_renderpass(void);
 void xud_test_frame(void);
 void xud_test_allocator(void);
 void xud_test_descriptor(void);
+void xud_test_batch(void);
 void xud_test_core(void);
 
 #endif /* XUD_TEST_HARNESS_H_ */

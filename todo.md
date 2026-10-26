@@ -6,54 +6,41 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] Batch layer (`xudrl`): dynamic per-attribute **stream** buffers + one index buffer (SoA, decided 2026-10-23 — see
-    Decided below), flush on pipeline/material change (flush is per stream), fixed pipeline set
-    - 2026-10-25 note: **nothing of this rung is in the tree** — no `xud_batch.h`/`xud_batch.c`, no batch field in
-      `XudContext`, no `tests/xud_test_batch.c`. What is left, itemised against what the tree says today:
-      - **The rung**: N stream `VkBuffer`s (`pos`/`uv`/`color`/`normal` = 36 B/vertex across four buffers) + one
-        index buffer, each carved out of the allocator — the allocator's **third** thing ever asked for, after the
-        descriptor's uniform buffer and the render pass's depth image.
-      - **The pure half** (headless-testable by construction): the "every stream holds the same vertex count"
-        invariant, the flush-on-pipeline/material-change decision (flush is per stream), the vertex/index
-        arithmetic, the capacity-doubling bounds.
-      - **The driver half**: staging the CPU-side attribute bytes into those buffers by `vkCmdCopyBuffer` off the
-        allocator's transient ring — `xud_allocator_ring_acquire`/`xud_allocator_ring_reset` are called by nothing
-        above the allocator today, and there is no `vkCmdCopyBuffer` anywhere in `src/xud/`.
-      - **The first three command-buffer bindings the tree would make**: `vkCmdBindVertexBuffers` (one call, whole
-        array, returns void → zero-state-then-check), `vkCmdBindDescriptorSets` for set 0, `vkCmdPushConstants`
-        into the range the descriptor rung already wrote — none of the three names appears anywhere today.
-      - **The per-frame uniform update**: `xud_descriptor_fill_uniform_block()` writes an identity `viewProj`
-        (`xud_descriptor.c:387-390`) and nothing else ever touches that row; the copy that puts the block's bytes
-        into the GPU buffer is the frame loop's, and is not in the tree.
+- [ ] Batch **consumers**: the pipeline's vertex input, the frame loop's indexed draw and its three command-buffer
+    bindings, the per-frame uniform copy, the **transparent** pipeline variant + the sorted-batch rule, the handle
+    layer's `record`, the frame loop's multi-draw shape
+    - 2026-10-26 note: the **batch rung itself landed as S16** — see the *Steps complete (S16 …)* section at the top of
+      `todo_completed.md`. What that step deliberately left for this one, itemised against what the tree says today:
       - **The pipeline's vertex input**: `xud_pipeline_fill_state()` still writes
-        `vertexBindingDescriptionCount`/`vertexAttributeDescriptionCount` 0 (`xud_pipeline.c:80`/`82`) — the batch
-        writes four binding + four attribute rows, gated on the caps' `maxVertexInputBindings`/
-        `maxVertexInputAttributes`, and the built-in SPIR-V must be rewritten to read those bindings and take the
-        push constant (today's shaders generate their three vertices from `gl_VertexIndex`).
-      - **The draw**: `xud_frame.c:665` is a hard-coded `vkCmdDraw(commandBuffer, XUD_FRAME_DRAW_VERTEX_COUNT, 1u,
-        0u, 0u)`; the batch's is `vkCmdDrawIndexed` against a real index buffer and count.
-      - **The second pipeline variant**: the transparent one (blend on + depth test, sorted) — a second pipeline of
-        the pipeline rung, created once at init, plus the sorted-batch rule. Only the opaque variant exists today
-        (`xud_pipeline.c:178`, `blendEnable = VK_FALSE`).
-      - **The handle layer's `record`**: `XudHandleSlot.record` (`xud_handle.h:107`) is still the NULL sentinel and
-        `xud.h` still declares no create/close function that takes a handle — the batch/object rungs are what fill
-        it.
-      - **The frame loop's shape**: `xud_frame.h:50`'s one-`VkSubmitInfo`-per-submit "one batch flushed per frame"
-        assumption and `xud_frame_draw()`'s refusal shapes must grow to multi-draw recording.
-      - **The test area**: `tests/xud_test_batch.c` + one line in `tests/xud_test_main.c` and one in
-        `CMakeLists.txt`'s explicit source list (no globs), per the split's rules.
-    - 2026-10-25 note (the reasoning that note above assumes, kept for it): sits above the descriptor rung (S13) and
-      the depth-attachment step (S15), both landed the same day — the batch's streams are the allocator's **third
-      thing ever asked for (the descriptor's uniform buffer and the render pass's depth image were the first two,
-      and the image is a block of its own because an image's `VkMemoryRequirements` ask for an alignment of 65536
-      on this driver, not a buffer's 256), and its draws are the
-      first thing that binds set 0 and pushes the range that rung already wrote. `vkCmdBindVertexBuffers` and
-      `vkCmdBindDescriptorSets` are rows of Volk's device table, already filled in bulk, so no loader slot is added —
-      the row check before the call is what remains. This is also the first time the tree writes
-      `VkPipelineVertexInputStateCreateInfo` at all: today's pipeline writes zero bindings and zero attributes. **The
-      transparent pipeline variant lands here, not earlier**: the opaque variant (blend off + depth write against the
-      depth attachment) landed with S15, and the transparent half (blend on + depth test, sorted) is the sorted-batch
-      rule's, so it is the batch's to write.
+        `vertexBindingDescriptionCount`/`vertexAttributeDescriptionCount` 0 (`xud_pipeline.c:80`/`82`) — the batch writes
+        four binding + four attribute rows (`xud_batch_fill_binding`/`xud_batch_fill_attribute`/`xud_batch_fill_vertex_input`
+        are in the tree and headless-tested, gated on the caps' `maxVertexInputBindings`/`maxVertexInputAttributes`), but
+        nothing above the batch **calls** them into a `VkPipelineVertexInputStateCreateInfo` yet, and the built-in SPIR-V
+        still generates its three vertices from `gl_VertexIndex` instead of reading those bindings and taking the push
+        constant.
+      - **The three command-buffer bindings**: `vkCmdBindVertexBuffers` (one call, whole array, returns void → zero-state-then
+        -check), `vkCmdBindDescriptorSets` for set 0, `vkCmdPushConstants` into the range the descriptor rung already wrote —
+        none of the three names appears anywhere in `src/xud/` today.
+      - **The draw**: `xud_frame.c` is still a hard-coded `vkCmdDraw(commandBuffer, XUD_FRAME_DRAW_VERTEX_COUNT, 1u, 0u, 0u)`;
+        the batch's is `vkCmdDrawIndexed` against a real index buffer and count. `xud_batch_record_draw()` records the draw
+        ROWS (firstIndex/indexCount from the pending pair, grown by `XUD_BATCH_DRAW_MIN`); the frame loop has to replay them.
+      - **The upload**: `xud_batch_upload()` is in the tree and issues the five `vkCmdCopyBuffer` calls, but nothing calls it —
+        it needs a command buffer that is being recorded, and the only command buffer in this tree belongs to the frame loop.
+        `tests/xud_test_batch.c` says so in its file-top comment; the region ARITHMETIC it builds from is checked headless.
+      - **The per-frame uniform update**: `xud_descriptor_fill_uniform_block()` writes an identity `viewProj` and nothing else
+        ever touches that row; the copy that puts the block's bytes into the GPU buffer is the frame loop's and is not in the
+        tree.
+      - **The second pipeline variant**: the transparent one (blend on + depth test, **sorted**) — `XUD_BATCH_VARIANT_TRANSPARENT`
+        is declared and the flush decision already keys on the variant index, but only the opaque pipeline exists
+        (`xud_pipeline.c`, `blendEnable = VK_FALSE`). Sorting is this step's, not S15's.
+      - **The handle layer's `record`**: `XudHandleSlot.record` (`xud_handle.h:107`) is still the NULL sentinel and `xud.h`
+        still declares no create/close function that takes a handle.
+      - **The frame loop's shape**: `xud_frame.h:50`'s one-`VkSubmitInfo`-per-submit "one batch flushed per frame" assumption
+        and `xud_frame_draw()`'s refusal shapes must grow to multi-draw recording.
+      - **The arena is static, so the ring is still unused**: `xud_allocator_ring_acquire`/`xud_allocator_ring_reset` are
+        called by nothing above the allocator today, and the GPU areas assert the allocator's ring block does **not** exist
+        after a completed context. The transient ring is what the per-frame uniform copy will want, one rung up.
+
 
 ## Next
 

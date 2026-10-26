@@ -14,6 +14,7 @@
 
 #include "xud.h" /* Required for: XudResult, XUD_VERSION, the XUD_GPU_TESTS gate */
 #include "xud_allocator.h" /* Required for: XudMemoryRange, the range the buffer is bound to, and the stats the GPU half reads back */
+#include "xud_batch.h" /* Required for: XudBatch, the batch's six static carves the stats below count */
 #include "xud_core.h" /* Required for: XudContext, the owner the GPU half runs against */
 #include "xud_descriptor.h" /* Required for: XudDescriptor, the caps gate, the eight fill rungs and the open/close pair */
 #include "xud_physical.h" /* Required for: XudDeviceCaps, the limits every gate is read off */
@@ -421,24 +422,39 @@ static void xud_test_gpu_descriptor(void) {
     }
 
     /* The allocator below this rung is no longer storage-only: the descriptor's buffer made one blo
-       ck and one live range, and the render pass's depth image made a second of each - the image's
-       requirements ask for an alignment of 65536 on this driver, which no hole in the buffer's block
-       can satisfy, so the image is a second VkDeviceMemory rather than a suballocation.
+       ck and one live range, the render pass's depth image made a second of each, and the batch run
+       g below the renderer made a third block and six more live ranges - its arena and its five dat
+       a buffers are six requests small enough to share blocks, which is the suballocation half of t
+       he repo's "allocate once, suballocate always" rule seen from the other side of the ladder. Ev
+       ery number below is therefore read as a delta on this baseline rather than as a constant.
      */
     xud_check(
         xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytes, &cursor) == XUD_OK, "gpu-desc/stats-answers", "answers");
-    xud_check(blockCount == 2u, "gpu-desc/two-blocks",
-        "two VkDeviceMemory, the descriptor's uniform buffer and the render pass's depth image - the"
-        " image is the first thing in this tree that asked for an image's requirements rather than a"
-        " buffer's, and an image's alignment is not a buffer's");
-    xud_check(liveCount == 2u, "gpu-desc/two-live-ranges", "and two live ranges, those two carves");
-    xud_check(bytes == context->descriptor->uniformRange.size + context->renderer->renderPass->depthRange.size,
-        "gpu-desc/bytes-are-both-carves",
-        "the reserved bytes are exactly the two carves added up, which is what makes the counter a fa"
-        "ct rather than an estimate");
+    xud_check(blockCount == 3u, "gpu-desc/three-blocks",
+        "three VkDeviceMemory: the descriptor's uniform buffer, the render pass's depth image (the firs"
+        "t thing in this tree that asked for an IMAGE's requirements, whose alignment is not a buffer's"
+        ") and the batch's six carves, which do not need a block of their own");
+    xud_check(liveCount == 8u, "gpu-desc/eight-live-ranges",
+        "eight live ranges over them: the two above plus the batch's arena, its four streams and its i"
+        "ndex buffer, which is what a completed context owns now");
+    {
+        uint32_t stream = 0u;
+        VkDeviceSize batchCarves = 0u;
+        for (stream = 0u; stream < XUD_BATCH_STREAM_COUNT; stream++) {
+            batchCarves += context->renderer->batch->stream[stream].range.size;
+        }
+        batchCarves += context->renderer->batch->stagingRange.size;
+        batchCarves += context->renderer->batch->indexRange.size;
+        xud_check(bytes == (context->descriptor->uniformRange.size + context->renderer->renderPass->depthRange.size + batchCarves),
+            "gpu-desc/bytes-are-every-carve",
+            "the reserved bytes are exactly every carve added up, which is what makes the counter a fa"
+            "ct rather than an estimate - and the batch's six are in that sum, so the rung below this o"
+            "ne is being counted rather than assumed");
+    }
     xud_check(cursor == 0u, "gpu-desc/cursor-untouched",
-        "and the ring's cursor is still at the start: a per-frame uniform buffer is static, not tran"
-        "sient, so it did not come from the ring");
+        "and the ring's cursor is still at the start: a per-frame uniform buffer is static, not transi"
+        "ent, and so is the batch's arena - the batch's own note says why a ring is the wrong place fo"
+        "r it, and the ring being untouched here is that note read as a fact");
 
     if (context->validate != 0u) {
         xud_check(context->diagnostics->errorMessages == 0u, "gpu-desc/validation-clean",

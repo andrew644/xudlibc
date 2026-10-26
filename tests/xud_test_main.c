@@ -43,6 +43,7 @@ int main(void) {
     xud_test_frame();
     xud_test_allocator();
     xud_test_descriptor();
+    xud_test_batch();
     xud_test_core();
 
     printf("checks: %d  failures: %d\n", xudChecks, xudFailures);

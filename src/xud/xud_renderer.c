@@ -1,13 +1,15 @@
 /***********************************************************************************************
  *
- *   xud_renderer.c - the renderer rung: the owner of one pipeline, one render pass, one
- *                    framebuffer per swapchain image and one frame loop
+ *   xud_renderer.c - the renderer rung: the owner of one batch, one pipeline, one render pass,
+ *                    one framebuffer per swapchain image and one frame loop
  *
- *   Owns : the four rungs below the public API that make a frame possible - the pipeline rung's
- *          one graphics pipeline (with its layout and its two shader modules inside it), the
- *          render-pass rung's one VkRenderPass, that rung's array of one VkFramebuffer per
- *          swapchain image, and the frame loop's command pool, command buffer, acquire
- *          semaphore and per-image fences - and the one teardown order that hands all four back.
+ *   Owns : the five rungs below the public API that make a frame possible - the batch rung's four
+ *          SoA attribute streams and its one index buffer (plus the one mapped staging arena the
+ *          CPU-side bytes are written into), the pipeline rung's one graphics pipeline (with its
+ *          layout and its two shader modules inside it), the render-pass rung's one VkRenderPass,
+ *          that rung's array of one VkFramebuffer per swapchain image, and the frame loop's comm
+ *          and pool, command buffer, acquire semaphore and per-image fences - and the one teardown
+ *          order that hands all five back.
  *   Layer: above the frame loop, below the public API. This is the rung of the plan's layer
  *          ladder ("xudrl renderer (passes, pipelines, batches, buffers)") and the rung xud_init
  *          _context() wires, which is what makes the context's renderer field live rather than a
@@ -16,29 +18,36 @@
  *          ive holds no vk* symbol and the link line has no -lvulkan anywhere (AGENTS.md).
  *
  *   The order is load-bearing in both directions, and it is the plan's dependency direction read
- *          both ways. Open: render pass -> pipeline -> framebuffer array -> frame. The pass is first
- *          because the core-1.4 binding makes it an argument of the pipeline's create (VUID-VkGr
- *          aphicsPipelineCreateInfo-dynamicRendering-06576: with dynamicRendering not enabled -
- *          and it is not, see the render-pass decision in AGENTS.md - a graphics pipeline with
- *          pre-rasterization or fragment state MUST name the pass it belongs to, and the validat
- *          ion layer on this machine reports VK_NULL_HANDLE there as a hard error, probed today).
- *          A framebuffer is created FOR a pass too (the spec requires the framebuffer's attachme
- *          nt list to match the pass's descriptions exactly) and a frame records a draw naming a
- *          pipeline, a pass and a framebuffer row, so each of the four needs the ones above it.
- *          Close: the exact reverse - frame first, because a frame is the only thing in this set
- *          that can still have a presentation in flight against the swapchain's images and its
- *          own close is the fence guard that retires it; then the framebuffer array, whose views
- *          name those very images; then the pipeline and then the pass, both of which name that
- *          pass's handle, so it dies last.
+ *          both ways. Open: render pass -> batch -> pipeline -> framebuffer array -> frame. The pass
+ *          is first because the core-1.4 binding makes it an argument of the pipeline's create (VU
+ *          ID-VkGraphicsPipelineCreateInfo-dynamicRendering-06576: with dynamicRendering not enab
+ *          led - and it is not, see the render-pass decision in AGENTS.md - a graphics pipeline w
+ *          ith pre-rasterization or fragment state MUST name the pass it belongs to, and the valid
+ *          ation layer on this machine reports VK_NULL_HANDLE there as a hard error, probed today).
+ *          The batch is second because what it needs is the two records BELOW this rung - the caps
+ *          and the allocator - and neither the pass nor the pipeline is an argument of its create;
+ *          it sits before the pipeline because the pipeline's vertex-input state is the thing that
+ *          names the batch's buffers, so the buffers have to exist before the pipeline is built ag
+ *          ainst them and must outlive it. A framebuffer is created FOR a pass too (the spec requi
+ *          res the framebuffer's attachment list to match the pass's descriptions exactly) and a f
+ *          rame records a draw naming a pipeline, a pass and a framebuffer row, so each of the rest
+ *          needs the ones above it. Close: the exact reverse - frame first, because a frame is the
+ *          only thing in this set that can still have a presentation in flight against the swapcha
+ *          in's images and its own close is the fence guard that retires it; then the framebuffer
+ *          array, whose views name those very images; then the pipeline, then the batch and then t
+ *          he pass, all of which name that pass's handle, so it dies last.
  *
  *   What this rung does NOT own, and why: no swapchain (the context owns it, one rung below), no
  *          VkImage of a swapchain image (the swapchain owns its images - xud_swapchain.c's note
- *          about vkDestroyImage), no vertex buffer and no GPU-memory allocator of its own (the
- *          allocator rung IS in the tree now (S12) and is owned by the context rather than by
- *          this rung - which is why the pipeline declares zero vertex
- *          bindings and the draw's whole geometry is a vertex count). The batch, the descriptor
- *          layout and the object kinds a public XudHandle names are steps above this one that
- *          have not landed; this rung is the smallest one that can draw a triangle.
+ *          about vkDestroyImage), no GPU-memory allocator of its own (the allocator rung IS in the
+ *          tree now (S12) and is owned by the context rather than by this rung - which is why the
+ *          batch's buffers are handed to the allocator rather to a block of this rung's). The desc
+ *          riptor layout and the object kinds a public XudHandle names are steps above this one th
+ *          at have not landed. THE BATCH RUNG, though, IS in the tree now and this rung owns it -
+ *          and what is still open in it, stated rather than hidden: the pipeline this rung builds
+ *          declares zero vertex bindings and the frame loop still records a vkCmdDraw rather than a
+ *          vkCmdDrawIndexed, so the batch's six buffers are created, uploaded through xud_batch_u
+ *          pload() and not yet bound to a draw. That is the next step, not a gap in this one.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -47,6 +56,7 @@
 #include "xud_renderer.h"
 #include "xud.h"
 #include "xud_allocator.h"
+#include "xud_batch.h"
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_frame.h"
@@ -87,12 +97,14 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
     (void)rung;
     rung = xud_pipeline_close(&renderer->pipeline, device, loader);
     (void)rung;
+    rung = xud_batch_close(&renderer->batch, device, loader, alloc);
+    (void)rung;
     rung = xud_renderpass_close(&renderer->renderPass, device, loader, alloc);
     (void)rung;
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The bring-up - the four rungs, in the one order that is correct
+ * The bring-up - the five rungs, in the one order that is correct
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
@@ -150,7 +162,25 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
         return result;
     }
 
-    /* 2. the pipeline, which names the pass above it: the core-1.4 binding makes the render pass
+    /* 2. the batch rung, below the pipeline in the ladder and above the allocator: its five
+       buffers are carved out of the allocator's memory, which is already in hand from the pass
+       above, and its vertex-input state is gated on the caps' vertex-input limits. It is handed
+       neither the pass nor the pipeline because neither is an argument of its create - what it
+       needs is the two records below this rung and nothing else. Opened BEFORE the pipeline for
+       the direction the file-top note states: the pipeline's vertex-input state is the thing that
+       will name these buffers, so the buffers have to exist before the pipeline is built against
+       them and must outlive it. What is NOT yet true here, and is open work rather than a claim:
+       the pipeline below still declares zero vertex bindings, and the frame loop still records a
+       vkCmdDraw rather than an indexed one, so these five buffers are created and uploaded through
+       xud_batch_upload() and not yet bound to a draw.
+     */
+    result = xud_batch_open(&renderer->batch, loader, device, caps, alloc);
+    if (result != XUD_OK) {
+        free(renderer);
+        return result;
+    }
+
+    /* 3. the pipeline, which names the pass above it: the core-1.4 binding makes the render pass
        an argument of vkCreateGraphicsPipelines (VUID-VkGraphicsPipelineCreateInfo-dynamicRenderi
        ng-06576, and the validation layer on this machine reports VK_NULL_HANDLE there as a hard
        error, probed today), so the pass has to exist before the pipeline does. The descriptor re
@@ -168,7 +198,7 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
         return result;
     }
 
-    /* 3. the framebuffer array - one row per swapchain image, in image-index order, each row bu
+    /* 4. the framebuffer array - one row per swapchain image, in image-index order, each row bu
        ilt from the image xud_swapchain_images_get() hands back. That accessor is the repo's rule
        for a rung above the swapchain: a caller above holds an INDEX rather than a VkImage, beca
        use a recreate replaces the whole array. */
@@ -179,7 +209,7 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
         return result;
     }
 
-    /* 4. the frame loop, last: it owns the fences that bound a presentation of THESE images and
+    /* 5. the frame loop, last: it owns the fences that bound a presentation of THESE images and
        the command buffer that records a draw naming the pipeline, the pass and a row of the arra
        y above, so it needs all three. */
     result = xud_frame_open(&renderer->frame, loader, device, swapchain);
@@ -257,6 +287,8 @@ XudResult xud_renderer_close(XudRenderer** ioRenderer, const XudDevice* device, 
     victim->framebuffers = NULL;
     free(victim->pipeline);
     victim->pipeline = NULL;
+    free(victim->batch);
+    victim->batch = NULL;
     free(victim->renderPass);
     victim->renderPass = NULL;
     free(victim->frame);

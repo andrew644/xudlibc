@@ -548,15 +548,16 @@ static void xud_test_renderpass_gpu(void) {
         "e-derived guess");
     xud_check(xud_allocator_stats(context->allocator, &blocks, &live, &bytes, &cursor) == XUD_OK, "gpu-renderpass/stats-answers",
         "the counters answer");
-    xud_check(blocks == 2u, "gpu-renderpass/two-blocks",
-        "TWO blocks now rather than the descriptor rung's one: the depth image's requirements (alignment 6"
+    xud_check(blocks == 3u, "gpu-renderpass/three-blocks",
+        "THREE blocks now rather than the descriptor rung's one: the depth image's requirements (alignment 6"
         "5536 on this driver) do not fit the block the uniform buffer was carved out of, so the image's bl"
-        "ock is a second VkDeviceMemory rather than a suballocation - the allocator's rule read against an"
-        " image's requirements for the first time");
-    xud_check(live == 2u, "gpu-renderpass/two-live-ranges",
-        "two live ranges over them, the uniform buffer's carve and the depth image's, which is what a comp"
-        "leted context owns now and is the baseline every number in the allocator area is read as a delta o"
-        "n");
+        "ock is a second VkDeviceMemory rather than a suballocation, and the batch rung below the render"
+        "er is a third - its six carves are small enough to share blocks, which is the suballocation hal"
+        "f of the repo's allocate-once rule seen from above");
+    xud_check(live == 8u, "gpu-renderpass/eight-live-ranges",
+        "eight live ranges over them: the uniform buffer's carve, the depth image's, and the batch's ar"
+        "ena plus its four streams and its index buffer, which is what a completed context owns now and"
+        " is the baseline every number in the allocator area is read as a delta on");
     xud_check(bytes >= pass->depthRange.size, "gpu-renderpass/bytes-count-the-image",
         "the reserved-bytes counter includes the image's own range, so the counter is a fact about the rows"
         " rather than an estimate");

@@ -2,6 +2,79 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S16 The batch rung — four SoA stream buffers + one index buffer + one mapped staging arena, the flush decision and the capacity arithmetic, one step, landed as one commit, 2026-10-26)
+
+- [x] ~~**Batch layer (`xudrl`)**: dynamic per-attribute **stream** buffers + one index buffer (SoA, decided 2026-10-23 — see
+    Decided below), flush on pipeline/material change (flush is per stream), fixed pipeline set~~ — **done 2026-10-26, the
+    rung itself**: `src/xud/xud_batch.h`/`.c` and `tests/xud_test_batch.c` are in the tree, the renderer owns one `XudBatch*`
+    per context, and the headless half of the rung is green. What is **not** in this step, and stays open in `todo.md`: the
+    pipeline's vertex-input state (still zero bindings/zero attributes), the three command-buffer bindings
+    (`vkCmdBindVertexBuffers`/`vkCmdBindDescriptorSets`/`vkCmdPushConstants`), the indexed draw (`xud_frame.c` still records
+    `vkCmdDraw`), the per-frame uniform copy, the **transparent** pipeline variant and the sorted-batch rule, the handle
+    layer's `record`, and the frame loop's multi-draw shape.
+
+  **The rung**: `XudBatch` owns six `VkBuffer`s — four stream buffers (`pos` `R32G32B32_SFLOAT` 12 B, `uv` `R32G32_SFLOAT`
+  8 B, `color` `R8G8B8A8_UNORM` 4 B, `normal` `R32G32B32_SFLOAT` 12 B = the settled 36 B/vertex **split across four buffers
+  rather than interleaved into one**) and one index buffer (`uint32_t`, `XUD_BATCH_INDEX_SIZE 4u`, the one width that never
+  needs a second index buffer past 65535 vertices) — plus one host-visible staging arena that all six are carved out of. The
+  arena is one buffer holding the four streams as fixed windows plus an index window, so the whole frame's attribute bytes ar
+  e **one** host allocation and **one** map, and the copy is five `vkCmdCopyBuffer` calls (five destinations is five calls, n
+  ot one call with five regions — `vkCmdCopyBuffer` names one source and one destination buffer).
+
+  **The pure half, headless by construction**: `xud_batch_layout()` (the four stream offsets, the index offset, the arena tot
+  al and the index capacity — `XUD_BATCH_INDEX_CAPACITY(v) = (3v+1)/2`, Euler's 3n/2 bound rounded up, not a guess), `xud_bat
+  ch_next_capacity()` (the doubling and its bound), `xud_batch_fill_binding()`/`xud_batch_fill_attribute()`/`xud_batch_fill_v
+  ertex_input()` (the two vertex-input rows per stream, gated on the caps' `maxVertexInputBindings`/`maxVertexInputAttributes
+  ` — 33/29 on this driver against this rung's 4, so headroom is read rather than assumed), `xud_batch_fill_copy_regions()`,
+  `xud_batch_check_invariant()` (the settled SoA invariant, "every stream holds the same vertex count"), `xud_batch_should_f
+  lush()` (flush on variant change, material change, or an append that would pass the capacity — the flush decision with th
+  e driver calls taken out of it), `xud_batch_record_draw()` (the draw rows the frame loop will replay, grown by `XUD_BATCH_D
+  RAW_MIN` rather than refused at a caller-visible bound), `xud_batch_append_vertex()`/`xud_batch_append_index()` (the host w
+  rites into the mapped arena, refused rather than written past a buffer), `xud_batch_reset()`, `xud_batch_stats()` and `xud_
+  batch_host_visible_bits()` (the mask of the caps' host-visible memory types, which is the one requirement the arena's allo
+  cator request carries).
+
+  **The arena is static, not transient, and that is the load-bearing decision of this step**: the staging arena is carved wi
+  th `xud_allocator_acquire()` out of the allocator's **blocks**, not with `xud_allocator_ring_acquire()` out of its ring. Th
+  e ring is a cursor that **wraps**, so anything it handed out at one lap is overwritten at a later one — and this arena hold
+  s the frame's attribute bytes from the moment the appends wrote them until the moment the copies read them, so a ring carv
+  e is a batch whose bytes a later lap of the ring overwrites mid-frame. Mapping it **once at open and once at close** is th
+  e repo's "no `vkMapMemory` per frame without a matching `vkUnmapMemory`" rule satisfied without a per-frame pair to keep h
+  onest; the per-frame part of the arena is its content being rewritten, not its mapping being redone. Consequence read as a
+  fact in three GPU areas: the allocator's ring block **still does not exist** after a completed context, because nothing in
+  this rung asks the ring for a byte — the frame loop will, one rung up.
+
+  **The baselines that moved, and why**: the allocator's block count went **2 → 3** and its live-range count **2 → 8** at a
+  completed context (the batch's arena, its four streams and its index buffer are six more carves, and they need one more bl
+  ock only once the existing holes run out), which is the suballocation half of "allocate once, suballocate always" seen fro
+  m above — six requests sharing blocks rather than six `vkAllocateMemory`. The GPU areas of the allocator, descriptor, ren
+  derpass and core tests had their baselines restated to that truth, and two of the allocator area's own checks stopped bei
+  ng absolute: `small1.blockIndex == 0` became `small1.blockIndex < baseBlocks` ("the request came out of a block that ALRE
+  ADY existed", which is the stronger fact — which hole the scan picks is the free list's row order, not the block count's)
+  , and `reuse.blockIndex == 0` became `reuse.blockIndex == small1.blockIndex` ("back in the SAME block the first request us
+  ed", the coalesced free range rather than a fresh block). The ring's own offsets (0 / 256 / 1280, wrap back to 0) and its
+  cursor (0 before, 256 after a reset lap) are **unchanged**, which is the static-arena decision read as a fact: had the ar
+  ena come from the ring, every one of those numbers would have moved.
+
+  **Ownership**: the renderer owns the batch, not `XudContext` — `struct XudRenderer` grew `XudBatch* batch`, opened after t
+  he render pass and **before** the pipeline (the pipeline's vertex-input state is the thing that will name these buffers, s
+  o they must exist before it and outlive it) and closed in the reverse slot, after the pipeline has been retired and befor
+  e the render pass's teardown. `xud_renderer_retire()` grew the `xud_batch_close()` rung; the renderer's teardown grew the
+  `free(victim->batch)` slot. `ar -t build/libxud.a` went **39 → 40** objects, the one new one being `xud_batch.c`.
+
+  **Bar met, dated one-liner**: headless **2255 checks / 0 failures** (was 2147) and `XUD_GPU_TESTS=1` **2804 / 0** (was 267
+  5), under gcc **and** under `-DCMAKE_C_COMPILER=clang`, validation-clean with `VK_INSTANCE_LAYERS` unset and forced to `VK
+  _LAYER_KHRONOS_validation` (still exactly the diagnostics layer's own synthetic `ERROR/validation` + `WARNING/validation`
+  pair in either run, nothing else), `-DXUD_SANITIZERS=ON` green headless (**72 B / 3 allocations**, byte-for-byte S15's nu
+  mbers, so the batch's pure half allocates nothing) and GPU **1432 B / 69** (was 1296 B / 66) reporting **only** the extern
+  al allocations the S7–S15 blocks record — no leak stack names `xud_batch_*`/`xud_renderer_*`/`xud_allocator_*`/`xud_frame
+  _*`/`xud_pipeline_*`, and the two stacks that name `xud_test_batch_gpu` are the same 32 B inside `vkCreateDevice` (`xud_de
+  vice_open`) and the same 8 B in `libdecor_new` (`xud_window_open`) every other GPU area reports, reached through the batch
+  area's own `xud_init_context()` call — and with `ASAN_OPTIONS=detect_leaks=0` answering 2255 / 2804 with 0 failures and n
+  o `runtime error` line; `nm -u` lists no `vk*`/`glfw*` symbol and `ldd` lists no `libvulkan`/`libglfw`/`libGL`/`libEGL` fo
+  r either executable, and `./scripts/format.sh --check` is green over the tree.
+
+
 ## Steps complete (S15 The depth attachment + the opaque pipeline variant — the first `VkImage` in the tree, its own
 `VkDeviceMemory` carve and view, the pipeline's depth pair ON against it, one step, landed as one commit, 2026-10-25)
 

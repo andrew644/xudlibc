@@ -266,6 +266,7 @@ add_library(xud STATIC
     src/xud/xud_swapchain.c
     src/xud/xud_allocator.c
     src/xud/xud_descriptor.c
+    src/xud/xud_batch.c
     src/xud/xud_handle.c
     src/xud/xud_shader.c
     src/xud/xud_pipeline.c
@@ -347,6 +348,7 @@ add_executable(xud_test
     tests/xud_test_frame.c
     tests/xud_test_allocator.c
     tests/xud_test_descriptor.c
+    tests/xud_test_batch.c
     tests/xud_test_core.c
 )
 
