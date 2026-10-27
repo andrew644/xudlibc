@@ -12,6 +12,14 @@
  *   ries, ONE VkFence PER SWAPCHAIN IMAGE, classic synchronization, no VK_KHR_vulkan_memory_mode
  *   l anywhere.
  *
+ *   The acquire and the present are the only two calls in this tree whose VkResult answers about
+ *   the SWAPCHAIN rather than about the call: VK_SUBOPTIMAL_KHR ("works, but not the most optimal
+ *   swapchain for this surface") and VK_ERROR_OUT_OF_DATE_KHR ("no longer matches the surface -
+ *   create a new one before the NEXT acquire, but the image this call handed back is still valid").
+ *   For those two the frame is not refused: the image is acquired, drawn, submitted and presented
+ *   as usual, and the rung leaves recreateWanted set for the resize step above to act on. Refusing
+ *   them is what turns a window resize into a frame that never draws at all.
+ *
  *   The frame loop is what CONSUMES the batch and the descriptor now: it closes the batch's pending ru
  *   n into a draw row before the command buffer is begun, writes set 0's block into the descriptor's m
  *   apped arena, uploads the batch's live bytes with the five vkCmdCopyBuffer calls and the block's by
@@ -257,6 +265,18 @@ struct XudFrame {
                                          uffer and every fence index) a caught error rather than a pr
                                          esentation against a dead handle */
     uint32_t lastImageIndex; /* the index vkAcquireNextImageKHR wrote, kept for the present */
+    uint32_t recreateWanted; /* 1 once an acquire or a present answered with the swapchain's two
+                                out-of-band codes (VK_SUBOPTIMAL_KHR / VK_ERROR_OUT_OF_DATE_KHR),
+                                0 until one does. It is a REQUEST, not an action: this rung cannot
+                                recreate - the swapchain is the context's, a rung below, and every
+                                framebuffer row and every fence index dies with it - so the rung
+                                that observed the answer records it and the resize step above acts
+                                on it. Sticky rather than rewritten every frame, because "a recrea
+                                te is wanted" stays true until someone acts: a clean acquire answer
+                                on the next frame does not un-want the recreate the previous one
+                                asked for. Written at open rather than left to calloc's zero, the
+                                same way xud_frame_open() writes the depth layout row -
+                                this is state a caller above reads, not a numeric coincidence. */
     uint32_t framesDrawn; /* how many frames completed - the counter a test can read to know the lo
                             op ran more than once, which is what exercises a reused command buffer a
                             nd a reused acquire semaphore rather than asserting about them */
@@ -344,8 +364,12 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
 /// s rung needs is nil, or the fence / framebuffer arrays no longer match the swapchain in hand (th
 /// e plan's "the framebuffer array is recreated with the swapchain" rule, read here as a refusal ra
 /// ther than as a rebuild this rung cannot do without a resize to act on); XUD_VULKAN_ERROR when th
-/// e driver refused the acquire, the submit, the present or a wait (an out-of-date acquire answer m
-/// aps here, and the recreate path is the resize step's, not this rung's).
+/// e driver refused the submit, the present or a wait, or answered the acquire/present pair with a
+/// code outside the swapchain's own two (VK_SUBOPTIMAL_KHR and VK_ERROR_OUT_OF_DATE_KHR are NOT re
+/// fusals: for those two the image is usable and the presentation happens, so the frame runs and
+/// leaves frame->recreateWanted set for the resize step above to act on - xud_swapchain_result_fro
+/// m_vk() is the second funnel that makes that distinction a table rather than a caller's judge
+/// ment, and the general funnel still calls both codes a fault everywhere else it is used).
 /// The batch is the argument after the framebuffer array for one reason: the frame loop is what
 /// consumes it. It uploads the batch's live bytes with the batch rung's five vkCmdCopyBuffer calls,
 /// binds the batch's four streams with ONE vkCmdBindVertexBuffers call over the whole array and its

@@ -29,6 +29,12 @@
  *          what has to be true before an image is written again is that the presentation of THAT image
  *          finished.
  *
+ *          The acquire and the present are the only two calls here whose VkResult answers about the swap
+ *          chain rather than about the call: VK_SUBOPTIMAL_KHR and VK_ERROR_OUT_OF_DATE_KHR are a frame
+ *          that runs and leaves recreateWanted set for the rung above, not a frame that is refused, and
+ *          xud_swapchain_result_from_vk() is the second funnel that keeps that pair out of the general
+ *          mapping every other call in this file funnels through.
+ *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
 
@@ -455,6 +461,10 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
     }
     frame->imageFenceCount = fencesMade;
 
+    /* No acquire has answered yet, so no recreate is wanted yet - written rather than left to calloc's
+       zero, because this is state a rung above reads rather than a numeric coincidence, the same re
+       ason xud_frame_open() writes the depth layout row for. */
+    frame->recreateWanted = 0u;
     frame->presentedSwapchain = swapchain->swapchain; /* borrowed, updated by every draw */
 
     *outFrame = frame;
@@ -482,6 +492,8 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     VkSubmitInfo submit;
     VkPresentInfoKHR present;
     uint32_t imageIndex = 0u;
+    uint32_t acquireRecreateWanted = 0u;
+    uint32_t presentRecreateWanted = 0u;
     VkFence frameFence = VK_NULL_HANDLE;
     uint32_t vertexCount = 0u;
     uint32_t indexCount = 0u;
@@ -583,12 +595,24 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        ssing one here would be a second, different boundary on the same image. --- */
     vk = loader->deviceTable.vkAcquireNextImageKHR(
         device->device, swapchain->swapchain, XUD_FRAME_NO_TIMEOUT, frame->imageAcquired, VK_NULL_HANDLE, &imageIndex);
-    result = xud_result_from_vk(vk);
+    /* The SECOND funnel, and the reason it is second: this is one of the two calls in the tree whose
+       VkResult answers about the swapchain rather than about the call. VK_SUBOPTIMAL_KHR and VK_ERR
+       OR_OUT_OF_DATE_KHR both mean "the image you asked for is yours" - the first adds "and this s
+       wapchain is not the best shape for the surface", the second adds "and this swapchain no longe
+       r matches it, so make a new one before the next acquire" - so neither is a refused frame and
+       both leave a recreate wanted. Mapping them through the general funnel is what made a resize a
+       frame that never drew: the image was usable, the compositor was only asking for a better swap
+       chain, and a refusal here is a whole renderer going quiet. */
+    result = xud_swapchain_result_from_vk(vk, &acquireRecreateWanted);
     if (result != XUD_OK) {
-        /* An out-of-date acquire answer maps here rather than to a recreate: the recreate path is the res
-           ize step's, and this rung's job is to report that the image it was handed is no longer the one t
-           he compositor wants. */
         return result;
+    }
+    if (acquireRecreateWanted != 0u) {
+        /* Recorded, not acted on: the swapchain is the context's, a rung below, and recreating it r
+           etires every image, every framebuffer row and every fence index this rung holds, which is
+           a decision the resize step above owns. Sticky rather than rewritten per frame - the recrea
+           te stays wanted until someone makes it. */
+        frame->recreateWanted = 1u;
     }
     if (imageIndex >= swapchain->imageCount) {
         return XUD_INTERNAL_ERROR;
@@ -1001,10 +1025,17 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        are a library decision and not a fact about this driver. --- */
     present.pSwapchains = &swapchain->swapchain;
     present.pImageIndices = &imageIndex;
+    /* The present's answer goes through the same second funnel the acquire's did, for the same reas
+       on: vkQueuePresentKHR is documented to answer the swapchain's two codes, and for it both mean
+       the presentation still happened - the image reached the surface - with a recreate wanted. Ret
+       urning an error here instead would be a frame that presented and then reported it had not. */
     vk = loader->deviceTable.vkQueuePresentKHR(presentQueue.queue, &present);
-    result = xud_result_from_vk(vk);
+    result = xud_swapchain_result_from_vk(vk, &presentRecreateWanted);
     if (result != XUD_OK) {
         return result;
+    }
+    if (presentRecreateWanted != 0u) {
+        frame->recreateWanted = 1u;
     }
 
     /* --- 7. wait the fence that bounded this frame, then reset it. The wait is what makes "this image may b
@@ -1132,6 +1163,7 @@ XudResult xud_frame_close(XudFrame** ioFrame, const XudDevice* device, XudLoader
     victim->imageFenceCapacity = 0u;
     victim->lastFrameFence = VK_NULL_HANDLE;
     victim->presentedSwapchain = VK_NULL_HANDLE;
+    victim->recreateWanted = 0u;
     free(victim);
     *ioFrame = NULL;
 

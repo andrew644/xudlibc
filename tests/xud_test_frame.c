@@ -3,7 +3,8 @@
  *   xud_test_frame.c - the frame loop and the renderer that draws through it
  *
  *   Owns : the command-pool and command-buffer rows, the submit and present rows, the core-1.0 acquire gate, the per-image layout record
- * and the barrier that makes the next frame's oldLayout a fact - plus the GPU half that draws real frames through the renderer, with a
+ * and the barrier that makes the next frame's oldLayout a fact, plus the swapchain's two out-of-band
+ * answer codes and the recreate flag they leave behind - plus the GPU half that draws real frames through the renderer, with a
  * triangle appended to the batch before each of them so the upload / bind / draw path inside the frame
  * loop is the path actually taken rather than the empty-batch path, and refuses the failure shapes of
  * the frame loop against those very live objects. Layer: tests. Sees xud_frame.h, xud_batch.h, xud_renderer.h and xud_core.h: the
@@ -256,6 +257,9 @@ static void xud_test_gpu_draw(void) {
         "the row was built at the context's extent, copied from the swapchain rather than re-queried");
     xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/nothing-in-flight-before",
         "no frame has been drawn, so no fence is in flight");
+    xud_check(context->renderer->frame->recreateWanted == 0u, "gpu-draw/no-recreate-wanted-before",
+        "and no acquire has answered yet, so the frame loop opens with no recreate wanted - the field "
+        "is written at open rather than left to a zero that happens to be calloc's");
 
     /* The failure shapes of the frame loop, against THIS context's live objects rather than against
        synthetic ones: a synthetic struct could not tell a nil row from a dead handle, and the whole
@@ -425,6 +429,11 @@ static void xud_test_gpu_draw(void) {
         "the index the last acquire wrote is recorded in the frame loop");
     xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/nothing-in-flight-after",
         "the last frame waited and reset its fence, so the teardown's fence guard has nothing left to wait");
+    xud_check((context->renderer->frame->recreateWanted == 0u) || (context->renderer->frame->recreateWanted == 1u),
+        "gpu-draw/recreate-flag-is-two-state",
+        "the flag is the two-state answer the swapchain funnel writes, never a count of how many acquires asked for one: a machine "
+        "whose compositor never asks leaves it at 0 and one that does leaves it at 1 after the very same four frames drew, which is "
+        "what makes a resize a frame that asks rather than a frame that never came");
     xud_check(
         (context->renderer->descriptor->uniformStagingMapped != NULL) && (context->renderer->descriptor->uniformStagingMappedLive == 1u),
         "gpu-draw/arena-still-mapped-after",

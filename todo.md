@@ -95,14 +95,14 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Next
 
-- [ ] The acquire's **positive answer codes**: `xud_result_from_vk()` maps `VK_SUBOPTIMAL_KHR` (`1000001003`) and
-    `VK_ERROR_OUT_OF_DATE_KHR` (`-1000001004`) to `XUD_VULKAN_ERROR` through its default case, so a frame whose acquire
-    answered "this image is usable, but recreate the swapchain" is **refused** rather than presented and flagged.
-    Observed on this machine 2026-10-26: the GPU test's 4th `vkAcquireNextImageKHR` answered `VK_SUBOPTIMAL_KHR` and
-    `xud_renderer_draw` returned `XUD_VULKAN_ERROR` (7) with the validation layer printing nothing — a real behaviour,
-    not a validation complaint, and the fix is the resize/recreate step's decision (present the image, record that a
-    recreate is wanted) rather than a mapping tweak. The three-frame test loop never trips it, which is why the tree
-    has been green over it so far.
+- [ ] The **resize / recreate** step, which is what reads the flag S21 left behind: `XudFrame.recreateWanted` has **no
+    reader** anywhere above the frame loop, so the pair `VK_SUBOPTIMAL_KHR` / `VK_ERROR_OUT_OF_DATE_KHR` is now a frame t
+    hat runs and asks rather than a frame that is refused, and nothing acts on the ask yet. The step recreates the swapch
+    ain (and the framebuffer array and the per-image fence array with it, since every image, row and fence index dies wit
+    h it) at the **next** acquire rather than in the middle of the frame that asked — which is what the Vulkan wording o
+    f the out-of-date code insists on — and GLFW's `glfwGetFramebufferSize` / `glfwSetFramebufferSizeCallback` pair is w
+    hat makes a resize observable at all. **Ask before widening it**: the swapchain is the context's, so a recreate is a
+    context decision, and any public call that names one is a public-API-surface change.
 - [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
     shape family in the API)
 

@@ -1,6 +1,65 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S20, the transparent variant** — the pipeline rung owning a pipeline per row of the batch's variant list under one layout, and the frame loop binding the row a draw's variant names beside that draw (2026-10-26).
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S21, the swapchain's two out-of-band answer codes** — the second `VkResult` funnel for the acquire/present
+boundary and the `XudFrame.recreateWanted` flag it leaves behind (2026-10-26).
+
+## Steps complete (S21 The acquire's and the present's positive answer codes — a second VkResult funnel for the swapchain boundary, and the recreate flag it leaves on the frame, one step, landed as one commit, 2026-10-26)
+
+- [x] ~~**The acquire's positive answer codes**: `VK_SUBOPTIMAL_KHR` / `VK_ERROR_OUT_OF_DATE_KHR` being mapped to `XUD_VULKAN_ERROR` by the general funnel, so a frame whose acquire answered "usable image, recreate the swapchain" was **refused** rather than drawn, presented and flagged~~ — **done 2026-10-26**.
+
+  **What the item claimed and what is true today** (corrected in this entry rather than in the item, so the log keeps bot
+  h readings): the item as written in `todo.md` said the GPU test's 4th `vkAcquireNextImageKHR` answered `VK_SUBOPTIMAL_KH
+  R` here. Re-probed today against the pre-fix tree and again against the fixed one, with a temporary `fprintf` beside th
+  e acquire (probe added, run, removed, tree re-checked clean): all four acquires answer **`VK_SUCCESS`** and the image in
+  dices are 0,1,2,3, so on this machine's Wayland session the two codes are not what the driver answers for a four-frame
+  run and the tree has been green over the loop for a different reason than the item thought. The rule the step installs i
+  s therefore a **spec** fact plus a **table** the headless run checks, not a GPU-observed behaviour here — and the GPU-o
+  bserved half of the claim may have been a window that had been moved or rescaled between the runs, which is exactly the
+  condition the two codes answer. What is NOT in question is that the general funnel's mapping is wrong for these two cal
+  ls: it is, and the next step that resizes the window will hit it.
+
+  **What landed**:
+  - **A second funnel, not a new row in the first one.** `xud_vulkan.h`/`.c` gain `xud_swapchain_result_from_vk(VkResult,
+    uint32_t* outRecreateWanted)`, which maps `VK_SUCCESS` → `XUD_OK`/flag 0, `VK_SUBOPTIMAL_KHR` and `VK_ERROR_OUT_OF_DA
+    TE_KHR` → `XUD_OK`/flag 1, and **everything else** → `xud_result_from_vk(vkResult)`/flag 0 — so the two funnels differ
+    in exactly two rows and nothing else, including for the two swapchain-adjacent codes that are not of this pair
+    (`VK_ERROR_SURFACE_LOST_KHR`, `VK_ERROR_INCOMPATIBLE_DISPLAY_KHR`, which name a lost surface and an unusable display
+    mode and stay refusals). The flag is written on **every** path, error paths included, before the switch rather than on
+    ly inside the rows, because an out-param undefined on a path is a question a caller cannot ask; a NULL flag is `XUD_IN
+    VALID_ARG`, refused before any mapping is made. The general `xud_result_from_vk()` is untouched and still calls both
+    codes `XUD_VULKAN_ERROR`, which is the right answer everywhere outside those two calls — one table with exceptions wo
+    uld make the exception a caller's judgement rather than a fact of the entry point, which is why there are two.
+    Three message-carrying `static_assert`s in `xud_vulkan.h` keep the pair two distinct codes, neither of them `VK_SUCCE
+    SS`, or the funnel's `OK` row would be a lie about one of them.
+  - **The flag lives on the frame, not on the result.** `XudFrame` gains `uint32_t recreateWanted`, written 0 at `xud_fra
+    me_open()`, cleared 0 at `xud_frame_close()`, set 1 by `xud_frame_draw()` when the **acquire** or the **present** ans
+    wered the pair. It is a **request, not an action**, and that is the whole point: this rung cannot recreate — the swap
+    chain is the context's, a rung below, and recreating it retires every image, every framebuffer row and every fence in
+    dex this rung holds — so the rung that observed the answer records it and the resize step above acts on it. Sticky ra
+    ther than rewritten per frame, because "a recreate is wanted" stays true until someone makes it: a clean acquire on t
+    he next frame does not un-want the recreate the previous one asked for.
+  - **Both call sites changed**, and the present's answer changed with the acquire's: `vkQueuePresentKHR` is documented t
+    o answer the same two codes, and for it both mean the presentation still happened — returning an error there would be
+    a frame that presented and then reported it had not. The bounds check on the acquired index stays where it was, aft
+    er the funnel rather than before it, because the out-of-date answer's `pImageIndex` is still written and still names a
+    n image this swapchain has.
+  - **The tests**: the vocabulary area gains 23 checks that pin the two tables against each other — the pair is `XUD_OK` +
+    flag 1 through the swapchain funnel and `XUD_VULKAN_ERROR` through the general one, every other code delegates to th
+    e general mapping with the flag written 0 on the error path (checked by pre-setting the flag to 1, so "written" is a
+    fact rather than a `calloc` coincidence), and a NULL flag is refused. The GPU area gains 2 checks that the flag is two-
+    state rather than a count, and that the loop opens with it clear. Headless went 2307 → 2330 checks, the GPU run 2913
+    → 2938, both with 0 failures and validation-clean; the `-DXUD_SANITIZERS=ON` build reports the SAME 72 bytes / 3 all
+    ocations headless and 1336 bytes / 68 allocations GPU as the pre-change tree (probed by stashing this step, re-runni
+    ng both, then popping), i.e. only the allocations the log already documents as living wholly outside this tree — the
+    8-byte libdecor/libgdk one GLFW `dlopen`s and the 32 bytes per `vkCreateDevice` inside the validation layer — and no
+    thing this step adds.
+  - **AGENTS.md** gains the rule under *Vulkan rules*, beside the swapchain bullet it belongs to: the two codes are a fra
+    me, not a refusal, and the two funnels are what keep that a fact of the entry point rather than a caller's judgement.
+
+  **What stays open**: the flag has **no reader yet** — the resize/recreate step is the next item and is what will act o
+  n it (recreate the swapchain, then the framebuffer array and the fence array with it, at the next acquire rather than m
+  id-frame). Nothing in `src/xud/` above the frame loop reads `recreateWanted` today, and saying so is the point: the st
+  ep installed the request half of a decision whose action half is still a step away.
 
 ## Steps complete (S20 The transparent variant — a pipeline per row of the batch's variant list under one layout, the frame loop binding the row a draw names, one step, landed as one commit, 2026-10-26)
 

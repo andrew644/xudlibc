@@ -140,6 +140,11 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
 /// less; XUD_UNSUPPORTED when the loader is closed, its rows are not this device's, a row the
 /// frame needs is nil, or the fence and framebuffer arrays no longer match the swapchain in hand
 /// (the plan's "the framebuffer array is recreated with the swapchain" rule, read as a refusal).
+/// What this rung leaves behind rather than acting on: an acquire or a present that answered the
+/// swapchain's two out-of-band codes ran the frame to the end (the image was usable and the present
+/// ation happened) and set renderer->frame->recreateWanted, which is the resize step's to read -
+/// recreating is not this rung's either, since the swapchain is the context's and every image, frame
+/// buffer row and fence index in here dies with it.
 XudResult xud_renderer_draw(
     XudRenderer* renderer, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain, uint32_t* outImageIndex);
 
