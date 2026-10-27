@@ -122,6 +122,71 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Decided since then
 
+- 2026-10-26 — **The transparent variant's three open questions → the raylib-shaped answer for all three** (settled today;
+  the *Blocked / needs a decision* entries above are closed by this one, and the tie-breaker the user set is the same every
+  time: **whichever option feels like using raylib**). The evidence is the reference headers, quoted with line numbers so
+  the choice can be re-checked rather than remembered.
+
+  **D1 — the two pipelines are an ARRAY indexed by the variant constant, and ONE layout for both.** `XudPipeline` grows
+  `VkPipeline pipeline[XUD_BATCH_VARIANT_COUNT]` + `VkGraphicsPipelineCreateInfo createInfo[2]` + `VkPipelineColorBlendStateCreateInfo
+  blending[2]` + `VkPipelineColorBlendAttachmentState blendAttachment[2]`, and keeps the one `VkPipelineLayout`. Why this is
+  the raylib shape: raylib's blending is an **enum-indexed list of modes**, not a pair — `BlendMode` (`reference/raylib/raylib.h`
+  918–926) is `BLEND_ALPHA = 0` … `BLEND_CUSTOM_SEPARATE`, nine entries, and `rlgl.h` mirrors it as `RL_BLEND_ALPHA = 0` … (497–505)
+  with `GlState.currentBlendMode` an **int** (1068) that a `switch` maps to GL state (2127). A named `pipelineOpaque`/`pipelineTransparent`
+  pair would be the wrong shape for a library whose public feel is that list: adding `BLEND_ADDITIVE` — which raylib has and we
+  will want, `VK_BLEND_FACTOR_ONE`/`VK_BLEND_FACTOR_ONE` + `VK_BLEND_OP_ADD` being the Vulkan form of `glBlendFunc(GL_SRC_ALPHA, GL_ONE)`
+  (rlgl.h 2128) — is a new row in an array, not a new member in a struct and a rename of every site. The batch's `variant` field
+  (S16's committed row) is already that index, and `XUD_BATCH_VARIANT_OPAQUE`/`TRANSPARENT` are already the named constants, so the
+  array is the only spelling that keeps the batch's index and the pipeline's object one number. **One layout, not two**: the two
+  variants differ only in `VkPipelineColorBlendAttachmentState`, which is **pipeline** state, not **interface** state — the sets,
+  the bindings and the push range are identical, so a second layout would be a second record of the same interface and every
+  `vkCmdBindDescriptorSets` would have to know which of the two it names. `blendEnable = VK_FALSE` (opaque, S15's) and
+  `blendEnable = VK_TRUE` with `srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA` / `dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA`
+  / `VK_BLEND_OP_ADD` (transparent) is the literal Vulkan form of raylib's default `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)`
+  + `glBlendEquation(GL_FUNC_ADD)` (rlgl.h 2127, `BLEND_ALPHA` being the **default** mode, raylib.h 918).
+
+  **D2 — the sort rule is the CALLER's append order: no library sort, and no new field on the batch's draw row.** This is raylib's
+  own semantics read literally: raylib has no transparency sort anywhere. `SetBlendMode(mode)` (raylib.h 1059) / `rlSetBlendMode(mode)`
+  (rlgl.h 2118) does two things — `rlDrawRenderBatch(RLGL.currentBatch)` **flushes the batch when the mode changes** (2121), then the
+  state is set — and the draws inside a batch are submitted in the order the caller appended them. So the transparent draws are replayed
+  in **recorded** order, the caller draws back-to-front, and `XudBatchDraw` stays `{ firstIndex, indexCount, variant, materialIndex }`
+  with no sort key added. The three options considered and why two lose: (a) a sort key on the batch's draw row would be a change to a
+  committed, tested S16 rung **and** a field nothing in raylib has an equivalent of — raylib never asks a caller for a depth per draw,
+  it asks them to draw in order; (c) a centroid computed by reading the arena back would be a host read of bytes the batch wrote for
+  the GPU plus a per-draw cost, and would sort against the caller's back-to-front intent rather than with it; (b) is what raylib does,
+  needs no new field, and is the option AGENTS.md's blending rule already names ("which is how raylib's painter's-algorithm semantics
+  map over"). The batch's flush decision is the mechanism that makes the order observable at all — `xud_batch_should_flush(requestedVariant,
+  requestedMaterial, …)` (xud_batch.c 359) closes a run when either changes, which is the Vulkan form of rlgl.h 2121's flush-on-mode-change,
+  and it is already in the tree and already tested.
+
+  **D3 — the switch is a blend-mode STATE call, and the material is named by a handle.** Two halves, both raylib-shaped:
+  - **The switch**: the batch's `currentVariant` is set by a **state call** rather than by an argument of the append, because raylib's
+    shape is state — `SetBlendMode(mode)` (raylib.h 1059) and `EndBlendMode()` (1059, "reset to default: alpha blending") are calls on
+    the drawing state, not arguments of `DrawCube`/`DrawMesh`. The library-rung spelling is `xud_batch_set_variant()` beside the batch's
+    own `currentVariant`, and the public `xud.h` spelling that will sit above it is `xud_set_blend_mode()` / `xud_end_blend_mode()` — a
+    public-API-surface change, so it lands with the shapes step that will actually need it rather than on its own (AGENTS.md's *Ask before*
+    rule for the public surface, and the user's go-ahead covers the decision, not the whole shapes subsystem).
+  - **The material**: the batch's `materialIndex` becomes a **material-kind slot index** of the handle layer, and the material slot's
+    record holds what a draw needs — the variant bit and the set-1 bindings it names. That is the raylib shape: raylib names the material
+    **at the draw call** (`DrawMesh(Mesh mesh, Material material, Matrix transform)`, raylib.h 1632; `DrawMeshInstanced` 1633) and the
+    caller **holds** it (`SetMaterialTexture(Material *material, int mapType, Texture2D texture)`, 1657), so in our currency the caller
+    holds an `XudHandle` of kind `MATERIAL` (the 2026-10-23 decision's value type, index+generation+kind) and the batch's row stores the
+    slot **index** the handle carries, not a bare invented counter. The `XUD_BATCH_NO_MATERIAL` sentinel stays the "no material named"
+    state, which is what the handle layer's `XUD_HANDLE_KIND_NONE = 0u` never-stored rule already guarantees a live slot index cannot
+    collide with. What the record's exact members are stays the handle layer's step (it is a subsystem: `xud_create_material`/`xud_close_material`
+    in `xud.h` + the slot array's material kind), and the decision recorded here is the **naming**, which is the part that was open.
+  - **The default stays OPAQUE**, and that is a deliberate divergence from raylib's default, recorded rather than left to be rediscovered:
+    raylib's default is `BLEND_ALPHA` (raylib.h 918, `= 0` and commented "(default)"), i.e. blending is ON. Ours is blend-OFF, because
+    with a depth buffer and no library sort (D2), blending-by-default is wrong for everything that is not explicitly transparent —
+    raylib's default is safe only because GL blends into a color buffer that was already cleared to a known background and its draws
+    are painter's-ordered by the caller against no depth write at all. `xud_batch_open`/`xud_batch_reset` set `currentVariant = XUD_BATCH_VARIANT_OPAQUE`
+    (xud_batch.c 507/856) and that stays.
+
+  **What is NOT decided by this entry, and stays open**: the material slot's exact record members (above), the blend-mode list growing
+  past the two variants (D1 makes it a row in an array, but the list's contents are the shapes/text steps' to want), and whether the
+  transparent variant turns depth **writes** off — raylib keeps depth writes on under `BLEND_ALPHA` and gets the overlap artifacts that
+  go with it, so keeping them on is the raylib-shaped default and turning them off is a later knob, not this decision.
+
 - 2026-10-23 — **Data layout → SoA, no ECS at this level** (settled; AGENTS.md's open question on this is closed).
   One stream per vertex attribute, one `VkBuffer` per stream, one `VkVertexInputBindingDescription` each (`stride` = that
   stream's element size, `offset` 0), one `VkVertexInputAttributeDescription` per attribute on its own `binding`; today's
@@ -290,25 +355,17 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Blocked / needs a decision
 
-- **The transparent variant's two sub-questions** (raised 2026-10-26 while S19 was being committed — the variant itself is
-    settled in `AGENTS.md` ("blending is done with explicit pipeline variants (opaque = blend disabled, transparent = blend
-    enabled + sorted)"), these two are what the step would have to invent without asking):
-    - **The shape of the two pipelines inside the pipeline rung**: `XudPipeline` owns ONE `VkGraphicsPipelineCreateInfo` /
-      `VkPipeline`/`VkPipelineLayout` today. Two variants are either a `pipeline[XUD_BATCH_VARIANT_COUNT]` array (which is
-      what the batch's `variant` field already indexes, and what a third variant would grow without a rename) or two named
-      members (`pipelineOpaque`/`pipelineTransparent`, which says the two names in the type and hides the batch's index). As
-      sked before: array or named pair, and does the **layout** grow too (one layout is enough today — the two variants differ
-      only in `VkPipelineColorBlendAttachmentState`, so one layout, two pipelines) or does each variant get its own?
-    - **The sort key of a transparent draw**: `XudBatchDraw` is `{ firstIndex, indexCount, variant, materialIndex }` — it carr
-      ies no position and no depth, so there is nothing in the committed row to sort by. The options are (a) a sort key added
-      to the batch's draw row (a change to a committed rung — the batch's row is S16's, committed and tested), (b) the caller's
-      append order, which is raylib's own painter's-algorithm semantics and needs no new field (the batch replays transparent
-      draws in the order recorded and the caller draws back-to-front), or (c) a key computed from the stream bytes (reading
-      the vertices back to get a centroid, which is a host read of the arena and a per-draw cost the two other options do not
-      pay). Asked before: which of the three, and if (a), what the field is.
+- ~~**The transparent variant's two sub-questions**~~ — **decided 2026-10-26**, see the *Decided since then* entry
+  "The transparent variant's three open questions → the raylib-shaped answer for all three": the pipelines are an **array
+  indexed by the variant** with **one layout** for both (D1), and the sort rule is the **caller's append order**, no
+  library sort and no new field on the batch's draw row (D2).
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
-- Handle layer's `record`: what a slot's record holds per kind — in particular what the **material** kind's record is
-    (a pipeline-variant index + the set-1 bindings it names?), and whether the batch's `materialIndex` becomes a handle-layer
-    slot index of that kind rather than a bare `uint32_t` (ask — it is a subsystem, and the batch's row is a committed rung)
+- ~~Handle layer's `record`: … whether the batch's `materialIndex` becomes a handle-layer slot index …~~ — **the naming is
+  decided 2026-10-26** (D3 above): the batch's `materialIndex` is a **material-kind slot index**, the caller holds an
+  `XudHandle` of kind `MATERIAL` and names it at the draw (raylib's `DrawMesh(mesh, material, transform)`, raylib.h 1632,
+  `SetMaterialTexture(Material *material, …)`, 1657), and the slot's record holds the variant bit plus the set-1 bindings.
+  What is still open is the record's **exact members** — the subsystem (`xud_create_material`/`xud_close_material` in `xud.h`
+  plus the material kind's slot array) is the handle layer's step, and a public create/close pair is a public-API-surface
+  change AGENTS.md's *Ask before* rule puts the ask on.
 - Audio: vendor miniaudio vs no audio (ask)
 - Text/font: own bitmap atlas vs vendored `stb_truetype`/fontstash (ask)
