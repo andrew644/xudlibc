@@ -145,7 +145,9 @@ BeginDrawing: acquire image (semaphore) → reset+begin cmd → viewport/scissor
               shader stages and VERTEX_ATTRIBUTE_READ to the input+vertex stages, so one barrier naming both access bits
               with one stage mask naming all three is refused) → one vkCmdBindDescriptorSets (set 0, against the
               pipeline's OWN layout, firstSet 0 count 1)
-  begin render pass → one vkCmdDrawIndexed per recorded draw row → end render pass
+  begin render pass → vkCmdPushConstants (the per-draw row, against the layout's OWN recorded range —
+              stageFlags/offset/size read off descriptor->pushRange, not constants of the loop's) → one
+              vkCmdDrawIndexed per recorded draw row → end render pass
 EndDrawing: end cmd → submit (graphics, acquire semaphore waited, per-image fence) → present (queue)
             → wait+reset that fence → reset the batch
 ```

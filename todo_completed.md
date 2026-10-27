@@ -2,6 +2,89 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S19 The push-constant row — `vkCmdPushConstants` beside every recorded draw, the vertex stage placing the vertex by `viewProj * modelMatrix`, one step, landed as one commit, 2026-10-26)
+
+- [x] ~~**Batch consumers (part 3 of 4)**: `vkCmdPushConstants` into the range the descriptor rung already wrote, and the
+    shader reading the **push-constant model matrix**~~ — **done 2026-10-26**. What stays open in the item, and stays in
+    `todo.md`: the **transparent** pipeline variant + the sorted-batch rule, the handle layer's `XudHandleSlot.record`, and
+    the transient ring's still-caller-less pair.
+
+  **The channel, and why it is per draw rather than per frame**: a push-constant range is command-buffer **state that the
+  last push before a draw bound**, which is exactly what makes it the per-draw channel and set 0 the per-frame one — the
+  same layout, read from the two ends. The descriptor rung had already declared and gated the range (`xud_descriptor_fill_pu
+  sh_range()`, stageFlags VERTEX|FRAGMENT, offset 0, size `XUD_DESCRIPTOR_PUSH_SIZE` = 80 = `sizeof(XudPushRow)`, gated on
+  `limits->maxPushConstantsSize` against the 128-byte core floor) and nothing consumed it; S18's honest boundary said pushing
+  a range a stage does not read changes nothing about what is drawn, so the call and the read land together rather than one
+  before the other.
+
+  **The push names the layout's OWN recorded range, not constants of the loop's**: `descriptor->pushRange.stageFlags/offset/size`
+  are the arguments, beside `pipeline->layout` — the same discipline the set-0 bind one line above follows with the same
+  field (`pipeline->layout` rather than a layout of the loop's), and the reason is one sentence: the layout the pipeline was
+  created with is the layout the set and the range were allocated against, so naming the recorded row is what makes the two
+  agree rather than two records that happen to match. The validation layer checks that agreement (`VUID-vkCmdPushConstants-
+  stageFlags-06674`/`offset-06675`/`size-06676`: the call's stage flags must be a **subset** of the layout's for a range, and
+  offset+size must lie inside it), so a loop that invented its own constants would be a run that only looked right until the
+  layer moved. The new refusal beside the four descriptor rows above is `descriptor->pushRange.size == 0u` → `XUD_INVALID_ARG`
+  — a zero-size range names no bytes at all, and the stage flags of a zero-size range would be decoration, so the size is the
+  field checked.
+
+  **The row itself is a local of the loop iteration, and that is the one place this tree does NOT follow its own member rule**:
+  every other row the driver reads is a member rather than a frame temporary because the driver reads the **pointer** later
+  (`vkCmdBindDescriptorSets` keeps the set handles, `vkQueueSubmit` keeps the submit struct). `vkCmdPushConstants` takes
+  `const void* data` and the driver **copies the bytes into the command buffer during the call**, so nothing above reads
+  them after it and an iteration-local is legal. The comment beside the call says so, because the rule and the exception
+  otherwise look identical in the diff.
+
+  **The pure half**: `xud_frame_fill_push_row(outRow, drawRow)` — the model matrix is the **identity**, which is the same
+  honest answer the block's `viewProj` gives and for the same reason (a non-identity matrix is a transform the camera/transf
+  orm step has to CHOOSE, and that step is above this one and has not landed — see the *Later* item); what is not decoration
+  is the channel, and the step above replaces the matrix without this rung's shape changing. `materialIndex` is the draw row's
+  own with the batch's `XUD_BATCH_NO_MATERIAL` (0xFFFFFFFF) sentinel **mapped to slot 0**, and the reason is the argument's
+  type: the push member is an index a read could use and 0xFFFFFFFF indexes nothing, while "no material slot yet" is a batch-
+  side fact about a subsystem that does not exist. `textureIndex` is 0 because set 1 is declared and never allocated, so there
+  is no sampler array with an entry in it. `flags` is the variant the draw was flushed under — the pipeline variant is chosen
+  by BINDING a different pipeline, and this is the same fact from the shader's side, which is what lets a stage branch on the
+  variant without a third pipeline. The vertex stage reads only the model matrix today, so the other three members are record
+  ed-and-unread: the row is the channel and a stage need not touch every member of a block its layout declares.
+
+  **The shader**: `shaders/solid.vert` gains `layout(push_constant) uniform XudPushRow { mat4 modelMatrix; uint materialInd
+  ex; uint textureIndex; uint flags; uint reserved; }` and `gl_Position = xudFrame.viewProj * xudPush.modelMatrix * vec4(inP
+  os, 1.0f)`. The member order/widths are the C layout of `XudPushRow` read against std140 — mat4 at 0 (64 B), uint at 64/68
+  /72/76, 80 B total, byte-for-byte the struct in `xud_descriptor.h` and the assert beside `XUD_DESCRIPTOR_PUSH_SIZE` is the
+  same number from the other side. Both matrices are identity on this machine today, so the drawn geometry does not move and
+  no pixel expectation in any test changes — the fact this step adds is the multiplication and the two reads, not a new image.
+
+  **Tests**: `tests/xud_test_frame.c`'s pure half gains the row in **both material shapes** (the sentinel and a real slot, bec
+  ause the sentinel mapping is the branch this rung owns and the only one a synthetic row can exercise) and in **both varian
+  ts**: the refusals (NULL out-row, NULL draw row — the row's variant and material slot are what the push carries, so there is
+  nothing to carry without one), the identity's diagonal **and** its twelve off-diagonal zeros (so the matrix is the identity
+  rather than a matrix that happens to have ones on its diagonal), the sentinel mapping to 0, texture 0 / flags = the variant /
+  padding zeroed, and a real slot passed through unchanged with the variant following the row (the per-draw channel carries the
+  draw's own facts, not this rung's). The GPU half gains `gpu-draw/push-range-recorded`: the layout's range is a recorded row
+  rather than a discarded one, and it is the row the frame loop pushes against, so the channel has an extent, an offset and two
+  stages behind it rather than a call naming constants of the loop's own.
+
+  **Bar met, dated one-liner**: headless **2293 checks / 0 failures** (was 2283) and `XUD_GPU_TESTS=1` **2896 / 0** (was 2885),
+  under gcc **and** under `-DCMAKE_C_COMPILER=clang` (both build trees rebuild the generated header — `ninja` regenerates
+  `build/gen/solid_vert.spv`, `spirv-val` runs in the same rule, and `xud_solid_spv.h` is rewritten from it, so the shader's
+  new push block is validated in CI rather than assumed to compile), validation-clean with `VK_INSTANCE_LAYERS` unset and forced
+  to `VK_LAYER_KHRONOS_validation` (still exactly the harness's own synthetic `ERROR/validation` + `WARNING/validation` pair in
+  either run and nothing else — the push call's stage flags/offset/size pass the layer's subset-and-extent rules against the
+  layout the pipeline was created with, and the `Gtk-WARNING` lines GLFW's Wayland backend prints are not validation output),
+  `-DXUD_SANITIZERS=ON` green headless (**72 B / 3 allocations**) and GPU **1336 B / 68** — byte-for-byte S18's numbers, so the
+  push step added no allocation and no leak, and with `ASAN_OPTIONS=detect_leaks=0` answering 2293 / 2896 with 0 failures and no
+  `runtime error` line; `./scripts/format.sh --check` green; `ar -t build/libxud.a` stays **40** objects (no new TU — the row is
+  the frame rung's own pure half); `nm -u` lists no `vk*`/`glfw*` symbol and `ldd` lists no `libvulkan`/`libglfw`/`libGL`/`libEGL`
+  for either executable (the four Wayland libs GLFW links PUBLIC are still the only window-system libs present).
+
+  **Honest boundary**: the push row is live end to end (filled, pushed, read), but the matrix in it is the identity for the same
+  reason the block's `viewProj` is — a non-identity matrix is a transform the camera/transform step has to choose, and that step
+  is a *Later* item; the material / texture / flags members of the same row are recorded and unread, which is the channel the
+  material, texture and variant steps above will fill rather than a decoration of this one (the variant member is the fact the
+  transparent step below will branch on); and the frame loop still records **one** draw row per frame, so the push is exercised
+  once per frame today and N times per frame the moment a mid-frame flush exists — `xud_batch_should_flush()` is still a decision
+  no caller acts on.
+
 ## Steps complete (S18 The per-frame uniform update — a host-visible arena of its own block, the block written and copied every frame, `vkCmdBindDescriptorSets` for set 0 and the shader reading the set-0 `viewProj`, one step, landed as one commit, 2026-10-26)
 
 - [x] ~~**Batch consumers (part 2 of 4)**: the per-frame uniform copy (the `viewProj` row `xud_descriptor_fill_uniform_block()`

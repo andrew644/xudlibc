@@ -30,12 +30,12 @@
  *   What this rung does NOT have, and why: no VkImage and no VkSampler anywhere, so set 1's
  *          layout is DECLARED and its set is never allocated - the texture step is what creates
  *          the images and allocates that set from this same pool (which is why the pool is sized
- *          for both sets today). No vkCmdPushConstants anywhere: the frame loop below this one bi
- *          nds set 0 and reads its block, but the push row is still declared-and-unread, and pushi
- *          ng a range a shader does not read is a call that changes nothing about what is drawn. T
- *          he shaders under shaders/ read the batch's streams and this rung's block now (the per-f
- *          rame uniform step's) and no push row yet; the draw that pushes one is the next step's -
- *          see todo.md and the honest-boundary note in todo_completed.md for this step.
+ *          for both sets today). The push row of this layout is DECLARED here and CONSUMED one ru
+ *          ng over: the frame loop pushes it beside every draw it records and the vertex stage re
+ *          ads the model matrix out of it, so the bytes this rung's range row describes are live e
+ *          nd to end. What nothing reads today is the material / texture / flags trio of that same
+ *          row - the channel the material, texture and variant steps above will fill, and a stage n
+ *          eed not touch every member of a block its layout declares.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/

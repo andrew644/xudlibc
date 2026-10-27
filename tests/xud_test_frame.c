@@ -136,6 +136,52 @@ static void xud_test_frame_pure(void) {
         "the per-swapchain VkResult out-array is refused here rather than asked for: the rung's own "
         "return code is the report, and a pResults array would be a second channel for the same ans"
         "wer that a caller above would have to read");
+
+    /* The push row of one draw, in both material shapes: the batch's sentinel and a real slot, bec"
+       ause the sentinel mapping is the branch this rung owns and the only one a synthetic row can ex"
+       ercise. The two rows are also the two variants, which is the flags member's whole point. */
+    {
+        XudPushRow pushRow;
+        const XudBatchDraw sentinelRow = { 0u, 3u, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL };
+        const XudBatchDraw realRow = { 12u, 6u, XUD_BATCH_VARIANT_TRANSPARENT, 3u };
+        uint32_t axis = 0u;
+        uint32_t offDiagonal = 0u;
+
+        xud_check(xud_frame_fill_push_row(NULL, &sentinelRow) == XUD_INVALID_ARG, "frame/push-null-out", "refused");
+        xud_check(xud_frame_fill_push_row(&pushRow, NULL) == XUD_INVALID_ARG, "frame/push-null-draw",
+            "and so is a draw with no row behind it - the row's variant and material slot are what th"
+            "e push carries, so there is nothing to carry without one");
+
+        xud_check(xud_frame_fill_push_row(&pushRow, &sentinelRow) == XUD_OK, "frame/push-sentinel-ok", "the row is assembled");
+        xud_check((pushRow.modelMatrix[0] == 1.0f) && (pushRow.modelMatrix[5] == 1.0f) && (pushRow.modelMatrix[10] == 1.0f)
+                && (pushRow.modelMatrix[15] == 1.0f),
+            "frame/push-identity-diagonal",
+            "the model matrix is the identity, which is the same honest answer the block's viewProj g"
+            "ives: a non-identity matrix is a transform the step above has to choose");
+        for (axis = 0u; axis < 16u; axis++) {
+            if ((axis % 5u) != 0u) {
+                offDiagonal += (pushRow.modelMatrix[axis] == 0.0f) ? 1u : 0u;
+            }
+        }
+        xud_check(offDiagonal == 12u, "frame/push-identity-off-diagonal",
+            "and every off-diagonal element is zero, so the matrix is the identity rather than a matr"
+            "ix that happens to have ones on its diagonal");
+        xud_check(pushRow.materialIndex == 0u, "frame/push-sentinel-mapped",
+            "the batch's 0xFFFFFFFF sentinel is mapped to slot 0, because the push row's member is a"
+            "n index a read could use and the sentinel indexes nothing");
+        xud_check((pushRow.textureIndex == 0u) && (pushRow.flags == XUD_BATCH_VARIANT_OPAQUE) && (pushRow.reserved == 0u),
+            "frame/push-other-members",
+            "texture 0 (set 1 is declared and never allocated, so there is no sampler array with an e"
+            "ntry in it), flags the variant the draw was flushed under, and the padding byte-zeroed");
+
+        xud_check(xud_frame_fill_push_row(&pushRow, &realRow) == XUD_OK, "frame/push-real-ok", "and so for a real material slot");
+        xud_check((pushRow.materialIndex == 3u) && (pushRow.flags == XUD_BATCH_VARIANT_TRANSPARENT), "frame/push-real-passthrough",
+            "a slot that is not the sentinel is passed through unchanged, and the variant follows the"
+            "row - the per-draw channel carries the draw's own facts, not this rung's");
+        xud_check(pushRow.modelMatrix[0] == 1.0f, "frame/push-identity-again",
+            "and the model matrix is the identity for every row, because the matrix is not a per-draw"
+            "fact until the transform step above makes it one");
+    }
 }
 
 /* How many frames xud_test_gpu_draw() draws. More than one, because the point of drawing several i
@@ -300,6 +346,13 @@ static void xud_test_gpu_draw(void) {
         "gpu-draw/refuse-no-descriptor",
         "a frame with no descriptor has no set 0 to upload and no set to bind, which is a bad argument "
         "rather than a draw of a pipeline whose block was never written");
+    xud_check((context->renderer->descriptor->pushRange.size == XUD_DESCRIPTOR_PUSH_SIZE)
+            && (context->renderer->descriptor->pushRange.offset == 0u)
+            && (context->renderer->descriptor->pushRange.stageFlags == XUD_DESCRIPTOR_PUSH_STAGES),
+        "gpu-draw/push-range-recorded",
+        "the layout's push range is a recorded row rather than a discarded one, and it is the row the "
+        "frame loop pushes against - so the per-draw channel has an extent, an offset and two stages be"
+        "hind it rather than a call that names constants of the loop's own");
 
     for (frame = 0u; frame < XUD_TEST_GPU_DRAW_FRAMES; frame++) {
         uint32_t imageIndex = 0u;

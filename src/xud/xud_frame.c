@@ -9,8 +9,9 @@
  *          oad the batch with five vkCmdCopyBuffer calls behind the ONE host-write barrier that covers
  *          both arenas, bind the batch's four vertex streams with one vkCmdBindVertexBuffers call and
  *          its index buffer with one vkCmdBindIndexBuffer call, bind set 0 with one vkCmdBindDescript
- *          orSets call against the pipeline's own layout, begin render pass, replay the batch's recor
- *          ded draw rows as vkCmdDrawIndexed calls, end render pass), the batch reset at the end of a
+ *          orSets call against the pipeline's own layout, begin render pass, push the per-draw row wi
+ *          th vkCmdPushConstants beside each of the batch's recorded draw rows and replay those rows a
+ *          s vkCmdDrawIndexed calls, end render pass), the batch reset at the end of a
  *          completed frame, and the teardown that hands every one of them back.
  *   Layer: above the render pass and the framebuffer array, below the public API. Nothing in this
  *          file calls a Vulkan entry point directly - every one is reached through a row of XudLoa
@@ -63,6 +64,7 @@ static_assert(sizeof(PFN_vkCmdBindIndexBuffer) == sizeof(void*), "PFN row must b
 static_assert(sizeof(PFN_vkCmdBindDescriptorSets) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkCmdBindVertexBuffers) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkCmdDrawIndexed) == sizeof(void*), "PFN row must be pointer-sized");
+static_assert(sizeof(PFN_vkCmdPushConstants) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkCreateSemaphore) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkDestroySemaphore) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkCreateFence) == sizeof(void*), "PFN row must be pointer-sized");
@@ -213,6 +215,55 @@ XudResult xud_frame_fill_submit(
                                    ked for: the rung's own return code is the report, and a pResults arr
                                    ay would be a second channel for the same answer that a caller above w
                                    ould have to read */
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The push row of one draw - the pure half
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRow) {
+    uint32_t axis = 0u;
+
+    if ((outRow == NULL) || (drawRow == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The model matrix is the IDENTITY, and that is the same honest answer the descriptor rung gives
+       its block: a matrix that is not identity is a transform the camera/transform step has to CHOO
+       SE, and that step is above this one and has not landed. What is NOT decoration here is the chan
+       nel itself - the row is pushed, the vertex stage reads it, and the step above hands the object'
+       s own matrix in place of this one without this rung's shape changing. Identity is the one matri
+       x that is a fact rather than a choice, exactly as identity is the one viewProj the block holds t
+       oday.
+    */
+    for (axis = 0u; axis < 16u; axis++) {
+        outRow->modelMatrix[axis] = ((axis % 5u) == 0u) ? 1.0f : 0.0f;
+    }
+
+    /* The batch's sentinel is mapped to slot 0 here rather than passed through, and the reason is th
+       e argument's type: the push row's material index is an INDEX the shader would use, and XUD_BAT
+       CH_NO_MATERIAL is 0xFFFFFFFF, which is not an index into anything. "No material slot yet" is a
+       batch-side fact about a subsystem that does not exist; the per-draw channel has to carry a numb
+       er a read could use, and slot 0 is the only slot there is.
+    */
+    outRow->materialIndex = (drawRow->materialIndex == XUD_BATCH_NO_MATERIAL) ? 0u : drawRow->materialIndex;
+
+    /* Set 1 is declared and never allocated (the texture step's), so there is no sampler array to na
+       me an entry of. 0 is the only entry that could ever be read.
+    */
+    outRow->textureIndex = 0u;
+
+    /* The variant the draw was flushed under, in the per-draw channel rather than a channel of this r
+       ung's: the pipeline variant is chosen by BINDING a different pipeline, and this is the same fa
+       ct seen from the shader's side, which is what lets a stage branch on the variant without a thi
+       rd pipeline. The vertex stage reads only the model matrix today, so this member is recorded an
+       d unread - the row is the channel, and a stage need not read every member of a block its layou
+       t declares.
+    */
+    outRow->flags = drawRow->variant;
+    outRow->reserved = 0u;
 
     return XUD_OK;
 }
@@ -438,6 +489,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     uint32_t hasContent = 0u;
     VkDeviceSize stagingBytes = 0u;
     uint32_t draw = 0u;
+    XudPushRow pushRow;
 
     if ((frame == NULL) || (loader == NULL) || (device == NULL) || (swapchain == NULL) || (pipeline == NULL) || (pass == NULL)
         || (framebuffers == NULL) || (outImageIndex == NULL) || (batch == NULL) || (descriptor == NULL)) {
@@ -456,6 +508,14 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         /* Set 0 and the block it names are the state this frame binds and uploads, so a descriptor mi
            ssing any of the four is a descriptor this frame cannot run against - the same rule the line
            above applies to the pass and the pipeline one rung up. */
+        return XUD_INVALID_ARG;
+    }
+    if (descriptor->pushRange.size == 0u) {
+        /* The push row is pushed against the layout's OWN recorded range, so a descriptor that recorded
+           no range is a descriptor whose layout this frame cannot push against - the same shape of ref
+           usal as the four rows above, one rung over. The size rather than the stage flags is the fiel
+           d checked: a zero-size range is a range that names no bytes at all, and the stage flags of a
+           zero-size range would be decoration. */
         return XUD_INVALID_ARG;
     }
     if ((swapchain->imageCount == 0u) || (framebufferCount == 0u)) {
@@ -488,9 +548,10 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         || (loader->deviceTable.vkCmdBeginRenderPass == NULL) || (loader->deviceTable.vkCmdBindIndexBuffer == NULL)
         || (loader->deviceTable.vkCmdBindDescriptorSets == NULL) || (loader->deviceTable.vkCmdBindVertexBuffers == NULL)
         || (loader->deviceTable.vkCmdDrawIndexed == NULL) || (loader->deviceTable.vkCmdEndRenderPass == NULL)
-        || (loader->deviceTable.vkCmdPipelineBarrier == NULL) || (loader->deviceTable.vkEndCommandBuffer == NULL)
-        || (loader->deviceTable.vkQueueSubmit == NULL) || (loader->deviceTable.vkQueuePresentKHR == NULL)
-        || (loader->deviceTable.vkWaitForFences == NULL) || (loader->deviceTable.vkResetFences == NULL)) {
+        || (loader->deviceTable.vkCmdPipelineBarrier == NULL) || (loader->deviceTable.vkCmdPushConstants == NULL)
+        || (loader->deviceTable.vkEndCommandBuffer == NULL) || (loader->deviceTable.vkQueueSubmit == NULL)
+        || (loader->deviceTable.vkQueuePresentKHR == NULL) || (loader->deviceTable.vkWaitForFences == NULL)
+        || (loader->deviceTable.vkResetFences == NULL)) {
         return XUD_UNSUPPORTED;
     }
     if (!xud_loader_device_bound(loader, device->device)) {
@@ -864,6 +925,21 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         if (xud_batch_draw_get(batch, draw, &drawRow) != XUD_OK) {
             break;
         }
+        /* The push row is filled and pushed HERE, beside the draw it belongs to, rather than once per
+           frame: a push-constant range is command-buffer STATE that the last push before a draw bound,
+           which is exactly what makes it the per-draw channel and set 0 the per-frame one. The row is a
+           local of this iteration and that is legal where every other recorded row in this tree is a mem
+           ber: vkCmdPushConstants takes const void* and the driver COPIES the bytes into the command
+           buffer during the call, so nothing above reads them after it - the rule about members instead
+           of temporaries is about rows the driver reads by pointer later, and this is not one of those.
+           The stage flags are the layout's own range flags, which is the subset rule read as an equalit
+           y: the pipeline layout declared this range for exactly these two stages.
+        */
+        if (xud_frame_fill_push_row(&pushRow, &drawRow) != XUD_OK) {
+            break;
+        }
+        loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
+            descriptor->pushRange.offset, descriptor->pushRange.size, &pushRow);
         loader->deviceTable.vkCmdDrawIndexed(frame->commandBuffer, drawRow.indexCount, 0u, drawRow.firstIndex, 0, 0u);
     }
 

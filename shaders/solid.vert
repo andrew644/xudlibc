@@ -16,10 +16,13 @@
 // at 80 and 96 (both already 16-aligned), uint at 112 and 116 - which is byte-for-byte the struct in
 // xud_descriptor.h, and the assert beside that struct is the same number from the other side.
 //
-// The push-constant model matrix is NOT read here yet: the frame loop binds the set but pushes nothi
-// ng, and pushing a range a stage does not read is a call that changes nothing about what is drawn. U
-// ntil that lands the geometry stays in the block's space and the layout's push range stays declared
-// but unread, which is legal - a shader need not touch everything its layout declares.
+// The push-constant model matrix IS read here now: the frame loop pushes it with vkCmdPushConstants
+// beside every draw it records, so the vertex is placed by frame-viewProj * the draw's own model. The
+// block's member order and widths are the C layout of XudPushRow read against std140: mat4 at 0 (64
+// B), uint at 64, 68, 72 and 76 - 80 B, byte-for-byte the struct in xud_descriptor.h and the assert
+// beside XUD_DESCRIPTOR_PUSH_SIZE is the same number from the other side. Only modelMatrix is read:
+// a stage need not touch every member of a block its layout declares, and the material/texture/flags
+// members are the channel the material, texture and variant steps above will fill.
 
 layout(binding = 0, std140) uniform XudFrameBlock {
     mat4 viewProj;    // 0  - the VP matrix, column-major, the same 64 B the push row carries
@@ -30,6 +33,14 @@ layout(binding = 0, std140) uniform XudFrameBlock {
     uint lightCount;  // 112
     uint reserved;    // 116
 } xudFrame;
+
+layout(push_constant) uniform XudPushRow {
+    mat4 modelMatrix;    // 0  - the draw's own model matrix, column-major
+    uint materialIndex;  // 64 - which material slot this draw uses (unread today)
+    uint textureIndex;   // 68 - which entry of set 1's sampler array (unread today, set 1 unbound)
+    uint flags;          // 72 - the variant this draw was flushed under (unread today)
+    uint reserved;       // 76 - keeps the row 16-aligned with no hole
+} xudPush;
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec2 inUv;
@@ -42,7 +53,7 @@ layout(location = 2) out vec3 outNormal;
 
 void main(void)
 {
-    gl_Position = xudFrame.viewProj * vec4(inPos, 1.0f);
+    gl_Position = xudFrame.viewProj * xudPush.modelMatrix * vec4(inPos, 1.0f);
     outUv = inUv;
     outColor = inColor;
     outNormal = inNormal;

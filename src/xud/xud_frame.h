@@ -299,6 +299,21 @@ XudResult xud_frame_fill_recording(
 XudResult xud_frame_fill_submit(
     VkSubmitInfo* outSubmit, VkPresentInfoKHR* outPresent, VkCommandBuffer commandBuffer, VkSwapchainKHR swapchain);
 
+/// Pure: the push-constant row of ONE draw, from the batch's draw row. The model matrix is the iden
+/// tity for the same reason the block's viewProj is: a non-identity matrix is a transform the step a
+/// bove this one has to choose, and it has not landed - what is settled here is the CHANNEL (the row
+/// is pushed, the vertex stage reads it, the step above hands its own matrix in without this shape c
+/// hanging). materialIndex is the draw row's own, with the batch's XUD_BATCH_NO_MATERIAL sentinel map
+/// ped to slot 0 because the push row's member is an index a read could use and the sentinel is 0xFF
+/// FFFFF, which indexes nothing; textureIndex is 0 because set 1 is declared and never allocated, so
+/// there is no sampler array with an entry in it; flags is the variant the draw was flushed under, in
+/// the per-draw channel rather than a channel of this rung's - the pipeline variant is chosen by BIND
+/// ING, and this is the same fact from the shader's side, which is what lets a stage branch on the va
+/// riant without a third pipeline. The vertex stage reads only the model matrix today, so the other m
+/// embers are recorded and unread: the row is the channel and a stage need not read every member of a
+/// block its layout declares. XUD_INVALID_ARG on a NULL out-row or a NULL draw row.
+XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRow);
+
 /// Driver: the whole bring-up of this rung - vkCreateCommandPool, vkAllocateCommandBuffers, vkCre
 /// ateSemaphore, and vkCreateFence once per swapchain image. Before any call: the loader is open,
 /// its device rows are this device's rows, and EVERY destroy row this teardown needs is checked BE
@@ -345,9 +360,12 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
 /// s what updates set 0. It writes the block's bytes into the descriptor's mapped arena, uploads them
 /// with the descriptor rung's ONE vkCmdCopyBuffer call, and binds set 0 with one vkCmdBindDescriptorS
 /// ets call against the pipeline's own layout - so the block the shader reads is a block that holds s
-/// omething rather than a block that was never written. The push-constant range of the same layout is
-/// still declared-and-unread, and pushing a range a shader does not read is a call that changes nothi
-/// ng about what is drawn, so it stays the next step's.
+/// omething rather than a block that was never written. The push row of the same layout is pushed BE
+/// SIDE every draw this loop records (xud_frame_fill_push_row builds it from the batch's draw row and
+/// the driver half pushes it against the layout's own recorded range), so the vertex is placed by thi
+/// s frame's viewProj times this draw's model matrix - the per-draw channel and the per-frame set are
+/// both live, and what is still identity in both is the matrices themselves, because a non-identity m
+/// atrix is a transform the step above this one has to choose.
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
     XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
