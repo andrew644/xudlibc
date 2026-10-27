@@ -44,10 +44,15 @@
  *          batch's buffers are handed to the allocator rather to a block of this rung's). The desc
  *          riptor layout and the object kinds a public XudHandle names are steps above this one th
  *          at have not landed. THE BATCH RUNG, though, IS in the tree now and this rung owns it -
- *          and what is still open in it, stated rather than hidden: the pipeline this rung builds
- *          declares zero vertex bindings and the frame loop still records a vkCmdDraw rather than a
- *          vkCmdDrawIndexed, so the batch's six buffers are created, uploaded through xud_batch_u
- *          pload() and not yet bound to a draw. That is the next step, not a gap in this one.
+ *          and what is now true of it, stated rather than hidden: the pipeline this rung builds is
+ *          built against the batch (xud_pipeline_open() takes it and xud_pipeline_fill_vertex_input()
+ *          points the vertex-input row at the batch's four binding and four attribute rows), and the
+ *          frame loop this rung draws through takes it too, so the batch's six buffers are created,
+ *          uploaded through xud_batch_upload(), bound by one vkCmdBindVertexBuffers call over the
+ *          four streams and one vkCmdBindIndexBuffer call over the index buffer, and drawn by vkCmdD
+ *          rawIndexed per recorded draw row rather than by a hard-coded vkCmdDraw. What is still
+ *          open in this rung is the descriptor bind and the push constant, the per-frame uniform
+ *          copy, the transparent variant and the handle layer's record.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -167,12 +172,9 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
        above, and its vertex-input state is gated on the caps' vertex-input limits. It is handed
        neither the pass nor the pipeline because neither is an argument of its create - what it
        needs is the two records below this rung and nothing else. Opened BEFORE the pipeline for
-       the direction the file-top note states: the pipeline's vertex-input state is the thing that
-       will name these buffers, so the buffers have to exist before the pipeline is built against
-       them and must outlive it. What is NOT yet true here, and is open work rather than a claim:
-       the pipeline below still declares zero vertex bindings, and the frame loop still records a
-       vkCmdDraw rather than an indexed one, so these five buffers are created and uploaded through
-       xud_batch_upload() and not yet bound to a draw.
+       the direction the file-top note states: the pipeline's vertex-input state names these buffers,
+       so the buffers have to exist before the pipeline is built against them and must outlive it -
+       and xud_pipeline_open() below takes the batch for exactly that reason.
      */
     result = xud_batch_open(&renderer->batch, loader, device, caps, alloc);
     if (result != XUD_OK) {
@@ -191,7 +193,7 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
        bove the allocator and below this rung, and closes it after this rung's teardown has retired
        the pipeline that names those handles.
      */
-    result = xud_pipeline_open(&renderer->pipeline, loader, device, descriptor, renderer->renderPass->renderPass);
+    result = xud_pipeline_open(&renderer->pipeline, loader, device, descriptor, renderer->batch, renderer->renderPass->renderPass);
     if (result != XUD_OK) {
         xud_renderer_retire(renderer, device, loader, alloc);
         free(renderer);
@@ -246,7 +248,7 @@ XudResult xud_renderer_draw(
     }
 
     return xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
-        renderer->framebufferCount, outImageIndex);
+        renderer->framebufferCount, renderer->batch, outImageIndex);
 }
 
 /*-----------------------------------------------------------------------------------------------

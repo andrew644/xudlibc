@@ -26,16 +26,15 @@
  *          e() is exactly that call.
  *
  *   What this rung does NOT have, and why: no VkImage and no VkSampler anywhere, so set 1's
- *          layout is DECLARED and its set is never allocated - the texture step is what crea
- *          tes the images and allocates that set from this same pool (which is why the pool i
- *          s sized for both sets today). No vertex buffer and no vertex stream (the batch st
- *          ep's). No vkCmdBindDescriptorSets and no vkCmdPushConstants anywhere: the frame lo
- *          op below this one records the first triangle's one vkCmdDraw from a shader that re
- *          ads no binding and takes no push constant, and binding a set or pushing a range a
- *          shader does not read is a call that changes nothing about what is drawn. The shad
- *          ers under shaders/ are unchanged by this step, and the draw that binds these rows
- *          is the batch step's - see todo.md and the honest-boundary note in todo_completed.
- *          md for this step.
+ *          layout is DECLARED and its set is never allocated - the texture step is what creates
+ *          the images and allocates that set from this same pool (which is why the pool is sized
+ *          for both sets today). No vkCmdBindDescriptorSets and no vkCmdPushConstants anywhere:
+ *          the frame loop below this one records the batch's indexed draws from a shader that rea
+ *          ds the batch's four vertex attributes and still reads no binding and takes no push co
+ *          nstant, and binding a set or pushing a range a shader does not read is a call that chan
+ *          ges nothing about what is drawn. The shaders under shaders/ read the batch's streams no
+ *          w (the vertex-input step's) and none of these rows yet; the draw that binds them is the
+ *          next step's - see todo.md and the honest-boundary note in todo_completed.md for this step.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/

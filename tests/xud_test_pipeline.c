@@ -3,10 +3,13 @@
  *   xud_test_pipeline.c - the pipeline rung: one graphics pipeline, its layout, its two modules
  *
  *   Owns : the layout assembly that refuses a descriptor record whose set layouts or uniform buffer are not live, the shader-stage rows,
- * the pipeline create-info assembly and the state assembly that writes zero vertex bindings and an
- * ON depth pair against the pass's depth attachment - and says why. Layer:
- * tests. Sees xud_pipeline.h and xud_descriptor.h: the layout names the two set layouts and the push-constant range the descriptor rung
- * owns, so that record is an input to what is checked here.
+ * the pipeline create-info assembly and the state assembly that writes the STARTING zero
+ * vertex-input row plus an ON depth pair against the pass's depth attachment, the vertex-input
+ * overwrite that replaces that zero row with the batch rung's four binding and four attribute
+ * rows - and says why. Layer: tests. Sees xud_pipeline.h, xud_batch.h and xud_descriptor.h:
+ * the layout names the two set layouts and the push-constant range the descriptor rung owns, and
+ * the batch's four rows are what the pipeline's vertex-input state is handed, so both records are
+ * inputs to what is checked here.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -14,6 +17,7 @@
  ***********************************************************************************************/
 
 #include "xud.h" /* Required for: XudResult, XUD_VERSION, the XUD_GPU_TESTS gate */
+#include "xud_batch.h" /* Required for: XudBatch, the four vertex-input rows the pipeline's state is handed */
 #include "xud_descriptor.h" /* Required for: XudDescriptor, the record the layout assembly is handed */
 #include "xud_pipeline.h" /* Required for: XudPipeline, the fill rungs and the entry-point name */
 #include "xud_shader.h" /* Required for: XudShader, the two modules the pipeline stage rows name */
@@ -45,16 +49,69 @@ static void xud_test_pipeline_pure(void) {
     xud_check(pipeline.vertexInput.sType == VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO, "pipeline/vertex-input-stamped",
         "every row is stamped, which is the same rule the physical layer records for a driver");
     xud_check(pipeline.vertexInput.vertexBindingDescriptionCount == 0u, "pipeline/zero-bindings",
-        "zero vertex bindings: there is still no VkBuffer and no vertex stream above the allocator, "
-        "so the vertex shader generates its vertices from gl_VertexIndex instead");
+        "zero vertex bindings IN THE ROW fill_state writes: that row is the starting state of the field, "
+        "and xud_pipeline_fill_vertex_input below is what overwrites it with the batch's four rows");
     xud_check(pipeline.vertexInput.vertexAttributeDescriptionCount == 0u, "pipeline/zero-attributes",
         "and zero attributes, the other half of the same rule");
     xud_check((pipeline.vertexInput.pVertexBindingDescriptions == NULL) && (pipeline.vertexInput.pVertexAttributeDescriptions == NULL),
         "pipeline/binding-arrays-null",
         "both counts are paired with a NULL array, so a driver that reads past a count reads "
         "nothing");
+
+    /* The vertex-input OVERWRITE, which is the other half of the field's life: a batch whose four rows
+       are filled, handed to the pipeline. The rows are filled by hand rather than by xud_batch_open
+       because open creates six buffers and needs a device, and the row VALUES are all the overwrite
+       reads - so a synthetic batch that carries them is the same input the renderer hands.
+    */
+    {
+        XudBatch batch = (XudBatch) { 0 };
+        XudPipeline withBatch = (XudPipeline) { 0 };
+        XudBatch empty = (XudBatch) { 0 };
+        XudPipeline refused = (XudPipeline) { 0 };
+
+        batch.bindings[XUD_BATCH_STREAM_POS].binding = XUD_BATCH_STREAM_POS;
+        batch.bindings[XUD_BATCH_STREAM_UV].binding = XUD_BATCH_STREAM_UV;
+        batch.bindings[XUD_BATCH_STREAM_COLOR].binding = XUD_BATCH_STREAM_COLOR;
+        batch.bindings[XUD_BATCH_STREAM_NORMAL].binding = XUD_BATCH_STREAM_NORMAL;
+        batch.bindings[XUD_BATCH_STREAM_POS].stride = XUD_BATCH_STREAM_POS_SIZE;
+        batch.bindings[XUD_BATCH_STREAM_UV].stride = XUD_BATCH_STREAM_UV_SIZE;
+        batch.bindings[XUD_BATCH_STREAM_COLOR].stride = XUD_BATCH_STREAM_COLOR_SIZE;
+        batch.bindings[XUD_BATCH_STREAM_NORMAL].stride = XUD_BATCH_STREAM_NORMAL_SIZE;
+        batch.attributes[XUD_BATCH_STREAM_POS].location = XUD_BATCH_STREAM_POS;
+        batch.attributes[XUD_BATCH_STREAM_UV].location = XUD_BATCH_STREAM_UV;
+        batch.attributes[XUD_BATCH_STREAM_COLOR].location = XUD_BATCH_STREAM_COLOR;
+        batch.attributes[XUD_BATCH_STREAM_NORMAL].location = XUD_BATCH_STREAM_NORMAL;
+        batch.attributes[XUD_BATCH_STREAM_POS].format = XUD_BATCH_STREAM_FORMAT(XUD_BATCH_STREAM_POS);
+        batch.attributes[XUD_BATCH_STREAM_UV].format = XUD_BATCH_STREAM_FORMAT(XUD_BATCH_STREAM_UV);
+        batch.attributes[XUD_BATCH_STREAM_COLOR].format = XUD_BATCH_STREAM_FORMAT(XUD_BATCH_STREAM_COLOR);
+        batch.attributes[XUD_BATCH_STREAM_NORMAL].format = XUD_BATCH_STREAM_FORMAT(XUD_BATCH_STREAM_NORMAL);
+
+        xud_check(xud_pipeline_fill_vertex_input(&withBatch, &batch) == XUD_OK, "pipeline/vertex-input-from-batch",
+            "the overwrite completes against a batch whose four binding numbers and four attribute locations are the stream numbers 0..3, "
+            "which is both what the pipeline's vertex-input row is about to claim and what vkCmdBindVertexBuffers will bind");
+        xud_check((withBatch.vertexInput.vertexBindingDescriptionCount == XUD_BATCH_STREAM_COUNT)
+                && (withBatch.vertexInput.vertexAttributeDescriptionCount == XUD_BATCH_STREAM_COUNT),
+            "pipeline/four-bindings-four-attributes",
+            "four of each, the batch's four streams, where the row fill_state writes had zero of each");
+        xud_check(withBatch.vertexInput.pVertexBindingDescriptions == (const VkVertexInputBindingDescription*)batch.bindings,
+            "pipeline/binding-array-is-the-batch's",
+            "the row NAMES the batch's own array rather than a copy of it, which is what makes the batch's life the pipeline's subject");
+        xud_check(withBatch.vertexInput.pVertexAttributeDescriptions == (const VkVertexInputAttributeDescription*)batch.attributes,
+            "pipeline/attribute-array-is-the-batch's", "the same rule on the attribute side");
+
+        xud_check(xud_pipeline_fill_vertex_input(NULL, &batch) == XUD_INVALID_ARG, "pipeline/fill-vertex-input-null-pipeline",
+            "an out-param that cannot be filled is refused");
+        xud_check(xud_pipeline_fill_vertex_input(&withBatch, NULL) == XUD_INVALID_ARG, "pipeline/fill-vertex-input-null-batch",
+            "a pipeline with no batch to name has no vertex input to write, which is a refusal rather than a zero row");
+        xud_check(xud_pipeline_fill_vertex_input(&refused, &empty) == XUD_INVALID_ARG, "pipeline/fill-vertex-input-zero-row-refused",
+            "a batch whose rows are still all zero never went through xud_batch_open's fill, and a pipeline built on that row "
+            "would read a binding number and a location that name no stream at all");
+        xud_check(refused.vertexInput.vertexBindingDescriptionCount == 0u, "pipeline/refused-row-untouched",
+            "a refused overwrite leaves the row at the state fill_state wrote it in, rather than half-writing it");
+    }
+
     xud_check(pipeline.inputAssembly.topology == XUD_PIPELINE_TOPOLOGY, "pipeline/topology",
-        "a triangle list, which is what vkCmdDraw's vertexCount means");
+        "a triangle list, which is what vkCmdDrawIndexed's indexCount means over the batch's index buffer");
     xud_check(pipeline.inputAssembly.primitiveRestartEnable == VK_FALSE, "pipeline/no-primitive-restart",
         "no restart index, so every vertex of the count is a vertex of the triangle");
     xud_check((pipeline.viewportState.viewportCount == 1u) && (pipeline.viewportState.scissorCount == 1u),

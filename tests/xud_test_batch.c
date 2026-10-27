@@ -11,12 +11,14 @@
  *          xud_batch.h and xud_physical.h: every gate below is read off the caps' vertex-input and
  *          memory rows, which is the record the physical layer owns.
  *
- *   What this area does NOT check, and why: the five vkCmdCopyBuffer calls of xud_batch_upload().
- *   The call needs a command buffer that is being recorded, and the only command buffer in this
- *   tree belongs to the frame loop, which records it itself - so the region ARITHMETIC the calls
- *   are built from is checked here (xud_batch_fill_copy_regions, headless, against live counts)
- *   and the calls themselves land with the frame loop's step that binds the batch. Saying so is
- *   the honest version of "the upload path is not exercised by a GPU test yet".
+ *   What this area does NOT check, and why: the five vkCmdCopyBuffer calls of xud_batch_upload(),
+ *   the one vkCmdBindVertexBuffers call over the four streams and the one vkCmdBindIndexBuffer call
+ *   over the index buffer. All three need a command buffer that is being recorded, and the only
+ *   command buffer in this tree belongs to the frame loop - so the region ARITHMETIC the copies are
+ *   built from is checked here (xud_batch_fill_copy_regions, headless, against live counts) and the
+ *   calls themselves are exercised by the frame area's GPU half, which appends a triangle before
+ *   every frame so the upload / bind / draw path inside xud_frame_draw() is the path actually taken
+ *   rather than the empty-batch path.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *

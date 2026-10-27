@@ -412,6 +412,15 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t variant, uint32_t mate
     return XUD_OK;
 }
 
+XudResult xud_batch_draw_get(const XudBatch* batch, uint32_t index, XudBatchDraw* outRow) {
+    if ((batch == NULL) || (outRow == NULL) || (index >= batch->drawCount)) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outRow = batch->draws[index];
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The appends - pure arithmetic over the arena, plus the one host write into the mapped bytes
  *-----------------------------------------------------------------------------------------------*/

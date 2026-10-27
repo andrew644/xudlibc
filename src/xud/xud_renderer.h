@@ -42,14 +42,13 @@
  *   THE BATCH RUNG IS NOW IN THE TREE, AND THIS RUNG OWNS IT. The batch opens AFTER the render
  *   pass and BEFORE the pipeline, and closes in the reverse slot - after the pipeline has been
  *   retired and before the pass - because the batch sits BELOW the pipeline in the ladder: the
- *   pipeline's vertex-input state is the thing that will name the batch's buffers, so the buffers
- *   have to exist before the pipeline is built against them and must outlive it. What is NOT yet
- *   true of this tree, and is open work rather than a claim: the pipeline this rung builds still
- *   declares zero vertex bindings and zero attributes, and the frame loop still records a vkCmdDra
- *   w rather than an indexed one, so the batch's six buffers are created, uploaded through
- *   xud_batch_upload() and not yet bound to a draw. The batch is handed to nothing in this open
- *   order - it needs the caps and the allocator, both of which this rung is already handed - and
- *   the pipeline create's taking of it is the step that lands the vertex-input state.
+ *   pipeline's vertex-input state is the thing that names the batch's buffers, so the buffers
+ *   have to exist before the pipeline is built against them and must outlive it. That order is
+ *   no longer a promise: xud_pipeline_open() takes the batch and xud_pipeline_fill_vertex_input()
+ *   points the pipeline's vertex-input row at the batch's four binding and four attribute rows,
+ *   and xud_frame_draw() takes it too, so the batch's six buffers are created, uploaded, bound
+ *   (one vkCmdBindVertexBuffers call over the four streams, one vkCmdBindIndexBuffer call over
+ *   the index buffer) and drawn by vkCmdDrawIndexed rather than by a hard-coded vkCmdDraw.
  ***********************************************************************************************/
 
 #ifndef XUD_RENDERER_H_
@@ -77,13 +76,12 @@
 
 typedef struct XudRenderer XudRenderer;
 struct XudRenderer {
-    XudBatch* batch; /* owned: the batch rung's five buffers - the four SoA attribute streams and
-                        the one index buffer - carved out of the allocator's memory, plus the one
-                        mapped staging arena the CPU-side bytes are written into. Opened BEFORE the
-                        pipeline sits before it because the pipeline's vertex-input state is the
-                        thing that will name these buffers, so they have to exist before the pipe
-                        line is built against them and must outlive it. Its buffers are created and
-                        uploaded, and not yet bound to a draw: see the batch note above. */
+    XudBatch* batch; /* owned: the batch rung's four SoA attribute streams and the one index
+                        buffer, carved out of the allocator's memory, plus the one mapped staging
+                        arena the CPU-side bytes are written into. Opened BEFORE the pipeline sits
+                        before it because the pipeline's vertex-input state names these buffers, so
+                        they have to exist before the pipeline is built against them and must outl
+                        ive it - and the frame loop uploads, binds and draws them every frame. */
     XudPipeline* pipeline; /* owned: the one graphics pipeline of this rung, with its layout
                               and its two VkShaderModules inside it */
     XudRenderPass* renderPass; /* owned: the one explicit VkRenderPass of the repo's settled

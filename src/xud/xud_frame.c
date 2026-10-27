@@ -4,8 +4,12 @@
  *          resent triple, and the acquire semaphore + per-image fences that bound a frame
  *
  *   Owns : vkCreateCommandPool / vkAllocateCommandBuffers / vkCreateSemaphore / vkCreateFence per
- *          swapchain image, one recorded frame (bind pipeline, set viewport + scissor, begin rende
- *          r pass, draw, end render pass), and the teardown that hands every one of them back.
+ *          swapchain image, one recorded frame (bind pipeline, set viewport + scissor, upload the
+ *          batch with five vkCmdCopyBuffer calls behind two barriers, bind the batch's four vertex
+ *          streams with one vkCmdBindVertexBuffers call and its index buffer with one vkCmdBindIndexBuffer
+ *          call, begin render pass, replay the batch's recorded draw rows as vkCmdDrawIndexed calls,
+ *          end render pass), the batch reset at the end of a completed frame, and the teardown that
+ *          hands every one of them back.
  *   Layer: above the render pass and the framebuffer array, below the public API. Nothing in this
  *          file calls a Vulkan entry point directly - every one is reached through a row of XudLoa
  *          der's Volk device table, so the archive holds no vk* symbol and the link line has no -lv
@@ -26,6 +30,7 @@
 
 #include "xud_frame.h"
 #include "xud.h"
+#include "xud_batch.h"
 #include "xud_device.h"
 #include "xud_loader.h"
 #include "xud_physical.h"
@@ -51,7 +56,9 @@ static_assert(sizeof(PFN_vkCmdSetViewport) == sizeof(void*), "PFN row must be po
 static_assert(sizeof(PFN_vkCmdSetScissor) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkCmdBeginRenderPass) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkCmdEndRenderPass) == sizeof(void*), "PFN row must be pointer-sized");
-static_assert(sizeof(PFN_vkCmdDraw) == sizeof(void*), "PFN row must be pointer-sized");
+static_assert(sizeof(PFN_vkCmdBindIndexBuffer) == sizeof(void*), "PFN row must be pointer-sized");
+static_assert(sizeof(PFN_vkCmdBindVertexBuffers) == sizeof(void*), "PFN row must be pointer-sized");
+static_assert(sizeof(PFN_vkCmdDrawIndexed) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkCreateSemaphore) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkDestroySemaphore) == sizeof(void*), "PFN row must be pointer-sized");
 static_assert(sizeof(PFN_vkCreateFence) == sizeof(void*), "PFN row must be pointer-sized");
@@ -404,7 +411,8 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
 
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
-    uint32_t* outImageIndex) {
+    XudBatch* batch, uint32_t* outImageIndex) {
+    XudBatchDraw drawRow;
     XudQueue graphicsQueue;
     XudQueue presentQueue;
     XudFramebuffer* row = NULL;
@@ -419,9 +427,16 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     VkPresentInfoKHR present;
     uint32_t imageIndex = 0u;
     VkFence frameFence = VK_NULL_HANDLE;
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    uint32_t hasContent = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    uint32_t draw = 0u;
 
     if ((frame == NULL) || (loader == NULL) || (device == NULL) || (swapchain == NULL) || (pipeline == NULL) || (pass == NULL)
-        || (framebuffers == NULL) || (outImageIndex == NULL)) {
+        || (framebuffers == NULL) || (outImageIndex == NULL) || (batch == NULL)) {
         return XUD_INVALID_ARG;
     }
     if (!loader->open) {
@@ -459,7 +474,8 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     if ((loader->deviceTable.vkAcquireNextImageKHR == NULL) || (loader->deviceTable.vkResetCommandBuffer == NULL)
         || (loader->deviceTable.vkBeginCommandBuffer == NULL) || (loader->deviceTable.vkCmdBindPipeline == NULL)
         || (loader->deviceTable.vkCmdSetViewport == NULL) || (loader->deviceTable.vkCmdSetScissor == NULL)
-        || (loader->deviceTable.vkCmdBeginRenderPass == NULL) || (loader->deviceTable.vkCmdDraw == NULL)
+        || (loader->deviceTable.vkCmdBeginRenderPass == NULL) || (loader->deviceTable.vkCmdBindIndexBuffer == NULL)
+        || (loader->deviceTable.vkCmdBindVertexBuffers == NULL) || (loader->deviceTable.vkCmdDrawIndexed == NULL)
         || (loader->deviceTable.vkCmdEndRenderPass == NULL) || (loader->deviceTable.vkCmdPipelineBarrier == NULL)
         || (loader->deviceTable.vkEndCommandBuffer == NULL) || (loader->deviceTable.vkQueueSubmit == NULL)
         || (loader->deviceTable.vkQueuePresentKHR == NULL) || (loader->deviceTable.vkWaitForFences == NULL)
@@ -521,6 +537,35 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     }
     if ((row == NULL) || (row->framebuffer == VK_NULL_HANDLE) || (row->view == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
+    }
+
+    /* --- 3b. the batch is flushed HERE, before the command buffer is begun. Closing the pending run
+       into a draw row and reading the row list are both PURE host work - they need no command buffer -
+       so doing them here is what keeps every failure path below the begin call one that ends the buffer
+       it began rather than returning out of a begun one. The counts come from the batch's own accessor
+       rather than from its fields, which is the repo's accessor rule read one rung below: the frame loop
+       asks, it does not reach.
+    */
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+    hasContent = ((vertexCount > 0u) && (indexCount > 0u)) ? 1u : 0u;
+    if (hasContent != 0u) {
+        /* The pending batch is closed into a draw row here, which is what makes "the frame loop is the
+           flush" a fact rather than a promise: the rows read below are the whole list the frame replays,
+           and the variant/material the row names is the one the appends were made under. Nothing in this
+           tree flushes mid-frame yet - xud_batch_should_flush is the decision and no caller above has
+           acted on it - so the pending run is one row today, and the day it is more than one is the day
+           the multi-draw shape below already handles.
+        */
+        if (xud_batch_record_draw(batch, batch->currentVariant, batch->currentMaterial) != XUD_OK) {
+            return XUD_OUT_OF_MEMORY;
+        }
+        result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+        if (result != XUD_OK) {
+            return result;
+        }
     }
 
     result = xud_frame_fill_recording(&begin, &viewport, &scissor, row->createInfo.width, row->createInfo.height);
@@ -657,12 +702,101 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        not a transition that happened yet: the image is still in frame->imageLayouts[imageIndex] until
        vkQueueSubmit has run the commands, and a barrier that names the wrong oldLayout is a validation
        error on the NEXT frame rather than on this one. */
+    /* --- 5b. the batch's content is uploaded, bound and drawn only when the batch has content in it:
+       a frame whose batch is empty clears and presents with no draw at all, which is a legal frame
+       rather than an error, and the honest answer to "nothing has appended yet".
+    */
+    if (hasContent != 0u) {
+        /* The barrier that makes the batch's HOST WRITES visible to the copies below. The batch's arena
+           is mapped ONCE for its whole life (xud_batch_open maps it, xud_batch_close unmaps it), so these
+           are not a map/unmap pair per frame and the repo's rule that a mapped write needs a matching
+           unmap + invalidate does not reach them - what makes them visible is this barrier. HOST is the
+           one stage the spec's supported-access-type table puts VK_ACCESS_HOST_WRITE_BIT at, and it is a
+           legal srcStageMask and never a dstStageMask, which is why this is its own call rather than a
+           third entry folded into the layout-transition barrier above.
+        */
+        {
+            const VkMemoryBarrier hostToTransfer = (VkMemoryBarrier) { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .pNext = NULL,
+                .srcAccessMask = XUD_FRAME_HOST_WRITE_ACCESS,
+                .dstAccessMask = XUD_FRAME_TRANSFER_READ_ACCESS };
+            loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, XUD_FRAME_BARRIER_HOST_STAGE, XUD_FRAME_BARRIER_TRANSFER_STAGE,
+                0u, 1u, &hostToTransfer, 0u, NULL, 0u, NULL);
+        }
+
+        /* The five vkCmdCopyBuffer calls, from the batch's own copy rows, over the live byte counts and
+           not the capacity: the arena's bytes are rewritten in place every frame, never appended to, so
+           the copy is of what is live and the rest of the buffer is stale bytes no draw reads. The call
+           is legal only OUTSIDE a render pass instance, which is where it sits - before the begin below.
+           A failure here ends the buffer before returning, which is what keeps the rung's claim that a
+           begun command buffer is always ended before it returns checkable rather than a promise.
+        */
+        if (xud_batch_upload(batch, loader, device, frame->commandBuffer) != XUD_OK) {
+            (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
+            return XUD_INTERNAL_ERROR;
+        }
+
+        /* The barrier that makes the copies' results visible to the reads that follow them: the streams
+           are read as vertex attributes and the uniform block as a uniform, and the validation layer's
+           supported-access-type rule is what refuses a dstStageMask that covers neither.
+        */
+        {
+            const VkMemoryBarrier transferToReads = (VkMemoryBarrier) { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .pNext = NULL,
+                .srcAccessMask = XUD_FRAME_TRANSFER_WRITE_ACCESS,
+                .dstAccessMask = XUD_FRAME_VERTEX_READ_ACCESS };
+            loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, XUD_FRAME_BARRIER_TRANSFER_STAGE,
+                XUD_FRAME_BARRIER_VERTEX_READ_STAGES, 0u, 1u, &transferToReads, 0u, NULL, 0u, NULL);
+        }
+
+        /* ONE call over the whole array of the batch's four streams, at the binding numbers the batch's
+           vertex-input rows named - four separate calls would be four calls each leaving three of the
+           pipeline's four bindings unbound, which is a draw reading a binding nothing wrote. The offsets
+           are INTO THE BUFFER, not the buffer's address in the allocator's block: each stream is its own
+           VkBuffer bound at its range's offset, so the vertex data starts at buffer offset 0. The call is
+           void and cannot fail, and the arrays are this frame's own, read during the call.
+        */
+        {
+            VkBuffer streamRows[XUD_BATCH_STREAM_COUNT];
+            VkDeviceSize streamOffsets[XUD_BATCH_STREAM_COUNT];
+            uint32_t stream = 0u;
+            for (stream = 0u; stream < XUD_BATCH_STREAM_COUNT; stream++) {
+                streamRows[stream] = batch->stream[stream].buffer;
+                streamOffsets[stream] = 0u;
+            }
+            loader->deviceTable.vkCmdBindVertexBuffers(
+                frame->commandBuffer, XUD_FRAME_FIRST_BINDING, XUD_BATCH_STREAM_COUNT, streamRows, streamOffsets);
+        }
+
+        /* The index buffer is bound HERE, not passed to the draw: vkCmdDrawIndexed names no index buffer
+           at all, the bind is the state and the draw reads it. The offset is 0 because the batch's indices
+           start at the beginning of its own buffer, and the type is UINT32 because XUD_BATCH_INDEX_SIZE is
+           four bytes an entry - a bind that named another type would be a draw reading part of an index.
+           The bind is recorded OUTSIDE the render pass, beside the vertex bind above it, which is where
+           state-setting belongs.
+        */
+        loader->deviceTable.vkCmdBindIndexBuffer(frame->commandBuffer, batch->indexBuffer, 0u, XUD_FRAME_INDEX_TYPE);
+    }
+
     loader->deviceTable.vkCmdBeginRenderPass(frame->commandBuffer, &passBegin, VK_SUBPASS_CONTENTS_INLINE);
 
-    /* The draw. vertexCount is the whole argument set of the first-triangle step: there is no vertex buffe
-       r and no index buffer, so the count IS the geometry and the shader derives the corner from gl_Vertex
-       Index (see shaders/solid.vert). instanceCount 0 is the "draw once" form. */
-    loader->deviceTable.vkCmdDraw(frame->commandBuffer, XUD_FRAME_DRAW_VERTEX_COUNT, XUD_FRAME_DRAW_INSTANCE_COUNT, 0u, 0u);
+    /* The draws: one vkCmdDrawIndexed per recorded row of the batch, which is the plan's multi-draw
+       shape - the batch's rows are the flush list and the frame loop replays them. The row's firstIndex/
+       indexCount are what the batch recorded when it flushed, and the index buffer itself was bound above,
+       so the geometry is the batch's and no longer a hard-coded three-vertex triangle. A batch with
+       nothing in it has no rows at all, so this loop records nothing and the frame is a clear-and-present
+       frame. The row accessor is read inside the pass and a row that cannot be read ENDS the list rather
+       than returning out of a begun pass: the count above came from the same batch, so the branch is not
+       one this loop reaches, and the draws made so far are the whole list either way, which is what keeps
+       the command buffer well formed. instanceCount 0 is the "draw once" form and vertexOffset 0 is the
+       "no shift" form of the int32_t argument.
+    */
+    for (draw = 0u; draw < drawCount; draw++) {
+        if (xud_batch_draw_get(batch, draw, &drawRow) != XUD_OK) {
+            break;
+        }
+        loader->deviceTable.vkCmdDrawIndexed(frame->commandBuffer, drawRow.indexCount, 0u, drawRow.firstIndex, 0, 0u);
+    }
 
     loader->deviceTable.vkCmdEndRenderPass(frame->commandBuffer);
 
@@ -728,6 +862,17 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     frame->lastFrameFence = VK_NULL_HANDLE; /* waited and reset, so nothing is in flight any more */
     frame->presentedSwapchain = swapchain->swapchain;
     frame->lastImageIndex = imageIndex;
+
+    /* The batch is reset HERE, at the end of a frame that completed: the frame loop is the flush, so the
+       next frame starts from an empty batch and the arena's bytes are rewritten from offset 0 rather than
+       appended to. The capacities and the buffers stay - only the live counts restart - which is the same
+       property xud_batch_reset's own note states. A frame that failed above leaves the batch alone, because
+       a batch whose content was never uploaded is a batch a caller above still has to see.
+    */
+    if (xud_batch_reset(batch) != XUD_OK) {
+        return XUD_INTERNAL_ERROR;
+    }
+
     frame->framesDrawn++;
 
     *outImageIndex = imageIndex;

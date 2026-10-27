@@ -3,9 +3,12 @@
  *   xud_test_frame.c - the frame loop and the renderer that draws through it
  *
  *   Owns : the command-pool and command-buffer rows, the submit and present rows, the core-1.0 acquire gate, the per-image layout record
- * and the barrier that makes the next frame's oldLayout a fact - plus the GPU half that draws real frames through the renderer and refuses
- * the failure shapes of the frame loop against those very live objects. Layer: tests. Sees xud_frame.h, xud_renderer.h and xud_core.h: the
- * renderer is the owner of the four rungs and xud_renderer_draw() is the one call a caller above makes, so the loop and its owner are one
+ * and the barrier that makes the next frame's oldLayout a fact - plus the GPU half that draws real frames through the renderer, with a
+ * triangle appended to the batch before each of them so the upload / bind / draw path inside the frame
+ * loop is the path actually taken rather than the empty-batch path, and refuses the failure shapes of
+ * the frame loop against those very live objects. Layer: tests. Sees xud_frame.h, xud_batch.h, xud_renderer.h and xud_core.h: the
+ * renderer is the owner of the rungs and xud_renderer_draw() is the one call a caller above makes, so
+ * the loop, the batch it consumes and its owner are one area.
  * area.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
@@ -14,6 +17,7 @@
  ***********************************************************************************************/
 
 #include "xud.h" /* Required for: XudResult, XUD_VERSION, the XUD_GPU_TESTS gate */
+#include "xud_batch.h" /* Required for: XudBatch, the batch the frame loop uploads / binds and draws */
 #include "xud_core.h" /* Required for: XudContext, the owner the GPU half runs against */
 #include "xud_frame.h" /* Required for: XudFrame, the fill rungs, the allocation and the recording rows */
 #include "xud_renderer.h" /* Required for: xud_renderer_draw, the one call the GPU half draws through */
@@ -157,6 +161,15 @@ static void xud_test_gpu_draw(void) {
     uint32_t previousIndex = 0u;
     uint32_t probeIndex = 0u;
     bool indexMoved = false;
+    /* The triangle appended to the batch before every frame: fixed coordinates, a fixed colour and a
+       fixed normal, so the run is deterministic and the validation layer sees the same geometry every
+       run. The three positions are distinct and inside the clip volume, so the draw is a draw of a
+       triangle rather than a draw of a degenerate one at the origin.
+    */
+    const float trianglePos[3][3] = { { -0.5f, -0.5f, 0.0f }, { 0.5f, -0.5f, 0.0f }, { 0.0f, 0.5f, 0.0f } };
+    const float triangleUv[3][2] = { { 0.0f, 0.0f }, { 1.0f, 0.0f }, { 0.5f, 1.0f } };
+    const uint8_t triangleColor[4] = { 255u, 255u, 255u, 255u };
+    const float triangleNormal[3] = { 0.0f, 0.0f, 1.0f };
 
     result = xud_init_context(&context, 256u, 256u);
     xud_check(result == XUD_OK, "gpu-draw/context-completes", "the ladder has to complete before anything can be drawn");
@@ -202,28 +215,31 @@ static void xud_test_gpu_draw(void) {
        block are what say so - framesDrawn is the counter the loop below is about to move, and last
        FrameFence is the one field a frame that had started would have filled.
     */
-    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, NULL)
+    xud_check(
+        xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+            context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch, NULL)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-out-index", "a frame with nowhere to write the acquired index is a bad argument");
-    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, NULL,
-                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, &probeIndex)
+    xud_check(
+        xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, NULL, context->renderer->renderPass,
+            context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-pipeline", "a frame with no pipeline to bind is a bad argument, not a draw with no pipeline");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-                  NULL, context->renderer->framebuffers, context->swapchain->imageCount, &probeIndex)
+                  NULL, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-pass", "a frame with no render pass to begin is a bad argument");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-                  context->renderer->renderPass, NULL, context->swapchain->imageCount, &probeIndex)
+                  context->renderer->renderPass, NULL, context->swapchain->imageCount, context->renderer->batch, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-rows", "a frame with no framebuffer rows has no attachment to draw into");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-                  context->renderer->renderPass, context->renderer->framebuffers, 0u, &probeIndex)
+                  context->renderer->renderPass, context->renderer->framebuffers, 0u, context->renderer->batch, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-zero-count", "a frame told it has no rows to attach is a bad argument");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount + 1u, &probeIndex)
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount + 1u,
+                  context->renderer->batch, &probeIndex)
             == XUD_UNSUPPORTED,
         "gpu-draw/refuse-count-disagrees",
         "a count that is not the swapchain's is a frame this rung "
@@ -239,15 +255,61 @@ static void xud_test_gpu_draw(void) {
     xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/refusals-in-flight-still-none",
         "and no fence was signalled, so a refused frame leaves nothing in flight to be waited");
 
+    /* The batch the frame loop is about to consume, read before the first frame reaches it: the loop
+       names the batch's six buffers in a copy, a vertex bind and an index bind, so a nil batch or a
+       nil buffer in it is a frame recording reads of nothing. The renderer opened the batch before it
+       opened the pipeline, so the buffers exist by the time a frame can be drawn at all.
+    */
+    xud_check(
+        context->renderer->batch != NULL, "gpu-draw/batch-present", "the renderer owns a batch, which is what the frame loop consumes");
+    xud_check(context->renderer->batch->indexBuffer != VK_NULL_HANDLE, "gpu-draw/index-buffer-live",
+        "the batch's index buffer is a real VkBuffer, which is what vkCmdBindIndexBuffer names");
+    xud_check(xud_batch_check_invariant(context->renderer->batch) == XUD_OK, "gpu-draw/batch-invariant",
+        "the batch's own invariant holds on the renderer's batch, so the frame loop is consuming a batch that is well formed");
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, NULL, &probeIndex)
+            == XUD_INVALID_ARG,
+        "gpu-draw/refuse-no-batch",
+        "a frame with no batch to upload, bind or draw is a bad argument rather than a frame that clears and presents a whole screen of "
+        "nothing");
+
     for (frame = 0u; frame < XUD_TEST_GPU_DRAW_FRAMES; frame++) {
         uint32_t imageIndex = 0u;
+        /* One triangle appended to the batch before the frame is drawn, which is what makes the
+           upload / bind / draw path inside the frame loop the path this run actually takes: with an
+           empty batch the loop would clear and present and never reach a copy, a bind or a draw at
+           all, and a green run of that loop would say nothing about the batch being consumed. The
+           batch is reset at the end of every frame, so each frame appends its own three vertices
+           into a batch that starts empty again - which is also what says the reset happens.
+        */
+        xud_check(xud_batch_append_vertex(context->renderer->batch, trianglePos[0], triangleUv[0], triangleColor, triangleNormal) == XUD_OK,
+            "gpu-draw/append-vertex-a", "the batch accepts a vertex within its capacity");
+        xud_check(xud_batch_append_vertex(context->renderer->batch, trianglePos[1], triangleUv[1], triangleColor, triangleNormal) == XUD_OK,
+            "gpu-draw/append-vertex-b", "and a second");
+        xud_check(xud_batch_append_vertex(context->renderer->batch, trianglePos[2], triangleUv[2], triangleColor, triangleNormal) == XUD_OK,
+            "gpu-draw/append-vertex-c", "and a third, so the batch has a triangle in it");
+        xud_check(xud_batch_append_index(context->renderer->batch, 0u) == XUD_OK, "gpu-draw/append-index-0",
+            "the batch accepts an index within its capacity");
+        xud_check(xud_batch_append_index(context->renderer->batch, 1u) == XUD_OK, "gpu-draw/append-index-1", "and the next");
+        xud_check(xud_batch_append_index(context->renderer->batch, 2u) == XUD_OK, "gpu-draw/append-index-2",
+            "and the last, so the index buffer names the three vertices");
         result = xud_renderer_draw(context->renderer, context->loader, context->device, context->swapchain, &imageIndex);
         xud_check(result == XUD_OK, "gpu-draw/frame-draws",
-            "acquire, record, submit with the image's own fence, present, wait and reset that fence");
+            "acquire, record the batch's copies / binds / draw, submit with the image's own fence, present, wait and reset that fence");
         xud_check(imageIndex < context->swapchain->imageCount, "gpu-draw/index-in-range",
             "the index acquire wrote names an image this swapchain has");
-        if (frame > 0u)
+        /* The frame loop reset the batch at its end, so the triangle that was drawn this frame is
+           gone from the batch before the next one appends - which is the same property the batch
+           area checks of xud_batch_reset on its own, read here on the renderer's batch through the
+           frame loop rather than through a direct call.
+        */
+        xud_check(context->renderer->batch->vertexCount == 0u, "gpu-draw/batch-reset-after-frame",
+            "the frame that drew the triangle left the batch with zero live vertices, so the next frame appends into an empty batch");
+        xud_check(context->renderer->batch->drawCount == 0u, "gpu-draw/batch-draws-reset",
+            "and zero recorded draw rows, so the row the frame replayed is not kept for the next one");
+        if (frame > 0u) {
             indexMoved = indexMoved || (imageIndex != previousIndex);
+        }
         previousIndex = imageIndex;
     }
 

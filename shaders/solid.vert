@@ -1,20 +1,32 @@
 #version 460 core
+// xud_solid_spv.h - the vertex stage of the solid pipeline, built from the batch's attribute streams
+//
+// Owns: the vertex stage of the one solid pipeline the renderer builds.
+// Layer: shaders. Compiled at build time by CMake into build/gen/xud_solid_spv.h - never at runtime.
+//
+// The position is no longer a hard-coded triangle off gl_VertexIndex: it is read from the batch's
+// four SoA streams, at the locations xud_batch_fill_attribute writes and xud_pipeline_fill_vertex_input
+// hands the pipeline. The batch's index buffer is what picks which vertices a draw reads, so the
+// index is the draw's, not this stage's.
+//
+// The push-constant model matrix and the set-0 viewProj are NOT read here yet: the frame loop has to
+// bind both before a stage can read them, and that binding is the next step's half. Until it lands,
+// the geometry stays in clip space and the pipeline layout's push range and set layouts stay declared
+// but unread, which is legal - a shader need not touch everything its layout declares.
 
-/* solid.vert - the untextured-solid variant, first triangle.
+layout(location = 0) in vec3 inPos;
+layout(location = 1) in vec2 inUv;
+layout(location = 2) in vec4 inColor;
+layout(location = 3) in vec3 inNormal;
 
-   The three vertices come from gl_VertexIndex rather than from a vertex
-   buffer: the allocator rung that would own a VkBuffer is not in the tree
-   yet (see todo.md), and the SoA attribute streams land with the batch.
-   The pipeline's vertex-input state therefore declares zero bindings and
-   zero attributes, which is a valid Vulkan pipeline. */
+layout(location = 0) out vec2 outUv;
+layout(location = 1) out vec4 outColor;
+layout(location = 2) out vec3 outNormal;
 
-const vec2 POS[3] = vec2[3](vec2(-0.5f, -0.5f), vec2(0.5f, -0.5f), vec2(0.0f, 0.5f));
-const vec4 COL[3] = vec4[3](
-    vec4(1.0f, 0.0f, 0.0f, 1.0f), vec4(0.0f, 1.0f, 0.0f, 1.0f), vec4(0.0f, 0.0f, 1.0f, 1.0f));
-
-layout(location = 0) out vec4 outColor;
-
-void main() {
-    gl_Position = vec4(POS[gl_VertexIndex], 0.0f, 1.0f);
-    outColor = COL[gl_VertexIndex];
+void main(void)
+{
+    gl_Position = vec4(inPos, 1.0f);
+    outUv = inUv;
+    outColor = inColor;
+    outNormal = inNormal;
 }

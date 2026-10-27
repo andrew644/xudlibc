@@ -3,10 +3,11 @@
  *   xud_pipeline.c - the pipeline layer: the built-in SPIR-V, one pipeline layout, one
  *          graphics pipeline, and the one teardown order that hands them back
  *
- *   Owns : the pipeline layer. Fills the fixed pipeline state (pure), assembles the two
- *          create-infos from it (pure), then creates the two shader modules, the layout and
- *          the pipeline through the device rows, and tears all four back down in the one
- *          order that keeps every handle's owner alive.
+ *   Owns : the pipeline layer. Fills the fixed pipeline state (pure), overwrites that state's
+ *          zero vertex-input row with the batch's four binding and four attribute rows (pure),
+ *          assembles the two create-infos from it (pure), then creates the two shader modules,
+ *          the layout and the pipeline through the device rows, and tears all four back down in
+ *          the one order that keeps every handle's owner alive.
  *   Layer: above the shader rung, below the render pass. Nothing in this file calls a Vulkan
  *          entry point directly - every one is reached through a row of XudLoader's Volk
  *          device table, so the archive holds no vk* symbol and the link line has no -lvul
@@ -22,7 +23,8 @@
 
 #include "xud_pipeline.h"
 #include "xud.h"
-#include "xud_descriptor.h"
+#include "xud_batch.h"
+#include "xud_descriptor.h" /* Required for: XudDescriptor, the record whose set layouts and push range the pipeline layout names */
 #include "xud_device.h"
 #include "xud_loader.h"
 #include "xud_shader.h"
@@ -63,18 +65,54 @@ static_assert((XUD_SHADER_SPIRV_HEADER_WORDS * sizeof(uint32_t)) <= sizeof(xudSo
  * The fixed pipeline state - pure, no driver call, no handle in hand
  *-----------------------------------------------------------------------------------------------*/
 
+XudResult xud_pipeline_fill_vertex_input(XudPipeline* pipeline, const XudBatch* batch) {
+    uint32_t stream = 0u;
+
+    if ((pipeline == NULL) || (batch == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The rows must be the batch's FILLED rows rather than a zero row: xud_batch_open fills them before
+       it creates anything, so a batch that exists has them, and a struct whose rows are still all zero is
+       one that never went through that open. The check is that the four binding numbers and the four
+       attribute locations are the stream numbers 0..3 - which is both what the pipeline's vertex-input row
+       is about to claim and what vkCmdBindVertexBuffers will bind, so a row that disagrees is refused here
+       rather than built into a pipeline that reads a binding nothing wrote.
+    */
+    for (stream = 0u; stream < XUD_BATCH_STREAM_COUNT; stream++) {
+        if ((batch->bindings[stream].binding != stream) || (batch->attributes[stream].location != stream)) {
+            return XUD_INVALID_ARG;
+        }
+    }
+
+    /* The row points at the BATCH's arrays rather than at a copy of them, which is what makes the
+       pipeline's vertex-input state name the same four streams the batch's buffers hold - and what
+       makes the batch's life the pipeline's subject. The renderer opens the batch before the pipeline
+       and closes it after, so the pointer cannot outlive what it names.
+    */
+    pipeline->vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    pipeline->vertexInput.pNext = NULL;
+    pipeline->vertexInput.pVertexBindingDescriptions = (const VkVertexInputBindingDescription*)batch->bindings;
+    pipeline->vertexInput.pVertexAttributeDescriptions = (const VkVertexInputAttributeDescription*)batch->attributes;
+    pipeline->vertexInput.vertexBindingDescriptionCount = XUD_BATCH_STREAM_COUNT;
+    pipeline->vertexInput.vertexAttributeDescriptionCount = XUD_BATCH_STREAM_COUNT;
+    return XUD_OK;
+}
+
 XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     if (pipeline == NULL) {
         return XUD_INVALID_ARG;
     }
 
-    /* --- vertex input: zero bindings, zero attributes. The allocator rung IS in the tree now
-       (S12) but owns no VkBuffer at all - nothing above it has asked it for memory - and the
-       SoA streams land with the batch, so the vertex shader generates its vertices from
-       gl_VertexIndex instead. The row itself must still be present
-       and stamped: pVertexInputState may not be NULL when any fragment stage is present,
-       because a fragment stage that writes gl_FragColor reads gl_FragCoord, and that is the
-       spec's own rule for this pointer. --- */
+    /* --- vertex input: the STARTING state of this field, zero bindings and zero attributes. The
+       batch rung below this one owns the four SoA streams, and xud_pipeline_open calls xud_pipeline_fill_vertex_input
+       AFTER this call, which overwrites all four fields below with the batch's four rows - so the
+       built pipeline names those streams and the built-in SPIR-V reads them at those locations
+       rather than generating its three vertices from gl_VertexIndex. Writing the zero row here at
+       all is what lets the headless assembly test ask "is the row stamped, is its pNext clear" with
+       no batch in hand. The row itself must still be present and stamped: pVertexInputState may not
+       be NULL when any fragment stage is present, because a fragment stage that writes gl_FragColor
+       reads gl_FragCoord, and that is the spec's own rule for this pointer. --- */
     pipeline->vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     pipeline->vertexInput.pNext = NULL;
     pipeline->vertexInput.vertexBindingDescriptionCount = 0u;
@@ -351,8 +389,8 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, VkGraphicsP
  * The create rung - the driver half
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_pipeline_open(
-    XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor, VkRenderPass renderPass) {
+XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
+    const XudBatch* batch, VkRenderPass renderPass) {
     XudPipeline* pipeline = NULL;
     XudShader* vertexShader = NULL;
     XudShader* fragmentShader = NULL;
@@ -364,6 +402,9 @@ XudResult xud_pipeline_open(
     VkResult vk = VK_ERROR_UNKNOWN;
 
     if ((outPipeline == NULL) || (*outPipeline != NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (batch == NULL) {
         return XUD_INVALID_ARG;
     }
     if ((loader == NULL) || (device == NULL) || (descriptor == NULL)) {
@@ -403,6 +444,16 @@ XudResult xud_pipeline_open(
     }
 
     result = xud_pipeline_fill_state(pipeline);
+    if (result != XUD_OK) {
+        free(pipeline);
+        return result;
+    }
+
+    /* The vertex input is the batch's rows, written AFTER the fixed assembly above so the batch's four
+       streams are what the built pipeline names. The batch is asked for here rather than at the create
+       call because the row it hands the driver points at the batch's own arrays.
+    */
+    result = xud_pipeline_fill_vertex_input(pipeline, batch);
     if (result != XUD_OK) {
         free(pipeline);
         return result;

@@ -2,6 +2,102 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S17 The batch's consumers — the pipeline's vertex input names the batch's four streams, the frame loop uploads / binds / draws them, the indexed multi-draw replay and the per-frame reset, one step, landed as one commit, 2026-10-26)
+
+- [x] ~~**Batch consumers (part 1 of 2)**: the pipeline's vertex-input state, the frame loop's indexed draw and its
+    two command-buffer bindings (`vkCmdBindVertexBuffers` over the four streams, `vkCmdBindIndexBuffer` over the index
+    buffer), the upload (`xud_batch_upload()` called from the frame loop), the frame loop's multi-draw shape and its
+    per-frame batch reset~~ — **done 2026-10-26**. What stays open in the item, and stays in `todo.md`: `vkCmdBindDescriptorSets`
+    for set 0, `vkCmdPushConstants`, the per-frame uniform copy (the `viewProj` row is written by nothing today), the
+    **transparent** pipeline variant + the sorted-batch rule, and the handle layer's `record`.
+
+  **The shader**: `shaders/solid.vert` no longer generates three vertices from `gl_VertexIndex`. It declares the four
+  inputs at locations 0..3 (`inPos` `vec3`, `inUv` `vec2`, `inColor` `vec4`, `inNormal` `vec3`) — the locations `xud_batch_fill_attribute`
+  writes and `xud_pipeline_fill_vertex_input` hands the pipeline — and outputs `outUv`/`outColor`/`outNormal` at 0/1/2.
+  `gl_Position = vec4(inPos, 1.0f)` because the push-constant model matrix and the set-0 `viewProj` are still unread
+  (the frame loop has to bind both before a stage can read them, and that binding is the next step's half); a shader
+  need not touch everything its layout declares, so the push range and the two set layouts stay declared-but-unread,
+  which is legal rather than half-built. `shaders/solid.frag`'s `inColor` moved from `location = 0` to `location = 1`
+  because the vertex stage's `outColor` is at 1 (0 is `outUv`, a `vec2`) — the validation layer's
+  `VUID-RuntimeSpirv-OpEntryPoint-08743` refuses a frag input whose Location/Component slots the previous stage does
+  not output, and it reported that mismatch as a hard error on this machine before the fix, in the **headless** run too
+  (the ungated `xud_test_init_bringup_boundary` completes a real context here, so a pipeline really is built with no
+  `XUD_GPU_TESTS` set).
+
+  **The pipeline**: `xud_pipeline_fill_vertex_input(pipeline, batch)` is the pure overwrite — it refuses a NULL pipeline/batch
+  and a batch whose four binding numbers and four attribute locations are not the stream numbers 0..3 (a row still all-zero
+  never went through `xud_batch_open`'s fill, and a pipeline built on it would read a binding number that names no stream),
+  then points `pVertexBindingDescriptions`/`pVertexAttributeDescriptions` at the **batch's own arrays** with both counts
+  `XUD_BATCH_STREAM_COUNT`. Pointing rather than copying is legal because the renderer's open/close order opens the batch
+  before the pipeline and closes it after, so the pointer cannot outlive what it names. `xud_pipeline_open` takes the batch
+  and calls the overwrite after `xud_pipeline_fill_state`, which is why `fill_state` still writes the zero row: that row is
+  the **starting state** of the field, and keeping it is what lets the headless assembly test ask "is the row stamped, is
+  its `pNext` clear" with no batch in hand.
+
+  **The frame loop** (`xud_frame_draw`, batch argument added after the framebuffer array): the batch is flushed **before**
+  the command buffer is begun — `xud_batch_stats()` then, on content, `xud_batch_record_draw(batch, batch->currentVariant,
+  batch->currentMaterial)` closing the pending run and a re-read of the stats — because closing a row and reading the row
+  list are pure host work, and doing them above the begin call is what keeps every failure path below it one that ends the
+  buffer it began rather than returning out of a begun one. `xud_batch_record_draw` returns `XUD_OUT_OF_MEMORY` rather than
+  a code of its own because the row array is grown by `XUD_BATCH_DRAW_MIN` and a refusal there is an allocation this rung
+  cannot make. Then, outside any render pass instance and before `vkCmdBeginRenderPass`: a `HOST_WRITE → TRANSFER_READ`
+  `vkCmdPipelineBarrier` (the arena is mapped **once** for the batch's whole life by `xud_batch_open`/`xud_batch_close`, so
+  these are not a map/unmap pair per frame and the repo's matching-unmap rule does not reach them — the barrier is what
+  makes the writes visible, and `HOST` is a legal `srcStageMask` and never a `dstStageMask`, which is why this is its own
+  call rather than a third entry folded into the layout-transition barrier above), then `xud_batch_upload()`'s five
+  `vkCmdCopyBuffer` calls over the **live** byte counts rather than the capacity (the arena's bytes are rewritten in place
+  every frame, never appended to, so the rest is stale bytes no draw reads), then a `TRANSFER_WRITE → VERTEX_ATTRIBUTE_READ`
+  barrier, then **one** `vkCmdBindVertexBuffers` call with `firstBinding 0` and `bindingCount XUD_BATCH_STREAM_COUNT` over
+  a stack array of the four stream `VkBuffer`s at offset 0 each (four separate calls would leave three of the pipeline's
+  four bindings unbound, and the offset is **into the buffer**, not the buffer's address in the allocator's block — each
+  stream is its own `VkBuffer` bound at its range's offset, so the vertex data starts at 0), then one `vkCmdBindIndexBuffer`
+  call at offset 0 with `VK_INDEX_TYPE_UINT32` (`XUD_BATCH_INDEX_SIZE` is 4 bytes an entry, so `UINT16` would be a bind
+  reading half an index and `UINT8` a bind reading a quarter of one). Inside the pass: one `vkCmdDrawIndexed` per recorded
+  row. **This machine's `vulkan-headers 1.4.363` declares `vkCmdDrawIndexed` without an index-buffer argument** —
+  `(commandBuffer, indexCount, instanceCount, firstIndex, vertexOffset /* int32_t */, firstInstance)` — and declares
+  `vkCmdBindIndexBuffer` beside it, so the index buffer is bound as state and the draw reads it; the `static_assert` pair
+  on the two `PFN` rows and the loader's nil-row checks are what pin that reading rather than a memory of the spec. A row
+  that the accessor cannot read **ends** the list rather than returning out of a begun pass (the count came from the same
+  batch, so the branch is not one the loop reaches, and the draws made so far are the whole list either way, which is what
+  keeps the command buffer well formed). An empty batch is a legal clear-and-present frame: no copies, no binds, no draws.
+  And `xud_batch_reset(batch)` runs at the end of a frame that **completed** — capacities and buffers stay, only the live
+  counts restart — while a frame that failed above leaves the batch alone, because a batch whose content was never uploaded
+  is a batch a caller above still has to see.
+
+  **The renderer** passes the batch to both: `xud_pipeline_open(..., renderer->batch, renderPass)` and
+  `xud_frame_draw(..., framebufferCount, renderer->batch, outImageIndex)`. The open/close order is unchanged and is still
+  load-bearing: open pass → batch → pipeline → framebuffer array → frame, close in exact reverse.
+
+  **The tests**: `tests/xud_test_pipeline.c` grew the headless half of the overwrite — a synthetic batch whose four binding
+  numbers, four strides, four locations and four formats are filled by hand (filling by hand rather than by `xud_batch_open`
+  because open creates six buffers and needs a device, and the row **values** are all the overwrite reads), checked against
+  the OK path, the two NULL refusals, the zero-row refusal and "a refused overwrite leaves the row untouched". Its two
+  `zero-bindings`/`zero-attributes` checks stay (they are checks of the row `fill_state` writes) with their reasons
+  rewritten to say so. `tests/xud_test_frame.c`'s GPU half now appends a **real triangle** before every frame — three
+  fixed positions inside the clip volume, fixed uv, fixed white colour, fixed +Z normal, so the run is deterministic and
+  the validation layer sees the same geometry every run — which is what makes the upload / bind / draw path inside
+  `xud_frame_draw` the path this run actually takes rather than the empty-batch path a green run would say nothing about.
+  It adds the `NULL`-batch refusal, the batch-present / index-buffer-live / `xud_batch_check_invariant` reads before the
+  first frame, and inside the loop the two checks that the frame reset the batch (`vertexCount == 0u` and `drawCount == 0u`
+  after every drawn frame, so the triangle that was drawn is gone before the next frame appends its own). `tests/xud_test_batch.c`'s
+  file-top note that the copies are "not exercised by a GPU test yet" is replaced with the truth: the three bindings and the
+  five copies are exercised by the frame area's GPU half.
+
+  **Bar met, dated one-liner**: headless **2263 checks / 0 failures** (was 2255) and `XUD_GPU_TESTS=1` **2848 / 0**
+  (was 2804), under gcc **and** under `-DCMAKE_C_COMPILER=clang`, validation-clean with `VK_INSTANCE_LAYERS` unset and
+  forced to `VK_LAYER_KHRONOS_validation` (still exactly the diagnostics layer's own synthetic `ERROR/validation` +
+  `WARNING/validation` pair in either run and nothing else — the pipeline's SPIR-V-interface error the new shader pair
+  would otherwise raise is gone), `-DXUD_SANITIZERS=ON` green headless (**72 B / 3 allocations**, byte-for-byte S16's
+  numbers) and GPU **1432 B / 69** (byte-for-byte S16's numbers), reporting **only** the external allocations the S7–S16
+  blocks record — no leak stack names `xud_batch_*`/`xud_renderer_*`/`xud_frame_*`/`xud_pipeline_*`, and the two stacks
+  that name an xud source are the same 32 B inside `vkCreateDevice` (`xud_device.c:374`, the validation layer's) and the
+  same 8 B in `libdecor_new` (`xud_window.c:156`, GLFW's) every other area reports; with `ASAN_OPTIONS=detect_leaks=0`
+  answering 2263 / 2848 with 0 failures and no `runtime error` line; `nm -u` lists no `vk*`/`glfw*` symbol and `ldd`
+  lists no `libvulkan`/`libglfw`/`libGL`/`libEGL` for either executable; `./scripts/format.sh --check` is green over the
+  tree; `ar -t build/libxud.a` stays **40** objects (no new TU this step — the batch's consumers are the pipeline and
+  frame rungs' own halves).
+
+
 ## Steps complete (S16 The batch rung — four SoA stream buffers + one index buffer + one mapped staging arena, the flush decision and the capacity arithmetic, one step, landed as one commit, 2026-10-26)
 
 - [x] ~~**Batch layer (`xudrl`)**: dynamic per-attribute **stream** buffers + one index buffer (SoA, decided 2026-10-23 — see

@@ -11,26 +11,33 @@
  *   line, glyph, opaque/transparent) land beside this one in this same file, not as a
  *   pipeline-per-draw path anywhere above it.
  *
- *   What this rung does NOT have, and why: no vertex input (the allocator rung and the
- *   descriptor rung ARE in the tree now, but the allocator still owns no VkBuffer that holds a
- *   vertex stream - no batch above the descriptor rung has asked it for one - so the pipeline
- *   declares zero bindings and zero attributes and the vertex shader generates its three
- *   vertices from gl_VertexIndex). What it DOES have is the layout: the descriptor rung below
- *   it owns the two set layouts, the push-constant range and the uniform buffer, and this rung
- *   names them, because a pipeline whose layout declares zero sets is a pipeline that cannot
- *   be bound to the set that per-frame data was written into. The pipeline stays descriptor-
- *   free in its SHADERS (the built-in SPIR-V reads no binding and takes no push constant), so
- *   the layout is a declaration this rung makes and the batch step above is what binds it.
+ *   What this rung does NOT have, and why: no transparent variant (the OPAQUE variant below is
+ *   the one this rung builds; blend-enabled sorted draws are the next step's) and no descriptor-
+ *   reading shader (the layout below is still a declaration this rung makes, because the frame
+ *   loop has not bound set 0 or the push range yet).
+ *
+ *   What it DOES have now is the vertex input. The batch rung below it owns the four SoA streams
+ *   and the one index buffer, and xud_pipeline_fill_vertex_input overwrites the zero row that
+ *   xud_pipeline_fill_state assembles with the batch's four binding and four attribute rows, so
+ *   the pipeline names those streams and the built-in SPIR-V reads them at those locations
+ *   instead of generating its three vertices from gl_VertexIndex. xud_pipeline_open takes the
+ *   batch for exactly that reason: the row points at the BATCH's own arrays, and the renderer's
+ *   open/close order opens the batch before this rung and closes it after, which is what makes
+ *   that pointer legal for the pipeline whole life rather than a dangling read. The layout stays
+ *   a declaration: a shader need not touch everything its layout declares, so declaring the
+ *   push range and the two set layouts while reading none of them is legal, not a half-built
+ *   binding.
  ***********************************************************************************************/
 
 #ifndef XUD_PIPELINE_H_
 #define XUD_PIPELINE_H_
 
 #include "volk.h"
-#include "xud_descriptor.h"
-#include "xud_device.h"
-#include "xud_loader.h"
-#include "xud_shader.h"
+#include "xud_batch.h" /* Required for: XudBatch, the four SoA streams whose vertex-input rows this names */
+#include "xud_descriptor.h" /* Required for: XudDescriptor, the one pipeline layout this is built under */
+#include "xud_device.h" /* Required for: XudDevice, the handle the build and teardown are asked of */
+#include "xud_loader.h" /* Required for: XudLoader, the PFN rows vkCreateGraphicsPipelines and vkDestroyPipeline go through */
+#include "xud_shader.h" /* Required for: XudShader, the SPIR-V bytes this is built from */
 #include "xud_vulkan.h"
 #include <assert.h>
 #include <stdint.h>
@@ -154,10 +161,10 @@ static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_POINT
 /// layer records: an unstamped create-info is a hard error, and here the same rule is a
 /// property of this file's own assembly).
 ///
-/// The decisions, each with its reason: zero vertex bindings and zero attributes (the
-/// allocator rung IS in the tree now (S12) but owns no VkBuffer at all - nothing above it has
-/// asked it for memory - and the SoA streams land with the batch, so the vertex shader
-/// generates its vertices from gl_VertexIndex instead);
+/// The decisions, each with its reason: zero vertex bindings and zero attributes IN THIS ROW (the
+/// row is the starting state of the field and xud_pipeline_fill_vertex_input below is what overwrites
+/// it with the batch's four and four - a pipeline that has no batch to name has no vertex input to
+/// write, and that is a refusal rather than a zero row);
 /// TRIANGLE_LIST with no primitive restart (restart is a degenerate-index convention the
 /// batch step owns); viewportCount 1 and scissorCount 1 with NULL pViewports/pScissors
 /// (both are dynamic - and pViewportState may not be NULL at all, because a fragment
@@ -189,6 +196,20 @@ static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_POINT
 /// VIEWPORT + SCISSOR as the two
 /// dynamic states. XUD_INVALID_ARG on a NULL pipeline.
 XudResult xud_pipeline_fill_state(XudPipeline* pipeline);
+
+/// Pure: overwrite the pipeline's vertex-input row with the batch rung's four binding and four
+/// attribute rows, so the pipeline this struct builds NAMES the batch's four SoA streams instead of
+/// declaring no vertex input at all. xud_pipeline_fill_state above writes the zero row and this one
+/// overwrites it, in that order, which is why xud_pipeline_open calls them in that order too: the
+/// zero row is the starting state of the field, not what the built pipeline ends up carrying.
+/// The row points at the BATCH's arrays rather than at a copy of them, so the batch has to outlive
+/// the pipeline, and the renderer's open/close order is what gives it that (the batch is opened
+/// before the pipeline is built and closed after the pipeline is retired). The caps gate that keeps
+/// the four streams inside maxVertexInputBindings and maxVertexInputAttributes already ran inside
+/// xud_batch_open when the batch filled these very rows, so a batch whose rows are live is a batch
+/// that passed it; a batch whose rows are still the zero row is refused here rather than built a
+/// pipeline that reads nothing. XUD_INVALID_ARG on a NULL pipeline or batch.
+XudResult xud_pipeline_fill_vertex_input(XudPipeline* pipeline, const XudBatch* batch);
 
 /// Pure: the two shader-stage rows, from the two module handles in hand. Stamped, pName
 /// XUD_PIPELINE_ENTRY_POINT (named, not NULL: the validation layer on this machine reports a
@@ -246,8 +267,8 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, VkGraphicsP
 /// XUD_UNSUPPORTED when the loader is closed, its device rows are not this device's, a row this rung needs is nil, or the SPI R-V is not
 /// SPIR-V; XUD_OUT_OF_MEMORY/XUD_OUT_OF_RESOURCES when the driver refuses on host or device memory; XUD_VULKAN_ERROR otherwise (a pipeline
 /// that fails to compile is the common one, VK_ERROR_PIPELINE_COMPILE_SHADER_INTERNAL_ERROR and its neighbours).
-XudResult xud_pipeline_open(
-    XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor, VkRenderPass renderPass);
+XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
+    const XudBatch* batch, VkRenderPass renderPass);
 
 /// Driver: the teardown - vkDestroyPipeline, then vkDestroyPipelineLayout, then the two
 /// modules through xud_shader_close(), then free. That order is load-bearing: the pipeline

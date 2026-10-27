@@ -131,10 +131,17 @@ GLFW window (extent, input, framebuffer-size)
 Frame loop (`BeginDrawing` → `EndDrawing`):
 
 ```
-BeginDrawing: acquire image (semaphore) → begin cmd → begin render pass → clear color+depth
+BeginDrawing: acquire image (semaphore) → reset+begin cmd → viewport/scissor → bind pipeline
   draw calls: append each attribute into its own dynamic stream buffer, indices into the dynamic IB (SoA,
-              settled 2026-10-23); flush on pipeline/material change
-EndDrawing: end pass → end cmd → submit (graphics) → present (queue) → signal fence (per-image)
+              settled 2026-10-23); the frame loop is the flush — the pending run is closed into a draw row
+              before the command buffer is begun, and xud_batch_reset() runs at the end of a frame that
+              completed (xud_batch_should_flush() is the mid-frame decision and no caller acts on it yet)
+  before the pass: HOST_WRITE→TRANSFER_READ barrier → five vkCmdCopyBuffer (xud_batch_upload, live bytes
+              only) → TRANSFER_WRITE→VERTEX_ATTRIBUTE_READ barrier → one vkCmdBindVertexBuffers over the
+              four streams → one vkCmdBindIndexBuffer (vkCmdDrawIndexed names no buffer on this header)
+  begin render pass → one vkCmdDrawIndexed per recorded draw row → end render pass
+EndDrawing: end cmd → submit (graphics, acquire semaphore waited, per-image fence) → present (queue)
+            → wait+reset that fence → reset the batch
 ```
 
 ## Testing rules

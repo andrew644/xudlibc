@@ -345,6 +345,11 @@ XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint
 /// a NULL batch, XUD_OUT_OF_MEMORY only when that doubling step fails on the host.
 XudResult xud_batch_record_draw(XudBatch* batch, uint32_t variant, uint32_t materialIndex);
 
+/// Pure: ONE recorded draw row by index, so the frame loop above can replay the flush list without
+/// reaching into the batch's own heap array (the repo's accessor rule, one rung below). XUD_INVALID_ARG
+/// on a NULL batch/out-row or an index at or above the batch's recorded count.
+XudResult xud_batch_draw_get(const XudBatch* batch, uint32_t index, XudBatchDraw* outRow);
+
 /// Pure: append one vertex's four attribute values into the arena at the live vertex index, and
 /// bump the count. The write is a memcpy into the mapped arena - the only host write this rung
 /// makes, and the barrier that makes it visible to the transfer is the frame loop's, one rung

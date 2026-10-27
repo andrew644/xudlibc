@@ -12,6 +12,23 @@
  *   ries, ONE VkFence PER SWAPCHAIN IMAGE, classic synchronization, no VK_KHR_vulkan_memory_mode
  *   l anywhere.
  *
+ *   The frame loop is what CONSUMES the batch now: it closes the batch's pending run into a draw row
+ *   before the command buffer is begun, uploads the batch's live bytes with the five vkCmdCopyBuffer
+ *   calls, binds the batch's four streams with ONE vkCmdBindVertexBuffers call and its index buffer
+ *   with one vkCmdBindIndexBuffer call, replays the batch's recorded draw rows as vkCmdDrawIndexed
+ *   calls, and resets the batch at the end of a frame that completed - so the geometry is the batch's
+ *   and no longer a hard-coded three-vertex triangle, and XUD_FRAME_DRAW_VERTEX_COUNT / XUD_FRAME_DRAW_INSTANCE_COUNT
+ *   are gone because there is no constant vertex count left to name. A batch with nothing in it is
+ *   a frame that clears and presents with no draw at all, which is a legal frame rather than an error.
+ *
+ *   The staging rule the repo settles is why the two buffer barriers below are here: the batch's arena
+ *   is mapped ONCE for its whole life, so the host writes into it are not a map/unmap pair per frame
+ *   and the thing that makes them visible to the copies is a HOST_WRITE -> TRANSFER_READ barrier, and
+ *   the thing that makes the copies' results visible to the vertex-attribute reads is a second
+ *   TRANSFER_WRITE -> VERTEX_ATTRIBUTE_READ barrier. Both sit BEFORE vkCmdBeginRenderPass, outside
+ *   any render pass instance, which is what the rule that a barrier inside a pass must name the bound
+ *   pipeline's stages does not reach - and vkCmdPipelineBarrier is not legal inside a pass at all.
+ *
  *   The fence array is per IMAGE, not per frame, and that is the point of the plan's wording: a
  *   fence that bounded a frame would say nothing about which image the frame wrote, and the thing
  *   that has to be true before an image is written again is that the presentation of THAT image
@@ -22,6 +39,7 @@
 #define XUD_FRAME_H_
 
 #include "volk.h"
+#include "xud_batch.h" /* Required for: XudBatch, the four SoA streams this rung uploads, binds and draws */
 #include "xud_device.h"
 #include "xud_loader.h"
 #include "xud_physical.h"
@@ -50,19 +68,33 @@
     1u /* one VkSubmitInfo per submit: the plan's one batch flushed                                                                        \
           per frame, and the batch layer that would make this more th                                                                      \
           an one is not in the tree */
-#define XUD_FRAME_DRAW_VERTEX_COUNT                                                                                                        \
-    3u /* the triangle. vkCmdDraw's vertexCount is the whole arg                                                                           \
-          ument set of the first-triangle step: there is no vert                                                                           \
-          ex buffer and no index buffer, so the count IS the geom                                                                          \
-          etry, and the shader derives the corner from gl_VertexI                                                                          \
-          ndex (see shaders/solid.vert) */
-#define XUD_FRAME_DRAW_INSTANCE_COUNT                                                                                                      \
-    0u /* no instancing: vkCmdDraw's instanceCount 0 is the "dr                                                                            \
-        aw once" form, and the plan's instancing path is one mor                                                                           \
-        e per-instance binding on streams that do not exist yet                                                                            \
-        . There is no index count here at all - vkCmdDraw has no                                                                           \
-        such argument, vkCmdDrawIndexed does, and no index buffe                                                                           \
-        r exists in this tree */
+#define XUD_FRAME_FIRST_BINDING                                                                                                            \
+    0u /* vkCmdBindVertexBuffers' firstBinding: the batch's four streams are bindings 0..3, the same                                       \
+          numbers xud_batch_fill_binding writes and the same ones the pipeline's vertex-input row                                          \
+          names, so ONE call binds the whole array rather than four calls that would each leave a                                          \
+          binding of the pipeline's four unbound */
+#define XUD_FRAME_BARRIER_HOST_STAGE                                                                                                       \
+    VK_PIPELINE_STAGE_HOST_BIT /* the srcStageMask of the barrier that makes the batch's host writes                                       \
+                                  into its mapped arena visible to the copies below: HOST is the one                                       \
+                                  stage the spec's table puts VK_ACCESS_HOST_WRITE_BIT at, and it is                                       \
+                                  legal in a srcStageMask and never in a dstStageMask - which is why                                       \
+                                  this barrier is a separate call from the layout-transition one below                                     \
+                                  rather than a third entry added to that call's masks */
+#define XUD_FRAME_BARRIER_TRANSFER_STAGE                                                                                                   \
+    VK_PIPELINE_STAGE_TRANSFER_BIT /* the dstStageMask of that first barrier AND the srcStageMask of                                       \
+                                     the second one, which is the copy the upload issues: TRANSFER is                                      \
+                                     the one stage both VK_ACCESS_TRANSFER_READ_BIT and VK_ACCESS_TRANSFER_WRITE_BIT sit at */
+#define XUD_FRAME_BARRIER_VERTEX_READ_STAGES                                                                                               \
+    (VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) /* the dstStageMask \
+          of the barrier that makes the copies visible to the reads that follow them: the batch's bytes                                    \
+          are read as vertex attributes at the input stage and as uniforms at the shader stages, and the                                   \
+          validation layer's supported-access-type rule is what refuses a mask that covers neither */
+#define XUD_FRAME_HOST_WRITE_ACCESS VK_ACCESS_HOST_WRITE_BIT /* the srcAccessMask of the barrier over the batch's host writes */
+#define XUD_FRAME_TRANSFER_READ_ACCESS VK_ACCESS_TRANSFER_READ_BIT /* the dstAccessMask of that same barrier: the copies read the arena */
+#define XUD_FRAME_TRANSFER_WRITE_ACCESS VK_ACCESS_TRANSFER_WRITE_BIT /* the srcAccessMask of the barrier over the copies' results */
+#define XUD_FRAME_VERTEX_READ_ACCESS                                                                                                       \
+    VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT /* the dstAccessMask of that same barrier: the draws read the                                      \
+                                          streams as vertex attributes */
 #define XUD_FRAME_WAIT_STAGE                                                                                                               \
     VK_PIPELINE_STAGE_VERTEX_SHADER_BIT /* the stage the acquire semapho                                                                   \
                                            re is waited AT: the first stag                                                                 \
@@ -89,14 +121,21 @@
               timeout of 0 would be a wait that returns without waiting,                                                                   \
               which is the opposite of the boundary this rung exists to                                                                    \
               enforce */
+#define XUD_FRAME_INDEX_TYPE                                                                                                               \
+    VK_INDEX_TYPE_UINT32 /* vkCmdBindIndexBuffer's indexType: the batch's index buffer holds uint32_t                                      \
+                            entries, XUD_BATCH_INDEX_SIZE is 4 bytes an entry, so UINT32 is the only type                                  \
+                            that names them - UINT16 would be a bind reading half an index and UINT8 a                                     \
+                            bind reading a quarter of one */
 #define XUD_FRAME_WAIT_ALL                                                                                                                 \
     1u /* vkWaitForFences' waitAll argument: every fence in the list has t                                                                 \
          o be signalled, and the list is one fence, so the pair is the un                                                                  \
          ambiguous form rather than a bit pattern to reason about */
 
-static_assert(XUD_FRAME_DRAW_VERTEX_COUNT == 3u, "a triangle is three vertices");
 static_assert(XUD_FRAME_COMMAND_BUFFER_COUNT == 1u, "one command buffer, per the plan");
 static_assert(XUD_FRAME_SUBMIT_COUNT == 1u, "one submit per frame, per the plan");
+static_assert(XUD_FRAME_FIRST_BINDING == 0u, "the batch's four streams are bindings 0..3");
+static_assert(XUD_FRAME_VERTEX_READ_ACCESS == VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, "the streams are read as vertex attributes");
+static_assert(XUD_FRAME_INDEX_TYPE == VK_INDEX_TYPE_UINT32, "the batch's indices are uint32_t entries");
 static_assert(XUD_FRAME_WAIT_STAGE == VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, "the first stage that reads the image");
 static_assert(XUD_FRAME_NO_TIMEOUT == (~0ull), "the all-ones value is the no-timeout answer");
 static_assert(VK_COMMAND_BUFFER_LEVEL_PRIMARY == 0u, "the primary level is what this rung records");
@@ -258,9 +297,20 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
 /// ther than as a rebuild this rung cannot do without a resize to act on); XUD_VULKAN_ERROR when th
 /// e driver refused the acquire, the submit, the present or a wait (an out-of-date acquire answer m
 /// aps here, and the recreate path is the resize step's, not this rung's).
+/// The batch is the argument after the framebuffer array for one reason: the frame loop is what
+/// consumes it. It uploads the batch's live bytes with the batch rung's five vkCmdCopyBuffer calls,
+/// binds the batch's four streams with ONE vkCmdBindVertexBuffers call over the whole array and its
+/// index buffer with one vkCmdBindIndexBuffer call (vkCmdDrawIndexed names no index buffer at all -
+/// the bind is the state and the draw reads it), and
+/// replays the batch's recorded draw rows as vkCmdDrawIndexed calls - so the geometry is the batch's
+/// and no longer a hard-coded three-vertex triangle. A batch with nothing in it is a frame that clears
+/// and presents with no draw at all, which is a legal frame rather than an error. The frame loop also
+/// closes the batch's pending row into the draw list and resets the batch at the end of a frame that
+/// completed, which is what makes "the frame loop is the flush" true rather than a promise: the next
+/// frame starts from an empty batch and the arena's bytes are rewritten in place, never appended to.
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
-    uint32_t* outImageIndex);
+    XudBatch* batch, uint32_t* outImageIndex);
 
 /// Driver: retire everything this rung owns, in the one order that is correct - vkWaitForFences on
 /// a fence still in flight, then vkFreeCommandBuffers, vkDestroySemaphore, vkDestroyFence for ever
