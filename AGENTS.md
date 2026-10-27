@@ -99,7 +99,7 @@ Keep `build/`, `bin/` and `reference/` out of git (`.gitignore` already covers a
 - **No Vulkan symbols linked at build time.** Load `libvulkan.so` with `dlopen` + `vkGetInstanceProcAddr` (Volk-style), resolve entry points into a small internal function table. Rationale: the library must build and run on a machine with no driver, and `xud_vulkan_supported()` must be a real runtime query. Do **not** add `-lvulkan` to the link line. **Vendored Volk (`src/external/volk.h`/`volk.c`) is what does this today**: `src/external/volk.c` is compiled into the `xud` archive, `xud_loader.c` wraps Volk's instance/device tables in the context's one `XudLoader`, and under `VK_NO_PROTOTYPES` every entry point is a **data pointer**, so the rule is a link-time fact rather than a convention — `nm -u build/xud_test` lists no `vk*` symbol and `ldd` lists no `libvulkan`. The hand-rolled 20-slot table it replaced is gone (see *Verified Volk bring-up* and *Loader rework* below).
 - **Never hardcode a layer name.** Enumerate with `vkEnumerateInstanceLayerProperties`, request everything advertised, and re-create the instance with `ppEnabledLayerNames`. Validation is gated: `XUD_VALIDATE` on in debug builds, off in release, always overridable by env (`VK_INSTANCE_LAYERS`) or config.
 - **Check before you use.** Every extension and feature is queried (`vkEnumerateDeviceExtensionProperties`, `vkGetPhysicalDeviceFeatures2`) and recorded in a `XudDeviceCaps` struct; `VkDeviceCreateInfo` carries **only** what was verified. Anything unverified stays off and the feature that needed it returns `XUD_UNSUPPORTED`.
-- **Explicit pipelines, created once at init.** A small fixed set of variants (see Design sketch), never created per draw, never rebuilt per frame.
+- **Explicit pipelines, created once at init.** A small fixed set of variants (see Design sketch), never created per draw, never rebuilt per frame. Today: the **two-row list** the batch's `variant` indexes (`pipeline[XUD_BATCH_VARIANT_COUNT]`, one layout for the whole list) — growing the list is a row, never a rename of the pair, and the frame loop **binds** the row a draw's variant names beside that draw.
 - **Allocate once, suballocate always — with one exception, and the exception is a Vulkan fact.** One GPU-memory allocator owns all buffers/images; static geometry is a one-time allocation, per-frame data comes from a ring/transient allocation. **No `vkCreateBuffer` inside a frame.** The allocator is **ours** — no VMA, settled 2026-10-23, see *Settled decisions*. **Settled 2026-10-26**: the batch's staging arena is **not** ring memory — the ring is a cursor that wraps, so a ring carve is a batch whose bytes a later lap overwrites mid-frame; the arena is carved from the blocks, mapped once at open and unmapped once at close. **Settled 2026-10-26 (same day, the exception)**: `vkMapMemory` maps a `VkDeviceMemory`, not a range, so a suballocated carve inside a block someone else already mapped cannot be mapped at all (`VUID-vkMapMemory-memory-00678`, and lavvk answers it as `VK_ERROR_MEMORY_MAP_FAILED` rather than forgiving it). The one carve a rung maps therefore owns the **whole block**, which is why the allocator has two acquires — `xud_allocator_acquire()` (suballocating, free-list) and `xud_allocator_acquire_host_visible()` (whole block, no free-list scan, never split). Suballocation is for the bytes a frame reads through a transfer; a host mapping is a whole-memory decision. Two arenas spend it today: the batch's and the descriptor's staging arena for set 0's block. The ring is still unused by anything outside the allocator's own test — the per-frame uniform copy landed and is **not** what wanted it, for the batch's own reason above.
 - **Staging via transfer ops only**: `vkCmdCopyBuffer` / `vkCmdCopyImage` / `vkCmdCopyBufferToImage` from a staging ring. No `vkMapMemory` per frame without a matching `vkUnmapMemory` + `VkBufferInvalidateRangeInfo` (or a `vkCmdPipelineBarrier` with the right scope), and prefer the copy path over mapped writes for anything transient.
 - **Synchronization is classic**: acquire/present semaphores for frame boundaries, one `VkFence` per swapchain image, `vkCmdPipelineBarrier` and explicit subpass dependencies inside a command buffer. **No `VK_KHR_vulkan_memory_model`**, no `vkmm*` sync — it is not in the vendored headers here and it makes the correctness argument untestable headlessly.
@@ -131,7 +131,7 @@ GLFW window (extent, input, framebuffer-size)
 Frame loop (`BeginDrawing` → `EndDrawing`):
 
 ```
-BeginDrawing: acquire image (semaphore) → reset+begin cmd → viewport/scissor → bind pipeline
+BeginDrawing: acquire image (semaphore) → reset+begin cmd → viewport/scissor
   draw calls: append each attribute into its own dynamic stream buffer, indices into the dynamic IB (SoA,
               settled 2026-10-23); the frame loop is the flush — the pending run is closed into a draw row
               before the command buffer is begun, and xud_batch_reset() runs at the end of a frame that
@@ -145,9 +145,11 @@ BeginDrawing: acquire image (semaphore) → reset+begin cmd → viewport/scissor
               shader stages and VERTEX_ATTRIBUTE_READ to the input+vertex stages, so one barrier naming both access bits
               with one stage mask naming all three is refused) → one vkCmdBindDescriptorSets (set 0, against the
               pipeline's OWN layout, firstSet 0 count 1)
-  begin render pass → vkCmdPushConstants (the per-draw row, against the layout's OWN recorded range —
-              stageFlags/offset/size read off descriptor->pushRange, not constants of the loop's) → one
-              vkCmdDrawIndexed per recorded draw row → end render pass
+  begin render pass → one vkCmdBindPipeline + vkCmdPushConstants per recorded draw row (the bind names
+              the variant's row of the pipeline list — the last bind before a draw is the one that draw uses,
+              which is the Vulkan form of rlgl re-selecting state per batch; the push is against the layout's
+              OWN recorded range, stageFlags/offset/size read off descriptor->pushRange, not constants of the
+              loop's) → one vkCmdDrawIndexed per recorded draw row → end render pass
 EndDrawing: end cmd → submit (graphics, acquire semaphore waited, per-image fence) → present (queue)
             → wait+reset that fence → reset the batch
 ```

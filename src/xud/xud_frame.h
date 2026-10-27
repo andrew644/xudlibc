@@ -17,8 +17,9 @@
  *   apped arena, uploads the batch's live bytes with the five vkCmdCopyBuffer calls and the block's by
  *   tes with the descriptor rung's ONE vkCmdCopyBuffer call, binds the batch's four streams with ONE v
  *   kCmdBindVertexBuffers call, its index buffer with one vkCmdBindIndexBuffer call and set 0 with one
- *   vkCmdBindDescriptorSets call against the pipeline's own layout, replays the batch's recorded draw
- *   rows as vkCmdDrawIndexed calls, and resets the batch at the end of a frame that completed - so the
+ *   vkCmdBindDescriptorSets call against the pipeline's own layout, binds the variant's pipeline row
+ *   beside each of the batch's recorded draw rows and replays those rows as vkCmdDrawIndexed calls, and
+ *   resets the batch at the end of a frame that completed - so the
  *   geometry is the batch's and the matrix the shader places it by is the block's, and no longer a har
  *   d-coded three-vertex triangle placed by nothing at all. A batch with nothing in it is a frame tha
  *   t clears and presents with no draw at all, which is a legal frame rather than an error; the block i

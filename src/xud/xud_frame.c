@@ -4,7 +4,8 @@
  *          resent triple, and the acquire semaphore + per-image fences that bound a frame
  *
  *   Owns : vkCreateCommandPool / vkAllocateCommandBuffers / vkCreateSemaphore / vkCreateFence per
- *          swapchain image, one recorded frame (bind pipeline, set viewport + scissor, write set 0's
+ *          swapchain image, one recorded frame (bind the variant's pipeline row per recorded draw
+ *          row, set viewport + scissor, write set 0's
  *          block into the descriptor's mapped arena and upload it with ONE vkCmdCopyBuffer call, upl
  *          oad the batch with five vkCmdCopyBuffer calls behind the ONE host-write barrier that covers
  *          both arenas, bind the batch's four vertex streams with one vkCmdBindVertexBuffers call and
@@ -498,9 +499,11 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     if (!loader->open) {
         return XUD_UNSUPPORTED;
     }
-    if ((device->device == VK_NULL_HANDLE) || (swapchain->swapchain == VK_NULL_HANDLE) || (pipeline->pipeline == VK_NULL_HANDLE)
-        || (pipeline->layout == VK_NULL_HANDLE) || (pass->renderPass == VK_NULL_HANDLE) || (frame->commandPool == VK_NULL_HANDLE)
-        || (frame->commandBuffer == VK_NULL_HANDLE) || (frame->imageAcquired == VK_NULL_HANDLE)) {
+    if ((device->device == VK_NULL_HANDLE) || (swapchain->swapchain == VK_NULL_HANDLE)
+        || (pipeline->pipeline[XUD_BATCH_VARIANT_OPAQUE] == VK_NULL_HANDLE)
+        || (pipeline->pipeline[XUD_BATCH_VARIANT_TRANSPARENT] == VK_NULL_HANDLE) || (pipeline->layout == VK_NULL_HANDLE)
+        || (pass->renderPass == VK_NULL_HANDLE) || (frame->commandPool == VK_NULL_HANDLE) || (frame->commandBuffer == VK_NULL_HANDLE)
+        || (frame->imageAcquired == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
     if ((descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) || (descriptor->uniformBuffer == VK_NULL_HANDLE)
@@ -668,10 +671,11 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     loader->deviceTable.vkCmdSetViewport(frame->commandBuffer, 0u, 1u, &viewport);
     loader->deviceTable.vkCmdSetScissor(frame->commandBuffer, 0u, 1u, &scissor);
 
-    /* The pipeline is bound inside the command buffer, once, per frame - the repo's "explicit pipelines, c
-       reated once at init" rule read at the use side: the pipeline object is not rebuilt here, only named
-       . */
-    loader->deviceTable.vkCmdBindPipeline(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
+    /* The pipeline is NOT bound here any more: the variant a recorded draw row names is what picks the
+       row of the pipeline list to bind, and the bind is command-buffer state, so it moves into the draw
+       loop below, one bind per row. Binding once here would be binding one variant for every row of a
+       list that can name either, which is a transparent draw replayed through the opaque pipeline - the
+       blend row the batch asked for silently not the blend row the draw gets. */
 
     passBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     passBegin.pNext = NULL;
@@ -925,6 +929,20 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         if (xud_batch_draw_get(batch, draw, &drawRow) != XUD_OK) {
             break;
         }
+        /* The variant is the row of the pipeline list this draw binds, and a variant at or past the
+           count ends the list rather than reading a row off the end of the array - the same rule the
+           batch's own invariant check applies to the variant a draw row names, read here at the use
+           side because this loop is what indexes the array. */
+        if (drawRow.variant >= XUD_BATCH_VARIANT_COUNT) {
+            break;
+        }
+        /* The pipeline is bound per draw row, not once per frame: the variant is what picks the row,
+           and a bind is command-buffer state, so the last bind before a draw is the one that draw uses.
+           This is the Vulkan form of rlgl re-selecting its shader/blend state per batch (rlSetBlendMode
+           flushes the batch on a mode change, rlgl.h 2121, then sets the state) - the batch's flush
+           decision already closed a run before the variant changed, so a bind here cannot change what
+           a draw already recorded. */
+        loader->deviceTable.vkCmdBindPipeline(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline[drawRow.variant]);
         /* The push row is filled and pushed HERE, beside the draw it belongs to, rather than once per
            frame: a push-constant range is command-buffer STATE that the last push before a draw bound,
            which is exactly what makes it the per-draw channel and set 0 the per-frame one. The row is a

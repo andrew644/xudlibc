@@ -6,15 +6,17 @@
  *   VkPipeline - because a pipeline names its layout and its layout's modules are the only
  *   thing that keeps them alive, so all four die together and in one order: pipeline,
  *   layout, modules. "Explicit pipelines, created once at init, a small fixed set of
- *   variants, never created per draw" (the repo's rule) is what this rung is: the first
- *   triangle needs one variant, and the variants the rest of the plan asks for (textured,
- *   line, glyph, opaque/transparent) land beside this one in this same file, not as a
- *   pipeline-per-draw path anywhere above it.
+ *   variants, never created per draw" (the repo's rule) is what this rung is: today the set is
+ *   the batch's **two-row** variant list, the plan's opaque/transparent pair, and the variants
+ *   the rest of the plan asks for (textured, line, glyph) land beside them in this same file
+ *   as rows of that list - never as a pipeline-per-draw path anywhere above it.
  *
- *   What this rung does NOT have, and why: no transparent variant (the OPAQUE variant below is
- *   the one this rung builds; blend-enabled sorted draws are the next step's) and no descriptor-
- *   reading shader (the layout below is still a declaration this rung makes, because the frame
- *   loop has not bound set 0 or the push range yet).
+ *   What this rung does NOT have, and why: no third blend variant (the variant list below is the
+ *   batch's, `XUD_BATCH_VARIANT_COUNT` rows, and the two rows of that list are the plan's opaque/
+ *   transparent pair - raylib's `BlendMode` has nine modes and we want none of the other seven yet,
+ *   so growing the list is a row in an array, not a member in a struct, when a step wants one) and
+ *   no set-1-reading shader (the layout below is the declaration this rung makes and the frame loop
+ *   binds both channels of - set 1 is the other half, and it has no allocation to name yet).
  *
  *   What it DOES have now is the vertex input. The batch rung below it owns the four SoA streams
  *   and the one index buffer, and xud_pipeline_fill_vertex_input overwrites the zero row that
@@ -23,10 +25,10 @@
  *   instead of generating its three vertices from gl_VertexIndex. xud_pipeline_open takes the
  *   batch for exactly that reason: the row points at the BATCH's own arrays, and the renderer's
  *   open/close order opens the batch before this rung and closes it after, which is what makes
- *   that pointer legal for the pipeline whole life rather than a dangling read. The layout stays
- *   a declaration: a shader need not touch everything its layout declares, so declaring the
- *   push range and the two set layouts while reading none of them is legal, not a half-built
- *   binding.
+ *   that pointer legal for the pipeline whole life rather than a dangling read. The layout is
+ *   one layout for the whole list, and the frame loop binds both of its channels - set 0 and the
+ *   push range - so the shader reads the frame block and the push row while set 1 stays declared
+ *   and unbound, which is legal because a shader need not touch everything its layout declares.
  ***********************************************************************************************/
 
 #ifndef XUD_PIPELINE_H_
@@ -75,9 +77,15 @@
 
 typedef struct XudPipeline XudPipeline;
 struct XudPipeline {
-    VkPipeline pipeline; /* the one Vulkan object this layer owns: VK_NULL_HANDLE until
-                            xud_pipeline_open() creates it, cleared and destroyed by
-                            xud_pipeline_close() */
+    VkPipeline pipeline[XUD_BATCH_VARIANT_COUNT]; /* the Vulkan objects this layer owns: one per
+                            variant row of the batch's list, VK_NULL_HANDLE until xud_pipeline_open()
+                            creates it, cleared and destroyed by xud_pipeline_close(). The array is
+                            indexed by the batch's `variant` field - the one index space that makes
+                            the batch's row and this object the same number (todo.md's D1, 2026-10-26:
+                            raylib's blending is an enum-indexed list of modes, `BlendMode` raylib.h
+                            918-926 with `BLEND_ALPHA = 0` the default, and rlgl.h's `GlState.currentBlendMode`
+                            an int a switch maps to state, so a named opaque/transparent PAIR would be
+                            the wrong shape for a library whose public feel is that list) */
     VkPipelineLayout layout; /* owned beside it: a pipeline names its layout, and there is no
                                 way to retire the layout while the pipeline that names it is
                                 alive, so the two are one teardown step */
@@ -101,11 +109,12 @@ struct XudPipeline {
     VkPipelineRasterizationStateCreateInfo rasterizer;
     VkPipelineMultisampleStateCreateInfo multisample;
     VkPipelineDepthStencilStateCreateInfo depthStencil;
-    VkPipelineColorBlendStateCreateInfo blending;
-    VkPipelineColorBlendAttachmentState blendAttachment;
+    VkPipelineColorBlendStateCreateInfo blending[XUD_BATCH_VARIANT_COUNT];
+    VkPipelineColorBlendAttachmentState blendAttachment[XUD_BATCH_VARIANT_COUNT];
     VkPipelineDynamicStateCreateInfo dynamicState;
     VkDynamicState dynamicStates[XUD_PIPELINE_DYNAMIC_STATE_COUNT];
-    VkGraphicsPipelineCreateInfo createInfo; /* what vkCreateGraphicsPipelines was handed */
+    VkGraphicsPipelineCreateInfo createInfo[XUD_BATCH_VARIANT_COUNT]; /* what vkCreateGraphicsPipelines
+                                                            was handed, one row per variant */
 };
 
 /*-----------------------------------------------------------------------------------------------
@@ -139,8 +148,21 @@ struct XudPipeline {
     VK_LOGIC_OP_COPY /* the enum's value with logicOpEnable VK_FALSE,                                                                      \
                         written because the field must be a valid                                                                          \
                         enum, not because the op is used */
+#define XUD_PIPELINE_BLEND_OP                                                                                                              \
+    VK_BLEND_OP_ADD /* the one blend equation both variant rows use:                                                                       \
+raylib's default BLEND_ALPHA is glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)                                                          \
++ glBlendEquation(GL_FUNC_ADD) (rlgl.h 2127), and VK_BLEND_OP_ADD is that                                                                  \
+equation's Vulkan form - the FACTORS are what differ between the rows, not                                                                 \
+the equation, so the equation is one name and the factors are a table */
 
 static_assert(XUD_PIPELINE_STAGE_COUNT == (XUD_PIPELINE_FRAGMENT_STAGE + 1u), "the stage rows are contiguous from the vertex stage up");
+static_assert(XUD_BATCH_VARIANT_COUNT >= 2u, "the variant list has both the opaque and the transparent row");
+static_assert(sizeof(((XudPipeline*)0)->pipeline) / sizeof(VkPipeline) == XUD_BATCH_VARIANT_COUNT,
+    "one pipeline per variant row, which is what makes the batch's variant index name this object");
+static_assert(sizeof(((XudPipeline*)0)->blendAttachment) / sizeof(VkPipelineColorBlendAttachmentState) == XUD_BATCH_VARIANT_COUNT,
+    "one blend attachment per variant row, which is what makes the create-info's pAttachments the variant's own");
+static_assert(sizeof(((XudPipeline*)0)->createInfo) / sizeof(VkGraphicsPipelineCreateInfo) == XUD_BATCH_VARIANT_COUNT,
+    "one create-info per variant row, the record of what each create call was handed");
 static_assert(VK_SHADER_STAGE_VERTEX_BIT != VK_SHADER_STAGE_FRAGMENT_BIT,
     "the two stage bits are distinct, which is what makes a swapped row a caught "
     "error rather than a pipeline that compiles twice");
@@ -253,8 +275,11 @@ XudResult xud_pipeline_fill_layout_info(const XudDescriptor* descriptor, VkPipel
 /// VK_SUBPASS_TYPE_* constant at all, so 0 is written as the enum's own zero), basePi
 /// pelineHandle VK_NULL_HANDLE and basePipelineIndex -1 (the spec's "no base pipeline"
 /// pair - 0 would name pipeline row 0 of a pipeline-derivation this rung does not take).
-/// XUD_INVALID_ARG on a NULL out-create-info or a pipeline that owns no layout.
-XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo);
+/// XUD_INVALID_ARG on a NULL out-create-info or a pipeline that owns no layout, or on a
+/// variant at or past XUD_BATCH_VARIANT_COUNT. The variant selects which `blending[variant]` /
+/// `blendAttachment[variant]` row the create-info points at, which is what makes the batch's
+/// variant index and this create-info the same number (todo.md's D1, 2026-10-26).
+XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, uint32_t variant, VkGraphicsPipelineCreateInfo* outCreateInfo);
 
 /// Driver: the whole rung up in one call - the two built-in SPIR-V modules, the layout, the
 /// pipeline, in that order, and each one's teardown rung checked before the create that

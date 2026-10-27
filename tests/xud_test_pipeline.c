@@ -40,6 +40,7 @@ static void xud_test_pipeline_pure(void) {
     const VkShaderModule fragModule = (VkShaderModule)0x2000u;
     VkPipelineLayoutCreateInfo layout = (VkPipelineLayoutCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkGraphicsPipelineCreateInfo out = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkGraphicsPipelineCreateInfo transparentInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     XudDescriptor desc = (XudDescriptor) { 0 };
 
     xud_check(
@@ -159,37 +160,72 @@ static void xud_test_pipeline_pure(void) {
         "t rather than left at zero");
     xud_check((pipeline.depthStencil.minDepthBounds == 0.0f) && (pipeline.depthStencil.maxDepthBounds == 1.0f),
         "pipeline/depth-bounds-full", "the full range, which is what a disabled depth-bounds test has to say beside it");
-    xud_check(pipeline.blendAttachment.blendEnable == VK_FALSE, "pipeline/attachment-blend-disabled",
-        "blend disabled at the attachment, which is the OPAQUE variant of the plan's pair and the on"
-        "ly variant there is today - the transparent half is the batch step's, because the sort that"
-        " makes it correct is a property of the batch");
-    xud_check((pipeline.blendAttachment.srcColorBlendFactor == VK_BLEND_FACTOR_ONE)
-            && (pipeline.blendAttachment.dstColorBlendFactor == VK_BLEND_FACTOR_ZERO),
+    xud_check(pipeline.blendAttachment[XUD_BATCH_VARIANT_OPAQUE].blendEnable == VK_FALSE, "pipeline/attachment-blend-disabled",
+        "blend disabled at the OPAQUE row of the variant list, which is the plan's opaque half and"
+        " the row the batch's default variant indexes today");
+    xud_check((pipeline.blendAttachment[XUD_BATCH_VARIANT_OPAQUE].srcColorBlendFactor == VK_BLEND_FACTOR_ONE)
+            && (pipeline.blendAttachment[XUD_BATCH_VARIANT_OPAQUE].dstColorBlendFactor == VK_BLEND_FACTOR_ZERO),
         "pipeline/blend-factors-overwrite",
-        "ONE/ZERO, the identity of an overwrite, written even though blending is off so that the "
-        "day a variant enables it the factors are already the right pair");
-    xud_check((pipeline.blendAttachment.srcAlphaBlendFactor == VK_BLEND_FACTOR_ONE)
-            && (pipeline.blendAttachment.dstAlphaBlendFactor == VK_BLEND_FACTOR_ZERO),
+        "ONE/ZERO at the opaque row, the identity of an overwrite, written even though blending is "
+        "off so that the row says a complete blend");
+    xud_check((pipeline.blendAttachment[XUD_BATCH_VARIANT_OPAQUE].srcAlphaBlendFactor == VK_BLEND_FACTOR_ONE)
+            && (pipeline.blendAttachment[XUD_BATCH_VARIANT_OPAQUE].dstAlphaBlendFactor == VK_BLEND_FACTOR_ZERO),
         "pipeline/blend-alpha-factors-overwrite",
-        "the alpha half says the same: leaving it at ZERO/ZERO would be a blend that writes 0 alph"
-        "a into the swapchain the moment a later variant enables blending");
-    xud_check(pipeline.blendAttachment.colorWriteMask
+        "the alpha half says the same at the opaque row: leaving it at ZERO/ZERO would be a blend "
+        "that writes 0 alpha into the swapchain the moment a variant enables blending");
+    xud_check(pipeline.blendAttachment[XUD_BATCH_VARIANT_OPAQUE].colorWriteMask
             == (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT),
         "pipeline/color-write-mask",
-        "every component is written, alpha included, which is what a swapchain with OPAQUE composi"
-        "te needs");
-    xud_check(pipeline.blending.attachmentCount == 1u, "pipeline/blend-attachment-count",
-        "one blend attachment, which is the pass's one colour attachment read from the other side");
-    xud_check(pipeline.blending.pAttachments == &pipeline.blendAttachment, "pipeline/blend-attachment-row",
-        "the row points at the record's own attachment, so the record and the create-info the drive"
-        "r is handed cannot disagree");
-    xud_check((pipeline.blending.logicOpEnable == VK_FALSE) && (pipeline.blending.logicOp == XUD_PIPELINE_LOGIC_OP), "pipeline/no-logic-op",
-        "no logic op, with the enum's own COPY value written beside it because the field has to ho"
-        "ld a valid enum");
-    xud_check((pipeline.blending.blendConstants[0] == 0.0f) && (pipeline.blending.blendConstants[3] == 0.0f),
+        "every component is written at the opaque row, alpha included, which is what a swapchain "
+        "with OPAQUE composite needs");
+    xud_check(pipeline.blending[XUD_BATCH_VARIANT_OPAQUE].attachmentCount == 1u, "pipeline/blend-attachment-count",
+        "one blend attachment at the opaque row, which is the pass's one colour attachment read fr"
+        "om the other side");
+    xud_check(pipeline.blending[XUD_BATCH_VARIANT_OPAQUE].pAttachments == &pipeline.blendAttachment[XUD_BATCH_VARIANT_OPAQUE],
+        "pipeline/blend-attachment-row",
+        "the row points at the record's OWN opaque attachment, so the record and the create-info t"
+        "he variant's create call is handed cannot disagree");
+    xud_check((pipeline.blending[XUD_BATCH_VARIANT_OPAQUE].logicOpEnable == VK_FALSE)
+            && (pipeline.blending[XUD_BATCH_VARIANT_OPAQUE].logicOp == XUD_PIPELINE_LOGIC_OP),
+        "pipeline/no-logic-op",
+        "no logic op at the opaque row, with the enum's own COPY value written beside it because t"
+        "he field has to hold a valid enum");
+    xud_check((pipeline.blending[XUD_BATCH_VARIANT_OPAQUE].blendConstants[0] == 0.0f)
+            && (pipeline.blending[XUD_BATCH_VARIANT_OPAQUE].blendConstants[3] == 0.0f),
         "pipeline/blend-constants-zero",
-        "the four blend constants are written as zeros, which is what a blend that does not use th"
-        "em still says");
+        "the four blend constants are zeros at the opaque row, which is what a blend that does not "
+        "use them still says");
+    xud_check(pipeline.blendAttachment[XUD_BATCH_VARIANT_TRANSPARENT].blendEnable == VK_TRUE, "pipeline/attachment-blend-enabled",
+        "blend ENABLED at the TRANSPARENT row of the same list, which is the plan's other half and "
+        "the row a draw row naming XUD_BATCH_VARIANT_TRANSPARENT selects");
+    xud_check((pipeline.blendAttachment[XUD_BATCH_VARIANT_TRANSPARENT].srcColorBlendFactor == VK_BLEND_FACTOR_SRC_ALPHA)
+            && (pipeline.blendAttachment[XUD_BATCH_VARIANT_TRANSPARENT].dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA),
+        "pipeline/blend-factors-raylib-default",
+        "SRC_ALPHA/ONE_MINUS_SRC_ALPHA at the transparent row, the Vulkan form of raylib's default "
+        "blend: rlgl.h 2127's glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA), and BLEND_ALPHA is "
+        "raylib's default mode (raylib.h 918, the enum's zeroth entry, commented \"(default)\")");
+    xud_check(pipeline.blendAttachment[XUD_BATCH_VARIANT_TRANSPARENT].colorBlendOp == XUD_PIPELINE_BLEND_OP, "pipeline/blend-op-both-rows",
+        "ADD at the transparent row, the same equation the opaque row carries - rlgl.h 2127's glBlendEquation(GL_FUNC_ADD) "
+        "is one equation for both rows, the FACTORS are what differ between them");
+    xud_check((pipeline.blendAttachment[XUD_BATCH_VARIANT_TRANSPARENT].srcAlphaBlendFactor == VK_BLEND_FACTOR_ONE)
+            && (pipeline.blendAttachment[XUD_BATCH_VARIANT_TRANSPARENT].dstAlphaBlendFactor == VK_BLEND_FACTOR_ZERO),
+        "pipeline/blend-alpha-factors-both-rows",
+        "the alpha half stays ONE/ZERO under BOTH rows: the swapchain's alpha is composited against "
+        "nothing here, and writing 1.0 rather than 0.0 is what a later compositor wants");
+    xud_check(pipeline.blendAttachment[XUD_BATCH_VARIANT_TRANSPARENT].colorWriteMask
+            == (VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT),
+        "pipeline/color-write-mask-both-rows",
+        "every component is written at both rows, so the transparent row is a blend of the drawn colour "
+        "over the stored one rather than a partial write");
+    xud_check(pipeline.blending[XUD_BATCH_VARIANT_TRANSPARENT].pAttachments == &pipeline.blendAttachment[XUD_BATCH_VARIANT_TRANSPARENT],
+        "pipeline/blend-attachment-row-transparent",
+        "the transparent row points at the record's OWN transparent attachment, which is what makes "
+        "the variant's create-info and the variant's attachment the same bytes");
+    xud_check(pipeline.blendAttachment[XUD_BATCH_VARIANT_OPAQUE].blendEnable
+            != pipeline.blendAttachment[XUD_BATCH_VARIANT_TRANSPARENT].blendEnable,
+        "pipeline/blend-rows-differ",
+        "the two rows differ in exactly the one field the variant is about, which is what makes the "
+        "variant index a pipeline choice rather than a decoration on one pipeline");
     xud_check(pipeline.dynamicState.dynamicStateCount == XUD_PIPELINE_DYNAMIC_STATE_COUNT, "pipeline/dynamic-count", "two dynamic states");
     xud_check(pipeline.dynamicState.pDynamicStates == pipeline.dynamicStates, "pipeline/dynamic-array",
         "the row points into the owning struct, which is what keeps it valid past the call");
@@ -249,26 +285,33 @@ static void xud_test_pipeline_pure(void) {
         "one push-constant range, the descriptor rung's own row: the spec allows at most one in a"
         "layout, so the one range is a bound on this rung's row rather than a list it could grow");
 
-    xud_check(xud_pipeline_fill_create_info(NULL, &out) == XUD_INVALID_ARG, "pipeline/create-no-record",
+    xud_check(xud_pipeline_fill_create_info(NULL, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG, "pipeline/create-no-record",
         "a create-info with no record to assemble from is refused");
-    xud_check(xud_pipeline_fill_create_info(&pipeline, NULL) == XUD_INVALID_ARG, "pipeline/create-null-out",
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_VARIANT_OPAQUE, NULL) == XUD_INVALID_ARG, "pipeline/create-null-out",
         "and so is one with nowhere to be written");
-    xud_check(xud_pipeline_fill_create_info(&bare, &out) == XUD_INVALID_ARG, "pipeline/create-no-layout-handle",
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_VARIANT_COUNT, &out) == XUD_INVALID_ARG,
+        "pipeline/create-variant-past-list",
+        "a variant at or past the batch's variant count is refused rather than a row read off the end "
+        "of the arrays - the same rule the batch's own invariant check applies to a draw row's variant");
+    xud_check(xud_pipeline_fill_create_info(&bare, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG, "pipeline/create-no-layout-handle",
         "a record with no layout handle is a bad argument, because the layout is an argument of the "
         "create call");
     bare.layout = (VkPipelineLayout)0x9000u;
-    xud_check(xud_pipeline_fill_create_info(&bare, &out) == XUD_INVALID_ARG, "pipeline/create-no-pass-handle",
+    xud_check(xud_pipeline_fill_create_info(&bare, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG, "pipeline/create-no-pass-handle",
         "and so is a record that names no render pass: the core-1.4 binding makes the pass an argu"
         "ment of the create as well, so a record that cannot name one is a bad argument of this f"
         "unction, not a create-info that happens to carry VK_NULL_HANDLE");
     bare.renderPass = (VkRenderPass)0x3000u;
-    xud_check(xud_pipeline_fill_create_info(&bare, &out) == XUD_UNSUPPORTED, "pipeline/create-unstamped-rows",
+    xud_check(xud_pipeline_fill_create_info(&bare, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_UNSUPPORTED, "pipeline/create-unstamped-rows",
         "a record whose rows were never stamped is a bad state of THIS layer, reported as such rat"
         "her than assembled from calloc's zeros");
     pipeline.layout = (VkPipelineLayout)0x9000u;
     pipeline.renderPass = (VkRenderPass)0x3000u;
-    xud_check(
-        xud_pipeline_fill_create_info(&pipeline, &out) == XUD_OK, "pipeline/create-ok", "the create-info is assembled from the record");
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_OK, "pipeline/create-opaque-ok",
+        "the opaque row's create-info is assembled from the record");
+    xud_check(out.pColorBlendState == &pipeline.blending[XUD_BATCH_VARIANT_OPAQUE], "pipeline/create-blend-row-opaque",
+        "the create-info's blend pointer is the OPAQUE row's, which is what makes the variant argume"
+        "nt and the blend state the same number");
     xud_check(out.sType == VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, "pipeline/create-stamped", "stamped");
     xud_check((out.pNext == NULL) && (out.flags == 0u), "pipeline/create-chain-clear", "nothing is chained into it");
     xud_check((out.stageCount == XUD_PIPELINE_STAGE_COUNT) && (out.pStages == pipeline.shaderStages), "pipeline/create-two-stages",
@@ -278,7 +321,7 @@ static void xud_test_pipeline_pure(void) {
     xud_check((out.pVertexInputState == &pipeline.vertexInput) && (out.pInputAssemblyState == &pipeline.inputAssembly)
             && (out.pViewportState == &pipeline.viewportState) && (out.pRasterizationState == &pipeline.rasterizer)
             && (out.pMultisampleState == &pipeline.multisample) && (out.pDepthStencilState == &pipeline.depthStencil)
-            && (out.pColorBlendState == &pipeline.blending) && (out.pDynamicState == &pipeline.dynamicState),
+            && (out.pColorBlendState == &pipeline.blending[XUD_BATCH_VARIANT_OPAQUE]) && (out.pDynamicState == &pipeline.dynamicState),
         "pipeline/create-rows-in-record",
         "every state pointer names the record's own row, so the record and the create-info the "
         "driver is handed are the same bytes and cannot disagree");
@@ -293,6 +336,25 @@ static void xud_test_pipeline_pure(void) {
     xud_check((out.basePipelineHandle == VK_NULL_HANDLE) && (out.basePipelineIndex == -1), "pipeline/create-no-base-pipeline",
         "the spec's own pairing for a pipeline that is not derived from another: a null handle wit"
         "h -1, because 0 would name pipeline row 0 of a derivation this rung does not take");
+
+    /* The same assembly at the OTHER row of the list, which is what makes the variant argument of
+       fill_create_info a choice rather than a decoration: the two create-infos are the same record
+       read at two rows, and the one row they differ in is the blend half. */
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_VARIANT_TRANSPARENT, &transparentInfo) == XUD_OK,
+        "pipeline/create-transparent-ok", "the transparent row's create-info assembles too");
+    xud_check(transparentInfo.pColorBlendState == &pipeline.blending[XUD_BATCH_VARIANT_TRANSPARENT],
+        "pipeline/create-blend-row-transparent",
+        "and its blend pointer is the TRANSPARENT row's, so the variant argument picks the blend "
+        "state the create call is handed rather than always the opaque one");
+    xud_check(transparentInfo.pColorBlendState != out.pColorBlendState, "pipeline/create-blend-rows-differ",
+        "the two create-infos differ in the blend row, which is the whole of what a variant is at "
+        "this rung: one layout, one shader pair, one of every other row");
+    xud_check(transparentInfo.layout == out.layout, "pipeline/create-one-layout-both-rows",
+        "both rows name the SAME layout, which is what makes the layout one object for the whole "
+        "list rather than a per-variant record of the same interface");
+    xud_check(transparentInfo.pStages == out.pStages, "pipeline/create-one-shader-pair",
+        "and the same two shader stages, so the variant is a blend-state choice and not a shader c"
+        "hoice");
 }
 
 void xud_test_pipeline(void) { xud_test_pipeline_pure(); }

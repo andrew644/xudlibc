@@ -1,6 +1,63 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S20, the transparent variant** — the pipeline rung owning a pipeline per row of the batch's variant list under one layout, and the frame loop binding the row a draw's variant names beside that draw (2026-10-26).
+
+## Steps complete (S20 The transparent variant — a pipeline per row of the batch's variant list under one layout, the frame loop binding the row a draw names, one step, landed as one commit, 2026-10-26)
+
+- [x] ~~**Batch consumers (part 4 of 4)**: the **transparent** pipeline variant + the sorted-draw rule~~ — **done 2026-10-26**.
+    What stays open in the item, and stays in `todo.md`: the handle layer's material **record** (the naming is decided, the
+    record's members and `xud.h`'s create/close pair are not) and the transient ring's still-caller-less pair.
+
+  **The two questions, and the answer the same day's *Decided since then* entry records for them** (D1 the pipeline list,
+  D2 the caller's append order — the tie-breaker being "whichever option feels like using raylib", with the evidence quoted
+  there by line number so the choice can be re-checked rather than remembered). This step is the first **code** of those
+  decisions:
+  - **D1 in code — the pipeline rung owns a LIST, not a pair.** `XudPipeline` grows `VkPipeline pipeline[XUD_BATCH_VARIANT_COUNT]`
+    plus the per-row `createInfo`/`blending`/`blendAttachment` arrays, and keeps the **one** `VkPipelineLayout`. `xud_pipeline_fill_state()`
+    fills the blend attachment from a **per-row table** — opaque `{ VK_FALSE, ONE, ZERO }`, transparent `{ VK_TRUE, SRC_ALPHA,
+    ONE_MINUS_SRC_ALPHA }`, both `XUD_PIPELINE_BLEND_OP` = `VK_BLEND_OP_ADD` — the literal Vulkan form of raylib's default
+    `BLEND_ALPHA` (`glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` + `GL_FUNC_ADD`). `xud_pipeline_fill_create_info()`
+    takes the variant and refuses one the list has no row for; `xud_pipeline_open()` creates one pipeline per row and records
+    them; `xud_pipeline_close()` destroys **every** row through a file-local `xud_pipeline_destroy_rows()`, so a partial
+    creation leaks nothing. The static asserts moved to the array's own size (`sizeof(((XudPipeline*)0)->pipeline) /
+    sizeof(VkPipeline) == XUD_BATCH_VARIANT_COUNT`) plus `XUD_BATCH_VARIANT_COUNT >= 2u`, which is what keeps the array's
+    length and the batch's variant count one number rather than two that happen to agree.
+  - **The frame loop binds per DRAW ROW, not per frame.** The once-per-frame `vkCmdBindPipeline` is gone; the loop bounds
+    `pipeline->pipeline[drawRow.variant]` beside each row it replays, and refuses a row whose variant is off the end of the
+    list (`drawRow.variant >= XUD_BATCH_VARIANT_COUNT` breaks the replay, the same shape as the `firstIndex + indexCount >
+    vertexCount` rule beside it). A bind is command-buffer state, so the last bind before a draw is the one that draw uses —
+    the Vulkan form of rlgl re-selecting state per batch, and the reason the per-frame bind was wrong rather than merely
+    coarse: with one bind the variant the row names would have been decoration on a row that always drew through the opaque
+    pipeline.
+  - **D2 needed no code**, and saying why is the point: the sorted-draw rule is the caller's append order, the library never
+    sorts, and no sort key is added to `XudBatchDraw` — the row array **already is** the append order, and `xud_batch_should_flush()`
+    (xud_batch.c 359, committed and tested at S16) is the mechanism that makes a variant change close a run at all, which
+    is the Vulkan form of rlgl's flush-on-mode-change. A sort would have been a change to a committed, tested rung and a
+    field nothing in raylib has an equivalent of.
+  - **The GPU test runs the transparent row end to end**: the last frame of the loop sets the batch's `currentVariant` to
+    `XUD_BATCH_VARIANT_TRANSPARENT` — the field, because the public spelling is `xud_set_blend_mode`/`xud_end_blend_mode` in
+    `xud.h` (D3, and a public-API-surface change that lands with the shapes step that will want it), so writing the field is
+    the same tamper-and-restore the `framebufferCount` check above already does — and the checks say the frame that names the
+    transparent variant **drew**, the transparent row of the list is a live handle, the two rows are **two** handles (so the
+    variant is a pipeline choice, not a flag on one pipeline), and the frame's batch reset moved the variant back to the
+    opaque default, which is what the batch's own reset rule states and this frame is the only thing that ran it. The frame
+    count stays `XUD_TEST_GPU_DRAW_FRAMES`, which is what keeps the acquire count the run has always had — the 4th acquire on
+    this machine answers `VK_SUBOPTIMAL_KHR`, and that is written up as a *Next* item in `todo.md` rather than absorbed here.
+  - **The headless half** asserts the two rows differ in exactly the variant field: opaque `blendEnable` differs from transparent
+    `blendEnable`, the transparent factors are `SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA` and the opaque ones stay `ONE`/`ZERO` under
+    both rows, the color write mask is full under both, the transparent `pAttachments` points at the transparent row, and
+    `fill_create_info` now takes a variant with a refusal for one off the end of the list plus a check that the `pColorBlendState`
+    it points at is the variant's own row. `xud_pipeline.h`'s file-top comment states the list and the one-layout rule with its
+    reason (the variants differ in **pipeline** state, not **interface** state, so a second layout would be a second record of
+    the same interface and every `vkCmdBindDescriptorSets` would have to know which it names), and `xud_batch.h`'s variant
+    comment now says BOTH rows exist today rather than "OPAQUE is the only one the pipeline rung builds today" — the stale
+    wording this step retires. `AGENTS.md`'s pipeline rule names the two-row list and the per-row bind, and its frame-loop
+    order moves `vkCmdBindPipeline` out of the once-per-frame line and beside the push/draw pair.
+  - **The bar, met**: `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror -I src/xud -I src/external -I build/gen` clean
+    (and the same under clang 22), `./scripts/format.sh --check` green, headless `./build/xud_test` **2307 / 0**, GPU run
+    **2913 / 0** validation-clean, clang build **2307 / 0** and **2913 / 0**, sanitiser builds green with the known external-only
+    leak set, `ar -t build/libxud.a | wc -l` still **40**, `nm -u build/xud_test | grep -E "vk|glfw"` still empty, `ldd` still
+    answers only `libwayland-egl.so.1`.
 
 ## Steps complete (S19 The push-constant row — `vkCmdPushConstants` beside every recorded draw, the vertex stage placing the vertex by `viewProj * modelMatrix`, one step, landed as one commit, 2026-10-26)
 

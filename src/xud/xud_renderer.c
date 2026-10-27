@@ -1,12 +1,14 @@
 /***********************************************************************************************
  *
- *   xud_renderer.c - the renderer rung: the owner of one batch, one pipeline, one render pass,
- *                    one framebuffer per swapchain image and one frame loop
+ *   xud_renderer.c - the renderer rung: the owner of one batch, the pipeline rung's variant
+ *                    list of graphics pipelines, one render pass, one framebuffer per swapchain
+ *                    image and one frame loop
  *
  *   Owns : the five rungs below the public API that make a frame possible - the batch rung's four
  *          SoA attribute streams and its one index buffer (plus the one mapped staging arena the
- *          CPU-side bytes are written into), the pipeline rung's one graphics pipeline (with its
- *          layout and its two shader modules inside it), the render-pass rung's one VkRenderPass,
+ *          CPU-side bytes are written into), the pipeline rung's variant list of graphics pipelines
+ *          (one layout and two shader modules shared under the whole list), the render-pass rung's
+ *          one VkRenderPass,
  *          that rung's array of one VkFramebuffer per swapchain image, and the frame loop's comm
  *          and pool, command buffer, acquire semaphore and per-image fences - and the one teardown
  *          order that hands all five back.

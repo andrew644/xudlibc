@@ -22,6 +22,7 @@
 #include "xud_frame.h" /* Required for: XudFrame, the fill rungs, the allocation and the recording rows */
 #include "xud_renderer.h" /* Required for: xud_renderer_draw, the one call the GPU half draws through */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
+#include <stdio.h>
 
 /*-----------------------------------------------------------------------------------------------
  * The frame loop, headless: the four create-info assemblies the driver calls below are written f
@@ -232,7 +233,9 @@ static void xud_test_gpu_draw(void) {
     xud_check((context->renderer->pipeline != NULL) && (context->renderer->renderPass != NULL) && (context->renderer->framebuffers != NULL)
             && (context->renderer->frame != NULL),
         "gpu-draw/four-rungs-live", "the renderer owns all four rungs, none of them a sentinel");
-    xud_check((context->renderer->pipeline->pipeline != VK_NULL_HANDLE) && (context->renderer->renderPass->renderPass != VK_NULL_HANDLE),
+    xud_check((context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_OPAQUE] != VK_NULL_HANDLE)
+            && (context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_TRANSPARENT] != VK_NULL_HANDLE)
+            && (context->renderer->renderPass->renderPass != VK_NULL_HANDLE),
         "gpu-draw/handles-live", "the VkPipeline and the VkRenderPass inside the two rungs are live handles");
     xud_check(context->renderer->framebufferCount == context->swapchain->imageCount, "gpu-draw/count-is-image-count",
         "the renderer recorded one framebuffer per swapchain image, and the count it hands the draw matches");
@@ -363,6 +366,16 @@ static void xud_test_gpu_draw(void) {
            batch is reset at the end of every frame, so each frame appends its own three vertices
            into a batch that starts empty again - which is also what says the reset happens.
         */
+        /* The variant this frame's run is accumulated under: the LAST frame of the loop runs the
+           TRANSPARENT row of the pipeline list and the others the opaque default, which is what makes
+           the frame loop's per-row pipeline bind the path this run takes for both rows. The batch's
+           currentVariant is the drawing state a public blend-mode call will set (todo.md's D3, 2026-10-26
+           - the public spelling is xud_set_blend_mode / xud_end_blend_mode in xud.h, raylib's SetBlendMode/
+           EndBlendMode pair, and it lands with the shapes step that wants one), so the field is written
+           directly here, the same tamper-and-restore the count-disagrees check below uses.
+        */
+        context->renderer->batch->currentVariant
+            = ((frame + 1u) == XUD_TEST_GPU_DRAW_FRAMES) ? XUD_BATCH_VARIANT_TRANSPARENT : XUD_BATCH_VARIANT_OPAQUE;
         xud_check(xud_batch_append_vertex(context->renderer->batch, trianglePos[0], triangleUv[0], triangleColor, triangleNormal) == XUD_OK,
             "gpu-draw/append-vertex-a", "the batch accepts a vertex within its capacity");
         xud_check(xud_batch_append_vertex(context->renderer->batch, trianglePos[1], triangleUv[1], triangleColor, triangleNormal) == XUD_OK,
@@ -379,6 +392,12 @@ static void xud_test_gpu_draw(void) {
             "acquire, record the batch's copies / binds / draw, submit with the image's own fence, present, wait and reset that fence");
         xud_check(imageIndex < context->swapchain->imageCount, "gpu-draw/index-in-range",
             "the index acquire wrote names an image this swapchain has");
+        if ((frame + 1u) == XUD_TEST_GPU_DRAW_FRAMES) {
+            xud_check(context->renderer->batch->currentVariant == XUD_BATCH_VARIANT_OPAQUE, "gpu-draw/variant-reset-by-frame",
+                "the frame that drew the transparent row reset the batch's variant back to the opaque "
+                "default, which is what the batch's own reset rule states and this frame is the only "
+                "thing that ran it");
+        }
         /* The frame loop reset the batch at its end, so the triangle that was drawn this frame is
            gone from the batch before the next one appends - which is the same property the batch
            area checks of xud_batch_reset on its own, read here on the renderer's batch through the
@@ -426,6 +445,21 @@ static void xud_test_gpu_draw(void) {
         "and the refused draw added no frame, so the refusal was "
         "made before the frame loop was reached at all");
     context->renderer->framebufferCount = context->swapchain->imageCount;
+
+    /* The two rows of the pipeline list, read on the live renderer: the variant the batch names has a
+       pipeline behind it rather than an index into an array of one, and the two rows are two handles,
+       which is what makes the variant a pipeline choice rather than a flag on one pipeline. The frame
+       loop bound the row the variant names, and the run is validation-clean below - so the blend-
+       enabled row is a pipeline a frame actually drew through, not a row of the list nothing reaches.
+    */
+    xud_check(context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_TRANSPARENT] != VK_NULL_HANDLE, "gpu-draw/transparent-pipeline-live",
+        "the transparent row of the pipeline list is a live handle, so the variant the batch named has "
+        "a pipeline behind it rather than an index into an array of one");
+    xud_check(context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_TRANSPARENT]
+            != context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_OPAQUE],
+        "gpu-draw/two-pipeline-handles",
+        "the two rows of the list are two handles, which is what makes the variant a pipeline choice "
+        "rather than a flag on one pipeline");
 
     if (context->validate != 0u) {
         xud_check(context->diagnostics->errorMessages == 0u, "gpu-draw/validation-clean",

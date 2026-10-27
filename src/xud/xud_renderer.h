@@ -1,17 +1,19 @@
 /***********************************************************************************************
- *   xud_renderer.h - the renderer rung: the owner of one pipeline, one render pass, one
- *                    framebuffer per swapchain image and one frame loop
+ *   xud_renderer.h - the renderer rung: the owner of one batch, the pipeline rung's variant
+ *                    list of pipelines, one render pass, one framebuffer per swapchain image
+ *                    and one frame loop
  *
  *   Layer: above the frame loop, below the public API. This is the rung of the plan's layer
  *   ladder - "xudrl renderer (passes, pipelines, batches, buffers)" - and it is the rung
  *   xud_init_context() wires, which is what makes the context's renderer field live rather
- *   than a sentinel. It owns four things and nothing else: the pipeline rung's one pipeline
- *   (with its layout and its two shader modules inside it), the render-pass rung's one
- *   VkRenderPass, that rung's array of one VkFramebuffer per swapchain image, and the frame
- *   loop's command pool, command buffer, acquire semaphore and per-image fences.
+ *   than a sentinel. It owns five things and nothing else: the batch rung's four SoA streams and
+ *   one index buffer, the pipeline rung's variant list of pipelines (one layout and two shader
+ *   modules shared under the whole list), the render-pass
+ *   rung's one VkRenderPass, that rung's array of one VkFramebuffer per swapchain image, and the
+ *   frame loop's command pool, command buffer, acquire semaphore and per-image fences.
  *
  *   The order this rung opens and closes in is load-bearing, and it is the plan's own
- *   dependency direction read both ways. Open: render pass -> pipeline -> framebuffer array
+ *   dependency direction read both ways. Open: render pass -> batch -> pipeline -> framebuffer array
  *   -> frame. The pass is FIRST because the core-1.4 binding makes it an argument of the pipe
  *   line's create (VUID-VkGraphicsPipelineCreateInfo-dynamicRendering-06576: with dynamicRende
  *   ring not enabled - and it is not, see the render-pass decision in AGENTS.md - a graphics

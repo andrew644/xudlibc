@@ -170,9 +170,13 @@ static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_
 /* The two variants of the plan's opaque/transparent pair, as the DRAW ROW's index into them
    rather than as a pipeline handle: a draw row that carried a VkPipeline would be a row whose
    pipeline had gone stale the moment the pipeline rung recreated one, and the row's whole point
-   is that it is a record. OPAQUE is the only one the pipeline rung builds today; TRANSPARENT is
-   the row the next step's second pipeline will answer, and naming it here is what makes the
-   flush decision below about "the variant changed" rather than about "a number changed". */
+   is that it is a record. BOTH rows exist today - the pipeline rung owns a pipeline per row of
+   this list under one layout (todo.md's D1, 2026-10-26: raylib's blending is an enum-indexed
+   list of modes, so the list is the shape and growing it is a row, not a rename) - and the
+   frame loop binds the row this index names, so naming a variant here is naming a pipeline
+   choice. OPAQUE is the DEFAULT because the transparent row is only correct against a caller
+   that drew back-to-front (todo.md's D2: raylib's painter's-algorithm semantics, the library
+   never sorts and no sort key is added to this row). */
 #define XUD_BATCH_VARIANT_OPAQUE 0u
 #define XUD_BATCH_VARIANT_TRANSPARENT 1u
 #define XUD_BATCH_VARIANT_COUNT 2u

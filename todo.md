@@ -6,8 +6,16 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- [ ] Batch **consumers** (last of four): the **transparent** pipeline variant + the sorted-batch rule, and the
-    handle layer's `XudHandleSlot.record`
+- [ ] Batch **consumers** (last part): the handle layer's material **record** — the batch's `materialIndex` names a
+    material slot and `xud.h` still declares no create/close function that takes a handle
+    - 2026-10-26 note: the **transparent variant landed as S20** — see the *Steps complete (S20 …)* section at the top
+      of `todo_completed.md`. What landed there: the pipeline rung owns a **pipeline per row of the batch's variant list**
+      (`pipeline[XUD_BATCH_VARIANT_COUNT]`, one layout for the whole list — the D1 below), the blend attachment is a
+      **per-row table** (opaque `blendEnable = VK_FALSE`, transparent `VK_TRUE` + `VK_BLEND_FACTOR_SRC_ALPHA`/`ONE_MINUS_SRC_ALPHA`
+      + `VK_BLEND_OP_ADD`, the Vulkan form of raylib's default `BLEND_ALPHA`), the frame loop **binds the row a draw's
+      variant names** beside that draw rather than once per frame, and the GPU test's last frame runs the transparent
+      state end to end. The sorted-draw rule is the **D2** below — caller append order, the library never sorts, no
+      sort key on the row — and it needed no code because the row array already **is** the append order.
     - 2026-10-26 note: the **third of this item landed as S19** — see the *Steps complete (S19 …)* section at the top
       of `todo_completed.md`. What landed there: **`vkCmdPushConstants`** in the frame loop, recorded beside every draw
       row the batch recorded rather than once per frame (against the layout's **own recorded** range — `descriptor->push
@@ -17,9 +25,6 @@ step, just move it, so the active tracker stays short and the log stays complete
       index a read could use, texture 0 because set 1 is never allocated, flags the variant the draw was flushed under),
       and `shaders/solid.vert` placing the vertex by **`viewProj * modelMatrix`** — so both channels of the layout are
       live end to end now. What is still open, itemised against this item's list:
-      - **The transparent variant**: `XUD_BATCH_VARIANT_TRANSPARENT` is declared and the batch's flush decision keys on
-        the variant index, but only the opaque pipeline exists (`blendEnable = VK_FALSE`, depth writes on) — the second
-        `VkGraphicsPipelineCreateInfo` (blend enabled, and the sorted-draw rule that goes with it) is this step's.
       - **The handle layer's `XudHandleSlot.record`**: still the NULL sentinel, and `xud.h` still declares no create/clos
         e function that takes a handle. What the batch's `materialIndex` would name is a material slot's record, and what
         such a record holds (a pipeline-variant index + the set-1 bindings) is an open design decision — see *Ask before*
@@ -90,6 +95,14 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Next
 
+- [ ] The acquire's **positive answer codes**: `xud_result_from_vk()` maps `VK_SUBOPTIMAL_KHR` (`1000001003`) and
+    `VK_ERROR_OUT_OF_DATE_KHR` (`-1000001004`) to `XUD_VULKAN_ERROR` through its default case, so a frame whose acquire
+    answered "this image is usable, but recreate the swapchain" is **refused** rather than presented and flagged.
+    Observed on this machine 2026-10-26: the GPU test's 4th `vkAcquireNextImageKHR` answered `VK_SUBOPTIMAL_KHR` and
+    `xud_renderer_draw` returned `XUD_VULKAN_ERROR` (7) with the validation layer printing nothing — a real behaviour,
+    not a validation complaint, and the fix is the resize/recreate step's decision (present the image, record that a
+    recreate is wanted) rather than a mapping tweak. The three-frame test loop never trips it, which is why the tree
+    has been green over it so far.
 - [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
     shape family in the API)
 
@@ -186,6 +199,12 @@ step, just move it, so the active tracker stays short and the log stays complete
   past the two variants (D1 makes it a row in an array, but the list's contents are the shapes/text steps' to want), and whether the
   transparent variant turns depth **writes** off — raylib keeps depth writes on under `BLEND_ALPHA` and gets the overlap artifacts that
   go with it, so keeping them on is the raylib-shaped default and turning them off is a later knob, not this decision.
+
+  **What this entry implemented, the same day (S20)**: D1 and D2 are code, not just decisions — `xud_pipeline.h`/`.c` own the
+  variant **array** (one layout, per-row blend-attachment table, per-row `createInfo`, close destroying every row) and the frame
+  loop binds the row a draw's variant names beside that draw; the GPU test's last frame runs the transparent state end to end. D3's
+  public call (`xud_set_blend_mode`/`xud_end_blend_mode`) is still not in `xud.h` — the test writes the batch's `currentVariant`
+  field directly, which is the same tamper-and-restore the tree already uses, and the public spelling lands with the shapes step.
 
 - 2026-10-23 — **Data layout → SoA, no ECS at this level** (settled; AGENTS.md's open question on this is closed).
   One stream per vertex attribute, one `VkBuffer` per stream, one `VkVertexInputBindingDescription` each (`stride` = that

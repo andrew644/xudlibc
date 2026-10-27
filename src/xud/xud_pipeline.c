@@ -1,12 +1,13 @@
 /***********************************************************************************************
  *
- *   xud_pipeline.c - the pipeline layer: the built-in SPIR-V, one pipeline layout, one
- *          graphics pipeline, and the one teardown order that hands them back
+ *   xud_pipeline.c - the pipeline layer: the built-in SPIR-V, one pipeline layout, the batch's
+ *          variant list of graphics pipelines, and the one teardown order that hands them back
  *
  *   Owns : the pipeline layer. Fills the fixed pipeline state (pure), overwrites that state's
  *          zero vertex-input row with the batch's four binding and four attribute rows (pure),
- *          assembles the two create-infos from it (pure), then creates the two shader modules,
- *          the layout and the pipeline through the device rows, and tears all four back down in
+ *          assembles one create-info per row of the batch's variant list (pure), then creates the
+ *          two shader modules, the one layout the whole list shares and one pipeline per row of
+ *          that list through the device rows, and tears every one of them back down in
  *          the one order that keeps every handle's owner alive.
  *   Layer: above the shader rung, below the render pass. Nothing in this file calls a Vulkan
  *          entry point directly - every one is reached through a row of XudLoader's Volk
@@ -100,6 +101,19 @@ XudResult xud_pipeline_fill_vertex_input(XudPipeline* pipeline, const XudBatch* 
 }
 
 XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
+    /* The per-variant blend state, in the BATCH's variant order - a table rather than a switch
+       because the variant IS the batch's index (todo.md's D1, 2026-10-26: raylib's blending is an
+       enum-indexed list of modes, BlendMode in reference/raylib/raylib.h 918-926, and rlgl.h's
+       GlState.currentBlendMode an int a switch maps to GL state, so growing the list is a row here
+       and not a member in a struct). The opaque row is the identity of an overwrite (ONE/ZERO);
+       the transparent row is raylib's DEFAULT mode BLEND_ALPHA (raylib.h 918, "= 0" and commented
+       "(default)"), whose Vulkan form is the rlgl.h 2127 pair glBlendFunc(GL_SRC_ALPHA,
+       GL_ONE_MINUS_SRC_ALPHA) + glBlendEquation(GL_FUNC_ADD). */
+    static const VkBool32 blendEnable[XUD_BATCH_VARIANT_COUNT] = { VK_FALSE, VK_TRUE };
+    static const VkBlendFactor blendSrc[XUD_BATCH_VARIANT_COUNT] = { VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_ALPHA };
+    static const VkBlendFactor blendDst[XUD_BATCH_VARIANT_COUNT] = { VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA };
+    uint32_t variant = 0u;
+
     if (pipeline == NULL) {
         return XUD_INVALID_ARG;
     }
@@ -197,41 +211,45 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     pipeline->depthStencil.maxDepthBounds = 1.0f;
     pipeline->depthStencil.minDepthBounds = 0.0f;
 
-    /* --- blend: the OPAQUE variant of the plan's opaque/transparent pair. blendEnable VK_FALSE
-       is the variant, and the two factor pairs are written because the row must say a complete
-       blend even when it is disabled - these headers spell the row as the core-1.0 form
-       (srcColorBlendFactor / dstColorBlendFactor / colorBlendOp and the same three for the
-       alpha half, grepped: srcAlpha, colorBlendFactor and useAlphaBlend do not exist anywhere
-       in vulkan_core.h 1.4.363), and leaving the alpha half at ZERO/ZERO would be a blend that
-       writes 0 alpha into the swapchain the moment a later variant enables blending. srcAlpha
-       VK_TRUE is the spec's default form. attachmentCount is the number of COLOUR attachments o
-       f the subpass this pipeline runs in, NOT the attachment count of the pass: the pass now ha
-       s two attachments, but only one of them has a colour aspect, and VUID-VkPipelineColorBlendS
-       tateCreateInfo-attachmentCount-00646 is about the colour half - the depth half of the pass i
-       s named by the depth-stencil row above, not by this one. The TRANSPARENT variant of the pa
-       ir is a second pipeline of this rung, not a flag on this one, and it lands with the batch: s
-       orted transparency is a property of what the batch draws, and there is no batch to sort yet,
-       so shipping a blend-enabled pipeline now would be a pipeline nothing can reach by any means
-       other than by being wrong. --- */
-    pipeline->blendAttachment.blendEnable = VK_FALSE;
-    pipeline->blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
-    pipeline->blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
-    pipeline->blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
-    pipeline->blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    pipeline->blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
-    pipeline->blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
-    pipeline->blendAttachment.colorWriteMask = 0xFu;
+    /* --- blend: the TWO variants of the plan's opaque/transparent pair, one row of each, in the
+       batch's variant order. blendEnable is the variant, and the two factor pairs are written even
+       where blending is off because the row must say a complete blend - these headers spell the row
+       as the core-1.0 form (srcColorBlendFactor / dstColorBlendFactor / colorBlendOp and the same
+       three for the alpha half; grepped: srcAlpha, colorBlendFactor and useAlphaBlend do not exist
+       anywhere in vulkan_core.h 1.4.363), and leaving the alpha half at ZERO/ZERO would be a blend
+       that writes 0 alpha into the swapchain the moment a later variant enables blending. srcAlpha
+       VK_TRUE is the spec's default form. attachmentCount is the number of COLOUR attachments of
+       the subpass this pipeline runs in, NOT the pass's attachment count: the pass has two
+       attachments but only one has a colour aspect, and VUID-VkPipelineColorBlendStateCreateInfo-
+       attachmentCount-00646 is about the colour half - the depth half is named by the depth-stencil
+       row above. The factors are the table above, indexed by the variant, which is what makes the
+       batch's variant index and this row the same number (todo.md's D1, 2026-10-26); the alpha
+       half stays ONE/ZERO under BOTH rows because the swapchain's alpha is composited against
+       nothing here and writing 1.0 rather than 0.0 is what a later compositor wants. Depth writes
+       stay ON under the transparent row - that is what raylib does under BLEND_ALPHA, and the
+       overlap artifacts that go with keeping them are raylib's own; turning them off is a later
+       knob, not this row. --- */
+    for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
+        pipeline->blendAttachment[variant].blendEnable = blendEnable[variant];
+        pipeline->blendAttachment[variant].srcColorBlendFactor = blendSrc[variant];
+        pipeline->blendAttachment[variant].dstColorBlendFactor = blendDst[variant];
+        pipeline->blendAttachment[variant].colorBlendOp = XUD_PIPELINE_BLEND_OP;
+        pipeline->blendAttachment[variant].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        pipeline->blendAttachment[variant].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        pipeline->blendAttachment[variant].alphaBlendOp = XUD_PIPELINE_BLEND_OP;
+        pipeline->blendAttachment[variant].colorWriteMask = 0xFu;
 
-    pipeline->blending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
-    pipeline->blending.pNext = NULL;
-    pipeline->blending.logicOpEnable = VK_FALSE;
-    pipeline->blending.logicOp = XUD_PIPELINE_LOGIC_OP;
-    pipeline->blending.attachmentCount = 1u;
-    pipeline->blending.pAttachments = &pipeline->blendAttachment;
-    pipeline->blending.blendConstants[0] = 0.0f;
-    pipeline->blending.blendConstants[1] = 0.0f;
-    pipeline->blending.blendConstants[2] = 0.0f;
-    pipeline->blending.blendConstants[3] = 0.0f;
+        pipeline->blending[variant].sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        pipeline->blending[variant].pNext = NULL;
+        pipeline->blending[variant].logicOpEnable = VK_FALSE;
+        pipeline->blending[variant].logicOp = XUD_PIPELINE_LOGIC_OP;
+        pipeline->blending[variant].attachmentCount = 1u;
+        pipeline->blending[variant].pAttachments = &pipeline->blendAttachment[variant];
+        pipeline->blending[variant].blendConstants[0] = 0.0f;
+        pipeline->blending[variant].blendConstants[1] = 0.0f;
+        pipeline->blending[variant].blendConstants[2] = 0.0f;
+        pipeline->blending[variant].blendConstants[3] = 0.0f;
+    }
 
     /* --- dynamic state: the viewport and the scissor, set per frame by the frame loop below. --- */
     pipeline->dynamicStates[XUD_PIPELINE_VIEWPORT_STATE] = VK_DYNAMIC_STATE_VIEWPORT;
@@ -321,8 +339,14 @@ XudResult xud_pipeline_fill_layout_info(const XudDescriptor* descriptor, VkPipel
  * The pipeline create-info - pure, assembled from the rows above
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo) {
+XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, uint32_t variant, VkGraphicsPipelineCreateInfo* outCreateInfo) {
     if (outCreateInfo == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    /* The variant is the row of the batch's list this create-info is for, and a variant at or past
+       the count is refused rather than read off the end of the arrays - the same rule the batch's
+       own invariant check applies to the variant a draw row names. */
+    if (variant >= XUD_BATCH_VARIANT_COUNT) {
         return XUD_INVALID_ARG;
     }
     if ((pipeline == NULL) || (pipeline->layout == VK_NULL_HANDLE)) {
@@ -344,7 +368,7 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, VkGraphicsP
         || (pipeline->rasterizer.sType != VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO)
         || (pipeline->multisample.sType != VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO)
         || (pipeline->depthStencil.sType != VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO)
-        || (pipeline->blending.sType != VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
+        || (pipeline->blending[variant].sType != VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
         || (pipeline->dynamicState.sType != VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO)) {
         return XUD_UNSUPPORTED;
     }
@@ -361,7 +385,7 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, VkGraphicsP
     outCreateInfo->pRasterizationState = &pipeline->rasterizer;
     outCreateInfo->pMultisampleState = &pipeline->multisample;
     outCreateInfo->pDepthStencilState = &pipeline->depthStencil;
-    outCreateInfo->pColorBlendState = &pipeline->blending;
+    outCreateInfo->pColorBlendState = &pipeline->blending[variant];
     outCreateInfo->pDynamicState = &pipeline->dynamicState;
     outCreateInfo->layout = pipeline->layout;
 
@@ -386,6 +410,22 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, VkGraphicsP
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * Retiring the variant rows that got made - file-local, the ladder below and xud_pipeline_close()
+ * both call it
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_pipeline_destroy_rows(XudLoader* loader, const XudDevice* device, VkPipeline* ioCreated) {
+    uint32_t row = 0u;
+
+    for (row = 0u; row < XUD_BATCH_VARIANT_COUNT; row++) {
+        if (ioCreated[row] != VK_NULL_HANDLE) {
+            (void)loader->deviceTable.vkDestroyPipeline(device->device, ioCreated[row], NULL);
+            ioCreated[row] = VK_NULL_HANDLE;
+        }
+    }
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The create rung - the driver half
  *-----------------------------------------------------------------------------------------------*/
 
@@ -395,11 +435,14 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     XudShader* vertexShader = NULL;
     XudShader* fragmentShader = NULL;
     VkPipelineLayoutCreateInfo layoutInfo;
-    VkGraphicsPipelineCreateInfo pipelineInfo;
-    VkPipeline created = VK_NULL_HANDLE;
+    VkGraphicsPipelineCreateInfo pipelineInfo[XUD_BATCH_VARIANT_COUNT];
+    VkPipeline created[XUD_BATCH_VARIANT_COUNT] = { VK_NULL_HANDLE }; /* zeroed in full: only the
+                            rows a create call reached have a handle in them, and the ladder below
+                            retires the rows that did get made by skipping the ones that did not */
     VkPipelineLayout layout = VK_NULL_HANDLE;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
+    uint32_t variant = 0u;
 
     if ((outPipeline == NULL) || (*outPipeline != NULL)) {
         return XUD_INVALID_ARG;
@@ -508,29 +551,47 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     }
     pipeline->layout = layout;
 
-    result = xud_pipeline_fill_create_info(pipeline, &pipelineInfo);
-    if (result != XUD_OK) {
-        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
-        (void)xud_shader_close(&fragmentShader, device, loader);
-        (void)xud_shader_close(&vertexShader, device, loader);
-        free(pipeline);
-        return result;
+    /* The variant list's pipelines, created in variant order, one create call per variant, each
+       create-info assembled from the rows above so the create-info and the record are the same
+       bytes. ONE layout for the whole list (todo.md's D1, 2026-10-26): the rows differ only in
+       VkPipelineColorBlendAttachmentState, which is PIPELINE state, not interface state - the sets,
+       the bindings and the push range are identical across the list - so a second layout would be a
+       second record of one interface and every vkCmdBindDescriptorSets would have to know which of
+       two it names. The handles are created into a local array and recorded into the struct only
+       once the whole list exists, which is what lets the ladder below retire the rows that did get
+       made without reaching into the struct mid-create. */
+    for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
+        result = xud_pipeline_fill_create_info(pipeline, variant, &pipelineInfo[variant]);
+        if (result != XUD_OK) {
+            xud_pipeline_destroy_rows(loader, device, created);
+            (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
+            (void)xud_shader_close(&fragmentShader, device, loader);
+            (void)xud_shader_close(&vertexShader, device, loader);
+            free(pipeline);
+            return result;
+        }
+
+        /* vkCreateGraphicsPipelines takes an ARRAY of create-infos and an array of pipelines, with a
+           count: one pipeline here, so one row of each, and the row is the struct's own, which is
+           what makes the create-info the driver reads and the create-info recorded above it the same
+           bytes. pipelineCache VK_NULL_HANDLE is the spec's "no cache" form - a pipeline cache is a
+           disk cache decision this library does not take today. */
+        vk = loader->deviceTable.vkCreateGraphicsPipelines(
+            device->device, VK_NULL_HANDLE, 1u, &pipelineInfo[variant], NULL, &created[variant]);
+        result = xud_result_from_vk(vk);
+        if (result != XUD_OK) {
+            xud_pipeline_destroy_rows(loader, device, created);
+            (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
+            (void)xud_shader_close(&fragmentShader, device, loader);
+            (void)xud_shader_close(&vertexShader, device, loader);
+            free(pipeline);
+            return result;
+        }
     }
 
-    /* vkCreateGraphicsPipelines takes an ARRAY of create-infos and an array of pipelines, with a
-       count: one pipeline here, so one row of each, and the array is a frame temporary the driver
-       reads during the call. pipelineCache VK_NULL_HANDLE is the spec's "no cache" form - a
-       pipeline cache is a disk cache decision this library does not take today. */
-    vk = loader->deviceTable.vkCreateGraphicsPipelines(device->device, VK_NULL_HANDLE, 1u, &pipelineInfo, NULL, &created);
-    result = xud_result_from_vk(vk);
-    if (result != XUD_OK) {
-        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
-        (void)xud_shader_close(&fragmentShader, device, loader);
-        (void)xud_shader_close(&vertexShader, device, loader);
-        free(pipeline);
-        return result;
+    for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
+        pipeline->pipeline[variant] = created[variant];
     }
-    pipeline->pipeline = created;
 
     *outPipeline = pipeline;
     return XUD_OK;
@@ -545,6 +606,7 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
     XudResult closedVertex = XUD_INVALID_ARG;
     XudResult closedFragment = XUD_INVALID_ARG;
     XudResult first = XUD_OK;
+    uint32_t variant = 0u;
 
     if ((ioPipeline == NULL) || (*ioPipeline == NULL)) {
         return XUD_INVALID_ARG;
@@ -561,18 +623,20 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
         return XUD_UNSUPPORTED;
     }
 
-    /* The pipeline first, then the layout, then the modules: the pipeline names its layout and the
-       layout's modules are the only thing keeping them alive, so anything else leaves a handle
-       whose owner is already gone. A nil destroy row while the object is live is a refusal, and
-       the struct is not freed, because freeing it would leak the handles silently - the rule
-       xud_shader_close() and xud_swapchain_close() both state. */
-    if (victim->pipeline != VK_NULL_HANDLE) {
-        if (loader->deviceTable.vkDestroyPipeline == NULL) {
-            return XUD_UNSUPPORTED;
+    /* The pipelines first (every row of the variant list), then the layout, then the modules: the
+       pipelines name their layout and the layout's modules are the only thing keeping them alive,
+       so anything else leaves a handle whose owner is already gone. A nil destroy row while a row
+       of the list is live is a refusal, and the struct is not freed, because freeing it would leak
+       the handles silently - the rule xud_shader_close() and xud_swapchain_close() both state. */
+    for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
+        if (victim->pipeline[variant] != VK_NULL_HANDLE) {
+            if (loader->deviceTable.vkDestroyPipeline == NULL) {
+                return XUD_UNSUPPORTED;
+            }
+            break;
         }
-        loader->deviceTable.vkDestroyPipeline(device->device, victim->pipeline, NULL);
-        victim->pipeline = VK_NULL_HANDLE;
     }
+    xud_pipeline_destroy_rows(loader, device, victim->pipeline);
 
     if (victim->layout != VK_NULL_HANDLE) {
         if (loader->deviceTable.vkDestroyPipelineLayout == NULL) {
