@@ -520,8 +520,10 @@ static void xud_test_batch_gpu(void) {
         "re live together - a half-bound batch is not a state that comes back OK");
     xud_check(context->allocator->ringMemory == VK_NULL_HANDLE, "gpu-batch/ring-still-absent",
         "and the allocator's transient ring has NOT been created, which is the batch's own note read a"
-        "s a fact: the arena is static, so it is carved from the blocks, and nothing in this rung has "
-        "asked the ring for a byte - the frame loop is what will, one rung up");
+        "s a fact: the arena is static, so it is carved from the blocks rather than out of the ring, a"
+        "nd nothing in this rung has asked the ring for a byte - and the frame loop's per-frame unifo"
+        "rm copy landed since and did not want it either, for the same reason the arena did: a ring c"
+        "arve is bytes a later lap overwrites mid-frame");
 
     xud_check(xud_batch_check_invariant(batch) == XUD_OK, "gpu-batch/invariant-against-a-driver",
         "the settled decision's invariant holds against real VkBuffers, which is the half the headless check above could only assert about "

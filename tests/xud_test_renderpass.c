@@ -548,16 +548,19 @@ static void xud_test_renderpass_gpu(void) {
         "e-derived guess");
     xud_check(xud_allocator_stats(context->allocator, &blocks, &live, &bytes, &cursor) == XUD_OK, "gpu-renderpass/stats-answers",
         "the counters answer");
-    xud_check(blocks == 3u, "gpu-renderpass/three-blocks",
-        "THREE blocks now rather than the descriptor rung's one: the depth image's requirements (alignment 6"
-        "5536 on this driver) do not fit the block the uniform buffer was carved out of, so the image's bl"
-        "ock is a second VkDeviceMemory rather than a suballocation, and the batch rung below the render"
-        "er is a third - its six carves are small enough to share blocks, which is the suballocation hal"
-        "f of the repo's allocate-once rule seen from above");
-    xud_check(live == 8u, "gpu-renderpass/eight-live-ranges",
-        "eight live ranges over them: the uniform buffer's carve, the depth image's, and the batch's ar"
-        "ena plus its four streams and its index buffer, which is what a completed context owns now and"
-        " is the baseline every number in the allocator area is read as a delta on");
+    xud_check(blocks == 4u, "gpu-renderpass/four-blocks",
+        "FOUR blocks now rather than the descriptor rung's one: the depth image's requirements (alignme"
+        "nt 65536 on this driver) do not fit the block the uniform buffer was carved out of, so the imag"
+        "e's block is a second VkDeviceMemory rather than a suballocation, and the two host-visible ar"
+        "enas - the batch's and the descriptor's staging arena - are two more, because vkMapMemory map"
+        "s a VkDeviceMemory rather than a range and a carve inside a block someone else already mapped"
+        "cannot be mapped at all. The batch's five data buffers are the carves that do share a block,"
+        "which is the suballocation half of the repo's allocate-once rule seen from above");
+    xud_check(live == 9u, "gpu-renderpass/nine-live-ranges",
+        "nine live ranges over them: the uniform buffer's carve, the depth image's, the two arenas eac"
+        "ch of which is a whole block, and the batch's four streams plus its index buffer, which is wh"
+        "at a completed context owns now and is the baseline every number in the allocator area is rea"
+        "d as a delta on");
     xud_check(bytes >= pass->depthRange.size, "gpu-renderpass/bytes-count-the-image",
         "the reserved-bytes counter includes the image's own range, so the counter is a fact about the rows"
         " rather than an estimate");

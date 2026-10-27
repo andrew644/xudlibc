@@ -2,6 +2,128 @@
 
 Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed.
 
+## Steps complete (S18 The per-frame uniform update — a host-visible arena of its own block, the block written and copied every frame, `vkCmdBindDescriptorSets` for set 0 and the shader reading the set-0 `viewProj`, one step, landed as one commit, 2026-10-26)
+
+- [x] ~~**Batch consumers (part 2 of 4)**: the per-frame uniform copy (the `viewProj` row `xud_descriptor_fill_uniform_block()`
+    writes was touched by nothing today), **`vkCmdBindDescriptorSets`** for set 0, and the shader reading the **set-0
+    `viewProj`**~~ — **done 2026-10-26**. What stays open in the item, and stays in `todo.md`: `vkCmdPushConstants` and the
+    shader reading the **push-constant model matrix**, the **transparent** pipeline variant + the sorted-batch rule, and
+    the handle layer's `record`.
+
+  **The allocator gains a second acquire, and the reason one is not enough**: `xud_allocator_acquire_host_visible()`.
+  `vkMapMemory` maps a **`VkDeviceMemory`**, not a range, so a suballocated carve inside a block someone else already
+  mapped cannot be mapped at all — the validation layer states it as `VUID-vkMapMemory-memory-00678` and lavvk answers
+  the same rule as `VK_ERROR_MEMORY_MAP_FAILED` rather than forgiving it (probed here: with the batch's arena suballocated
+  out of a shared block, the map of it failed and the validation layer named that VUID; the same carve taken as a whole
+  block maps clean). So the one carve a rung maps has to own the block it is mapped in, and this is the repo's "allocate
+  once, suballocate always" rule read with its **one exception stated and the exception a Vulkan fact rather than a
+  policy**: suballocation is for the bytes a frame reads through a transfer, a host mapping is a whole-memory decision.
+  The new acquire shares every request-side guard and both decisions (the caps' memory type, this layer's block size)
+  with `xud_allocator_acquire()`; the difference is that there is **no free-list scan at all** — reusing a range would be
+  reusing a memory that may already carry a mapping, which is the refusal above — the range handed back is the **whole
+  block**, and it is never split. `xud_allocator.h`'s doc comment says all of this beside the declaration.
+
+  **Two arenas spend that exception, and both were already in the tree**: the batch's staging arena (`xud_batch_create_staging()`
+  switched from `xud_allocator_acquire()` to the host-visible one — a change to the S16 rung, stated in its own comment
+  there rather than left to the diff) and the descriptor rung's new arena for set 0's block. A completed context therefore
+  owns **four** `VkDeviceMemory` and **nine** live ranges, not three and eight, and every block/range count in the
+  descriptor, render-pass, core and allocator areas' GPU halves moved with it (the allocator area's numbers stay read as
+  a **delta on the baseline** for that reason, which is what kept the one stale count from being a magic number).
+
+  **The descriptor rung owns the arena, not the frame loop**: `XudDescriptor` gains `uniformStagingBuffer`/`uniformStagingInfo`/
+  `uniformStagingRange`/`uniformStagingBindOffset`/`uniformStagingMapped`/`uniformStagingMappedLive` and the upload's one
+  `VkBufferCopy` region, plus `XUD_DESCRIPTOR_STAGING_USAGE` (`TRANSFER_SRC` only — the arena is read by the copy and never
+  by a shader stage, and the assert beside it is that its usage is **disjoint** from set 0's uniform buffer's, so a buffer
+  that asked for both would say nothing about which side it was) and `XUD_DESCRIPTOR_UPLOAD_REGION_COUNT` **1** — one
+  region carries the whole block, which is the opposite of the batch's five-call shape, where the five destinations are
+  five buffers. Four new rungs: `xud_descriptor_host_visible_bits()` (the AND of every caps `memoryTypes` row carrying
+  `VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT`, a **preference** mask handed to the allocator, same shape as `xud_batch_host_visible_bits()`
+  one rung over — zero means the driver has no host-visible type at all and is reported, not worked around), `xud_descriptor_fill_staging_info()`
+  (size = one block, no headroom, because the only thing ever written into it is one `XudFrameUniformRow`), `xud_descriptor_fill_upload_info()`
+  (one region at (0, 0, the block's size) — both buffers are exactly one block long and the block starts at the start of
+  each, and the extent is the block's size rather than either buffer's, which is the rule `vkCmdCopyBuffer` states: a region
+  must fit inside **both**) and `xud_descriptor_write_block()` (the ONE host write: a `memcpy` of the block into the mapped
+  arena, no driver call, so the block's layout stays testable with no device present up to the one guard it runs — an
+  unmapped arena is a state this rung refuses rather than a write into NULL). `xud_descriptor_upload()` is the driver half
+  of the copy: ONE `vkCmdCopyBuffer` carrying the one region, and it fills the rows itself rather than trusting the bring-up,
+  which is what lets the headless run call the assembly on its own and the driver still get the rows it asserted.
+
+  **The order, both ways, is one order**: the arena comes **last** in `xud_descriptor_open()` because it is the only object
+  of the six that nothing else in this rung names, and putting it last is what makes the teardown below the exact reverse
+  rather than a second order to state. `xud_descriptor_retire()` therefore **unmaps FIRST**, above every destroy — this is
+  the one place a descriptor dies and the repo's rule is that a mapped range has a matching unmap; a destroy of a buffer
+  whose memory is still mapped is a destroy over a mapping the driver still holds. `vkUnmapMemory` returns void, so the
+  handle is read into a local, the live bit cleared, and only then handed over (the zero-state-before-the-call rule every
+  void row in this tree follows). The caps gate that can now refuse the bring-up is `XUD_UNSUPPORTED` for "no host-visible
+  memory type exists to bind the arena to", and the chosen type is re-checked for the bit **after** `xud_allocator_select_memory_type()`
+  rather than trusted from the mask.
+
+  **The frame loop** (`xud_frame_draw` gains the descriptor argument after the batch, and `XudRenderer` holds a borrowed
+  pointer to the context's descriptor for the same outlive rule the batch's note gives — the pipeline below was built
+  against **this** record's two set layouts and the loop binds **this** record's set 0): set 0's block is uploaded **every
+  frame, whether or not the batch has content**, because the pipeline's fragment stage reads this block and a frame that
+  never uploaded it is a frame whose shader reads a buffer that was never written. The write and the copy are the descriptor
+  rung's; what belongs to this rung is the barriers and the bind. ONE `HOST_WRITE → TRANSFER_READ` barrier now covers
+  **both** arenas' host writes — a barrier is a scope, not a buffer — which is why the batch's own copy block no longer
+  records a second one, and the block's copy sits after the has-content block rather than inside it because the block
+  **always** has content. The barrier that makes that copy's result visible is a **second** `TRANSFER_WRITE` barrier, and
+  the split is load-bearing: the spec's supported-access-type rule binds an access bit to the stages that can perform it,
+  `VK_ACCESS_UNIFORM_READ_BIT` belongs at the two shader stages and `VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT` at the input and
+  vertex stages, and one barrier naming both access bits with one stage mask naming all three is refused. The new macros
+  `XUD_FRAME_UNIFORM_READ_STAGES`/`XUD_FRAME_UNIFORM_READ_ACCESS` are that pair, and the stages are `XUD_DESCRIPTOR_BUFFER_STAGES`
+  seen from the other side of the ladder. `vkCmdBindDescriptorSets` is recorded beside the other two binds, outside the
+  render pass, against **`pipeline->layout`** — the layout the pipeline was created with is the layout the set was allocated
+  against, so naming it rather than a layout of this rung's is what makes the two agree rather than two records that happen
+  to match — `firstSet` 0, count 1 (`XUD_FRAME_FIRST_SET`/`XUD_FRAME_SET_COUNT`), set 1 staying the texture step's.
+
+  **The shader**: `shaders/solid.vert` declares `layout(binding = 0, std140) uniform XudFrameBlock` and `gl_Position` is
+  now `xudFrame.viewProj * vec4(inPos, 1.0f)`. The member order and types are the C layout of `XudFrameUniformRow` read
+  against std140 — `mat4` at 0 (64 B), `vec3` at 64, `float` at 76, `vec4` at 80 and 96 (both already 16-aligned), `uint`
+  at 112 and 116 — which is byte-for-byte the struct in `xud_descriptor.h`, and the assert beside that struct is the same
+  120 from the other side. The push-constant model matrix is still unread and the layout's push range still declared-but-unread.
+
+  **Tests**: `tests/xud_test_descriptor.c`'s pure half gains the arena's create-info (stamped, one block long, `TRANSFER_SRC`
+  only, and disjoint from the buffer's usage), the upload's one region (both offsets 0, extent the block's size — assembled
+  against the synthetic pair of stand-in handles, which is what makes the GPU run's copy a check against a row the headless
+  run asserted), the host write's refusal (`XUD_INVALID_ARG` on NULL, `XUD_UNSUPPORTED` with no arena mapped) and the host-visible
+  preference read off a synthetic caps in all three shapes (the mask names only the host-visible row, a caps with no such row
+  gives an **empty mask** rather than a failure — the refusal belongs where the arena is acquired, because an empty mask
+  narrows the choice to nothing). Its GPU half reads the arena back **after** the bring-up: live over its own carve, the
+  carve is the whole block, mapped exactly once for the rung's life, and `xud_descriptor_write_block()` really put the block's
+  bytes in it — the read-back is the copy's source bytes, which is what makes the upload's one region a fact rather than an
+  intent. `tests/xud_test_frame.c` gains the set-and-block liveness and the arena's mapped state **before** the first frame,
+  the new `xud_frame_draw` refusal (no descriptor is a bad argument, not a draw of a pipeline whose block was never written),
+  the block's identity before the loop, and **after** the loop that the frames unmapped nothing — the arena is the one mapping
+  the descriptor's own close will unmap, and a per-frame map/unmap pair would have left the flag clear. `tests/xud_test_allocator.c`
+  gains the new acquire's headless guards (the same request-side refusals as the suballocating one, and the same unbound-loader
+  answer, "a block it creates would be a block it cannot free") and its GPU half the acquire against the **real** caps: the
+  range is a whole block, starts at 0, the block count moves by exactly one and the reserved bytes move by the whole block
+  rather than by the 2,048 that were asked for — the cost of the exception stated as a fact. `tests/xud_test_core.c` and
+  `tests/xud_test_renderpass.c` move their block/range counts with the rest.
+
+  **Bar met, dated one-liner**: headless **2283 checks / 0 failures** (was 2263) and `XUD_GPU_TESTS=1` **2885 / 0** (was
+  2848), under gcc **and** under `-DCMAKE_C_COMPILER=clang`, validation-clean with `VK_INSTANCE_LAYERS` unset and forced
+  to `VK_LAYER_KHRONOS_validation` (still exactly the diagnostics layer's own synthetic `ERROR/validation` + `WARNING/validation`
+  pair in either run and nothing else — the map/unmap order, the two-barrier split and the bind all pass the layer, and the
+  `VUID-vkMapMemory-memory-00678` refusal the new acquire exists against is **not** raised by any of them), `-DXUD_SANITIZERS=ON`
+  green headless (**72 B / 3 allocations**, byte-for-byte S16's and S17's numbers) and GPU **1336 B / 68** — reporting **only**
+  the external allocations the S7–S17 blocks record, and the two stacks that name an xud source are the same 32 B inside
+  `vkCreateDevice` (`xud_device.c:374`, the validation layer's) and the same 8 B in `libdecor_new` (`xud_window.c:156`, GLFW's)
+  every other area reports; no new leak stack names `xud_descriptor_*`/`xud_allocator_*`/`xud_frame_*`, and the arena's block
+  is freed by `xud_allocator_close()` under ASan; with `ASAN_OPTIONS=detect_leaks=0` answering 2283 / 2885 with 0 failures and
+  no `runtime error` line; `./scripts/format.sh --check` is green over the tree; `ar -t build/libxud.a` stays **40** objects
+  (no new TU this step — the arena is the descriptor rung's own half and the allocator's own half); `nm -u` lists no `vk*`/`glfw*`
+  symbol and `ldd` lists no `libvulkan`/`libglfw`/`libGL`/`libEGL` for either executable (the four Wayland libs GLFW links PUBLIC
+  are still the only window-system libs present).
+
+  **Honest boundary**: the per-frame update is live end to end — the block is written, copied, bound and read — but the block's
+  contents are still the identity `xud_descriptor_fill_uniform_block()` writes, because a camera that is not identity is the
+  camera/transform step's to choose; the push-constant range of the same layout is still declared-and-unread, and pushing a
+  range a stage does not read is a call that changes nothing about what is drawn, so it stays the next step's; the transient
+  **ring** still has no caller outside the allocator area's own test, and the per-frame uniform copy is **not** what wanted
+  it — the arena is a static carve because a ring carve is bytes a later lap overwrites mid-frame, and these bytes have to
+  survive from the moment the host wrote them to the moment the copy read them.
+
 ## Steps complete (S17 The batch's consumers — the pipeline's vertex input names the batch's four streams, the frame loop uploads / binds / draws them, the indexed multi-draw replay and the per-frame reset, one step, landed as one commit, 2026-10-26)
 
 - [x] ~~**Batch consumers (part 1 of 2)**: the pipeline's vertex-input state, the frame loop's indexed draw and its

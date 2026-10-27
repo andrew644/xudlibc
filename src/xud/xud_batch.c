@@ -637,10 +637,12 @@ static XudResult xud_batch_create_staging(
        at one lap is overwritten by a later one, and this arena holds the frame's bytes from the
        moment the appends wrote them to the moment the copies read them. A static carve is the one
        that lives that long. It is the repo's "allocate once, suballocate always" rule read at the
-       buffer that made it largest: 2,688 B of arena is one carve out of a block, not one vkAlloc
-       ateMemory per stream.
+       buffer that made it largest - with the one exception that rule has: the arena is MAPPED, an
+       d a mapping is per-VkDeviceMemory rather than per-range, so the acquire is the host-visible
+       one and the arena owns the block it lives in. 2,688 B of arena is one block, not one vkAllo
+       cateMemory per stream.
     */
-    result = xud_allocator_acquire(&batch->stagingRange, alloc, loader, device, caps, &narrowed);
+    result = xud_allocator_acquire_host_visible(&batch->stagingRange, alloc, loader, device, caps, &narrowed);
     if (result != XUD_OK) {
         loader->deviceTable.vkDestroyBuffer(device->device, batch->stagingBuffer, NULL);
         batch->stagingBuffer = VK_NULL_HANDLE;

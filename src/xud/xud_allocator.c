@@ -9,9 +9,12 @@
  *         headless-test rule asks for: the free list, the type rule, the create-info assembly and
  *         the cursor arithmetic call no driver function and are exercised by the default test run
  *         against a synthetic allocator, exactly as the physical layer's pure half is exercised
- *         against a synthetic caps struct. Only xud_allocator_acquire(), xud_allocator_ring_acqui
- *         re() and xud_allocator_close() touch the driver, and every one of them runs its guards
- *         before the call.
+ *         against a synthetic caps struct. Only xud_allocator_acquire(), xud_allocator_acquire_hos
+ *         t_visible(), xud_allocator_ring_acquire() and xud_allocator_close() touch the driver, and
+ *         every one of them runs its guards before the call. The second acquire is the one the
+ *         mapped carves need: vkMapMemory maps a VkDeviceMemory rather than a range, so a mapped
+ *         carve owns its block and is never suballocated - see the note above the definition and
+ *         the doc comment above the declaration for the VUID and the driver's answer.
  ***********************************************************************************************/
 
 #include "xud_allocator.h"
@@ -559,6 +562,88 @@ XudResult xud_allocator_acquire(XudMemoryRange* outRange, XudAllocator* alloc, X
     }
 
     return xud_allocator_take_range(alloc, freeRow, freeOffset, requirements->size, outRange);
+}
+
+/* The acquire a host-visible carve makes, and the reason a second acquire exists at all: vkMapMem
+   ory maps a VkDeviceMemory, not a range, and the validation layer here refuses a second map of a
+   memory that is already mapped (VUID-vkMapMemory-memory-00678, and lavvk answers it as VK_ERROR_M
+   EMORY_MAP_FAILED rather than forgiving it). A suballocated carve inside a block someone else alr
+   eady mapped is therefore a carve that cannot be mapped, so the one carve a rung maps has to own
+   the block it is mapped in. That is the repo's "allocate once, suballocate always" rule with its
+   one exception stated: suballocation is for the bytes a frame reads through a transfer, and a hos
+   t mapping is a whole-memory decision, so it takes a block of its own and is never split.
+ */
+XudResult xud_allocator_acquire_host_visible(XudMemoryRange* outRange, XudAllocator* alloc, XudLoader* loader, const XudDevice* device,
+    const XudDeviceCaps* caps, const VkMemoryRequirements* requirements) {
+    VkMemoryAllocateInfo info;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    VkDeviceSize blockWanted = 0u;
+    uint32_t typeIndex = 0u;
+    uint32_t blockIndex = 0u;
+    uint32_t rangeRow = 0u;
+    XudResult grown = XUD_OK;
+
+    if ((outRange == NULL) || (alloc == NULL) || (loader == NULL) || (device == NULL) || (caps == NULL) || (requirements == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The same request-side guards xud_allocator_acquire() runs before its driver call, and the
+       same two decisions: the type the caps allow and the block this layer would create. The two
+       acquires differ in where the bytes come from, never in what they are.
+     */
+    if (requirements->size == 0u) {
+        return XUD_INVALID_ARG;
+    }
+    if ((requirements->alignment == 0u) || (requirements->alignment > (VkDeviceSize)XUD_ALLOCATOR_ALIGN_MAX)) {
+        return XUD_INVALID_ARG;
+    }
+    if (requirements->memoryTypeBits == 0u) {
+        return XUD_UNSUPPORTED;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((loader->deviceTable.vkAllocateMemory == NULL) || (loader->deviceTable.vkFreeMemory == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+    if (xud_allocator_select_memory_type(caps, requirements, &typeIndex) != XUD_OK) {
+        return XUD_UNSUPPORTED;
+    }
+    if (xud_alloc_block_size(requirements->size, &blockWanted) == false) {
+        return XUD_OUT_OF_RESOURCES;
+    }
+
+    /* No free-list scan here at all: the range below is the whole block, so there is nothing to
+       split and nothing to reuse - and reusing a range would be reusing a memory that may already
+       carry a mapping, which is the refusal stated above.
+     */
+    if ((xud_alloc_reserve_blocks(alloc, 1u) != XUD_OK) || (xud_alloc_reserve_ranges(alloc, 1u) != XUD_OK)) {
+        return XUD_OUT_OF_RESOURCES;
+    }
+
+    grown = xud_allocator_fill_allocate_info(&info, typeIndex, blockWanted);
+    if (grown != XUD_OK) {
+        return grown;
+    }
+
+    grown = xud_result_from_vk(loader->deviceTable.vkAllocateMemory(device->device, &info, NULL, &memory));
+    if (grown != XUD_OK) {
+        return grown;
+    }
+
+    blockIndex = alloc->blockCount;
+    alloc->blockCount = blockIndex + 1u;
+    alloc->blocks[blockIndex].memory = memory;
+    alloc->blocks[blockIndex].size = blockWanted;
+    alloc->blocks[blockIndex].memoryTypeIndex = typeIndex;
+
+    rangeRow = xud_alloc_take_range_row(alloc);
+    alloc->ranges[rangeRow].blockIndex = blockIndex;
+    alloc->ranges[rangeRow].offset = 0u;
+    alloc->ranges[rangeRow].size = blockWanted;
+    alloc->ranges[rangeRow].live = 0u;
+
+    return xud_allocator_take_range(alloc, rangeRow, 0u, blockWanted, outRange);
 }
 
 XudResult xud_allocator_release(XudAllocator* alloc, const XudMemoryRange* range) {

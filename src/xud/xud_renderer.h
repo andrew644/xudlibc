@@ -84,6 +84,14 @@ struct XudRenderer {
                         ive it - and the frame loop uploads, binds and draws them every frame. */
     XudPipeline* pipeline; /* owned: the one graphics pipeline of this rung, with its layout
                               and its two VkShaderModules inside it */
+    XudDescriptor* descriptor; /* NOT owned: the descriptor rung the context below this one
+                                        created and closes, held here because this rung's pipelin
+                                        e was built against THIS descriptor's two set layouts and
+                                        the frame loop binds THIS descriptor's set 0 every frame.
+                                        The same rule the batch's note above gives: the owner of
+                                        this record must outlive this renderer, and closing the t
+                                        wo in the other order is a pipeline layout naming a freed
+                                        one. */
     XudRenderPass* renderPass; /* owned: the one explicit VkRenderPass of the repo's settled
                                   render-pass decision */
     XudFramebufferArray* framebuffers; /* owned: one VkFramebuffer (and one VkImageView) per
@@ -121,7 +129,7 @@ struct XudRenderer {
 /// and four attributes, or the swapchain has no chosen format. XUD_OUT_OF_MEMORY when a host
 /// allocation of one of the rungs fails.
 XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    const XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain);
+    XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain);
 
 /// Driver: one frame through the four rungs this rung owns - the caller above names no pipeline,
 /// no pass, no framebuffer array and no fence, which is what keeps the whole Vulkan half of the

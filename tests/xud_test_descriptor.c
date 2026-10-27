@@ -3,9 +3,10 @@
  *   xud_test_descriptor.c - the descriptor-layout rung: two set layouts, a pool, set 0, the uniform buffer
  *
  *   Owns : the caps gate that refuses rather than shrinks a layout, the two set layouts, the push range, the pool, set 0's allocate info,
- * the buffer and the write that binds it, the uniform block's bytes - and the GPU half that creates all of it against a real device. Layer:
- * tests. Sees xud_descriptor.h and xud_allocator.h: the uniform buffer is created from memory the allocator owns, which is the ownership
- * order the teardown below makes this rung die in.
+ * the buffer, the write that binds it, the staging arena and the upload's one-region copy row, the uniform block's bytes - and the GPU
+ * half that creates all of it against a real device, the arena mapped once and the block read back out of it. Layer: tests. Sees xud_
+ * descriptor.h and xud_allocator.h: the uniform buffer and the staging arena are both created from memory the allocator owns, which is
+ * the ownership order the teardown below makes this rung die in.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -14,7 +15,7 @@
 
 #include "xud.h" /* Required for: XudResult, XUD_VERSION, the XUD_GPU_TESTS gate */
 #include "xud_allocator.h" /* Required for: XudMemoryRange, the range the buffer is bound to, and the stats the GPU half reads back */
-#include "xud_batch.h" /* Required for: XudBatch, the batch's six static carves the stats below count */
+#include "xud_batch.h" /* Required for: XudBatch, the batch's carves and arena the stats below count */
 #include "xud_core.h" /* Required for: XudContext, the owner the GPU half runs against */
 #include "xud_descriptor.h" /* Required for: XudDescriptor, the caps gate, the eight fill rungs and the open/close pair */
 #include "xud_physical.h" /* Required for: XudDeviceCaps, the limits every gate is read off */
@@ -38,6 +39,7 @@ static void xud_test_descriptor_pure(void) {
     uint64_t fakeLayoutHandle = 0x4200u;
     uint64_t fakeSetHandle = 0x4400u;
     uint64_t fakeBufferHandle = 0x4500u;
+    uint64_t fakeStagingHandle = 0x4600u;
     uint32_t row = 0u;
 
     memset(&caps, 0, sizeof(caps));
@@ -308,6 +310,70 @@ static void xud_test_descriptor_pure(void) {
     for (row = 0u; row < XUD_DESCRIPTOR_SET_COUNT; row++) {
         xud_check(d.setLayouts[row] == VK_NULL_HANDLE, "descriptor/empty-layout", "and no set layout");
     }
+    xud_check((d.uniformStagingBuffer == VK_NULL_HANDLE) && (d.uniformStagingMapped == NULL) && (d.uniformStagingMappedLive == 0u),
+        "descriptor/empty-arena",
+        "and no staging arena, mapped or unmapped - the arena is created last, so a bring-up that failed part-way up never has one");
+
+    /* The staging arena's create-info and the upload's one region, assembled here with no device in
+       sight. These two are the pair the GPU run's arena and copy are checked against, and the rule
+       the repo settles is that the arena is NOT ring memory: a ring carve is a batch whose bytes a
+       later lap overwrites mid-frame, and the block's bytes have to survive from the host write to
+       the copy that reads them.
+    */
+    xud_descriptor_fill_staging_info(&d);
+    xud_check(d.uniformStagingInfo.sType == VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO, "descriptor/staging-stamped",
+        "the arena's create-info is stamped");
+    xud_check(d.uniformStagingInfo.size == XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE, "descriptor/staging-size-one-block",
+        "the arena is exactly one block long, because that is all a frame ever writes into it");
+    xud_check(d.uniformStagingInfo.usage == XUD_DESCRIPTOR_STAGING_USAGE, "descriptor/staging-usage-src-only",
+        "and it is a transfer SOURCE and nothing else - the arena is read by the copy, never by the shader");
+    xud_check((d.uniformStagingInfo.usage & XUD_DESCRIPTOR_BUFFER_USAGE) == 0u, "descriptor/staging-not-uniform",
+        "so the arena never claims the usage the buffer it feeds claims, which is what lets both live in one allocator");
+
+    /* The two buffers the upload reads between have to exist for its row to be assembled at all,
+       so the synthetic record carries the pair of stand-ins this area uses everywhere else above
+       the gate - and the row below is then the one the GPU run's copy is checked against.
+    */
+    d.uniformBuffer = (VkBuffer)&fakeBufferHandle;
+    d.uniformStagingBuffer = (VkBuffer)&fakeStagingHandle;
+
+    xud_descriptor_fill_upload_info(&d);
+    xud_check(d.uploadRegion.srcOffset == 0u, "descriptor/upload-src-at-zero", "the region starts at the arena's start");
+    xud_check(d.uploadRegion.dstOffset == 0u, "descriptor/upload-dst-at-zero", "and at the buffer's");
+    xud_check(d.uploadRegion.size == XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE, "descriptor/upload-extent-one-block",
+        "and is one block long, which is the only extent that fits inside both");
+
+    /* The one host write, refused rather than performed: an arena that is not mapped is a state this
+       rung reports, and the headless run has no arena at all, so this is the refusal the GPU run's
+       success is the other half of.
+    */
+    xud_check(xud_descriptor_write_block(NULL) == XUD_INVALID_ARG, "descriptor/write-block-null", "is refused");
+    xud_check(xud_descriptor_write_block(&d) == XUD_UNSUPPORTED, "descriptor/write-block-no-arena",
+        "with no arena mapped - the struct above is the empty one, so the refusal is the unmapped arena rather than a missing argument");
+
+    /* The host-visible preference, read off the caps rather than assumed. The mask is what narrows
+       the allocator's choice; the chosen type is still checked for the bit before anything maps it,
+       which is the half the GPU run reads.
+    */
+    {
+        XudDeviceCaps caps;
+        uint32_t bits = 0u;
+        memset(&caps, 0, sizeof(caps));
+        caps.memoryProperties.memoryProperties.memoryTypeCount = 2u;
+        caps.memoryProperties.memoryProperties.memoryTypes[0u].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        caps.memoryProperties.memoryProperties.memoryTypes[1u].propertyFlags
+            = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+        xud_check(xud_descriptor_host_visible_bits(&caps, NULL) == XUD_INVALID_ARG, "descriptor/host-visible-null-out", "is refused");
+        xud_check(xud_descriptor_host_visible_bits(NULL, &bits) == XUD_INVALID_ARG, "descriptor/host-visible-no-caps", "is refused");
+        xud_check(xud_descriptor_host_visible_bits(&caps, &bits) == XUD_OK, "descriptor/host-visible-ok", "as queried");
+        xud_check(bits == 0x00000002u, "descriptor/host-visible-mask",
+            "and the mask names only the type the caps mark host-visible, which is a read of the caps rather than a constant");
+        caps.memoryProperties.memoryProperties.memoryTypes[1u].propertyFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        xud_check(xud_descriptor_host_visible_bits(&caps, &bits) == XUD_OK, "descriptor/host-visible-none-is-empty",
+            "and a device with no host-visible type gives an empty mask rather than a failure - the refusal belongs where the arena is "
+            "acquired, because an empty mask narrows the choice to nothing");
+        xud_check(bits == 0u, "descriptor/host-visible-mask-empty", "and the mask really is empty");
+    }
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -401,6 +467,30 @@ static void xud_test_gpu_descriptor(void) {
     xud_check(context->descriptor->writeInfo.dstSet == context->descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME],
         "gpu-desc/write-targets-set-0", "and the set it wrote is the set this rung allocated");
 
+    /* The staging arena the upload path needs, read back after the bring-up rather than before it:
+       a host-visible carve of its own, mapped once for the rung's whole life rather than per frame,
+       which is the batch rung's rule seen from the block's side of the ladder - and the block's own
+       bytes sitting in it, which is what the frame loop's copy has to read.
+     */
+    xud_check((context->descriptor->uniformStagingBuffer != VK_NULL_HANDLE)
+            && (context->descriptor->uniformStagingRange.memory != VK_NULL_HANDLE),
+        "gpu-desc/arena-live", "the staging buffer exists over its own carve");
+    xud_check(context->descriptor->uniformStagingRange.size >= XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE, "gpu-desc/arena-owns-its-block",
+        "and the carve is the whole block rather than the block's own size, which is the one place the "
+        "repo's allocate-once rule spends a block of its own - a mapping is per-VkDeviceMemory, so a "
+        "carve that is mapped cannot share a block with one that is mapped too");
+    xud_check((context->descriptor->uniformStagingMapped != NULL) && (context->descriptor->uniformStagingMappedLive == 1u),
+        "gpu-desc/arena-mapped-open",
+        "and the arena is mapped exactly once for the rung's life, which is the rule that keeps a pe"
+        "r-frame map out of the frame loop");
+    xud_check((xud_descriptor_write_block(context->descriptor) == XUD_OK)
+            && (memcmp(context->descriptor->uniformStagingMapped, &context->descriptor->uniformBlock, XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE)
+                == 0),
+        "gpu-desc/arena-holds-the-block",
+        "and the one host write put the block's bytes in it, which is the only way a host-visible mapp"
+        "ing can be read back at all - and the read-back is the copy's source bytes, which is what mak"
+        "es the upload's one region a fact rather than an intent");
+
     /* The push row survived the bring-up rather than being left at zero, which is the shape the val
        idation layer reports as a hard error (stageFlags zero, size zero) rather than something the
        driver forgives.
@@ -430,13 +520,15 @@ static void xud_test_gpu_descriptor(void) {
      */
     xud_check(
         xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytes, &cursor) == XUD_OK, "gpu-desc/stats-answers", "answers");
-    xud_check(blockCount == 3u, "gpu-desc/three-blocks",
-        "three VkDeviceMemory: the descriptor's uniform buffer, the render pass's depth image (the firs"
+    xud_check(blockCount == 4u, "gpu-desc/four-blocks",
+        "four VkDeviceMemory: the descriptor's uniform buffer, the render pass's depth image (the firs"
         "t thing in this tree that asked for an IMAGE's requirements, whose alignment is not a buffer's"
-        ") and the batch's six carves, which do not need a block of their own");
-    xud_check(liveCount == 8u, "gpu-desc/eight-live-ranges",
-        "eight live ranges over them: the two above plus the batch's arena, its four streams and its i"
-        "ndex buffer, which is what a completed context owns now");
+        ") and the two host-visible arenas, this rung's staging arena and the batch's, which are block"
+        "s of their own because a mapping is per-VkDeviceMemory rather than per-range");
+    xud_check(liveCount == 9u, "gpu-desc/nine-live-ranges",
+        "nine live ranges over them: the uniform buffer's carve, the depth image's, the two arenas eac"
+        "ch of which is a whole block, and the batch's four streams plus its index buffer, which is wh"
+        "at a completed context owns now");
     {
         uint32_t stream = 0u;
         VkDeviceSize batchCarves = 0u;
@@ -445,7 +537,9 @@ static void xud_test_gpu_descriptor(void) {
         }
         batchCarves += context->renderer->batch->stagingRange.size;
         batchCarves += context->renderer->batch->indexRange.size;
-        xud_check(bytes == (context->descriptor->uniformRange.size + context->renderer->renderPass->depthRange.size + batchCarves),
+        xud_check(bytes
+                == (context->descriptor->uniformRange.size + context->descriptor->uniformStagingRange.size
+                    + context->renderer->renderPass->depthRange.size + batchCarves),
             "gpu-desc/bytes-are-every-carve",
             "the reserved bytes are exactly every carve added up, which is what makes the counter a fa"
             "ct rather than an estimate - and the batch's six are in that sum, so the rung below this o"

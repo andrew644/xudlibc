@@ -364,6 +364,19 @@ static void xud_test_allocator_pure(void) {
         "the rows must be this device's rows, and a handle-less device fails the bound check before any row is read");
     xud_check(range.memory == VK_NULL_HANDLE, "allocator/acquire-refused-untouched", "a refusal leaves the out-range as it was");
 
+    /* The host-visible acquire, headless: the same request-side guards as the suballocating one, an
+       d the same refusal for a loader that is not bound to the device - which is the pair that mak
+       es the GPU run's arena a fact rather than a hope, since the only thing that differs between
+       the two acquires is where the bytes come from.
+     */
+    xud_check(xud_allocator_acquire_host_visible(&range, NULL, &loader, &device, &caps, &ask) == XUD_INVALID_ARG,
+        "allocator/host-visible-null-alloc", "is refused");
+    xud_check(xud_allocator_acquire_host_visible(&range, alloc, &loader, &device, &caps, NULL) == XUD_INVALID_ARG,
+        "allocator/host-visible-no-requirements", "is refused");
+    xud_check(xud_allocator_acquire_host_visible(&range, alloc, &loader, &device, &caps, &ask) == XUD_UNSUPPORTED,
+        "allocator/host-visible-unbound-loader", "and so is this one, because a block it creates would be a block it cannot free");
+    xud_check(range.memory == VK_NULL_HANDLE, "allocator/host-visible-refused-untouched", "and the out-range is left as it was");
+
     xud_check(xud_allocator_ring_acquire(&range, NULL, &loader, &device, &caps, 64u, 256u, 1u) == XUD_INVALID_ARG,
         "allocator/ring-null-alloc", "is refused");
     xud_check(xud_allocator_ring_acquire(&range, alloc, &loader, &device, &caps, 0u, 256u, 1u) == XUD_INVALID_ARG,
@@ -421,6 +434,7 @@ static void xud_test_gpu_allocator(void) {
     XudMemoryRange big;
     XudMemoryRange reuse;
     XudMemoryRange refused;
+    XudMemoryRange arena;
     XudMemoryRange ring1;
     XudMemoryRange ring2;
     XudMemoryRange ring3;
@@ -439,6 +453,10 @@ static void xud_test_gpu_allocator(void) {
     uint32_t baseBlocks = 0u;
     uint32_t typeIndex = 0u;
     uint32_t heap = 0u;
+    uint32_t blocksBeforeHostVisible = 0u;
+    uint32_t blocksAfterHostVisible = 0u;
+    VkDeviceSize bytesBeforeHostVisible = 0u;
+    VkDeviceSize bytesAfterHostVisible = 0u;
     XudResult result = XUD_OK;
 
     memset(&small1, 0, sizeof(small1));
@@ -466,23 +484,28 @@ static void xud_test_gpu_allocator(void) {
     }
 
     /* The context's own bring-up already opened the descriptor rung, the render pass below the ren
-       derer AND the batch rung below the renderer, and those three carved eight ranges out of three
+       derer AND the batch rung below the renderer, and those three carved nine ranges out of four
        blocks: the per-frame uniform buffer is the first request the allocator ever saw (alignment 2
        56, so it sits in the 64 KiB block this layer opens first), the depth image is the second - i
        ts requirements ask for an alignment of 65536 on this driver, which no hole in the first bloc
        k can satisfy, so the image's block is a second VkDeviceMemory rather than a suballocation -
-       and the batch's arena plus its four streams and its index buffer are six more, small enough th
-       at they share blocks and need one more block only once the holes run out. Every number below i
-       s therefore read as a delta on this baseline rather than as a constant, which is what keeps th
-       e rung's rules about what moved rather than about absolute offsets.
+       and the batch's arena plus its four streams and its index buffer plus the descriptor's stagin
+       g arena are seven more, small enough that they share blocks and need one more block only once
+       the holes run out. TWO of those nine are not suballocations at all but whole blocks of their
+       own - the batch's arena and the descriptor's - because vkMapMemory maps a VkDeviceMemory rat
+       her than a range, so a carve that is mapped cannot share a block with one that is mapped too.
+       Every number below is therefore read as a delta on this baseline rather than as a constant,
+       which is what keeps the rung's rules about what moved rather than about absolute offsets.
      */
     xud_check(xud_allocator_stats(context->allocator, &baseBlocks, &baseLive, &baseBytes, &cursorBefore) == XUD_OK,
         "gpu-alloc/baseline-stats", "answers at the context's own state");
-    xud_check(baseBlocks == 3u, "gpu-alloc/baseline-three-blocks",
-        "three blocks: the descriptor rung's uniform buffer, the render pass's depth image (the first t"
+    xud_check(baseBlocks == 4u, "gpu-alloc/baseline-four-blocks",
+        "four blocks: the descriptor rung's uniform buffer, the render pass's depth image (the first t"
         "hing that ever asked for an IMAGE's requirements rather than a buffer's, and an image's align"
-        "ment is not a buffer's) and one more block the batch's six carves outgrew a hole in");
-    xud_check(baseLive == 8u, "gpu-alloc/baseline-eight-live", "and eight live ranges, those eight carves");
+        "ment is not a buffer's) and the two host-visible arenas - the batch's and the descriptor's st"
+        "aging arena - which are blocks of their own because vkMapMemory maps a VkDeviceMemory rather"
+        "than a range");
+    xud_check(baseLive == 9u, "gpu-alloc/baseline-nine-live", "and nine live ranges, those nine carves");
     xud_check(baseBytes > 0u, "gpu-alloc/baseline-bytes", "and reserved bytes, so the rungs below this one really did ask the allocator");
     xud_check(cursorBefore == 0u, "gpu-alloc/baseline-cursor",
         "and the ring's cursor is still at the start, because nothing has asked for transient memory y"
@@ -611,6 +634,35 @@ static void xud_test_gpu_allocator(void) {
         "the reserved bytes moved by exactly the 1024-byte range that was released and not asked for again, which is what makes the "
         "counter a fact rather than an estimate");
 
+    /* The host-visible acquire against the real caps: the range it hands back is a WHOLE block, s
+       o the range's size is the block's size and the block count moves by one for a request that c
+       ould have been a suballocation. That is the exception the rung states - a mapping is per-VkD
+       eviceMemory, so a carve that is mapped cannot share a block with one that is mapped too, an
+       d the two arenas above the allocator are the only two places that exception is spent.
+     */
+    memset(&arena, 0, sizeof(arena));
+    ask.size = 2048u;
+    ask.alignment = 256u;
+    ask.memoryTypeBits = 0xFFFFFFFFu;
+    xud_check(xud_allocator_stats(context->allocator, &blocksBeforeHostVisible, &liveCount, &bytesBeforeHostVisible, &cursor) == XUD_OK,
+        "gpu-alloc/stats-before-host-visible", "answers");
+    xud_check(xud_allocator_acquire_host_visible(
+                  &arena, context->allocator, context->loader, context->device, &context->physicalDevice->caps, &ask)
+            == XUD_OK,
+        "gpu-alloc/host-visible-completes", "against the real caps");
+    xud_check(arena.memory != VK_NULL_HANDLE, "gpu-alloc/host-visible-memory", "names a real VkDeviceMemory");
+    xud_check(arena.offset == 0u, "gpu-alloc/host-visible-at-the-start", "and the carve starts at the block's start");
+    xud_check(arena.size >= 2048u, "gpu-alloc/host-visible-is-the-block",
+        "the range is at least the request, and it is the whole block rather than a slice of one");
+    xud_check(xud_allocator_stats(context->allocator, &blocksAfterHostVisible, &liveCount, &bytesAfterHostVisible, &cursor) == XUD_OK,
+        "gpu-alloc/stats-after-host-visible", "answers");
+    xud_check(blocksAfterHostVisible == blocksBeforeHostVisible + 1u, "gpu-alloc/host-visible-made-a-block",
+        "the block count moved, which is the cost of the exception stated as a fact rather than as a n"
+        "ote - and it is the one cost, since a second host-visible request would move it again");
+    xud_check(bytesAfterHostVisible == bytesBeforeHostVisible + arena.size, "gpu-alloc/host-visible-bytes-are-the-block",
+        "and the reserved bytes moved by the whole block, not by the 2,048 bytes that were asked for");
+    (void)xud_allocator_release(context->allocator, &arena);
+
     /* The refusals the pure half states as rules, seen here against the REAL caps rather than a sy
        nthetic one: a request above the growth ceiling, a request above every heap, and a request n
        o memory type may serve. All three are refusals before vkAllocateMemory is asked, which is w
@@ -701,8 +753,11 @@ static void xud_test_gpu_allocator(void) {
 
     xud_check(xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytesAfter, &cursor) == XUD_OK,
         "gpu-alloc/stats-after-ring", "answers");
-    xud_check(blockCount == baseBlocks + 2u, "gpu-alloc/stats-plus-ring-block",
-        "the baseline's two static blocks plus the big request's plus the ring's one block, and no more");
+    xud_check(blockCount == baseBlocks + 3u, "gpu-alloc/stats-plus-ring-block",
+        "the baseline's blocks plus the big request's plus this test's own host-visible arena plus th"
+        "e ring's one block, and no more - three new VkDeviceMemory for three requests that could not"
+        " be suballocated, which is the cost argument of the rung read against the baseline rather th"
+        "an as a constant");
     xud_check(cursor == 256u, "gpu-alloc/stats-cursor-moved", "the cursor says exactly what the ring handed out since the reset");
 
     if (context->validate != 0u) {
@@ -713,7 +768,7 @@ static void xud_test_gpu_allocator(void) {
 
     result = xud_close_context(&context);
     xud_check(result == XUD_OK, "gpu-alloc/close-clean",
-        "a context whose allocator holds five blocks and a ring tears back down with nothing refused, w"
+        "a context whose allocator holds seven blocks and a ring tears back down with nothing refused, w"
         "hich is the allocator's close freeing every VkDeviceMemory it created before the device it wa"
         "s allocated from goes");
     xud_check(context == NULL, "gpu-alloc/close-clears", "and the out-param is cleared");

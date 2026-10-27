@@ -9,10 +9,27 @@
 // hands the pipeline. The batch's index buffer is what picks which vertices a draw reads, so the
 // index is the draw's, not this stage's.
 //
-// The push-constant model matrix and the set-0 viewProj are NOT read here yet: the frame loop has to
-// bind both before a stage can read them, and that binding is the next step's half. Until it lands,
-// the geometry stays in clip space and the pipeline layout's push range and set layouts stay declared
+// The set-0 block IS read here now: the frame loop uploads it with xud_descriptor_upload() and binds
+// set 0 with vkCmdBindDescriptorSets, so the matrix the vertex is placed by is a matrix that holds
+// something rather than a buffer that was never written. The block's member order and types are the
+// C layout of XudFrameUniformRow read against std140: mat4 at 0 (64 B), vec3 at 64, float at 76, vec4
+// at 80 and 96 (both already 16-aligned), uint at 112 and 116 - which is byte-for-byte the struct in
+// xud_descriptor.h, and the assert beside that struct is the same number from the other side.
+//
+// The push-constant model matrix is NOT read here yet: the frame loop binds the set but pushes nothi
+// ng, and pushing a range a stage does not read is a call that changes nothing about what is drawn. U
+// ntil that lands the geometry stays in the block's space and the layout's push range stays declared
 // but unread, which is legal - a shader need not touch everything its layout declares.
+
+layout(binding = 0, std140) uniform XudFrameBlock {
+    mat4 viewProj;    // 0  - the VP matrix, column-major, the same 64 B the push row carries
+    vec3 cameraPos;   // 64
+    float time;       // 76
+    vec4 fog;         // 80  - rgb + density
+    vec4 ambient;     // 96  - rgb + intensity
+    uint lightCount;  // 112
+    uint reserved;    // 116
+} xudFrame;
 
 layout(location = 0) in vec3 inPos;
 layout(location = 1) in vec2 inUv;
@@ -25,7 +42,7 @@ layout(location = 2) out vec3 outNormal;
 
 void main(void)
 {
-    gl_Position = vec4(inPos, 1.0f);
+    gl_Position = xudFrame.viewProj * vec4(inPos, 1.0f);
     outUv = inUv;
     outColor = inColor;
     outNormal = inNormal;

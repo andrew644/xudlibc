@@ -55,6 +55,40 @@ static void xud_descriptor_retire(XudDescriptor* descriptor, const XudDevice* de
         return;
     }
 
+    if (descriptor->uniformStagingMappedLive != 0u) {
+        /* The unmap comes FIRST, above every destroy, and it is load-bearing rather than tidy: thi
+           s is the one place a descriptor dies, and the repo's rule is that a mapped range has a ma
+           tching unmap. A destroy of a buffer whose memory is still mapped is a destroy over a map
+           ping the driver still holds. vkUnmapMemory returns void, so the handle is read, the live
+           bit cleared, and only then handed over - the zero-state-before-the-call rule every other
+           void row in this tree follows. */
+        if ((loader->deviceTable.vkUnmapMemory != NULL) && (descriptor->uniformStagingRange.memory != VK_NULL_HANDLE)) {
+            VkDeviceMemory arenaMemory = descriptor->uniformStagingRange.memory;
+            descriptor->uniformStagingMappedLive = 0u;
+            descriptor->uniformStagingMapped = NULL;
+            (void)loader->deviceTable.vkUnmapMemory(device->device, arenaMemory);
+        }
+    }
+
+    if (descriptor->uniformStagingBuffer != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroyBuffer != NULL) {
+            VkBuffer arena = descriptor->uniformStagingBuffer;
+            descriptor->uniformStagingBuffer = VK_NULL_HANDLE;
+            (void)loader->deviceTable.vkDestroyBuffer(device->device, arena, NULL);
+        }
+    }
+
+    if (descriptor->uniformStagingRange.memory != VK_NULL_HANDLE) {
+        /* The arena's carve goes free in the allocator's own rows, for the same reason the block bel
+           ow it does: the block itself is xud_allocator_close()'s to free, after this rung. */
+        rung = xud_allocator_release(alloc, &descriptor->uniformStagingRange);
+        (void)rung;
+        descriptor->uniformStagingRange.memory = VK_NULL_HANDLE;
+        descriptor->uniformStagingRange.size = 0u;
+        descriptor->uniformStagingRange.offset = 0u;
+        descriptor->uniformStagingBindOffset = 0u;
+    }
+
     if (descriptor->pool != VK_NULL_HANDLE) {
         if (loader->deviceTable.vkDestroyDescriptorPool != NULL) {
             /* The handle is an IN-parameter, so it is read into a local and the field cleared befo
@@ -393,6 +427,130 @@ XudResult xud_descriptor_fill_uniform_block(XudDescriptor* descriptor) {
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The staging arena of set 0's block - the pure half: its create-info, its memory rule and the
+ * upload's one region
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_descriptor_host_visible_bits(const XudDeviceCaps* caps, uint32_t* outMemoryTypeBits) {
+    const VkPhysicalDeviceMemoryProperties* mem = NULL;
+    uint32_t index = 0u;
+    uint32_t mask = 0u;
+
+    if ((caps == NULL) || (outMemoryTypeBits == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    mem = &caps->memoryProperties.memoryProperties;
+    if (mem->memoryTypeCount > VK_MAX_MEMORY_TYPES) {
+        return XUD_INVALID_ARG;
+    }
+
+    for (index = 0u; index < mem->memoryTypeCount; index++) {
+        if ((mem->memoryTypes[index].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u) {
+            mask |= (1u << index);
+        }
+    }
+
+    *outMemoryTypeBits = mask;
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_fill_staging_info(XudDescriptor* descriptor) {
+    if (descriptor == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    descriptor->uniformStagingInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    descriptor->uniformStagingInfo.pNext = NULL;
+    descriptor->uniformStagingInfo.flags = 0u;
+    descriptor->uniformStagingInfo.size = XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE;
+    descriptor->uniformStagingInfo.usage = XUD_DESCRIPTOR_STAGING_USAGE;
+    descriptor->uniformStagingInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    descriptor->uniformStagingInfo.queueFamilyIndexCount = 0u;
+    descriptor->uniformStagingInfo.pQueueFamilyIndices = NULL;
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_fill_upload_info(XudDescriptor* descriptor) {
+    if ((descriptor == NULL) || (descriptor->uniformStagingBuffer == VK_NULL_HANDLE) || (descriptor->uniformBuffer == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* One region, at (0, 0, the block's size): both buffers are exactly one block long and the blo
+       ck starts at the start of each, so the two offsets are 0 rather than a computed pair, and the
+       extent is the block's size rather than either buffer's - the rule vkCmdCopyBuffer states is th
+       at a region must fit inside BOTH, and here the two fit and are equal. */
+    descriptor->uploadRegion.srcOffset = 0u;
+    descriptor->uploadRegion.dstOffset = 0u;
+    descriptor->uploadRegion.size = XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE;
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The per-frame update of set 0's block - the host write and the copy
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_descriptor_write_block(XudDescriptor* descriptor) {
+    if (descriptor == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((descriptor->uniformStagingMapped == NULL) || (descriptor->uniformStagingMappedLive == 0u)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The one host write of the per-frame update: the block's bytes into the mapped arena. This cal
+       l records nothing and calls no driver entry point, which is what keeps the block's layout tes
+       table with no device present up to the one guard it runs - an arena that is not mapped is a s
+       tate this rung refuses rather than a write into NULL. The barrier that makes these bytes visi
+       ble to the transfer is the frame loop's, one rung up, because a barrier recorded into a comm
+       and buffer this rung does not own is not a decision this rung can make.
+     */
+    memcpy(descriptor->uniformStagingMapped, &descriptor->uniformBlock, XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE);
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_upload(XudDescriptor* descriptor, XudLoader* loader, const XudDevice* device, VkCommandBuffer commandBuffer) {
+    if ((descriptor == NULL) || (loader == NULL) || (device == NULL) || (commandBuffer == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if (!loader->open) {
+        return XUD_UNSUPPORTED;
+    }
+    if (device->device == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((descriptor->uniformStagingBuffer == VK_NULL_HANDLE) || (descriptor->uniformBuffer == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((descriptor->uniformStagingMapped == NULL) || (descriptor->uniformStagingMappedLive == 0u)) {
+        return XUD_UNSUPPORTED;
+    }
+    if (loader->deviceTable.vkCmdCopyBuffer == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The rows are filled here rather than trusted from the bring-up, so the headless run can call
+       the assembly on its own and the driver still gets the same rows it asserted. */
+    if (xud_descriptor_fill_upload_info(descriptor) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* ONE call carrying ONE region: this upload has one source and one destination, which is the op
+       posite of the batch's five-call shape, where the five destinations are five buffers. The cal
+       l is legal only OUTSIDE a render pass instance, which is the frame loop's job to honour, and
+       so are the two barriers either side of it - a transfer command has no stage, so no stage mas
+       k is an argument here at all.
+     */
+    loader->deviceTable.vkCmdCopyBuffer(commandBuffer, descriptor->uniformStagingBuffer, descriptor->uniformBuffer,
+        XUD_DESCRIPTOR_UPLOAD_REGION_COUNT, &descriptor->uploadRegion);
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The bring-up - driver
  *-----------------------------------------------------------------------------------------------*/
 
@@ -401,7 +559,11 @@ XudResult xud_descriptor_open(
     XudDescriptor* descriptor = NULL;
     XudResult result = XUD_INVALID_ARG;
     VkMemoryRequirements needs;
+    VkMemoryRequirements arenaNeeds;
     uint32_t row = 0u;
+    uint32_t hostVisibleMask = 0u;
+    uint32_t arenaTypeIndex = 0u;
+    void* arenaMapped = NULL;
 
     if ((outDescriptor == NULL) || (*outDescriptor != NULL)) {
         return XUD_INVALID_ARG;
@@ -426,7 +588,8 @@ XudResult xud_descriptor_open(
         || (loader->deviceTable.vkCreateDescriptorPool == NULL) || (loader->deviceTable.vkDestroyDescriptorPool == NULL)
         || (loader->deviceTable.vkCreateBuffer == NULL) || (loader->deviceTable.vkDestroyBuffer == NULL)
         || (loader->deviceTable.vkGetBufferMemoryRequirements == NULL) || (loader->deviceTable.vkBindBufferMemory == NULL)
-        || (loader->deviceTable.vkAllocateDescriptorSets == NULL) || (loader->deviceTable.vkUpdateDescriptorSets == NULL)) {
+        || (loader->deviceTable.vkAllocateDescriptorSets == NULL) || (loader->deviceTable.vkUpdateDescriptorSets == NULL)
+        || (loader->deviceTable.vkMapMemory == NULL) || (loader->deviceTable.vkUnmapMemory == NULL)) {
         return XUD_UNSUPPORTED;
     }
 
@@ -586,6 +749,121 @@ XudResult xud_descriptor_open(
        hopes, and a write that the driver refused is a write the validation layer reports.
      */
     loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->writeInfo, 0u, NULL);
+
+    /* 6. the staging arena of set 0's block, LAST of the six because it is the only object of them
+       that nothing else in this rung names - and putting it last is what makes the teardown below i
+       ts exact reverse rather than a second order to state. The arena is host-visible by constructi
+       on: the block's bytes are written by the CPU each frame, so the buffer's own memoryTypeBits i
+       s narrowed with the caps' host-visible rows BEFORE the allocator is asked, and the type the a
+       llocator actually picked is then re-read from xud_allocator_select_memory_type() and checked
+       for VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT rather than trusted from the mask that was asked for -
+       a mask is a preference, and vkMapMemory is called on the row the allocator chose. A driver wi
+       th no host-visible type at all is XUD_UNSUPPORTED, which is the repo's rule that an unverifi
+       ed capability stays off and the feature that needed it answers UNSUPPORTED rather than being
+       worked around.
+     */
+    result = xud_descriptor_fill_staging_info(descriptor);
+    if (result != XUD_OK) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+
+    result = xud_result_from_vk(
+        loader->deviceTable.vkCreateBuffer(device->device, &descriptor->uniformStagingInfo, NULL, &descriptor->uniformStagingBuffer));
+    if (result != XUD_OK) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+
+    memset(&arenaNeeds, 0, sizeof(arenaNeeds));
+    loader->deviceTable.vkGetBufferMemoryRequirements(device->device, descriptor->uniformStagingBuffer, &arenaNeeds);
+    if (arenaNeeds.size == 0u) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return XUD_VULKAN_ERROR;
+    }
+
+    result = xud_descriptor_host_visible_bits(caps, &hostVisibleMask);
+    if (result != XUD_OK) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+    if (hostVisibleMask == 0u) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return XUD_UNSUPPORTED;
+    }
+    arenaNeeds.memoryTypeBits &= hostVisibleMask;
+    if (arenaNeeds.memoryTypeBits == 0u) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The arena's carve, and it is the host-visible acquire rather than the suballocating one: a
+       mapping is per-VkDeviceMemory rather than per-range, so a carve inside a block someone else
+       already mapped is a carve that cannot be mapped at all. The arena is small and a block is 64
+       KiB, which is the cost of that fact - one block per host-visible arena, and the only place
+       the repo's "allocate once, suballocate always" rule spends one.
+    */
+    result = xud_allocator_acquire_host_visible(&descriptor->uniformStagingRange, alloc, loader, device, caps, &arenaNeeds);
+    if (result != XUD_OK) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+    descriptor->uniformStagingBindOffset = descriptor->uniformStagingRange.offset;
+
+    result = xud_allocator_select_memory_type(caps, &arenaNeeds, &arenaTypeIndex);
+    if ((result != XUD_OK) || (arenaTypeIndex >= caps->memoryProperties.memoryProperties.memoryTypeCount)
+        || ((caps->memoryProperties.memoryProperties.memoryTypes[arenaTypeIndex].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+            == 0u)) {
+        xud_allocator_release(alloc, &descriptor->uniformStagingRange);
+        descriptor->uniformStagingRange.memory = VK_NULL_HANDLE;
+        descriptor->uniformStagingRange.size = 0u;
+        descriptor->uniformStagingRange.offset = 0u;
+        descriptor->uniformStagingBindOffset = 0u;
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_result_from_vk(loader->deviceTable.vkBindBufferMemory(
+        device->device, descriptor->uniformStagingBuffer, descriptor->uniformStagingRange.memory, descriptor->uniformStagingBindOffset));
+    if (result != XUD_OK) {
+        xud_allocator_release(alloc, &descriptor->uniformStagingRange);
+        descriptor->uniformStagingRange.memory = VK_NULL_HANDLE;
+        descriptor->uniformStagingRange.size = 0u;
+        descriptor->uniformStagingRange.offset = 0u;
+        descriptor->uniformStagingBindOffset = 0u;
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+
+    /* The map, once, for the whole arena, for the whole life of the descriptor. flags 0 is the rea
+       d/write pair the repo's rule asks for: the arena is written by the CPU and read by a transfer,
+       and no cache-control flag is claimed for a type this layer has not asked to be cached. The x
+       ud_batch_create_staging() above makes the same call for the same reason one rung over.
+     */
+    result = xud_result_from_vk(loader->deviceTable.vkMapMemory(device->device, descriptor->uniformStagingRange.memory,
+        descriptor->uniformStagingRange.offset, descriptor->uniformStagingRange.size, 0u, &arenaMapped));
+    if (result != XUD_OK) {
+        xud_allocator_release(alloc, &descriptor->uniformStagingRange);
+        descriptor->uniformStagingRange.memory = VK_NULL_HANDLE;
+        descriptor->uniformStagingRange.size = 0u;
+        descriptor->uniformStagingRange.offset = 0u;
+        descriptor->uniformStagingBindOffset = 0u;
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+
+    descriptor->uniformStagingMapped = arenaMapped;
+    descriptor->uniformStagingMappedLive = 1u;
 
     *outDescriptor = descriptor;
     return XUD_OK;

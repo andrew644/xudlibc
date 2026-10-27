@@ -215,31 +215,34 @@ static void xud_test_gpu_draw(void) {
        block are what say so - framesDrawn is the counter the loop below is about to move, and last
        FrameFence is the one field a frame that had started would have filled.
     */
-    xud_check(
-        xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-            context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch, NULL)
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch,
+                  context->renderer->descriptor, NULL)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-out-index", "a frame with nowhere to write the acquired index is a bad argument");
-    xud_check(
-        xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, NULL, context->renderer->renderPass,
-            context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch, &probeIndex)
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, NULL,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch,
+                  context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-pipeline", "a frame with no pipeline to bind is a bad argument, not a draw with no pipeline");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-                  NULL, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch, &probeIndex)
+                  NULL, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch,
+                  context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-pass", "a frame with no render pass to begin is a bad argument");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-                  context->renderer->renderPass, NULL, context->swapchain->imageCount, context->renderer->batch, &probeIndex)
+                  context->renderer->renderPass, NULL, context->swapchain->imageCount, context->renderer->batch,
+                  context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-rows", "a frame with no framebuffer rows has no attachment to draw into");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-                  context->renderer->renderPass, context->renderer->framebuffers, 0u, context->renderer->batch, &probeIndex)
+                  context->renderer->renderPass, context->renderer->framebuffers, 0u, context->renderer->batch,
+                  context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-zero-count", "a frame told it has no rows to attach is a bad argument");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
                   context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount + 1u,
-                  context->renderer->batch, &probeIndex)
+                  context->renderer->batch, context->renderer->descriptor, &probeIndex)
             == XUD_UNSUPPORTED,
         "gpu-draw/refuse-count-disagrees",
         "a count that is not the swapchain's is a frame this rung "
@@ -266,12 +269,37 @@ static void xud_test_gpu_draw(void) {
         "the batch's index buffer is a real VkBuffer, which is what vkCmdBindIndexBuffer names");
     xud_check(xud_batch_check_invariant(context->renderer->batch) == XUD_OK, "gpu-draw/batch-invariant",
         "the batch's own invariant holds on the renderer's batch, so the frame loop is consuming a batch that is well formed");
+
+    /* The descriptor the frame loop is about to update, read before the first frame reaches it: the
+       loop writes the block into the arena, copies it into the buffer and binds the set, so a nil
+       set or a nil buffer in the pair is a frame that binds nothing. The arena is mapped for the
+       descriptor's whole life, so the flag is set long before any frame and stays set through every
+       one of them - the check below the loop says the frame loop unmapped nothing.
+    */
+    xud_check((context->renderer->descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] != VK_NULL_HANDLE)
+            && (context->renderer->descriptor->uniformBuffer != VK_NULL_HANDLE),
+        "gpu-draw/set-and-block-live", "set 0 and the uniform buffer inside it are both live, which is what the bind and the copy name");
+    xud_check((context->renderer->descriptor->uniformStagingBuffer != VK_NULL_HANDLE)
+            && (context->renderer->descriptor->uniformStagingMapped != NULL)
+            && (context->renderer->descriptor->uniformStagingMappedLive == 1u),
+        "gpu-draw/arena-mapped-open",
+        "the staging arena the frame loop writes into is a real buffer and is mapped for the descriptor's life");
+    xud_check(context->renderer->descriptor->uniformBlock.viewProj[0u] == 1.0f, "gpu-draw/block-identity-before",
+        "the block the first frame uploads is the identity the context's camera left in it");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, NULL, &probeIndex)
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, NULL,
+                  context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-batch",
         "a frame with no batch to upload, bind or draw is a bad argument rather than a frame that clears and presents a whole screen of "
         "nothing");
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->batch,
+                  NULL, &probeIndex)
+            == XUD_INVALID_ARG,
+        "gpu-draw/refuse-no-descriptor",
+        "a frame with no descriptor has no set 0 to upload and no set to bind, which is a bad argument "
+        "rather than a draw of a pipeline whose block was never written");
 
     for (frame = 0u; frame < XUD_TEST_GPU_DRAW_FRAMES; frame++) {
         uint32_t imageIndex = 0u;
@@ -325,6 +353,11 @@ static void xud_test_gpu_draw(void) {
         "the index the last acquire wrote is recorded in the frame loop");
     xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/nothing-in-flight-after",
         "the last frame waited and reset its fence, so the teardown's fence guard has nothing left to wait");
+    xud_check(
+        (context->renderer->descriptor->uniformStagingMapped != NULL) && (context->renderer->descriptor->uniformStagingMappedLive == 1u),
+        "gpu-draw/arena-still-mapped-after",
+        "the frames unmapped nothing, so the arena the loop wrote into is the one mapping the descript"
+        "or's own close will unmap - a per-frame map/unmap pair would have left this flag clear");
 
     /* The renderer's own count-vs-array rule, read on the live renderer: the count it hands the frame
        loop is the one it recorded at open, and a draw asked with a count that is not its array's is

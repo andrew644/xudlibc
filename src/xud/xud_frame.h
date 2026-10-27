@@ -12,22 +12,30 @@
  *   ries, ONE VkFence PER SWAPCHAIN IMAGE, classic synchronization, no VK_KHR_vulkan_memory_mode
  *   l anywhere.
  *
- *   The frame loop is what CONSUMES the batch now: it closes the batch's pending run into a draw row
- *   before the command buffer is begun, uploads the batch's live bytes with the five vkCmdCopyBuffer
- *   calls, binds the batch's four streams with ONE vkCmdBindVertexBuffers call and its index buffer
- *   with one vkCmdBindIndexBuffer call, replays the batch's recorded draw rows as vkCmdDrawIndexed
- *   calls, and resets the batch at the end of a frame that completed - so the geometry is the batch's
- *   and no longer a hard-coded three-vertex triangle, and XUD_FRAME_DRAW_VERTEX_COUNT / XUD_FRAME_DRAW_INSTANCE_COUNT
- *   are gone because there is no constant vertex count left to name. A batch with nothing in it is
- *   a frame that clears and presents with no draw at all, which is a legal frame rather than an error.
+ *   The frame loop is what CONSUMES the batch and the descriptor now: it closes the batch's pending ru
+ *   n into a draw row before the command buffer is begun, writes set 0's block into the descriptor's m
+ *   apped arena, uploads the batch's live bytes with the five vkCmdCopyBuffer calls and the block's by
+ *   tes with the descriptor rung's ONE vkCmdCopyBuffer call, binds the batch's four streams with ONE v
+ *   kCmdBindVertexBuffers call, its index buffer with one vkCmdBindIndexBuffer call and set 0 with one
+ *   vkCmdBindDescriptorSets call against the pipeline's own layout, replays the batch's recorded draw
+ *   rows as vkCmdDrawIndexed calls, and resets the batch at the end of a frame that completed - so the
+ *   geometry is the batch's and the matrix the shader places it by is the block's, and no longer a har
+ *   d-coded three-vertex triangle placed by nothing at all. A batch with nothing in it is a frame tha
+ *   t clears and presents with no draw at all, which is a legal frame rather than an error; the block i
+ *   s uploaded every frame whether or not the batch has content, because the shader reads it.
  *
- *   The staging rule the repo settles is why the two buffer barriers below are here: the batch's arena
- *   is mapped ONCE for its whole life, so the host writes into it are not a map/unmap pair per frame
- *   and the thing that makes them visible to the copies is a HOST_WRITE -> TRANSFER_READ barrier, and
- *   the thing that makes the copies' results visible to the vertex-attribute reads is a second
- *   TRANSFER_WRITE -> VERTEX_ATTRIBUTE_READ barrier. Both sit BEFORE vkCmdBeginRenderPass, outside
- *   any render pass instance, which is what the rule that a barrier inside a pass must name the bound
- *   pipeline's stages does not reach - and vkCmdPipelineBarrier is not legal inside a pass at all.
+ *   The staging rule the repo settles is why the buffer barriers below are here: the batch's arena and
+ *   the descriptor's uniform arena are BOTH mapped ONCE for the life of their owner, so the host writ
+ *   es into them are not a map/unmap pair per frame and the thing that makes them visible to the copies
+ *   is ONE HOST_WRITE -> TRANSFER_READ barrier covering both arenas' writes, and the thing that makes
+ *   the copies' results visible to the reads that follow them is TWO TRANSFER_WRITE barriers rather th
+ *   an one: TRANSFER_WRITE -> VERTEX_ATTRIBUTE_READ for the streams, whose dstStageMask is the input a
+ *   nd vertex stages, and TRANSFER_WRITE -> UNIFORM_READ for the block, whose dstStageMask is the two s
+ *   hader stages the layout declares for it. One barrier naming both access bits with one stage mask i
+ *   s refused by the spec's supported-access-type rule, which is the reason for the split. All three s
+ *   it BEFORE vkCmdBeginRenderPass, outside any render pass instance, which is what the rule that a ba
+ *   rrier inside a pass must name the bound pipeline's stages does not reach - and vkCmdPipelineBarrie
+ *   r is not legal inside a pass at all.
  *
  *   The fence array is per IMAGE, not per frame, and that is the point of the plan's wording: a
  *   fence that bounded a frame would say nothing about which image the frame wrote, and the thing
@@ -40,6 +48,7 @@
 
 #include "volk.h"
 #include "xud_batch.h" /* Required for: XudBatch, the four SoA streams this rung uploads, binds and draws */
+#include "xud_descriptor.h" /* Required for: XudDescriptor, set 0's block this rung uploads and binds */
 #include "xud_device.h"
 #include "xud_loader.h"
 #include "xud_physical.h"
@@ -126,6 +135,27 @@
                             entries, XUD_BATCH_INDEX_SIZE is 4 bytes an entry, so UINT32 is the only type                                  \
                             that names them - UINT16 would be a bind reading half an index and UINT8 a                                     \
                             bind reading a quarter of one */
+#define XUD_FRAME_FIRST_SET                                                                                                                \
+    0u /* vkCmdBindDescriptorSets' firstSet: set 0 is the per-frame set of the design sketch and this                                      \
+          rung binds that one set, so the first set bound is 0 and the count below is 1 - the pair is                                      \
+          the unambiguous form of "set 0 only" rather than a bit pattern to reason about */
+
+#define XUD_FRAME_SET_COUNT                                                                                                                \
+    1u /* how many sets one vkCmdBindDescriptorSets call binds: set 0 today, and set 1 is the texture                                      \
+          step's to allocate and bind, which is why the pool above is sized for both */
+
+#define XUD_FRAME_UNIFORM_READ_STAGES                                                                                                      \
+    (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) /* the dstStageMask                                      \
+          of the barrier that makes the block's upload visible to the stages that read it: this is XU_                                     \
+          DESCRIPTOR_BUFFER_STAGES, the pair the layout declares for the block, and a stage that does                                      \
+          not read it is not a stage the barrier has to cover */
+
+#define XUD_FRAME_UNIFORM_READ_ACCESS                                                                                                      \
+    VK_ACCESS_UNIFORM_READ_BIT /* the dstAccessMask of that same barrier: the block is read as a unifo                                     \
+          rm buffer, and the spec's supported-access-type rule is what refuses a barrier that names th                                     \
+          is access at a stage that cannot read a uniform - which is why this barrier is a separate ca                                     \
+          ll from the vertex-attribute one above rather than two access bits crammed into one mask, wh                                     \
+          ere the rule would refuse the stage pair the other mask names */
 #define XUD_FRAME_WAIT_ALL                                                                                                                 \
     1u /* vkWaitForFences' waitAll argument: every fence in the list has t                                                                 \
          o be signalled, and the list is one fence, so the pair is the un                                                                  \
@@ -136,6 +166,9 @@ static_assert(XUD_FRAME_SUBMIT_COUNT == 1u, "one submit per frame, per the plan"
 static_assert(XUD_FRAME_FIRST_BINDING == 0u, "the batch's four streams are bindings 0..3");
 static_assert(XUD_FRAME_VERTEX_READ_ACCESS == VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, "the streams are read as vertex attributes");
 static_assert(XUD_FRAME_INDEX_TYPE == VK_INDEX_TYPE_UINT32, "the batch's indices are uint32_t entries");
+static_assert(XUD_FRAME_FIRST_SET == 0u, "set 0 is the per-frame set and it is the first set bound");
+static_assert(XUD_FRAME_SET_COUNT == 1u, "one set bound per frame, which is set 0 and its block");
+static_assert(XUD_FRAME_UNIFORM_READ_ACCESS == VK_ACCESS_UNIFORM_READ_BIT, "the block is read as a uniform buffer");
 static_assert(XUD_FRAME_WAIT_STAGE == VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, "the first stage that reads the image");
 static_assert(XUD_FRAME_NO_TIMEOUT == (~0ull), "the all-ones value is the no-timeout answer");
 static_assert(VK_COMMAND_BUFFER_LEVEL_PRIMARY == 0u, "the primary level is what this rung records");
@@ -308,9 +341,16 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
 /// closes the batch's pending row into the draw list and resets the batch at the end of a frame that
 /// completed, which is what makes "the frame loop is the flush" true rather than a promise: the next
 /// frame starts from an empty batch and the arena's bytes are rewritten in place, never appended to.
+/// The descriptor is the argument after the batch for the same reason one rung over: the frame loop i
+/// s what updates set 0. It writes the block's bytes into the descriptor's mapped arena, uploads them
+/// with the descriptor rung's ONE vkCmdCopyBuffer call, and binds set 0 with one vkCmdBindDescriptorS
+/// ets call against the pipeline's own layout - so the block the shader reads is a block that holds s
+/// omething rather than a block that was never written. The push-constant range of the same layout is
+/// still declared-and-unread, and pushing a range a shader does not read is a call that changes nothi
+/// ng about what is drawn, so it stays the next step's.
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
-    XudBatch* batch, uint32_t* outImageIndex);
+    XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
 
 /// Driver: retire everything this rung owns, in the one order that is correct - vkWaitForFences on
 /// a fence still in flight, then vkFreeCommandBuffers, vkDestroySemaphore, vkDestroyFence for ever

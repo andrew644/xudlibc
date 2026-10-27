@@ -8,7 +8,10 @@
  *          bring-up, the memory-type rule read off the physical layer's recorded rows, create-
  *          info assembly, first-fit suballocation with a generation bump on reuse, release with
  *          coalescing, the transient ring's cursor, the counters a caller above reads, and
- *          teardown.
+ *          teardown. TWO acquires, and the split is a Vulkan fact rather than a policy: the suba
+ *          llocating one is for bytes a frame reads through a transfer, and the host-visible one
+ *          hands back a WHOLE block, because vkMapMemory maps a VkDeviceMemory rather than a
+ *          range and a carve inside a block someone else already mapped cannot be mapped at all.
  *   Layer: above the device and below the renderer. It is the rung the design sketch's "allocate
  *          once, suballocate always" rule belongs to, and the last rung of the ladder under the
  *          renderer: every buffer, image and staging ring the shapes/batch/descriptor steps land
@@ -312,6 +315,23 @@ XudResult xud_allocator_find_range(const XudAllocator* alloc, VkDeviceSize size,
 /// when a host growth step fails. On XUD_OK *outRange names a live range of at least the requested
 /// size; on any error it is left untouched, so a caller cannot read a half-filled range.
 XudResult xud_allocator_acquire(XudMemoryRange* outRange, XudAllocator* alloc, XudLoader* loader, const XudDevice* device,
+    const XudDeviceCaps* caps, const VkMemoryRequirements* requirements);
+
+/// Driver half: the acquire a host-visible carve makes, and the reason a second acquire exists at
+/// all. vkMapMemory maps a VkDeviceMemory, not a range: the validation layer refuses a second map
+/// of a memory that is already mapped (VUID-vkMapMemory-memory-00678) and lavvk answers the same
+/// rule as VK_ERROR_MEMORY_MAP_FAILED rather than forgiving it. A suballocated carve inside a block
+/// someone else already mapped is therefore a carve that cannot be mapped at all, so the one carve
+/// a rung maps has to own the block it is mapped in. This is the repo's "allocate once, suballocate
+/// always" rule with its one exception stated and the exception is a Vulkan fact, not a policy: su
+/// ballocation is for the bytes a frame reads through a transfer, a host mapping is a whole-memory
+/// decision. Same request-side guards and the same two decisions (the caps' type, this layer's blo
+/// ck size) as xud_allocator_acquire(); the difference is that there is no free-list scan, the rang
+/// e handed back is the WHOLE block, and it is never split. XUD_INVALID_ARG on a NULL argument, a
+/// zero size or an alignment above the bound; XUD_UNSUPPORTED when no type serves the request or a
+/// row is missing; XUD_OUT_OF_RESOURCES when the request exceeds the block ceiling or a growth step
+/// fails; the driver-half codes of xud_allocator_acquire() on the one vkAllocateMemory it makes.
+XudResult xud_allocator_acquire_host_visible(XudMemoryRange* outRange, XudAllocator* alloc, XudLoader* loader, const XudDevice* device,
     const XudDeviceCaps* caps, const VkMemoryRequirements* requirements);
 
 /// Pure: release one live range. The row is marked free and its generation is bumped in the same

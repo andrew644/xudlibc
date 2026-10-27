@@ -6,9 +6,11 @@
  *
  *   Owns : XudDescriptor (the two VkDescriptorSetLayouts, the one VkPushConstantRange row,
  *          the one VkDescriptorPool, the sets allocated from it, the one VkBuffer of set 0
- *          and the XudMemoryRange of the allocator it sits in) and the contract of the rung
+ *          plus its host-visible staging arena, and the XudMemoryRange of the allocator the
+ *          two sit in) and the contract of the rung
  *          - the caps gate, the create-info assembly of every row of this layout, the bring
- *          -up, the per-frame uniform block's byte layout, and the one teardown order.
+ *          -up, the per-frame uniform block's byte layout, the upload that copies the arena
+ *          into the buffer, and the one teardown order.
  *   Layer: above the allocator and below the renderer. This is the rung of the design sket
  *          ch's descriptor discipline - "one per-frame set (set 0, updated once per frame),
  *          one per-material set (set 1), push constants for the model matrix + material/tex
@@ -28,13 +30,12 @@
  *   What this rung does NOT have, and why: no VkImage and no VkSampler anywhere, so set 1's
  *          layout is DECLARED and its set is never allocated - the texture step is what creates
  *          the images and allocates that set from this same pool (which is why the pool is sized
- *          for both sets today). No vkCmdBindDescriptorSets and no vkCmdPushConstants anywhere:
- *          the frame loop below this one records the batch's indexed draws from a shader that rea
- *          ds the batch's four vertex attributes and still reads no binding and takes no push co
- *          nstant, and binding a set or pushing a range a shader does not read is a call that chan
- *          ges nothing about what is drawn. The shaders under shaders/ read the batch's streams no
- *          w (the vertex-input step's) and none of these rows yet; the draw that binds them is the
- *          next step's - see todo.md and the honest-boundary note in todo_completed.md for this step.
+ *          for both sets today). No vkCmdPushConstants anywhere: the frame loop below this one bi
+ *          nds set 0 and reads its block, but the push row is still declared-and-unread, and pushi
+ *          ng a range a shader does not read is a call that changes nothing about what is drawn. T
+ *          he shaders under shaders/ read the batch's streams and this rung's block now (the per-f
+ *          rame uniform step's) and no push row yet; the draw that pushes one is the next step's -
+ *          see todo.md and the honest-boundary note in todo_completed.md for this step.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
@@ -242,6 +243,43 @@ static_assert((XUD_DESCRIPTOR_BUFFER_USAGE & VK_BUFFER_USAGE_TRANSFER_DST_BIT) =
     "implementation-dependent");
 
 /*-----------------------------------------------------------------------------------------------
+ * The host-visible staging arena of set 0's block
+ *
+ *   The design sketch's "once per frame, one vkCmdCopyBuffer from the staging ring" is the whole
+ *   of the per-frame update, and AGENTS.md's staging rule says the copy path is preferred over a
+ *   mapped write for anything transient. So the block's bytes get a source buffer of their own, a
+ *   host-visible one, mapped ONCE for the life of the descriptor rather than once a frame - the
+ *   same shape the batch's arena is, one rung over, and the reason the batch's note gives: a map
+ *   per frame would need a matching unmap plus an invalidate row, and a map for the whole life nee
+ *   ds neither.
+ *
+ *   It is NOT carved from the allocator's transient ring, for the batch's own reason: the ring is a
+ *   cursor that wraps, so a ring carve is bytes a later lap overwrites mid-frame, and these bytes
+ *   have to survive from the moment the host wrote them to the moment the copy read them. A static
+ *   carve is the one that lives that long.
+ *
+ *   The arena is exactly one block long rather than a doubling arena: the block's size is a fixed
+ *   120 B and the only thing ever written into it is one XudFrameUniformRow, so there is nothing to
+ *   grow. XUD_DESCRIPTOR_UPLOAD_REGION_COUNT is 1 because the block is one contiguous run of bytes
+ *   and vkCmdCopyBuffer's regions are (srcOffset, dstOffset, extent) triples - one region carries
+ *   the whole block, which is the opposite of the batch's five-call shape, where the five destinati
+ *   ons are five buffers and this one destination is one buffer.
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_DESCRIPTOR_STAGING_USAGE VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+#define XUD_DESCRIPTOR_UPLOAD_REGION_COUNT 1u
+
+static_assert(XUD_DESCRIPTOR_STAGING_USAGE == VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+    "the staging arena is a source of the upload and never a destination of one, and no shader stage reads it");
+static_assert((XUD_DESCRIPTOR_STAGING_USAGE & XUD_DESCRIPTOR_BUFFER_USAGE) == 0u,
+    "the staging arena and set 0's uniform buffer claim disjoint usage: one is the copy's source and one is its destination, so a buffer "
+    "that asked for both would be a buffer whose usage says nothing about which");
+static_assert(XUD_DESCRIPTOR_UPLOAD_REGION_COUNT == 1u,
+    "the block is one contiguous run of bytes, so one vkCmdCopyBuffer region carries the whole of it");
+static_assert(XUD_DESCRIPTOR_UPLOAD_REGION_COUNT * XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE == XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE,
+    "the one region's extent is the whole block, so the arena and the buffer hold the same number of uploadable bytes");
+
+/*-----------------------------------------------------------------------------------------------
  * The pool's flags
  *-----------------------------------------------------------------------------------------------*/
 
@@ -301,9 +339,24 @@ struct XudDescriptor {
     VkDescriptorBufferInfo bufferRow; /* the row the write above points at: (buffer, offset, range) */
 
     /* --- the host-side copy of set 0's block --- */
-    XudFrameUniformRow uniformBlock; /* the bytes the GPU buffer is meant to hold. The copy that puts them there is the frame loop's step
-                                        (the sketch's vkCmdCopyBuffer from the staging ring), so today this is the layout of a block that
-                                        has never been uploaded - see the honest-boundary note in todo_completed.md */
+    XudFrameUniformRow uniformBlock; /* the bytes the GPU buffer is meant to hold. xud_descriptor_write_block() copies them into the arena
+                                        below and xud_descriptor_upload() copies the arena into the GPU buffer, so today this is the layout
+                                        of a block that has never been uploaded - see the honest-boundary note in todo_completed.md */
+
+    /* --- set 0's host-visible staging arena, the copy's source --- */
+    VkBuffer uniformStagingBuffer; /* owned: host-visible, created here, destroyed here */
+    VkBufferCreateInfo uniformStagingInfo; /* what vkCreateBuffer was handed for it */
+    XudMemoryRange
+        uniformStagingRange; /* BORROWED: the allocator owns the block this sits in; VK_NULL_HANDLE memory is the "not carved yet" state */
+    VkDeviceSize uniformStagingBindOffset; /* the offset inside that block vkBindBufferMemory was handed, recorded so the teardown and the
+                                              map read the same number the driver was given */
+    void* uniformStagingMapped; /* what vkMapMemory wrote, for the WHOLE arena, mapped once at open and unmapped once at close - the repo's
+                                   "no vkMapMemory per frame without a matching vkUnmapMemory" rule, satisfied by mapping it once */
+    uint32_t uniformStagingMappedLive; /* 1 while that mapping exists, 0 after xud_descriptor_close() unmapped it */
+
+    /* --- the upload's create-info and its one region --- */
+    VkBufferCopy
+        uploadRegion; /* the one region of the frame loop's one vkCmdCopyBuffer call: (srcOffset 0, dstOffset 0, extent the block's size) */
 };
 
 /*-----------------------------------------------------------------------------------------------
@@ -405,24 +458,75 @@ XudResult xud_descriptor_fill_write_info(XudDescriptor* descriptor);
 /// G on a NULL descriptor.
 XudResult xud_descriptor_fill_uniform_block(XudDescriptor* descriptor);
 
+/// Pure: the memory-type mask a staging arena needs - the AND of every caps memoryTypes row that
+/// carries VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, so a buffer bound to a type in this mask is a buffe
+/// r whose bytes the CPU can write. Zero means the driver has no host-visible type at all, which is
+/// reported rather than worked around: an arena with nowhere to be written is an upload that cannot
+/// happen, and the repo's rule is that an unverified capability stays off and the feature that neede
+/// d it answers UNSUPPORTED. Same shape as xud_batch_host_visible_bits(), one rung over, and the sam
+/// e reason: the mask is a PREFERENCE handed to the allocator, and the type the allocator actually
+/// picked is re-read from xud_allocator_select_memory_type() before anything maps it.
+XudResult xud_descriptor_host_visible_bits(const XudDeviceCaps* caps, uint32_t* outMemoryTypeBits);
+
+/// Pure: the VkBufferCreateInfo of the staging arena - size XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE (one
+/// block, no headroom, because the only thing ever written into it is one XudFrameUniformRow), usage
+/// XUD_DESCRIPTOR_STAGING_USAGE for the reason stated beside that constant, sharingMode EXCLUSIVE, f
+/// lags 0 and pNext NULL, queueFamilyIndexCount 0 with pQueueFamilyIndices NULL - the same "the
+/// application does not care which queue families" form xud_swapchain_fill_create_info() and
+/// xud_descriptor_fill_buffer_info() write. XUD_INVALID_ARG on a NULL descriptor.
+XudResult xud_descriptor_fill_staging_info(XudDescriptor* descriptor);
+
+/// Pure: the VkCopyBufferInfo of the per-frame upload and the one VkBufferCopy region it points at -
+/// srcBuffer the arena, dstBuffer set 0's uniform buffer, one region at (srcOffset 0, dstOffset 0,
+/// extent the block's size). Both offsets are 0 because both buffers are exactly one block long and
+/// the block starts at the start of each, and the extent is the block's size rather than either buffe
+/// r's, which is the rule vkCmdCopyBuffer states: a region must fit inside BOTH buffers, and here the
+/// two fit and are equal. The rows are members rather than frame temporaries for the rule every other
+/// create-info in this tree follows - the driver reads the pointers during the call, so what it reads
+/// has to outlive the call. XUD_INVALID_ARG on a NULL descriptor or one whose arena or buffer handle
+/// is not live.
+XudResult xud_descriptor_fill_upload_info(XudDescriptor* descriptor);
+
+/// Host write: copy the block's bytes into the mapped arena. This is the ONLY host write the per-fr
+/// ame update makes, and the barrier that makes it visible to the transfer is the frame loop's, named
+/// there - this call records nothing and calls no driver entry point, so it is testable with no device
+/// present up to the one guard it runs: an arena that is not mapped is a state this rung refuses rat
+/// her than a write into NULL. XUD_INVALID_ARG on a NULL descriptor; XUD_UNSUPPORTED when the arena
+/// is not mapped live; XUD_OK once the bytes are in.
+XudResult xud_descriptor_write_block(XudDescriptor* descriptor);
+
+/// Driver: record the per-frame upload into a command buffer that has already been begun - ONE vkCmd
+/// CopyBuffer call carrying the one region, from the mapped arena into set 0's uniform buffer. One
+/// call rather than several because this upload has one source and one destination, which is the oppo
+/// site of the batch's five-call shape where the five destinations are five buffers. The call is legal
+/// only OUTSIDE a render pass instance, so the frame loop records it before vkCmdBeginRenderPass; the
+/// two barriers that make the host write visible to the transfer and the transfer visible to the stag
+/// es that read the block are the frame loop's too, and are named there. XUD_INVALID_ARG on a NULL
+/// descriptor/loader/device/command-buffer-handle or on a descriptor whose arena or buffer handle is
+/// not live; XUD_UNSUPPORTED when the arena is not mapped live, the upload's rows are not filled, or
+/// the copy row is nil; XUD_OK only when the region's extent is non-zero, which xud_descriptor_fill_up
+/// load_info() is the guard of.
+XudResult xud_descriptor_upload(XudDescriptor* descriptor, XudLoader* loader, const XudDevice* device, VkCommandBuffer commandBuffer);
+
 /// Driver: the whole rung in one call, in the one order that is correct, and every destroy row of ev
 /// ery object checked before the create that needs it (a layout this layer cannot destroy is a layout
 /// it must not create, the rule xud_window.c applies to a surface, xud_swapchain.c to a swapchain and
 /// xud_allocator_acquire() to a block it cannot free). Order: the caps gate, then the two set layouts,
 /// then the pool, then the buffer (vkCreateBuffer -> vkGetBufferMemoryRequirements -> xud_allocator_a
 /// cquire() -> vkBindBufferMemory), then set 0 (vkAllocateDescriptorSets), then the write (vkUpdateDes
-/// criptorSets). Two of the ten rows this rung needs return VOID - vkGetBufferMemoryRequirements an
-/// d vkUpdateDescriptorSets - so there is no VkResult to map for either: the requirements row is cl
-/// eared before the call and a size of zero is a refusal, and the write's inputs are all checked li
-/// ve before the call. The buffer comes before the set because the write names both, and the write c
-/// omes last because it is the only one of the five that reads two objects created by two different
-/// steps above it. On any error everything created so far is retired in reverse order and *outDescr
-/// iptor stays NULL. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a descriptor, a
-/// NULL loader/device/
-/// caps/allocator, or a handle-less device; XUD_UNSUPPORTED when the loader is closed, its device
-/// rows are not this device's, a row this rung needs is nil, or the caps gate above refused; XUD_OUT_O
-/// F_MEMORY when a host allocation fails; XUD_OUT_OF_RESOURCES/XUD_LOST/XUD_VULKAN_ERROR when the driv
-/// er refuses for its own reason.
+/// criptorSets), then the staging arena (vkCreateBuffer -> requirements -> acquire -> bind -> vkMapMem
+/// ory, once, for the whole arena, for the whole life of the descriptor). The arena comes LAST because
+/// it is the only object of the six that nothing else in this rung names, and putting it last is what
+/// makes the teardown below its exact reverse rather than a second order to state. Four of the rows th
+/// is rung needs return VOID - vkGetBufferMemoryRequirements, vkUpdateDescriptorSets and vkUnmapMemor
+/// y - so there is no VkResult to map for them: the requirements row is cleared before the call and a
+/// size of zero is a refusal, and the write's inputs are all checked live before the call. On any erro
+/// r everything created so far is retired in reverse order and *outDescriptor stays NULL. XUD_INVALID_
+/// ARG on a NULL out-pointer or one that already owns a descriptor, a NULL loader/device/caps/alloca
+/// tor, or a handle-less device; XUD_UNSUPPORTED when the loader is closed, its device rows are not th
+/// is device's, a row this rung needs is nil, the caps gate above refused, or no host-visible memory t
+/// ype exists to bind the arena to; XUD_OUT_OF_MEMORY when a host allocation fails; XUD_OUT_OF_RESOUR
+/// CES/XUD_LOST/XUD_VULKAN_ERROR when the driver refuses for its own reason.
 XudResult xud_descriptor_open(
     XudDescriptor** outDescriptor, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps, XudAllocator* alloc);
 
@@ -431,14 +535,20 @@ XudResult xud_descriptor_open(
 /// eading this very buffer and this very set, so xud_device_wait_idle() is the same boundary xud_swapch
 /// ain_close() and xud_allocator_close() state, and a guard that cannot run (XUD_UNSUPPORTED) is a tea
 /// rdown this rung must not start while a LOST device is still torn down and still reported - the rule
-/// xud_device_close() follows. Then: vkDestroyDescriptorPool, which retires set 0 with it (there is no
-/// vkDestroyDescriptorSet in these headers - grep it: zero hits - and the set is therefore the pool's t
-/// o retire, which is why the pool is destroyed before the layouts: a set still allocated from a layout
-/// is an error against that layout's destroy), then vkDestroyBuffer, then xud_allocator_release() for it
-/// s range (the buffer first, so a free range never names memory a live buffer sits in, and the range af
-/// ter because the block itself is the allocator's to free, in xud_allocator_close(), which runs after t
-/// his rung in the context's teardown order), then the two layout destroys in reverse creation order, th
-/// en free. XUD_ALREADY when the pointer owns no descriptor; XUD_INVALID_ARG on a NULL pointer-to-poin
+/// xud_device_close() follows. Then, in the exact reverse of the order above: vkUnmapMemory for the st
+/// aging arena FIRST (the repo's rule that a mapped range has a matching unmap, read at the one place a
+/// descriptor dies, and the reason it is FIRST is that a destroy of a buffer whose range is still mapp
+/// ed is a destroy over a mapping the driver still holds), then vkDestroyBuffer for the arena and xud_a
+/// llocator_release() for its range, then vkDestroyDescriptorPool, which retires set 0 with it (there is
+/// no vkDestroyDescriptorSet in these headers - grep it: zero hits - and the set is therefore the pool'
+/// s to retire, which is why the pool is destroyed before the layouts: a set still allocated from a lay
+/// out is an error against that layout's destroy), then vkDestroyBuffer for set 0's block, then xud_all
+/// ocator_release() for its range (the buffer first, so a free range never names memory a live buffer s
+/// its in, and the range after because the block itself is the allocator's to free, in xud_allocator_cl
+/// ose(), which runs after this rung in the context's teardown order), then the two layout destroys in
+/// reverse creation order, then free. XUD_ALREADY when the pointer owns no descriptor; XUD_INVALID_ARG
+/// on a NULL pointer-to-pointer or a NULL loader/device/allocator; XUD_UNSUPPORTED when the device row
+/// s are not this device's or a destroy row is nil while the object it would destroy is live.
 /// ter or a NULL loader/device/allocator; XUD_UNSUPPORTED when the device rows are not this device's or
 /// a destroy row is nil while the object it would destroy is live.
 XudResult xud_descriptor_close(XudDescriptor** ioDescriptor, XudLoader* loader, const XudDevice* device, XudAllocator* alloc);

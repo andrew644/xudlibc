@@ -41,18 +41,22 @@
  *          VkImage of a swapchain image (the swapchain owns its images - xud_swapchain.c's note
  *          about vkDestroyImage), no GPU-memory allocator of its own (the allocator rung IS in the
  *          tree now (S12) and is owned by the context rather than by this rung - which is why the
- *          batch's buffers are handed to the allocator rather to a block of this rung's). The desc
- *          riptor layout and the object kinds a public XudHandle names are steps above this one th
- *          at have not landed. THE BATCH RUNG, though, IS in the tree now and this rung owns it -
- *          and what is now true of it, stated rather than hidden: the pipeline this rung builds is
- *          built against the batch (xud_pipeline_open() takes it and xud_pipeline_fill_vertex_input()
- *          points the vertex-input row at the batch's four binding and four attribute rows), and the
- *          frame loop this rung draws through takes it too, so the batch's six buffers are created,
- *          uploaded through xud_batch_upload(), bound by one vkCmdBindVertexBuffers call over the
- *          four streams and one vkCmdBindIndexBuffer call over the index buffer, and drawn by vkCmdD
- *          rawIndexed per recorded draw row rather than by a hard-coded vkCmdDraw. What is still
- *          open in this rung is the descriptor bind and the push constant, the per-frame uniform
- *          copy, the transparent variant and the handle layer's record.
+ *          batch's buffers are handed to the allocator rather to a block of this rung's), and no d
+ *          escriptor rung of its own either (the context owns that one too, and this rung holds a
+ *          POINTER to it because the pipeline below is built against that record's two set layouts
+ *          and the frame loop binds that record's set 0 every frame - the same outlive rule the bat
+ *          ch's note above gives). The object kinds a public XudHandle names are the step above thi
+ *          s one that has not landed. THE BATCH RUNG, though, IS in the tree now and this rung owns
+ *          it - and what is now true of it, stated rather than hidden: the pipeline this rung build
+ *          s is built against the batch (xud_pipeline_open() takes it and xud_pipeline_fill_vertex_
+ *          input() points the vertex-input row at the batch's four binding and four attribute rows)
+ *          , and the frame loop this rung draws through takes it too, so the batch's six buffers ar
+ *          e created, uploaded through xud_batch_upload(), bound by one vkCmdBindVertexBuffers cal
+ *          l over the four streams and one vkCmdBindIndexBuffer call over the index buffer, and dra
+ *          wn by vkCmdDrawIndexed per recorded draw row rather than by a hard-coded vkCmdDraw. Wha
+ *          t is still open in this rung is the push constant, the transparent variant and the handl
+ *          e layer's record - the descriptor bind and the per-frame uniform copy landed with the de
+ *          scriptor staging step, and the frame loop above does both.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -113,7 +117,7 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    const XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain) {
+    XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain) {
     XudRenderer* renderer = NULL;
     XudResult result = XUD_INVALID_ARG;
 
@@ -222,6 +226,14 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
     }
 
     renderer->framebufferCount = swapchain->imageCount;
+    /* The descriptor is the ONE record of the rungs above this one that this rung holds a pointer
+       to rather than owns: the pipeline built above was created against THIS record's two set lay
+       outs, and the frame loop binds THIS record's set 0 every frame, so a renderer that forgot it
+       would be a renderer whose draw had no set to bind. The owner of the record is the context be
+       low, which closes it after this rung's teardown has released the range - the same outlive ru
+       le the batch's note in the header gives.
+    */
+    renderer->descriptor = descriptor;
 
     *outRenderer = renderer;
     return XUD_OK;
@@ -236,7 +248,8 @@ XudResult xud_renderer_draw(
     if ((renderer == NULL) || (outImageIndex == NULL)) {
         return XUD_INVALID_ARG;
     }
-    if ((renderer->pipeline == NULL) || (renderer->renderPass == NULL) || (renderer->framebuffers == NULL) || (renderer->frame == NULL)) {
+    if ((renderer->pipeline == NULL) || (renderer->renderPass == NULL) || (renderer->framebuffers == NULL) || (renderer->frame == NULL)
+        || (renderer->descriptor == NULL)) {
         return XUD_INVALID_ARG;
     }
 
@@ -248,7 +261,7 @@ XudResult xud_renderer_draw(
     }
 
     return xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
-        renderer->framebufferCount, renderer->batch, outImageIndex);
+        renderer->framebufferCount, renderer->batch, renderer->descriptor, outImageIndex);
 }
 
 /*-----------------------------------------------------------------------------------------------

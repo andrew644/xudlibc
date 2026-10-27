@@ -4,8 +4,10 @@
  *                 flush-on-pipeline/material-change decision
  *
  *   Owns : XudBatch - four stream VkBuffers (pos / uv / color / normal), one index VkBuffer,
- *          one host-visible staging VkBuffer carved out of the allocator's static blocks and
- *          mapped for the whole life of the batch, the recorded draw rows, and the two rows
+ *          one host-visible staging VkBuffer that OWNS one of the allocator's blocks (not a suba
+ *          llocation of one: vkMapMemory maps a VkDeviceMemory rather than a range, so the one c
+ *          arve this rung maps cannot share a block with any other mapped carve) and mapped for t
+ *          he whole life of the batch, the recorded draw rows, and the two rows
  *          of vertex-input state the pipeline rung below is handed.
  *   Layer: above the descriptor and the allocator, below the frame loop. This is the rung of
  *          the plan's layer ladder ("xudrl renderer (passes, pipelines, BATCHES, buffers)") and
@@ -154,7 +156,8 @@ static_assert(
 static_assert(
     (XUD_BATCH_INITIAL_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) * XUD_BATCH_INDEX_SIZE)
         <= XUD_ALLOCATOR_BLOCK_MIN_SIZE,
-    "the smallest batch's staging arena fits the allocator's FIRST block, which is the block every static carve starts out of");
+    "the smallest batch's staging arena fits the allocator's SMALLEST block, which is the block the arena gets when it owns one - the "
+    "arena is mapped, and a mapped carve owns its block rather than sharing one");
 static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES) * XUD_BATCH_INDEX_SIZE)
         <= XUD_ALLOCATOR_BLOCK_MAX_SIZE,
     "the largest batch's staging arena is one request the allocator's block-growth ceiling can serve, which is what makes the bound the "
