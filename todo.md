@@ -290,6 +290,22 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Blocked / needs a decision
 
+- **The transparent variant's two sub-questions** (raised 2026-10-26 while S19 was being committed — the variant itself is
+    settled in `AGENTS.md` ("blending is done with explicit pipeline variants (opaque = blend disabled, transparent = blend
+    enabled + sorted)"), these two are what the step would have to invent without asking):
+    - **The shape of the two pipelines inside the pipeline rung**: `XudPipeline` owns ONE `VkGraphicsPipelineCreateInfo` /
+      `VkPipeline`/`VkPipelineLayout` today. Two variants are either a `pipeline[XUD_BATCH_VARIANT_COUNT]` array (which is
+      what the batch's `variant` field already indexes, and what a third variant would grow without a rename) or two named
+      members (`pipelineOpaque`/`pipelineTransparent`, which says the two names in the type and hides the batch's index). As
+      sked before: array or named pair, and does the **layout** grow too (one layout is enough today — the two variants differ
+      only in `VkPipelineColorBlendAttachmentState`, so one layout, two pipelines) or does each variant get its own?
+    - **The sort key of a transparent draw**: `XudBatchDraw` is `{ firstIndex, indexCount, variant, materialIndex }` — it carr
+      ies no position and no depth, so there is nothing in the committed row to sort by. The options are (a) a sort key added
+      to the batch's draw row (a change to a committed rung — the batch's row is S16's, committed and tested), (b) the caller's
+      append order, which is raylib's own painter's-algorithm semantics and needs no new field (the batch replays transparent
+      draws in the order recorded and the caller draws back-to-front), or (c) a key computed from the stream bytes (reading
+      the vertices back to get a centroid, which is a host read of the arena and a per-draw cost the two other options do not
+      pay). Asked before: which of the three, and if (a), what the field is.
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
 - Handle layer's `record`: what a slot's record holds per kind — in particular what the **material** kind's record is
     (a pipeline-variant index + the set-1 bindings it names?), and whether the batch's `materialIndex` becomes a handle-layer
