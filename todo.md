@@ -6,6 +6,20 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-26 note: the **shapes rung and the public drawing API landed as S23** — see the *Steps complete (S23 …)* section
+    at the top of `todo_completed.md`. What landed there: `src/xud/xud_shapes.h/.c` (a new rung between the batch and the
+    public API, `xud_shapes_append_triangle()` appending three vertices and three indices **atomically** into the batch's
+    four streams and its index buffer), `xud.h` gaining the two value types a caller passes down (`XudVector3`/`XudColor`,
+    raylib's own), the public frame pair `xud_begin_drawing()`/`xud_end_drawing()` and `xud_draw_triangle_3d()`, `xud_cor
+    e.c` gaining the frame pair above the context (neither half calls a driver function: the opening half is the batch's
+    reset and the closing half is the renderer's one frame call plus `xud_renderer_resize()`, the reader of the recreate
+    ask), `examples/hello_triangle.c` (the first program that draws anything, `xud.h` only) and `tests/xud_test_shapes.c`
+    (a new area, above the batch and below the core). What is **still** open above it is the rest of raylib's 3D shape f
+    -amily and the camera + transform math — which is why a shape's coordinates are **clip-space** coordinates today: th
+    e frame's `viewProj` and this draw's model matrix are both identity, so the vertex shader answers with the position i
+    t read out of the POS stream unchanged. A public call that names a recreate is still an ask, and nothing about the pu
+    blic API surface changed in S22 — it changed here.
+
 - 2026-10-26 note: the **resize / recreate step landed as S22** — see the *Steps complete (S22 …)* section at the top of
     `todo_completed.md`. What landed there: `xud_window_resize()` / `xud_window_framebuffer_size()` (GLFW's set/get pair,
     and the **framebuffer** extent is what a swapchain is created at, never the window's requested one), `xud_renderpass_r
@@ -103,8 +117,16 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Next
 
-- [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
-    shape family in the API)
+- [ ] Shapes module, the rest of it (`DrawCube`, `DrawSphere`, `DrawLine3D`, `DrawPoint3D`, `DrawMesh` — 3D only, there
+    is no 2D shape family in the API)
+    - 2026-10-26 note: **one shape of this item landed as S23** — `xud_draw_triangle_3d()` and the `xud_shapes.h/.c` run
+      n it lives in are in the tree, `hello_triangle.c` draws it and `tests/xud_test_shapes.c` tests it; see the *Steps
+      complete (S23 …)* section at the top of `todo_completed.md`. What the rest of this item owes: the shapes that nee
+      d more than a flat normal and a zero uv (a cube's six faces and a sphere's per-vertex normal are the shape's own
+      attribute rows, not constants), and `DrawMesh`, which is the mesh / vertex-buffer abstraction below this item in
+      the *Later* list rather than a shape of this rung's.
+    - 2026-10-26 note: the frame pair above this item — `xud_begin_drawing()`/`xud_end_drawing()` — landed with S23, so
+      the public boundary a shape appends into is no longer missing; see the same section.
 
 ## Later
 

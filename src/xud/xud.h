@@ -4,32 +4,41 @@
  *
  *   Owns : the public API surface and nothing else - version macros, build-time config
  *          switches (XUD_VALIDATE / XUD_GPU_TESTS), the runtime environment-variable names
- *          the library reads, the XudResult error enum, the one XudHandle currency and its
- *          kind tags, the opaque XudContext owner type, the xud_init_context()/xud_close_context()
- *          lifecycle pair, and the runtime Vulkan query xud_vulkan_supported().
+ *          the library reads, the XudResult error enum, the two value types a caller passes
+ *          down (XudVector3 / XudColor), the one XudHandle currency and its kind tags, the
+ *          opaque XudContext owner type, the xud_init_context()/xud_close_context() life-
+ *          cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d
+ *          () / xud_end_drawing()), and the runtime Vulkan query xud_vulkan_supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
  *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
  *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
- *          xud_pipeline.h/.c, xud_renderpass.h/.c, xud_frame.h/.c, xud_renderer.h/.c and xud_alloca
- *          tor.h/.c - and user code includes this header only; tests may include the internal ones.
- *          Every layer below this one is in the tree now and stays internal like the rest, so no
- *          rung below the public API is public API yet: nothing about a VkDevice, its queues, a
+ *          xud_pipeline.h/.c, xud_renderpass.h/.c, xud_frame.h/.c, xud_renderer.h/.c, xud_alloca
+ *          tor.h/.c, xud_descriptor.h/.c, xud_batch.h/.c and xud_shapes.h/.c - and user code inclu
+ *          des this header only; tests may include the internal ones.
+ *          Every layer below this one is in the tree now, and every one of them stays internal be
+ *          hind the two exceptions this note names: nothing about a VkDevice, its queues, a
  *          GLFW window, a VkSurfaceKHR, a VkSwapchainKHR, a VkPipeline, a VkRenderPass, a
- *          VkFramebuffer, a VkCommandBuffer or a VkDeviceMemory is reachable from here; the context
- *          owns all of them (S8's ownership step is landed, S9's swapchain rung sits on top of it,
- *          S10's handle layer and S11's five render rungs on top of that, and S12's allocator rung
- *          sits above the swapchain and below the renderer, so xud_init_context() completes to the
- *          renderer and the allocator and xud_close_context() tears all of it back and NO field of
- *          XudContext is a sentinel any more). The window layer, the swapchain layer, the render
- *          rungs and the allocator are internal for the same reason every layer below the public
- *          API is: xud.h declares no window type, no swapchain type, no render type, no allocator
- *          type and calls no GLFW function, and the VkSurfaceKHR a context owns lives inside the
- *          XudWindow it owns rather than in a field of its own. The handle is the ONE exception to
- *          that rule, and is public for the reason the note below states: it is the currency a
- *          caller holds, and the slot arrays behind it are internal - xud.h declares no table type
- *          and no handle function, so no public call takes or fills a handle today, and what is
- *          still missing above the allocator is the batch, the shapes and the descriptor rungs, so
- *          no handle names an object yet and nothing of a caller's concern can be drawn.
+ *          VkFramebuffer, a VkCommandBuffer or a VkDeviceMemory is reachable from here; the conte
+ *          xt owns all of them (S8's ownership step is landed, S9's swapchain rung sits on top of
+ *          it, S10's handle layer and S11's five render rungs on top of that, S12's allocator rung
+ *          sits above the swapchain and below the descriptor and the renderer, and S16's batch and
+ *          S18's descriptor rungs sit below the renderer above it, so xud_init_context() completes
+ *          to the renderer and xud_close_context() tears all of it back and NO field of XudConte
+ *          xt is a sentinel any more). The window layer, the swapchain layer, the render rungs,
+ *          the allocator, the descriptor and the batch are internal for the same reason every laye
+ *          r below the public API is: xud.h declares no window type, no swapchain type, no rende
+ *          r type, no allocator type, no batch type and calls no GLFW function, and the VkSurfac
+ *          eKHR a context owns lives inside the XudWindow it owns rather than in a field of its
+ *          own. The TWO exceptions to that rule are the handle and the shapes rung's public call
+ *          s, and both are public for the reason their own notes state: the handle is the curren
+ *          cy a caller holds and the slot arrays behind it are internal (xud.h still declares no
+ *          table type and no handle function, so no public call takes or fills one today and no
+ *          handle names an object yet); the shapes rung's calls are the geometry a caller draws,
+ *          which is what the drawing API above the renderer reaches - xud.h declares the frame pa
+ *          ir and one shape, and what is still missing above the renderer is the rest of rayli
+ *          b's 3D shape family, the camera + transform math, the handle layer's material record
+ *          and the object kinds a public handle would name, which is why a caller can draw a tr
+ *          iangle today and nothing else.
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -39,7 +48,7 @@
  *     - every function returns XudResult, or fills an out-param; nothing is ignored
  *     - out-params must be NULL on entry, and are NULL on every failure path
  *     - one XudContext owns instance/device/swapchain/allocator/renderer and the handle tables
- *       behind the public currency; callers hold a handle and nothing else
+ *       behind the public currency; callers hold a handle, a context pointer and nothing else
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -113,6 +122,41 @@ typedef enum XudResult {
 /* Human-readable name for an error code - for logging and for test output.
    Never returns NULL, and never allocates. */
 const char* xud_result_name(XudResult result);
+
+/*-----------------------------------------------------------------------------------------------
+ * The value types a caller passes down
+ *
+ * These are raylib's own two - Vector3 (reference/raylib/raylib.h 222) and Color (253) - and
+ * they are value types in the opposite bucket from the handle below: a handle ADDRESSES an
+ * object the library owns and a caller never reaches into, and these two carry the bytes a
+ * caller hands DOWN for the library to write into the batch's streams. Nothing here owns a
+ * driver name, so neither type has a lifetime, a close or an error code of its own.
+ *
+ * The colour is four uint8_t in R,G,B,A order, which is the byte order the batch's COLOR strea
+ * m's VkFormat is in (xud_batch.h's note: VK_FORMAT_R8G8B8A8_UNORM, and the reason that forma
+ * t and not an invented one). A caller's colour is therefore the stream's bytes, read field-
+ * wise rather than converted.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// The one 3-component vector a shape's point is named by - raylib's Vector3, same three float
+/// fields, same by-value passing.
+typedef struct XudVector3 {
+    float x; /* vector x component */
+    float y; /* vector y component */
+    float z; /* vector z component */
+} XudVector3;
+
+/// The one colour a shape is filled with - raylib's Color, R8G8B8A8, four bytes and no more.
+typedef struct XudColor {
+    uint8_t r; /* colour red value   */
+    uint8_t g; /* colour green value */
+    uint8_t b; /* colour blue value  */
+    uint8_t a; /* colour alpha value */
+} XudColor;
+
+static_assert(sizeof(XudColor) == 4u,
+    "xud.h: a colour is the four bytes the batch's COLOR stream holds, so the public type and the "
+    "stream's element are one number and not a conversion");
 
 /*-----------------------------------------------------------------------------------------------
  * The handle - the one currency every caller-addressable object is named by
@@ -207,8 +251,9 @@ XudResult xud_vulkan_supported(void);
 /// window system, no device this layer can take, a window system this device cannot present to,
 /// a surface this layer cannot get a swapchain for, a renderer or an allocator this layer cannot
 /// open); no field of XudContext is a sentinel any more, and what is missing is not a field but a
-/// rung above the allocator - the batch, the shapes and the descriptor rungs - which is why nothing
-/// of a caller's concern can be drawn yet and no handle names an object.
+/// rung above the renderer - the rest of raylib's 3D shape family, the camera + transform math an
+/// d the object kinds a public handle would name - which is why a caller can draw a triangle today
+/// and nothing else, and why no handle names an object yet.
 XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height);
 
 /// Tear the context down in the reverse order of creation - handle table -> renderer -> allocator
@@ -236,6 +281,51 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
 /// as a refusal), XUD_ALREADY if *context was already NULL, XUD_INVALID_ARG if context itself is
 /// NULL. Always sets *context to NULL when it is not NULL.
 XudResult xud_close_context(XudContext** context);
+
+/*-----------------------------------------------------------------------------------------------
+ * The drawing API - the frame pair and the shapes a frame is made of
+ *
+ * This is the raylib-shaped half of the public surface above the context: BeginDrawing/EndDrawi
+ * ng (raylib.h 1048/1049) and the 3D shape calls (DrawTriangle3D, raylib.h 1588). The pair is
+ * the public frame boundary and the shape calls are what sits between them, which is the order
+ * raylib's own comment states for the pair (raylib.h 1100: "By default EndDrawing() does this
+ * job: draws everything + SwapScreenBuffer() + manage frame timing + PollInputEvents()") - the
+ * draws append, the end of the frame is what submits and presents them. Nothing here is a stat
+ * e machine and nothing here is a GL call: the pair maps onto the renderer rung's one frame ca
+ * ll and the shape calls map onto the batch's appends.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Begin canvas drawing: the public frame boundary, opened. It resets the batch, so the frame
+/// about to be drawn starts from an empty one rather than from whatever the frame below left be
+/// hind - the frame loop's own reset at the end of a completed frame is the same property seen
+/// from the other side, and this call is what makes it a public boundary instead of a side effe
+/// ct of a rung a caller cannot name. XUD_INVALID_ARG on a NULL context or on a renderer whose
+/// batch rung is gone; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_begin_drawing(XudContext* context);
+
+/// Draw one filled triangle, counter-clockwise vertex order in raylib's own wording (raylib.h
+/// 1588): the three points are appended in the order the caller named them, with the flat +Z no
+/// rmal and the zero uv xud_shapes.h states, and the colour is written to the batch's COLOR str
+/// eam in the caller's R,G,B,A order. The append is atomic: a triangle that does not fit the bat
+/// ch's capacities is refused before a single byte of it is written. The coordinates are the
+/// shape's own - the frame's viewProj and this draw's model matrix are both identity today, so
+/// the space they land in is the clip space the vertex shader answers in, and a non-identity ma
+/// trix is the camera + transform step's to choose (see todo.md). XUD_INVALID_ARG on a NULL con
+/// text or a renderer with no batch; XUD_UNSUPPORTED on a context that never completed bring-up
+/// ; XUD_OUT_OF_MEMORY when the three vertices or the three indices do not fit the batch.
+XudResult xud_draw_triangle_3d(XudContext* context, XudVector3 v0, XudVector3 v1, XudVector3 v2, XudColor color);
+
+/// End canvas drawing and swap buffers: the public frame boundary, closed. It runs one frame -
+/// acquire, record, upload, bind, draw the batch's recorded rows, submit, present - through the
+/// renderer rung this context owns, and then acts on the recreate ask that frame left behind by
+/// recreating the swapchain at the window's FRAMEBUFFER extent, which is the one place above the
+/// frame loop a public caller can act on it: the swapchain is the context's, so a recreate repla
+/// ces every image, every framebuffer row and every fence index the renderer holds, and it has
+/// to happen between two draws rather than inside one. XUD_INVALID_ARG on a NULL context or a
+/// context missing a rung this frame needs; XUD_UNSUPPORTED when the loader is closed or its ro
+/// ws are not this device's; the frame's own codes otherwise, and a frame that refused leaves th
+/// e batch alone.
+XudResult xud_end_drawing(XudContext* context);
 
 #ifdef __cplusplus
 }

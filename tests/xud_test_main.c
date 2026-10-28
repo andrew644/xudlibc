@@ -10,7 +10,10 @@
  *          and the headless default stays green with no driver present. The GPU ladder of the
  *          bring-up (xud_test_gpu_bringup) sits between the device area and the window area,
  *          which is where the original single-file run ran it: the rungs that need a device are
- *          tested against a device before the rungs above it are tested at all.
+ *          tested against a device before the rungs above it are tested at all. The shapes area
+ *          runs above the batch and below the core, which is the layer order: the shape is chec
+ *          ked against a batch the area built itself, and the public calls are checked against a
+ *          real context inside that area's own GPU half.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -45,6 +48,7 @@ int main(void) {
     xud_test_allocator();
     xud_test_descriptor();
     xud_test_batch();
+    xud_test_shapes();
     xud_test_core();
 
     printf("checks: %d  failures: %d\n", xudChecks, xudFailures);

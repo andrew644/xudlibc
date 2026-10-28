@@ -1,9 +1,85 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S22, the resize / recreate step** — the reader of the recreate ask S21 left behind, the
-window's **framebuffer** extent as the answer to that ask, and the rebuild that follows (2026-10-26). The step before it
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S23, the shapes rung and the public drawing API above it** — one triangle appended atomically
+into the batch's four streams and its index buffer, the two value types a caller passes down, the public frame pair and
+the example that draws it (2026-10-26). The step before it is **S22, the resize / recreate step** — the reader of the rec
+reate ask S21 left behind, the window's **framebuffer** extent as the answer to that ask, and the rebuild that follows (2
+026-10-26). The step before it
 is **S21, the swapchain's two out-of-band answer codes** — the second `VkResult` funnel for the acquire/present
 boundary and the `XudFrame.recreateWanted` flag it leaves behind (2026-10-26).
+
+## Steps complete (S23 The shapes rung and the public drawing API above it — one shape, the frame pair, and the example that draws it, one step, landed as one commit, 2026-10-26)
+
+- [x] ~~**The shapes rung and everything above it**: `xud.h` declaring **no draw call at all**, no value type a caller
+    passes down and no frame boundary, so nothing of a caller's concern could be drawn and `examples/` had one program,
+    `hello_context.c`, which draws nothing~~ — **done 2026-10-26** for one shape and the frame pair. The rest of raylib's
+    3D shape family (`DrawCube`, `DrawSphere`, `DrawLine3D`, `DrawPoint3D`, `DrawMesh`) stays open in `todo.md`'s *Next*,
+    and so does the camera + transform math that would make a shape's coordinates world-space rather than clip-space.
+
+  **What landed, rung by rung:**
+
+  - **A new rung, `src/xud/xud_shapes.h/.c`**, between the batch and the public API — the same split raylib makes (rayli
+    b's `DrawTriangle3D` lives in `rshapes.c`, above `rlgl`'s batch), and the reason the file holds **two** functions ra
+    -ther than one: `xud_shapes_append_triangle()` is the half a test can run against a batch it built itself, with no co
+    ntext and no driver in sight, and `xud_draw_triangle_3d()` is the public call whose whole job is to reach the contex
+    t's renderer's batch and hand that half the shape. The public call sits in this file rather than in `xud_core.c` for
+    the same reason raylib's sits in `rshapes.c` — the shape IS the public call's job, and `xud.h` is the declaration of
+    it rather than its implementation.
+  - **The append is atomic, and that is the whole reason the counters are read before anything is written.** A triangle
+    costs three vertices and three indices, so the fit check is against **both** of the batch's capacities, and a shape
+    that does not fit is refused before a single byte of it is written — `XUD_OUT_OF_MEMORY`, the batch's own code, read
+    through `xud_batch_stats()` rather than off the fields. A shape that wrote part of itself before refusing would be a
+    batch whose live count says six and whose arena holds two and a half triangles, which is a state a frame loop would
+    then draw half a triangle from. The GPU half and the pure half both check the counters **after** the refusal, not on
+    ly the code.
+  - **The two constant attribute rows are named constants in the header, not literals in the source** — the flat +Z nor
+    -mal and the zero uv. The batch's appends refuse a NULL array rather than zero-filling one, so a stream this shape h
+    as nothing to say about still has to be handed something, and the reason it is what it is is stated beside each cons
+    -ant. The colour is **not** a constant: it is the caller's, and it is the batch's COLOR stream's four bytes in the ca
+    ller's R,G,B,A order, so the public `XudColor` and the stream's element are one number rather than a conversion — ch
+    ecked against `XUD_BATCH_STREAM_ELEMENT(XUD_BATCH_STREAM_COLOR)` rather than asserted in prose.
+  - **The two value types a caller passes down are raylib's own two**, `XudVector3` (raylib.h 222) and `XudColor` (253),
+    and they are in the opposite bucket from the handle `xud.h` already declares: a handle ADDRESSES an object the libra
+    ry owns and a caller never reaches into, and these two carry the bytes a caller hands DOWN for the library to write
+    into the batch's streams. Neither has a lifetime, a close or an error code of its own.
+  - **The public frame pair is the raylib-shaped boundary above the context** — `xud_begin_drawing()`/`xud_end_drawing()`
+    over raylib's `BeginDrawing`/`EndDrawing` (raylib.h 1048/1049), and the order the pair states is the order raylib's
+    own comment states for that pair (raylib.h 1100: "By default EndDrawing() does this job: draws everything + SwapScre
+    enBuffer() + …") — the draws append and the end of the frame is what submits and presents them. Nothing here is a st
+    ate machine and nothing here is a GL call: the pair maps onto the renderer rung's one frame call and the batch rung'
+    s one reset, and **neither half of the pair calls a driver function at all**.
+  - **`xud_end_drawing()` is the one place above the frame loop a public caller can act on the recreate ask**, which is
+    what closes S21's and S22's open question from the public side. The swapchain is the context's, so a recreate replac
+    es every image, every framebuffer row and every fence index the renderer holds, and it has to happen between two dr
+    aws rather than inside one — so the closing half of the pair runs the frame and then `xud_renderer_resize()`, which
+    is the reader of `XudFrame.recreateWanted` and answers `XUD_ALREADY` when nothing was asked for, which is what makes
+    calling it every frame cheap rather than a rebuild every frame. The resize is not this rung's to refuse: a rebuild t
+    hat failed is reported.
+  - **`hello_triangle.c` is the second example and the first thing that draws anything**, and it includes `xud.h` only —
+    which is the point of the public header: user code names a context, a frame boundary and a triangle, and never a VkD
+    evice, a swapchain, a pipeline, a batch, a buffer or a fence. It draws three frames, so the loop is visible: the fir
+    st frame's batch is empty at open, the frame that completed resets it, and the next `begin_drawing()` opens a bound
+    -ary on an empty batch again.
+  - **A new test area, `tests/xud_test_shapes.c`**, one TU per the repo's test-split rule, running above the batch area
+    and below the core area, which is the layer order: the shape is checked against a batch the area laid out itself (th
+    e same host-arena stand-in the batch area uses, since the batch's own mapping is a driver fact), and the public call
+    s are checked against a real context inside that area's own GPU half. The pure half checks the **bytes**, not only t
+    he counts — the caller's four colour bytes in the caller's order at the COLOR window's offset, the header's flat +Z
+    at the NORMAL window's, the header's zero uv at the UV's, the caller's first point as the first row of the POS windo
+    w's, and the three indices as 0,1,2 at the index buffer's offset — because a count-only check would pass a shape tha
+    t wrote the wrong bytes.
+
+  **Verified on this machine (2026-10-26):** the headless run is **2399 checks / 0 failures** (up from 2366, the 33 new
+  ones this area's pure half adds) and the `XUD_GPU_TESTS=1` run is **3086 / 0** (up from 3053), validation-clean throug
+  hout — the GPU half draws a real triangle through a real pipeline three frames in a row and the messenger hears nothi
+  ng about it, which is the signal the repo's validation rule asks for rather than "it didn't crash". `./build/hello_t
+  riangle` answers `XUD_OK` for the query, the bring-up, all three frames' three calls each and the teardown, and exits
+  0. The `-DXUD_SANITIZERS=ON` build reports **the same 72 bytes / 3 allocations as before this step** — the 8-byte libd
+  ecor/libgdk one GLFW `dlopen`s per window and the validation layer's 32 bytes per `vkCreateDevice`, both outside this
+  tree, neither of them new here and no suppression installed to make a run look clean. `clang` 22 builds the two new TU
+  s warning-free, and `./scripts/format.sh --check` is clean over `src/xud tests examples` after `./scripts/format.sh`.
+  `nm -u` on the new example lists no `vk*`/`glfw*` symbol and `ldd` lists no `libvulkan`/`libglfw` — the two rules hol
+  d of the new example, not only of the library.
 
 ## Steps complete (S22 The resize / recreate step — the reader of the recreate ask, the framebuffer extent as the answer, and the rebuild that follows, one step, landed as one commit, 2026-10-26)
 

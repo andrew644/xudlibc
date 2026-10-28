@@ -11,9 +11,13 @@
  *          the linker could see, and what keeps a machine with no driver and a machine with no windo
  *          w system both only ever getting XUD_UNSUPPORTED, which is what keeps the headless test ru
  *          n green. The handle layer is the one rung here that calls nothing at all: a handle is an
- *          index into this layer's own arrays, so opening and closing the table is host work.
+ *          index into this layer's own arrays, so opening and closing the table is host work. Also
+ *          owned from here: the public frame pair xud_begin_drawing()/xud_end_drawing(), which cal
+ *          ls no driver function at all - it reaches the renderer rung's one frame call and the
+ *          batch rung's one reset, and both of those rungs own the driver calls.
  *   Layer: core (bottom of the public API). Sees xud.h, xud_core.h and every layer below it (loader,
- *          diagnostics, window, instance, physical, device, swapchain, renderer, handle table). The
+ *          diagnostics, window, instance, physical, device, swapchain, renderer, handle table and
+ *          batch. The
  *          diagnostics struct is opened only when XUD_VALIDATE asked for validation, and it sits bet
  *          ween the loader and the instance in both the open order and the teardown order for the re
  *          ason the extension gives it: its messenger is destroyed through the VkInstance that owns
@@ -34,6 +38,7 @@
 
 #include "xud_core.h"
 #include "xud.h"
+#include "xud_batch.h" /* Required for: xud_batch_reset, the public frame boundary's opening half runs on */
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_diagnostics.h"
@@ -470,4 +475,73 @@ XudResult xud_close_context(XudContext** context) {
        cast away as it was until this step.
      */
     return first;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The public frame pair, above the context
+ *
+ * Both halves reach the renderer rung and nothing else, which is the point of the pair: a caller
+ * names a frame boundary and a shape, never a pipeline, a pass, a framebuffer row, a command buf
+ * fer or a fence. The opening half is the batch's reset and the closing half is the renderer's one
+ * frame call, so the order the frame loop states - appends, then the flush - is the order the pub
+ * lic pair states, and it is raylib's own order for BeginDrawing/EndDrawing (raylib.h 1100 says
+ * EndDrawing() is what draws everything and swaps buffers).
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_begin_drawing(XudContext* context) {
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->renderer == NULL) {
+        /* A context with no renderer is a context that never completed bring-up: xud_init_context()
+           hands back NULL for that case, so this is a caller holding on rather than a state the li
+           brary leaves behind. Reported, not ignored - and XUD_UNSUPPORTED is the code the public
+           surface already uses for "this machine cannot host what was asked for". */
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The reset is the frame boundary, and it is idempotent: xud_frame_draw() already reset the
+       batch at the end of the frame it completed, so a frame that ran to the end arrives here emp
+       ty already. The reset is still the whole point of this call - the frame about to be drawn
+       starts from an empty batch whatever the rung below left behind - and a batch that is empty
+       resets to empty, which is why the call is cheap rather than a promise. */
+    return xud_batch_reset(context->renderer->batch);
+}
+
+XudResult xud_end_drawing(XudContext* context) {
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t imageIndex = 0u;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->renderer == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->swapchain == NULL)
+        || (context->physicalDevice == NULL) || (context->window == NULL) || (context->allocator == NULL)) {
+        /* Every rung the frame and the rebuild below need is a context field, and a context missin
+           g one is a context that cannot run a frame at all - the same answer the half above gives
+           for the same reason. */
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_renderer_draw(context->renderer, context->loader, context->device, context->swapchain, &imageIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The recreate ask, acted on one rung above where it was left. xud_renderer_resize() is the re
+       nder of XudFrame.recreateWanted and it answers XUD_ALREADY when nothing was asked for, which
+       is what makes calling it here every frame cheap rather than a rebuild every frame: the flag
+       is the ask, and the two swapchain-boundary codes are the only things that set it. A frame
+       that answered VK_SUBOPTIMAL_KHR or VK_ERROR_OUT_OF_DATE_KHR ran to the end above - the image
+       was usable and the presentation happened - and this is the rung that replaces the swapchain
+       before the NEXT acquire, at the window's FRAMEBUFFER extent rather than at its requested one.
+       The resize is not this rung's to refuse: a rebuild that failed is reported, and the renderer
+       is left with the rungs it still has. */
+    result = xud_renderer_resize(&context->renderer, context->loader, context->device, &context->physicalDevice->caps, context->allocator,
+        context->physicalDevice, context->window, &context->swapchain);
+    if ((result != XUD_OK) && (result != XUD_ALREADY)) {
+        return result;
+    }
+
+    return XUD_OK;
 }

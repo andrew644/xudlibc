@@ -15,7 +15,7 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 | Path | What | Rules |
 | --- | --- | --- |
 | `src/xud/` | Library sources (`xud.h` public header + one `.c`/`.h` per module) | Where all library code lives |
-| `tests/` | Unit tests — **split 2026-10-25 into one TU per area** (`xud_test_harness.h`/`.c` = the shared counters, the one named check and the GPU gate; `xud_test_main.c` = the runner; `xud_test_<area>.c` × 19) | Headless by default; GPU tests gated by `XUD_GPU_TESTS=1`; the runner's area order is explicit in `CMakeLists.txt`, not globbed |
+| `tests/` | Unit tests — **split 2026-10-25 into one TU per area** (`xud_test_harness.h`/`.c` = the shared counters, the one named check and the GPU gate; `xud_test_main.c` = the runner; `xud_test_<area>.c` × 20) | Headless by default; GPU tests gated by `XUD_GPU_TESTS=1`; the runner's area order is explicit in `CMakeLists.txt`, not globbed |
 | `examples/` | Runnable demos | Small, one concern each |
 | `shaders/` | GLSL sources (`solid.vert`/`solid.frag` present today) | Compiled at build time by CMake into `build/gen/` — never at runtime, never committed as `.spv` |
 | `src/external/` | Vendored third-party deps (raylib's own convention) — **present today**: `volk.h`/`volk.c` (Volk) + a full `glfw/` source tree (GLFW 3.5.1) + `PROVENANCE.md` | Settled 2026-10-23 (see *Settled decisions*): **committed with its license files**, never edited in place; **Volk is built in now** (`volk.c` compiled into the `xud` archive, `src/external` on the include path), and so is the **GLFW tree** (the OBJECT target `glfw_vendor`, **Wayland** backend: 21 GLFW objects in the archive, 40 objects total, the four Wayland libs linked PUBLIC into `xud` — see *Verified GLFW Wayland build*) |

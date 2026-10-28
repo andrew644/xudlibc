@@ -52,6 +52,7 @@ void xud_test_renderer(void); /* the renderer rung's resize: the recreate ask, t
 void xud_test_allocator(void);
 void xud_test_descriptor(void);
 void xud_test_batch(void);
+void xud_test_shapes(void); /* the shapes rung and the public drawing API: the atomic append, the frame pair */
 void xud_test_core(void);
 
 #endif /* XUD_TEST_HARNESS_H_ */

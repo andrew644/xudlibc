@@ -147,8 +147,8 @@ static void xud_test_no_leak(void) {
    for, a GLFW window, a VkInstance carrying that window's required instance extensions, a physical
    device queried through THAT instance, a VkDevice created from that device's recorded caps with b
    oth role queues resolved, a VkSurfaceKHR for the window inside that window, and the XudSwapchai
-   n created for that surface on that device. The allocator is the one rung still not in the tree,
-   so its field stays a sentinel and the checks below say so rather than assuming it. The teardown
+   n created for that surface on that device. The allocator, the descriptor layer, the batch and t
+   he renderer are all in the tree now, and no field of XudContext is a sentinel. The teardown
    is xud_close_context()'s order (swapchain -> device -> surface -> window -> physical -> instance
    -> diagnostics -> loader) and the run has to be validation-clean, not just crash-free: the mess
    enger is installed, so a validation complaint would land in the callback and the error counter b
