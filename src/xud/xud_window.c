@@ -13,6 +13,13 @@
  *          urface (grepped in the vendored glfw3.h and in src/vulkan.c, the name does not exist)
  *          and the entry point that destroys a surface is vkDestroySurfaceKHR, a row of the loade
  *          r's instance table - which is why this layer takes an XudLoader at all.
+ *          The resize half is GLFW's too: glfwSetWindowSize is the programmatic resize (it
+ *          returns void, so the requested extent is written into the record rather than read
+ *          back), and glfwGetFramebufferSize is the extent a swapchain for this window has to
+ *          be created at - GLFW's Wayland half scales wl.width / wl.height into wl.fbWidth /
+ *          wl.fbHeight by the fractional or buffer scale, so on a scaled session the two pairs
+ *          differ and the requested pair is a pair a swapchain at it would be called out of
+ *          date on every acquire.
  *   Layer: above the instance (a surface is created FOR an instance, and its teardown takes that
  *          instance) and below the swapchain. This is the only file in src/xud/ that includes <GL
  *          FW/glfw3.h>, and the only one that calls GLFW at all: GLFW's Vulkan half resolves its
@@ -208,6 +215,60 @@ fail:
     free(window);
     *outWindow = NULL;
     return result;
+}
+
+/// See xud_window.h. glfwSetWindowSize is GLFW's own resize: on Wayland it runs resizeWindow ->
+/// resizeFramebuffer, which wl_egl_window_resize's the EGL window and writes wl.fbWidth / fbHeight
+/// synchronously, and on X11 it X11-resizes the window and re-asks for its pixmap. Neither backend
+/// returns a VkResult, so the zero-state rule applies and the extent written back is the one asked
+/// for - the framebuffer's own extent is a separate question, answered below.
+XudResult xud_window_resize(XudWindow* window, uint32_t width, uint32_t height) {
+    if ((window == NULL) || (window->glfwWindow == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((width < XUD_WINDOW_MIN_EXTENT) || (width > XUD_WINDOW_MAX_EXTENT) || (height < XUD_WINDOW_MIN_EXTENT)
+        || (height > XUD_WINDOW_MAX_EXTENT)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((width == window->width) && (height == window->height)) {
+        /* The state asked for is the state present, so there is nothing to resize - the rule
+           xud_swapchain_recreate() follows one rung up, and the reason a resize step that acts on
+           a recreate ask can be handed an extent that no longer needs one. */
+        return XUD_ALREADY;
+    }
+
+    glfwSetWindowSize(window->glfwWindow, (int)width, (int)height);
+    window->width = width;
+    window->height = height;
+    return XUD_OK;
+}
+
+/// See xud_window.h. The framebuffer's extent, not the window's: GLFW keeps its own fbWidth /
+/// fbHeight per backend (wl_window.c's resizeFramebuffer scales wl.width / wl.height by the
+/// fractional scale or the buffer scale; x11_window.c reads the pixmap XGetWindowPixmap gave back),
+/// and a swapchain whose extent is not that one is a swapchain the compositor calls out of date.
+XudResult xud_window_framebuffer_size(uint32_t* outWidth, uint32_t* outHeight, const XudWindow* window) {
+    int width = 0;
+    int height = 0;
+
+    if ((outWidth == NULL) || (outHeight == NULL) || (window == NULL) || (window->glfwWindow == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* glfwGetFramebufferSize zeroes both out-params before it dispatches (window.c 715-727), so a
+       platform that answers nothing leaves 0/0 behind rather than garbage. */
+    glfwGetFramebufferSize(window->glfwWindow, &width, &height);
+
+    /* GLFW reports the extent in ints, and a non-positive one is not a window. The layer's own
+       XUD_WINDOW_MAX_EXTENT is INT_MAX (asserted in the header above), so a positive int is inside
+       it by construction and no widening cast can wrap. */
+    if ((width <= 0) || (height <= 0)) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outWidth = (uint32_t)width;
+    *outHeight = (uint32_t)height;
+    return XUD_OK;
 }
 
 /// See xud_window.h. The instance and the physical device, not a loader, are the arguments here:

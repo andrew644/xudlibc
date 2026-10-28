@@ -6,6 +6,14 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-26 note: the **resize / recreate step landed as S22** — see the *Steps complete (S22 …)* section at the top of
+    `todo_completed.md`. What landed there: `xud_window_resize()` / `xud_window_framebuffer_size()` (GLFW's set/get pair,
+    and the **framebuffer** extent is what a swapchain is created at, never the window's requested one), `xud_renderpass_r
+    ecreate_depth()` (the depth attachment is recreated because a framebuffer attachment owes the framebuffer's own extent)
+    and `xud_renderer_resize()` (the reader of `XudFrame.recreateWanted`, running between draws in the one order that is c
+    orrect), plus the wait-idle guard `xud_swapchain_recreate()` now owes the `oldSwapchain` retirement. Nothing about the
+    public API surface changed — the resize is rung-level, and a public call that names a recreate is still an ask.
+
 - [ ] Batch **consumers** (last part): the handle layer's material **record** — the batch's `materialIndex` names a
     material slot and `xud.h` still declares no create/close function that takes a handle
     - 2026-10-26 note: the **transparent variant landed as S20** — see the *Steps complete (S20 …)* section at the top
@@ -95,14 +103,6 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Next
 
-- [ ] The **resize / recreate** step, which is what reads the flag S21 left behind: `XudFrame.recreateWanted` has **no
-    reader** anywhere above the frame loop, so the pair `VK_SUBOPTIMAL_KHR` / `VK_ERROR_OUT_OF_DATE_KHR` is now a frame t
-    hat runs and asks rather than a frame that is refused, and nothing acts on the ask yet. The step recreates the swapch
-    ain (and the framebuffer array and the per-image fence array with it, since every image, row and fence index dies wit
-    h it) at the **next** acquire rather than in the middle of the frame that asked — which is what the Vulkan wording o
-    f the out-of-date code insists on — and GLFW's `glfwGetFramebufferSize` / `glfwSetFramebufferSizeCallback` pair is w
-    hat makes a resize observable at all. **Ask before widening it**: the swapchain is the context's, so a recreate is a
-    context decision, and any public call that names one is a public-API-surface change.
 - [ ] Shapes module (`DrawCube`, `DrawSphere`, `DrawTriangle3D`, `DrawLine3D`, `DrawPoint3D` — 3D only, there is no 2D
     shape family in the API)
 

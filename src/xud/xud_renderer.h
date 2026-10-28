@@ -26,7 +26,10 @@
  *   can still have a presentation in flight against the swapchain's images and its own close i
  *   s the fence guard that retires it; then the framebuffer array, whose views name those very
  *   images; then the pipeline and then the pass, the two that name that pass's handle, so it d
- *   ies last.
+ *   ies last. Resize: the same order run down and back up again - frame, framebuffer array, the
+ *   context's swapchain SLOT, the pass's depth image, rows, frame - which is what xud_renderer_
+ *   resize() is, and why the swapchain is handed to it as the context's SLOT rather than the swap
+ *   chain itself.
  *
  *   What this rung does NOT own, and why: no swapchain (the context owns it, one rung below),
  *   no VkImage of a swapchain image (the swapchain owns its images, xud_swapchain.c's note
@@ -70,6 +73,7 @@
 #include "xud_renderpass.h"
 #include "xud_swapchain.h"
 #include "xud_vulkan.h"
+#include "xud_window.h"
 #include <stdint.h>
 
 /*-----------------------------------------------------------------------------------------------
@@ -142,11 +146,45 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
 /// (the plan's "the framebuffer array is recreated with the swapchain" rule, read as a refusal).
 /// What this rung leaves behind rather than acting on: an acquire or a present that answered the
 /// swapchain's two out-of-band codes ran the frame to the end (the image was usable and the present
-/// ation happened) and set renderer->frame->recreateWanted, which is the resize step's to read -
-/// recreating is not this rung's either, since the swapchain is the context's and every image, frame
-/// buffer row and fence index in here dies with it.
+/// ation happened) and set renderer->frame->recreateWanted, which is xud_renderer_resize()'s rung
+/// to read - recreating is not this rung's either, since the swapchain is the context's and every
+/// image, framebuffer row and fence index in here dies with it.
 XudResult xud_renderer_draw(
     XudRenderer* renderer, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain, uint32_t* outImageIndex);
+
+/// Driver: the resize step - the one rung in this tree that acts on the recreate ask the frame
+/// loop above leaves behind. renderer->frame->recreateWanted IS the ask (xud_vulkan.h's swapchain-
+/// boundary funnel is the only thing that sets it), and the ask is acted on at the NEXT acquire,
+/// which is what this rung is called BETWEEN two draws rather than inside one: the swapchain is
+/// the context's rather than this rung's, so the rung is handed the context's swapchain SLOT rather
+/// than the swapchain itself, and a recreate replaces the whole array of images, every framebuffer
+/// row and every fence index. The order is the open order run down and back up, and every step of
+/// it is load-bearing: close the FRAME first (its fences are the ones a presentation against the
+/// OLD images may still be waiting on, and xud_frame_close() is that guard), then the FRAMEBUFFER
+/// ARRAY (its rows' views name the swapchain images the recreate below is about to retire - VUID-
+/// vkDestroyDevice-device-05137 is what the validation layer reports a handle that survives its
+/// destroy at, so a row naming a retired image is a row that has to die BEFORE the recreate and not
+/// after it), then xud_swapchain_recreate() at the window's FRAMEBUFFER extent (read through
+/// xud_window_framebuffer_size(), never the window's requested extent: a Hi-Wayland window is 1600x
+/// 900 requested and 3200x1800 of framebuffer, and a swapchain at the first is one the compositor
+/// calls out of date on every acquire, which is what sets the flag again forever), then the pass's
+/// DEPTH image at the new extent (VUID-VkFramebufferCreateInfo-attachments-02702 requires every
+/// attachment of one framebuffer at the framebuffer's own extent, so the depth buffer is the one
+/// attachment a swapchain recreate forces), then the rows again, then the frame again. The batch,
+/// the pipeline and the descriptor are NOT touched: none of them names an extent. On XUD_OK the
+/// swapchain, the framebuffer array and the frame are all new, framebufferCount == the new image
+/// count, and recreateWanted is cleared. XUD_ALREADY when nothing was asked for (the flag is 0 - a
+/// draw that answered VK_SUCCESS leaves this rung to be called and to answer that the extent has not
+/// moved) or when the ask has already been satisfied (the swapchain is already at the extent the
+/// window's framebuffer is, in which case the flag is cleared too, so one ask cannot turn into a
+/// loop). XUD_INVALID_ARG on a NULL renderer/pointer, a NULL loader/device/caps/allocator/physical
+/// device/window/swapchain pointer or slot, a slot holding NULL, or a renderer missing any rung this
+/// rebuilds; XUD_UNSUPPORTED when the loader is closed, its rows are not this device's, the fence
+/// and framebuffer arrays no longer match the swapchain in hand, or a rung's guard cannot run. A
+/// rebuild that fails after the teardown has run leaves the renderer with the rungs it still has and
+/// nothing leaked - it is not drawable, and xud_renderer_close() retires whatever is left.
+XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, const XudPhysicalDevice* physicalDevice, const XudWindow* window, XudSwapchain** ioSwapchain);
 
 /// Driver: the teardown, in the reverse of the open order above and for the reasons the file-top
 /// note gives. Every rung reports the first thing that refused, and the rungs after a refusal

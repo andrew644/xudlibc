@@ -346,6 +346,7 @@ add_executable(xud_test
     tests/xud_test_pipeline.c
     tests/xud_test_renderpass.c
     tests/xud_test_frame.c
+    tests/xud_test_renderer.c
     tests/xud_test_allocator.c
     tests/xud_test_descriptor.c
     tests/xud_test_batch.c

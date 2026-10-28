@@ -5,7 +5,9 @@
  *   Owns : XudWindow - the GLFWwindow*, the VkSurfaceKHR that window was handed over, the extent
  *          asked for, and the instance-level extensions GLFW's window system needs, recorded once
  *          at open time - plus the rungs that bring each half up and down. The window half is
- *          GLFW's: glfwInit, glfwCreateWindow, glfwDestroyWindow, glfwTerminate. The surface half
+ *          GLFW's: glfwInit, glfwCreateWindow, glfwDestroyWindow, glfwTerminate, glfwSetWindowSize
+ *          and glfwGetFramebufferSize - the FRAMEBUFFER extent being what a swapchain is created
+ *          at, never the extent asked for. The surface half
  *          is the library's: glfwCreateWindowSurface hands a VkSurfaceKHR to the instance it is
  *          given, and vkDestroySurfaceKHR - a row of the loader's instance table - takes it back.
  *   Layer: above the instance (a surface is created FOR an instance, and vkDestroySurfaceKHR takes
@@ -178,6 +180,41 @@ XudResult xud_window_check_instance_support(bool* outSupports, const XudWindow* 
 /// not work), XUD_INTERNAL_ERROR when GLFW lies about it or a name does not fit its buffer.
 /// Every failure path frees the struct and leaves NULL.
 XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height);
+
+/// Driver (GLFW): ask the window system for a new extent - glfwSetWindowSize. This is the one
+///   call in this tree that moves a window's extent at all: nothing else writes window->width /
+///   height after the create, and a drag-resize is the COMPOSITOR's decision, applied by GLFW's
+///   own configure handler on both backends (x11_window.c's configure_func, wl_window.c's
+///   xdgSurfaceHandleConfigure), which then runs the same resizeWindow -> resizeFramebuffer
+///   chain this call goes through. This call is the programmatic half of that same path, which
+///   is what lets a test make a resize happen on demand instead of waiting for a drag. XUD_
+///   INVALID_ARG on a NULL window, one this layer does not own, or an extent outside the
+///   window layer's own bounds above; XUD_ALREADY when the window is already at that extent
+///   (the rule xud_swapchain_recreate() follows one rung up: the state asked for is the state
+///   present, so there is nothing to recreate); XUD_OK once GLFW has taken the new extent.
+///   glfwSetWindowSize returns void, so the zero-state rule applies: the window's extent is
+///   written from the request rather than read back. The FRAMEBUFFER's extent is a separate
+///   question, read by xud_window_framebuffer_size() below, and the two differ by the display's
+///   scale factor, which is the whole reason a resize step reads the second and not the first.
+XudResult xud_window_resize(XudWindow* window, uint32_t width, uint32_t height);
+
+/// Driver (GLFW): the extent of the window's FRAMEBUFFER as the window system gave it - glfwGet
+///   FramebufferSize. This is the extent a swapchain for this window has to be created at, and
+///   it is NOT the window's requested extent: GLFW's Wayland half keeps its own fbWidth / fbHeight,
+///   written by resizeFramebuffer from window->wl.width / wl.height scaled by either the
+///   fractional scale factor (the (w * scalingNumerator + 60) / 120 rounding wl_window.c uses)
+///   or the buffer scale, and the X11 half reads XGetWindowPixmap's pixmap width/height. A
+///   Hi-Wayland window is therefore 1600x900 requested and 3200x1800 of framebuffer, and a
+///   swapchain built at the first is a swapchain that does not match the surface - which is
+///   what the compositor answers with VK_ERROR_OUT_OF_DATE_KHR on every acquire, the two codes
+///   xud_vulkan.h's swapchain-boundary funnel exists for. xud_swapchain_open() takes the
+///   window's REQUESTED extent today, which is why the resize step below reads this one.
+///   glfwGetFramebufferSize returns void and zeroes both out-params BEFORE it dispatches
+///   (window.c 715-727), so a platform that answers nothing leaves 0/0 behind, and the bound
+///   below turns that into a refusal rather than a zero-extent swapchain. XUD_INVALID_ARG on a
+///   NULL out-parameter, a NULL window or one this layer does not own, or a non-positive
+///   extent; XUD_OK with both extents written.
+XudResult xud_window_framebuffer_size(uint32_t* outWidth, uint32_t* outHeight, const XudWindow* window);
 
 /// Driver (GLFW): does the window system GLFW picked present to the physical device in hand,
 /// through the queue family the physical layer chose (caps.queueFamilyIndex, the one family the

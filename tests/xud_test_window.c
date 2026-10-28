@@ -190,6 +190,29 @@ static void xud_test_window_pure(void) {
     xud_check(xud_window_close(&synthetic) == XUD_OK, "window/close-handleless",
         "a window that never got a GLFW window frees without a GLFW call");
     xud_check(synthetic == NULL, "window/close-clears-out", "close clears the out-param");
+
+    /* --- xud_window_resize and xud_window_framebuffer_size: the guards, every one of them before
+         a GLFW call. The two calls that reach GLFW are the GPU half's, below. --- */
+    xud_check(xud_window_resize(NULL, 64u, 64u) == XUD_INVALID_ARG, "window/resize-null", "no window at all is a bad argument");
+    xud_check(xud_window_resize(synthetic, 0u, 64u) == XUD_INVALID_ARG, "window/resize-zero-width",
+        "an extent of 0 is not a window, and GLFW's own resizeWindow clamps to 1 rather than refus"
+        "ing - the bound here is what keeps a zero-extent swapchain out of reach");
+    xud_check(xud_window_resize(synthetic, 64u, 0u) == XUD_INVALID_ARG, "window/resize-zero-height", "and so is a height of 0");
+    xud_check(xud_window_resize(synthetic, XUD_WINDOW_MAX_EXTENT + 1u, 64u) == XUD_INVALID_ARG, "window/resize-over-bound",
+        "an extent past the window layer's own int bound is refused before glfwSetWindowSize is hand"
+        "ed an int that cannot hold it");
+    xud_check(xud_window_resize(synthetic, 64u, 64u) == XUD_INVALID_ARG, "window/resize-no-glfw-handle",
+        "a window that never got a GLFW window has nothing to resize, and the refusal is the same o"
+        "ne xud_window_close() gives it above");
+    xud_check(xud_window_framebuffer_size(NULL, &count, synthetic) == XUD_INVALID_ARG, "window/fb-size-null-width-out",
+        "a width that cannot be written is a bad argument");
+    xud_check(xud_window_framebuffer_size(&count, NULL, synthetic) == XUD_INVALID_ARG, "window/fb-size-null-height-out",
+        "and so is a height that cannot be written");
+    xud_check(
+        xud_window_framebuffer_size(&count, &count, NULL) == XUD_INVALID_ARG, "window/fb-size-null-window", "and so is no window at all");
+    xud_check(xud_window_framebuffer_size(&count, &count, synthetic) == XUD_INVALID_ARG, "window/fb-size-no-glfw-handle",
+        "a window with no GLFW window behind it has no framebuffer extent to answer, which is what"
+        "makes the 0/0 a platform leaves behind a refusal rather than a zero-extent swapchain");
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -208,6 +231,10 @@ static void xud_test_gpu_window(void) {
     XudWindow* second = NULL;
     const char* required[XUD_INSTANCE_EXTRA_MAX] = { NULL };
     uint32_t requiredCount = 0u;
+    uint32_t fbWidth = 0u;
+    uint32_t fbHeight = 0u;
+    uint32_t fbMovedWidth = 0u;
+    uint32_t fbMovedHeight = 0u;
     bool supports = false;
     XudResult result;
 
@@ -228,6 +255,37 @@ static void xud_test_gpu_window(void) {
         (window->width == 320u) && (window->height == 240u), "gpu-window/extent-recorded", "the extent asked for is the extent recorded");
     xud_check(window->surface == VK_NULL_HANDLE, "gpu-window/surface-null-at-open", "opening a window creates no surface");
     xud_check(window->surfaceInstance == VK_NULL_HANDLE, "gpu-window/surface-instance-null", "and records no instance for one");
+
+    /* The FRAMEBUFFER's extent, which is what a swapchain for this window has to be created at, an
+       d the programmatic resize. GLFW's Wayland half scales wl.width / wl.height into wl.fbWidth /
+       wl.fbHeight by the fractional scale or the buffer scale, so on a scaled session the two exten
+       ts differ and the only fact that holds at both of them is that the framebuffer extent follows
+       the window - which is the half that matters, because a swapchain that kept the old extent is
+       a swapchain the compositor calls out of date on every acquire, forever. */
+    xud_check(xud_window_framebuffer_size(&fbWidth, &fbHeight, window) == XUD_OK, "gpu-window/fb-size",
+        "the window system answers a framebuffer extent for the window it made");
+    xud_check((fbWidth > 0u) && (fbHeight > 0u), "gpu-window/fb-size-positive",
+        "and it is a positive one, so a swapchain for this window has an extent to be created at");
+    xud_check(xud_window_framebuffer_size(NULL, &fbHeight, window) == XUD_INVALID_ARG, "gpu-window/fb-size-null-out",
+        "a width that cannot be written is refused even against a live window");
+    xud_check(xud_window_resize(window, 320u, 240u) == XUD_ALREADY, "gpu-window/resize-already",
+        "the window is already at that extent, so there is nothing to resize - the rule xud_swapcha"
+        "in_recreate() follows one rung up");
+    xud_check(xud_window_resize(window, 0u, 240u) == XUD_INVALID_ARG, "gpu-window/resize-zero",
+        "and an extent of 0 is refused before GLFW is asked at all");
+    xud_check(xud_window_resize(window, 400u, 300u) == XUD_OK, "gpu-window/resize-ok", "GLFW took the new extent");
+    xud_check((window->width == 400u) && (window->height == 300u), "gpu-window/resize-recorded",
+        "the window's requested extent is the extent asked for, written rather than read back - glF"
+        "WSetWindowSize returns void, so the zero-state rule applies here");
+    xud_check(xud_window_framebuffer_size(&fbMovedWidth, &fbMovedHeight, window) == XUD_OK, "gpu-window/fb-size-after",
+        "the framebuffer extent is read again after the resize");
+    xud_check((fbMovedWidth > 0u) && (fbMovedHeight > 0u), "gpu-window/fb-size-after-positive", "and it is still positive");
+    xud_check((fbMovedWidth != fbWidth) || (fbMovedHeight != fbHeight), "gpu-window/fb-follows-window",
+        "and it moved with the window, which is the one fact that holds at every scale factor: a s"
+        "wapchain that kept the old extent would be a swapchain the compositor calls out of date on "
+        "every acquire, which is a resize loop rather than a resize");
+    xud_check(xud_window_resize(window, 320u, 240u) == XUD_OK, "gpu-window/resize-back",
+        "the window is resized back so the rest of this area runs at the extent it opened at");
 
     xud_check(xud_window_required_instance_extensions(window, required, &requiredCount) == XUD_OK, "gpu-window/required-accessor",
         "the recorded list is readable");

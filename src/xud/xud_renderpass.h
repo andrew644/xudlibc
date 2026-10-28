@@ -19,6 +19,15 @@
  *   exists), which is why the first triangle has hidden-surface behaviour. The transparent
  *   variant of the pair is the batch step's - the sort is what makes it mean anything.
  *
+ *   A new swapchain extent forces a new depth buffer here: xud_renderpass_recreate_depth()
+ *   recreates the attachment at the extent the swapchain was recreated to, because
+ *   VUID-VkFramebufferCreateInfo-attachments-02702 makes every framebuffer attachment the
+ *   framebuffer's own extent. The new image / view / carve is made BEFORE the old row is
+ *   retired, so a recreate that fails leaves the pass exactly as it was rather than as a pass
+ *   whose description names an image that was never made, and the rung waits for the device
+ *   to be idle before it starts, because the frame loop above may still have a submission or
+ *   a presentation reading the very depth buffer being replaced.
+ *
  *   The depth image and its one view are owned HERE, not in the framebuffer array: the pass is
  *   what declares the attachment and every framebuffer row names the SAME view, so the view's
  *   owner is the pass and the rows only borrow it. That is the opposite of the colour half, whe
@@ -348,6 +357,39 @@ XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const 
 /// A refused step is reported, not hidden: the first non-OK answer is what the rung returns
 /// and the steps after it still run.
 XudResult xud_renderpass_close(XudRenderPass** ioPass, const XudDevice* device, XudLoader* loader, XudAllocator* alloc);
+
+/// Driver: the depth attachment at a new extent, and nothing else - the one attachment a swapchain
+///   recreate forces, because VUID-VkFramebufferCreateInfo-attachments-02702 requires every attach-
+///   ment of one framebuffer to be at the framebuffer's own extent, so a depth buffer of the OLD
+///   extent is a framebuffer the driver is entitled to refuse outright. The pass's own handle and
+///   its attachment DESCRIPTIONS are untouched: only the image, its one view and the allocator's
+///   range they back change. vkGetImageMemoryRequirements + vkCreateImage + vkBindImageMemory +
+///   vkCreateImageView for the NEW row, then vkDestroyImageView + vkDestroyImage + the allocator's
+///   release for the OLD one, in that order, so a recreate that fails leaves the pass exactly as it
+///   was rather than as a pass whose description names an image that was never made; the new row is
+///   retired through the one shared teardown order the close above uses, which is why that order is
+///   a function of its own. Before any of it: the loader is open, its device rows are this device's,
+///   and every destroy row the OLD row needs is checked before any create row the NEW one would
+///   otherwise leak - the rule xud_renderpass_open() applies above, one rung down. Then xud_device_
+///   wait_idle() guards the whole thing, for the reason the close above gives: the frame loop may
+///   still have a submission in flight and that submission is the one reading this very depth buffe
+///   r. A guard that cannot run (XUD_UNSUPPORTED) is a recreate this rung must not start. A LOST
+///   device is NOT still recreated here, unlike the close's still-torn-down rule: a teardown on a
+///   dying device has to run because the handles would otherwise leak, but a recreate on one has
+///   nothing to create against, and half-swapping the attachment would leave a broken pass - and
+///   nothing has been created at that point, so nothing leaks. The framebuffer rows above (which
+///   name the OLD view) and the frame loop above (whose fences name the OLD images) are closed by
+///   xud_renderer_resize() BEFORE this call, which is the only reason the old view can die here at
+///   all. XUD_ALREADY when the depth image is already at the swapchain's extent (the state asked
+///   for is the state present, the rule xud_swapchain_recreate() follows one rung up); XUD_INVALID
+///   ARG on a NULL pointer-to-pointer or one that owns no pass, a NULL loader/device/caps/allocato
+///   r/swapchain, a handle-less device, a swapchain with no handle or a zero extent, or a pass with
+///   no depth attachment at all (xud_renderpass_open() never leaves that state, and the pass's desc
+///   ription declares a depth row, so a pass that has none is a broken pass and xud_renderpass_open
+///   () is the call for it); XUD_UNSUPPORTED when the loader is closed, its rows are not this devi
+///   ce's, or a row this rung needs is nil.
+XudResult xud_renderpass_recreate_depth(XudRenderPass** ioPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, const XudSwapchain* swapchain);
 
 /// Driver: one framebuffer for one swapchain image - vkCreateImageView, then vkCreateFrame
 /// /// buffer, in that order, because the framebuffer's attachment list is the view the create

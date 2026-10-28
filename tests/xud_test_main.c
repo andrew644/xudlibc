@@ -41,6 +41,7 @@ int main(void) {
     xud_test_pipeline();
     xud_test_renderpass();
     xud_test_frame();
+    xud_test_renderer();
     xud_test_allocator();
     xud_test_descriptor();
     xud_test_batch();

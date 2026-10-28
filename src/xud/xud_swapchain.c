@@ -571,7 +571,7 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader, 
         return XUD_UNSUPPORTED;
     }
     if ((loader->deviceTable.vkDestroySwapchainKHR == NULL) || (loader->deviceTable.vkCreateSwapchainKHR == NULL)
-        || (loader->deviceTable.vkGetSwapchainImagesKHR == NULL)
+        || (loader->deviceTable.vkGetSwapchainImagesKHR == NULL) || (loader->deviceTable.vkDeviceWaitIdle == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceSurfaceCapabilitiesKHR == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceSurfaceFormatsKHR == NULL)
         || (loader->instanceTable.vkGetPhysicalDeviceSurfacePresentModesKHR == NULL)) {
@@ -588,6 +588,21 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader, 
     }
 
     guard = xud_swapchain_fill_create_info(&createInfo, &surfaceCaps, window->surface, width, height, old);
+    if (guard != XUD_OK) {
+        return guard;
+    }
+
+    /* The guard this rung owes the create below, not the close above: oldSwapchain makes the
+       creation retire the old handle, and the rule a retired swapchain owes is the one vkDestroy
+       SwapchainKHR-swapchain-00965 states for the explicit destroy - all uses of the presentable
+       images acquired from it must have completed execution. A frame that was submitted and pres
+       ented but not yet finished is a use of those very images, so a recreate that starts with a
+       presentation in flight is a recreate the validation layer calls a driver fault (probed: a
+       resize taken after a presented frame answered exactly that, "can't be called on a swapchai
+       n that is currently in use by a queue", and the one guarantee that nothing is in flight is
+       xud_device_wait_idle()'s). The guard runs after the queries above and before the create be
+       low, so a recreate that cannot guard has torn nothing down. */
+    guard = xud_device_wait_idle(device, loader);
     if (guard != XUD_OK) {
         return guard;
     }

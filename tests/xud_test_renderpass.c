@@ -8,7 +8,11 @@
  * the framebuffer + image-view create-info assembly per swapchain image. Layer: tests. Sees xud_re
  * nderpass.h and xud_pipeline.h: a framebuffer is created FOR a pass, so the pass's attachment des
  * criptions and the framebuffer's view row are checked as one area, and the pass's sample count is
- * the pipeline layer's constant the attachment rows are asked to match. The GPU half sees xud_core
+ * the pipeline layer's constant the attachment rows are asked to match. The area also owns
+ *  xud_renderpass_recreate_depth()'s guards - the half of the resize rung that decides a depth
+ *  recreate may not start, which is testable with no device present because it is all argument
+ *  checks and one extent comparison. The recreate itself is the GPU half's, and the rebuild that
+ *  hands it an extent is the renderer area's. The GPU half sees xud_core
  * .h and xud_allocator.h as well, because the depth attachment is the first thing in this tree tha
  * t asks the allocator for an IMAGE rather than a buffer, and the pass is the owner of that image.
  *
@@ -45,7 +49,21 @@ static void xud_test_renderpass_pure(void) {
     VkImageViewCreateInfo depthViewInfo = (VkImageViewCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkFramebufferCreateInfo fbInfo = (VkFramebufferCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkImageCreateInfo imageInfo = (VkImageCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    XudLoader loader = (XudLoader) { 0 };
+    XudDevice device = (XudDevice) { 0 };
+    XudDeviceCaps caps = (XudDeviceCaps) { 0 };
+    XudAllocator alloc = (XudAllocator) { 0 };
+    XudSwapchain swap = (XudSwapchain) { 0 };
+    XudRenderPass grown = (XudRenderPass) { 0 };
+    XudRenderPass* passSlot = NULL;
+    const VkDevice fakeDevice = (VkDevice)0x1100u;
+    const VkSwapchainKHR fakeSwapchain = (VkSwapchainKHR)0x1200u;
+    const VkRenderPass fakePass = (VkRenderPass)0x1300u;
+    const VkImage fakeImage = (VkImage)0x1400u;
+    const VkImageView fakeView = (VkImageView)0x1500u;
+    const VkDeviceMemory fakeMemory = (VkDeviceMemory)0x1600u;
     const VkFormat chosen = VK_FORMAT_B8G8R8A8_UNORM;
+    XudRenderPass* grownSlot = &grown;
 
     xud_check(xud_renderpass_fill_state(NULL, chosen) == XUD_INVALID_ARG, "renderpass/state-null-out", "refused");
     xud_check(xud_renderpass_fill_state(&pass, VK_FORMAT_UNDEFINED) == XUD_UNSUPPORTED, "renderpass/state-no-format",
@@ -437,6 +455,76 @@ static void xud_test_renderpass_pure(void) {
         "t the depth image above was created at, which is the attachment-extent rule VUID-VkFramebu"
         "fferCreateInfo-attachments-02702 reads");
     xud_check(fbInfo.layers == 1u, "framebuffer/create-layers", "one layer, the same answer as the view's and the pass's");
+
+    /* --- xud_renderpass_recreate_depth: the guards, every one of them before a driver call. The
+         recreate itself is the GPU half's and the renderer area below exercises it end-to-end; the
+         half that is testable with no device present is the half that decides a recreate may not
+         start, and the two rows that answer without one at all are the ALREADY row (the extent ask
+         is already satisfied) and the nil-table row (a recreate this layer cannot retire the old
+         half of). --- */
+    loader.open = true;
+    device.device = fakeDevice;
+    swap.swapchain = fakeSwapchain;
+    swap.imageCount = 2u;
+    swap.createInfo.imageExtent.width = 320u;
+    swap.createInfo.imageExtent.height = 240u;
+    grown.renderPass = fakePass;
+    grown.depthImage = fakeImage;
+    grown.depthView = fakeView;
+    grown.depthRange.memory = fakeMemory;
+    grown.depthRange.size = 4096u;
+    grown.depthImageInfo.extent.width = 320u;
+    grown.depthImageInfo.extent.height = 240u;
+
+    passSlot = NULL;
+    xud_check(xud_renderpass_recreate_depth(NULL, &loader, &device, &caps, &alloc, &swap) == XUD_INVALID_ARG,
+        "renderpass/recreate-null-slot", "a recreate with no pass to replace is a bad argument");
+    xud_check(xud_renderpass_recreate_depth(&passSlot, &loader, &device, &caps, &alloc, &swap) == XUD_INVALID_ARG,
+        "renderpass/recreate-empty-slot", "and so is a slot that owns no pass - the rung above that creates one is the call for that");
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, NULL, &device, &caps, &alloc, &swap) == XUD_INVALID_ARG,
+        "renderpass/recreate-null-loader", "a NULL loader is a bad argument, not an unsupported loader");
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, NULL, &caps, &alloc, &swap) == XUD_UNSUPPORTED,
+        "renderpass/recreate-null-device",
+        "a NULL device is reported as unsupported: the recreate is a driver call and there is no driver here");
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, &device, NULL, &alloc, &swap) == XUD_UNSUPPORTED,
+        "renderpass/recreate-null-caps", "and so is a NULL caps record, which is what the allocator's memory-type rule reads");
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, &device, &caps, NULL, &swap) == XUD_UNSUPPORTED,
+        "renderpass/recreate-null-allocator", "and a NULL allocator, which is the only owner of the memory the new image would live in");
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, &device, &caps, &alloc, NULL) == XUD_UNSUPPORTED,
+        "renderpass/recreate-null-swapchain", "and a NULL swapchain, whose extent IS the new extent being asked for");
+
+    /* The two rows that answer with no driver present at all. */
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, &device, &caps, &alloc, &swap) == XUD_ALREADY,
+        "renderpass/recreate-extent-already",
+        "the depth image is already at the extent asked for, so there is nothing to recreate - the "
+        "rule xud_swapchain_recreate() follows one rung up, and the reason a resize step that acted "
+        "on a recreate ask can be handed an extent that no longer needs one");
+    swap.createInfo.imageExtent.width = 640u;
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, &device, &caps, &alloc, &swap) == XUD_UNSUPPORTED,
+        "renderpass/recreate-rows-nil",
+        "a new extent, and every destroy and create row this teardown needs is nil in a loader that "
+        "was never opened against a device: an image this layer cannot destroy is an image it must "
+        "not create, which is why the destroy rows are checked before the create rows at all");
+
+    swap.createInfo.imageExtent.width = 320u;
+    swap.createInfo.imageExtent.height = 0u;
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, &device, &caps, &alloc, &swap) == XUD_INVALID_ARG,
+        "renderpass/recreate-zero-extent", "a zero extent is a bad argument, because it is an extent no image has");
+    swap.createInfo.imageExtent.height = 240u;
+    swap.swapchain = VK_NULL_HANDLE;
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, &device, &caps, &alloc, &swap) == XUD_INVALID_ARG,
+        "renderpass/recreate-no-swapchain-handle", "a swapchain with no handle has no extent to be recreated to");
+    swap.swapchain = fakeSwapchain;
+    device.device = VK_NULL_HANDLE;
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, &device, &caps, &alloc, &swap) == XUD_UNSUPPORTED,
+        "renderpass/recreate-no-device-handle", "a handle-less device is reported as unsupported, the rule every driver rung here follows");
+    device.device = fakeDevice;
+    grown.depthView = VK_NULL_HANDLE;
+    xud_check(xud_renderpass_recreate_depth(&grownSlot, &loader, &device, &caps, &alloc, &swap) == XUD_INVALID_ARG,
+        "renderpass/recreate-no-depth-row",
+        "a pass with no depth attachment has no attachment to replace: xud_renderpass_open() never "
+        "leaves that state, and the pass's own description declares a depth row, so a pass that has "
+        "none is a broken pass and the rung above that creates one is the call for it");
 }
 
 /*-----------------------------------------------------------------------------------------------

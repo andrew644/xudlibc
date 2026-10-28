@@ -1,7 +1,111 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S21, the swapchain's two out-of-band answer codes** — the second `VkResult` funnel for the acquire/present
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S22, the resize / recreate step** — the reader of the recreate ask S21 left behind, the
+window's **framebuffer** extent as the answer to that ask, and the rebuild that follows (2026-10-26). The step before it
+is **S21, the swapchain's two out-of-band answer codes** — the second `VkResult` funnel for the acquire/present
 boundary and the `XudFrame.recreateWanted` flag it leaves behind (2026-10-26).
+
+## Steps complete (S22 The resize / recreate step — the reader of the recreate ask, the framebuffer extent as the answer, and the rebuild that follows, one step, landed as one commit, 2026-10-26)
+
+- [x] ~~**The resize / recreate step**: `XudFrame.recreateWanted` having **no reader** anywhere above the frame loop, so
+    the pair `VK_SUBOPTIMAL_KHR` / `VK_ERROR_OUT_OF_DATE_KHR` being a frame that runs and asks with nothing acting on the
+    ask~~ — **done 2026-10-26**.
+
+  **What landed, rung by rung, bottom up:**
+
+  - **The window rung gains the two GLFW calls a resize needs**: `xud_window_resize()` over `glfwSetWindowSize` and
+    `xud_window_framebuffer_size()` over `glfwGetFramebufferSize`. The resize writes the requested extent into
+    `window->width`/`window->height` rather than reading it back, because `glfwSetWindowSize` returns **void** — the
+    zero-state-before-the-call rule this tree follows for a void call, applied to a record instead of a handle. The
+    bounds are the window layer's own `XUD_WINDOW_MIN_EXTENT`/`XUD_WINDOW_MAX_EXTENT`, and they are checked **before**
+    GLFW is handed an `int` that cannot hold the extent: GLFW's own Wayland `resizeWindow` clamps to 1 rather than refu
+    sing, so a zero extent that reaches it is a zero-extent swapchain waiting one call away. An extent already in hand
+    is `XUD_ALREADY`, the rule `xud_swapchain_recreate()` follows one rung up. `xud_window_framebuffer_size()` refuses
+    a non-positive extent rather than writing one, because GLFW's Wayland half zeroes both out-params before it
+    dispatches and a 0/0 answer cannot make a valid swapchain.
+  - **The framebuffer extent, not the window extent, is the ask's answer** — and that is the whole reason the pair of
+    calls exists separately. GLFW's Wayland half scales `wl.width`/`wl.height` into `wl.fbWidth`/`wl.fbHeight` by the
+    fractional scale (`(w * scalingNumerator + 60) / 120`) or the buffer scale, so on a scaled session the two pairs
+    differ, and a swapchain created at the **requested** pair is a swapchain the compositor calls out of date on every
+    acquire, which is a resize loop rather than a resize. The one fact that holds at every scale factor, and the one
+    the GPU test pins, is that the framebuffer extent **moves with** the window.
+  - **The render-pass rung gains `xud_renderpass_recreate_depth()`**, and the depth attachment is recreated because
+    `VUID-VkFramebufferCreateInfo-attachments-02702` makes every framebuffer attachment the framebuffer's own extent:
+    a new swapchain extent forces a new depth buffer. The order is create-new-then-retire-old, so a recreate that fails
+    leaves the pass exactly as it was rather than as a pass whose description names an image that was never made — the
+    new image, its one view and its carve of allocator memory are made first, the old row is retired through
+    `xud_renderpass_retire_depth()` after, and a failure after the new row exists restores the old one into the pass. The
+    shared teardown is why the teardown split exists: `xud_renderpass_retire_depth()` (view before image before release,
+    handles cleared before the destroy calls) is used by the whole-pass teardown and by the recreate's failure paths
+    alike, so the order is one owner's rather than restated. The rung calls `xud_device_wait_idle()` before it starts,
+    because the frame loop may still have a submission or a presentation reading the very depth buffer being replaced.
+  - **The renderer rung gains `xud_renderer_resize()`**, the reader of the flag, and it runs **between draws** rather
+    than inside one: the swapchain is the context's, a rung below, and a recreate retires every image, every
+    framebuffer row and every fence index this rung holds, so mid-draw is a state that cannot be rebuilt. The order is
+    the one that is correct — frame closed, framebuffer array closed, the context's swapchain recreated at the
+    framebuffer extent, the pass's depth image recreated at it, rows reopened against the new images and the new depth
+    view, frame reopened with one fence per new image — and the batch, the pipeline and the descriptor are **not**
+    touched, because none of them names an extent, so a resize that rebuilt them would be more work than the resize
+    needs. Two refusals fire before anything is torn down: a count that no longer matches the swapchain in hand is
+    `XUD_UNSUPPORTED` (the same mismatch `xud_frame_draw()` reports one rung down, read here before a rebuild would
+    make it worse), and a window with no framebuffer extent to give is `XUD_INVALID_ARG` rather than a rebuild at an
+    extent of 0. A resize whose framebuffer extent already matches the swapchain clears the flag and answers
+    `XUD_ALREADY`, which is what stops one ask becoming an endless recreate loop.
+  - **The swapchain rung's recreate owes a guard it did not have**: `vkCreateSwapchainKHR`'s `oldSwapchain` argument
+    retires the old handle as part of the creation, and the rule a retired swapchain owes is the one
+    `VUID-vkDestroySwapchainKHR-swapchain-00965` states for the explicit destroy — *all uses of the presentable images
+    acquired from swapchain must have completed execution*. A frame that was submitted and presented but not yet
+    finished is a use of those very images. This is not a hypothesis here: probed on this machine, a resize taken
+    after a presented frame answered exactly that, `vkDestroySwapchainKHR(): can't be called on a VkSwapchainKHR that
+    is currently in use by a VkQueue`, and the guard added (wait-idle after the surface queries, before the create,
+    and the `vkDeviceWaitIdle` row added to the rung's own table check) is what made it clean. A recreate whose guard
+    cannot run has torn nothing down.
+
+  **The tests, and what each half proves:**
+  - The **window** area gains 9 headless checks for the two calls' guards (null window, null out-params, the extent
+    bounds, a window with no GLFW window behind it) and 11 GPU checks that the framebuffer extent is readable, positive
+    and **moves with** the window across a real resize, plus that the window is resized back so the rest of the area
+    runs at its original extent.
+  - The **renderpass** area gains 12 headless checks for `xud_renderpass_recreate_depth()`'s guards — every argument
+    refusal, the `XUD_ALREADY` row (the extent ask is already satisfied), the nil-table row (an image this layer cannot
+    destroy is an image it must not create, which is why the destroy rows are checked before the create rows at all), a
+    zero extent, a handle-less swapchain, a handle-less device (reported `XUD_UNSUPPORTED`, the rule every driver rung
+    here follows) and a pass with no depth row (a broken pass, refused rather than half-recreated).
+  - A **new area file, `tests/xud_test_renderer.c`**, is the resize's own rung: 13 headless checks that every guard
+    fires before a driver call, against a renderer whose five rungs are all present and whose loader rows are all nil,
+    which is the whole point of testing this half with no device present. Its GPU half runs the rebuild end to end
+    against a completed context: a frame drawn so a presentation exists, the ask set the way the frame area tampers
+    its own fields (this machine's compositor answers `VK_SUCCESS` for every acquire, so the funnel never sets the flag
+    here — the rebuild is the half that has to work either way), the window resized, the rebuild run, and then the
+    facts that say the new set is a set the frame loop can actually run against rather than one that happened to
+    survive: the swapchain at the framebuffer extent, the depth image and view and the new range live, the rows and
+    the fences and the count the draw hands down all matching the **new** swapchain, a reopened row built at the new
+    extent, the reopened rows naming the **new** depth view rather than the retired one, the reopened frame naming the
+    new swapchain, the flag cleared, the reopened loop's frame count starting fresh at 0, the untouched rungs still
+    live, a frame drawing at the new extent, and a second call answering `XUD_ALREADY`.
+  - The area is wired in one place per the testing rules: one line in `tests/xud_test_main.c`, one line in
+    `CMakeLists.txt`'s explicit source list (between the frame area and the allocator area, the ladder slot the
+    renderer sits in), one entry point declared in `tests/xud_test_harness.h`.
+
+  **The run, measured**: headless 2330 → **2366** checks, GPU 2938 → **3016**, both 0 failures and validation-clean
+  (the renderer area's own GPU check asserts the validation layer's error count stays 0 across the rebuild and the
+  frame after it, so the old rows dying before the old images were retired by the recreate, and the old depth view
+  dying before the old depth image, are a checked fact rather than a claim). The `-DXUD_SANITIZERS=ON` build reports
+  72 bytes / 3 allocations headless and 1376 bytes / 70 allocations GPU against the pre-change tree's 1336 / 68 — the
+  delta is exactly the two 8-byte libdecor/libgdk allocations GLFW's `glfwInit` leaks per window opened, the class the
+  log already documents as living wholly outside this tree, and the new area opens one more window. The clang 22
+  second-opinion build is warning-free and answers the same 2366 / 0.
+
+  **AGENTS.md** gains the rule under *Vulkan rules*, beside the swapchain bullet it belongs to: a recreate is a rung
+  above the frame loop, asked for by the framebuffer extent rather than the window's, in the one order that is
+  correct, and it owes the same wait-idle guard a destroy does.
+
+  **What stays open**: the resize is **rung-level**, not public — `xud.h` still declares no call that names a resize,
+  and the public spelling (and the `glfwSetFramebufferSizeCallback` / `glfwSetWindowSizeCallback` pair that would make
+  a compositor's resize reach it on its own) is a public-API-surface change that stays an ask. Nothing in `examples/`
+  resizes yet. And the flag's producer is still unexercised on this driver: this machine's Wayland session answers
+  `VK_SUCCESS` for every acquire, so the two out-of-band codes' GPU path is a table the headless run pins rather than
+  a behaviour this run observes.
 
 ## Steps complete (S21 The acquire's and the present's positive answer codes — a second VkResult funnel for the swapchain boundary, and the recreate flag it leaves on the frame, one step, landed as one commit, 2026-10-26)
 

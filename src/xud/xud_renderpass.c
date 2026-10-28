@@ -5,7 +5,13 @@
  *
  *   Owns : the render-pass rows and their create-info assembly (pure), the framebuffer's view
  *          and create-info assembly (pure), then vkCreateRenderPass / vkCreateImageView /
- *          vkCreateFramebuffer and the teardown that hands every one of them back.
+ *          vkCreateFramebuffer and the teardown that hands every one of them back, plus
+ *          xud_renderpass_recreate_depth(): the depth attachment recreated at a new extent, the
+ *          new image / view / carve made before the old row is retired so a failed recreate
+ *          leaves the pass exactly as it was rather than as a pass whose description names an
+ *          image that was never made. The teardown split is one owner's - xud_renderpass_retire_
+ *          depth() (view before image before release, handles cleared before the destroy calls)
+ *          is used by the whole-pass teardown and by the recreate's failure paths alike.
  *   Layer: above the pipeline, below the frame loop. Nothing in this file calls a Vulkan entry
  *          point directly - every one is reached through a row of XudLoader's Volk device ta
  *          ble, so the archive holds no vk* symbol and the link line has no -lvulkan anywher
@@ -469,30 +475,22 @@ XudResult xud_framebuffer_fill_create_info(
  * The render pass - the driver half
  *-----------------------------------------------------------------------------------------------*/
 
-static void xud_renderpass_retire(XudRenderPass* pass, const XudDevice* device, XudLoader* loader, XudAllocator* alloc) {
-    if ((pass == NULL) || (loader == NULL) || (device == NULL)) {
+/* Internal: the depth attachment's own teardown - view before image before release. Shared by
+   the pass's whole teardown below AND by xud_renderpass_recreate_depth()'s failure path, which
+   is why it is a function of its own: a recreate that created a new image and then failed has to
+   retire exactly that half, and the only way to say that once is to have one order rather than a
+   second copy of it in the failure path. The order is the exact reverse of the order the objects
+   were created in, and every step of it is load-bearing: the VIEW before the IMAGE, because the
+   view names the image and there is no way to retire a view while its image is gone; the IMAGE
+   before the RELEASE, because an image bound to memory the allocator has just freed is an image
+   naming freed memory - the rule xud_descriptor.c's uniform buffer follows one rung over. Every
+   destroy handle is an IN-parameter, read into a local and the field cleared BEFORE the call,
+   which is the shape xud_renderpass_close() states below: clearing after it would destroy VK_NUL
+   L_HANDLE and leave the object alive, which the validation layer reports as VUID-vkDestroyDevic
+   e-device-05137 at the following vkDestroyDevice. */
+static void xud_renderpass_retire_depth(XudRenderPass* pass, const XudDevice* device, XudLoader* loader, XudAllocator* alloc) {
+    if ((pass == NULL) || (loader == NULL) || (device == NULL) || (alloc == NULL)) {
         return;
-    }
-
-    /* The one teardown order this rung's close and its failure path SHARE, which is the shape xud
-       _descriptor.c's xud_descriptor_retire() is one rung over: a bring-up that failed half-way thr
-       ough must leak nothing, and the only way to say that once is to have one order rather than a
-       second copy of it in the failure path. The order is the exact reverse of the order the object
-       s were created in, and every step of it is load-bearing: the PASS first, because its attachme
-       nt description is what names the depth image's layout; the VIEW before the IMAGE, because the
-       view names the image and there is no way to retire a view while its image is gone; the IMAGE
-       before the RELEASE, because an image bound to memory the allocator has just freed is an imag
-       e naming freed memory - the rule xud_descriptor.c's uniform buffer follows one rung over. Eve
-       ry destroy handle is an IN-parameter, read into a local and the field cleared BEFORE the call
-       , which is the shape xud_renderpass_close() states below: clearing after it would destroy VK_
-       NULL_HANDLE and leave the object alive, which the validation layer reports as VUID-vkDestroy
-       Device-device-05137 at the following vkDestroyDevice. */
-    if (pass->renderPass != VK_NULL_HANDLE) {
-        if (loader->deviceTable.vkDestroyRenderPass != NULL) {
-            VkRenderPass handle = pass->renderPass;
-            pass->renderPass = VK_NULL_HANDLE;
-            (void)loader->deviceTable.vkDestroyRenderPass(device->device, handle, NULL);
-        }
     }
 
     if (pass->depthView != VK_NULL_HANDLE) {
@@ -521,6 +519,28 @@ static void xud_renderpass_retire(XudRenderPass* pass, const XudDevice* device, 
         pass->depthRange.size = 0u;
         pass->depthRange.offset = 0u;
     }
+}
+
+/* Internal: the whole pass's teardown - the PASS first, then the depth row through the order
+   above. The pass goes first because its attachment description is what names the depth image's
+   layout, so a pass that still names one is a pass the driver is still reading that layout from;
+   the rest of the order is the depth helper's and is stated there once. Shared by xud_renderpas
+   s_open()'s failure paths and by xud_renderpass_close() below, which is why both are functions
+   of their own rather than two copies of one order. */
+static void xud_renderpass_retire(XudRenderPass* pass, const XudDevice* device, XudLoader* loader, XudAllocator* alloc) {
+    if ((pass == NULL) || (loader == NULL) || (device == NULL)) {
+        return;
+    }
+
+    if (pass->renderPass != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroyRenderPass != NULL) {
+            VkRenderPass handle = pass->renderPass;
+            pass->renderPass = VK_NULL_HANDLE;
+            (void)loader->deviceTable.vkDestroyRenderPass(device->device, handle, NULL);
+        }
+    }
+
+    xud_renderpass_retire_depth(pass, device, loader, alloc);
 }
 
 XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
@@ -758,6 +778,174 @@ XudResult xud_renderpass_close(XudRenderPass** ioPass, const XudDevice* device, 
     xud_renderpass_retire(victim, device, loader, alloc);
     free(victim);
     *ioPass = NULL;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The depth attachment at a new extent - the driver half
+ *-----------------------------------------------------------------------------------------------*/
+
+/// See xud_renderpass.h. The depth image is the pass's OWN image and the pass's OWN one view, and
+/// VUID-VkFramebufferCreateInfo-attachments-02702 requires every attachment of one framebuffer to
+/// be at the framebuffer's own extent, so a new swapchain extent is a depth buffer that has to be
+/// created again - the one attachment in this tree that a swapchain recreate forces. The new row
+/// is created BEFORE the old one is retired, so a recreate that fails leaves the pass exactly as it
+/// was rather than as a pass whose description names an image that was never made.
+XudResult xud_renderpass_recreate_depth(XudRenderPass** ioPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, const XudSwapchain* swapchain) {
+    XudRenderPass* pass = NULL;
+    XudRenderPass oldRow;
+    VkImageCreateInfo imageInfo;
+    VkImageViewCreateInfo viewInfo;
+    VkMemoryRequirements needs;
+    VkImage newImage = VK_NULL_HANDLE;
+    VkImageView newView = VK_NULL_HANDLE;
+    XudResult result = XUD_INVALID_ARG;
+    XudResult guard = XUD_OK;
+
+    if ((ioPass == NULL) || (*ioPass == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    pass = *ioPass;
+
+    if ((loader == NULL) || (device == NULL) || (caps == NULL) || (alloc == NULL) || (swapchain == NULL)) {
+        return (loader == NULL) ? XUD_INVALID_ARG : XUD_UNSUPPORTED;
+    }
+    if (!loader->open) {
+        return XUD_UNSUPPORTED;
+    }
+    if (device->device == VK_NULL_HANDLE) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((swapchain->swapchain == VK_NULL_HANDLE) || (swapchain->createInfo.imageExtent.width == 0u)
+        || (swapchain->createInfo.imageExtent.height == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((pass->renderPass == VK_NULL_HANDLE) || (pass->depthImage == VK_NULL_HANDLE) || (pass->depthView == VK_NULL_HANDLE)
+        || (pass->depthRange.size == 0u)) {
+        /* The attachment this rung replaces has to exist: xud_renderpass_open() never leaves a pass
+           with a description and no image, so a pass that has none is a broken pass rather than a
+           pass whose attachment can be swapped, and the rung above that creates one is the call for
+           it. */
+        return XUD_INVALID_ARG;
+    }
+    if ((pass->depthImageInfo.extent.width == swapchain->createInfo.imageExtent.width)
+        && (pass->depthImageInfo.extent.height == swapchain->createInfo.imageExtent.height)) {
+        /* The state asked for is the state present, so there is nothing to recreate - the rule
+           xud_swapchain_recreate() follows one rung up, and the reason a resize step that acted on
+           a recreate ask can be handed an extent that no longer needs one. */
+        return XUD_ALREADY;
+    }
+
+    /* Every destroy row this teardown needs, checked before any create row it would otherwise lea
+       k - the rule xud_renderpass_open() applies one rung down, now to the pair this rung makes an
+       d breaks: an image this layer cannot destroy is an image it must not create, and so is the
+       view beside it. The allocator's rows are in the list because the new image's memory goes thr
+       ough them. */
+    if ((loader->deviceTable.vkDestroyImageView == NULL) || (loader->deviceTable.vkDestroyImage == NULL)
+        || (loader->deviceTable.vkCreateImage == NULL) || (loader->deviceTable.vkCreateImageView == NULL)
+        || (loader->deviceTable.vkGetImageMemoryRequirements == NULL) || (loader->deviceTable.vkBindImageMemory == NULL)
+        || (loader->deviceTable.vkAllocateMemory == NULL) || (loader->deviceTable.vkFreeMemory == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The guard first, and it is not decoration: the frame loop above may still have a submission o
+       r a presentation in flight, and that submission is the one that reads this very depth buffer -
+       the same boundary xud_renderpass_close() states above. A guard that cannot run is a recreate
+       this rung must not start. A LOST device is NOT still recreated here, unlike the close's stil
+       l-torn-down rule: a teardown on a dying device has to run because the handles would otherwis
+       e leak, but a recreate on one has nothing to create against, and half-swapping the attachmen
+       t would leave a pass whose description names an image that was never made. Nothing has been
+       created at this point, so nothing leaks. */
+    guard = xud_device_wait_idle(device, loader);
+    if (guard != XUD_OK) {
+        return guard;
+    }
+
+    /* The old row moved aside, and the pass's own depth row cleared, so the shared teardown order
+       below reads ONLY the new half: the new attachment is created first, and the only way to retir
+       e the old one through that one order is to have it in a struct that order can read. */
+    oldRow = *pass;
+    pass->depthView = VK_NULL_HANDLE;
+    pass->depthImage = VK_NULL_HANDLE;
+    memset(&pass->depthRange, 0, sizeof pass->depthRange);
+
+    /* The new image's create-info, at the swapchain's new extent, through the same fill rung open(
+       ) uses below - and the same VUID open() quotes: a depth buffer of the OLD extent is a frame
+       buffer the driver is entitled to refuse outright. */
+    result = xud_renderpass_fill_depth_info(&imageInfo, swapchain->createInfo.imageExtent.width, swapchain->createInfo.imageExtent.height);
+    if (result != XUD_OK) {
+        *pass = oldRow;
+        return result;
+    }
+    pass->depthImageInfo = imageInfo;
+
+    result = xud_result_from_vk(loader->deviceTable.vkCreateImage(device->device, &imageInfo, NULL, &newImage));
+    if (result != XUD_OK) {
+        *pass = oldRow;
+        return result;
+    }
+    pass->depthImage = newImage;
+
+    /* What the new image needs before anything asks the allocator for it, and the same zero-the-re
+       cord-before-the-call discipline xud_renderpass_open() states for this row: the row returns VO
+       ID, so after the call there is nothing left to check, and a size that came back 0 is a refus
+       al rather than an allocation of nothing. */
+    memset(&needs, 0, sizeof needs);
+    loader->deviceTable.vkGetImageMemoryRequirements(device->device, newImage, &needs);
+    if (needs.size == 0u) {
+        xud_renderpass_retire_depth(pass, device, loader, alloc);
+        *pass = oldRow;
+        return XUD_VULKAN_ERROR;
+    }
+
+    /* The memory, through the allocator - the only owner of GPU memory in this tree. A refusal is
+       REPORTED, not grown past the block ceiling, the rule xud_allocator.h states. */
+    result = xud_allocator_acquire(&pass->depthRange, alloc, loader, device, caps, &needs);
+    if (result != XUD_OK) {
+        xud_renderpass_retire_depth(pass, device, loader, alloc);
+        *pass = oldRow;
+        return result;
+    }
+
+    if ((pass->depthRange.memory == VK_NULL_HANDLE) || (pass->depthRange.size == 0u)) {
+        xud_renderpass_retire_depth(pass, device, loader, alloc);
+        *pass = oldRow;
+        return XUD_INTERNAL_ERROR;
+    }
+
+    result = xud_result_from_vk(
+        loader->deviceTable.vkBindImageMemory(device->device, newImage, pass->depthRange.memory, pass->depthRange.offset));
+    if (result != XUD_OK) {
+        xud_renderpass_retire_depth(pass, device, loader, alloc);
+        *pass = oldRow;
+        return result;
+    }
+
+    result = xud_renderpass_fill_depth_view_info(&viewInfo, newImage);
+    if (result != XUD_OK) {
+        xud_renderpass_retire_depth(pass, device, loader, alloc);
+        *pass = oldRow;
+        return result;
+    }
+    pass->depthViewInfo = viewInfo;
+
+    result = xud_result_from_vk(loader->deviceTable.vkCreateImageView(device->device, &viewInfo, NULL, &newView));
+    if (result != XUD_OK) {
+        xud_renderpass_retire_depth(pass, device, loader, alloc);
+        *pass = oldRow;
+        return result;
+    }
+    pass->depthView = newView;
+
+    /* The OLD row retired last, and only once the new one is whole: the framebuffer rows that were
+       the only things naming the old view were closed by xud_renderer_resize() before this call ev
+       er happened, which is the one reason the old view can die here at all. */
+    xud_renderpass_retire_depth(&oldRow, device, loader, alloc);
 
     return XUD_OK;
 }
