@@ -946,8 +946,10 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        frame. The row accessor is read inside the pass and a row that cannot be read ENDS the list rather
        than returning out of a begun pass: the count above came from the same batch, so the branch is not
        one this loop reaches, and the draws made so far are the whole list either way, which is what keeps
-       the command buffer well formed. instanceCount 0 is the "draw once" form and vertexOffset 0 is the
-       "no shift" form of the int32_t argument.
+       the command buffer well formed. instanceCount 1 is the "draw once" form - the PFN's order is
+       (indexCount, instanceCount, firstIndex, vertexOffset, firstInstance), so the instance count is the
+       SECOND argument, and a 0 there is a legal draw of zero instances, which is a frame that records a
+       draw and renders nothing. vertexOffset 0 is the "no shift" form of the int32_t argument.
     */
     for (draw = 0u; draw < drawCount; draw++) {
         if (xud_batch_draw_get(batch, draw, &drawRow) != XUD_OK) {
@@ -982,7 +984,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         }
         loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
             descriptor->pushRange.offset, descriptor->pushRange.size, &pushRow);
-        loader->deviceTable.vkCmdDrawIndexed(frame->commandBuffer, drawRow.indexCount, 0u, drawRow.firstIndex, 0, 0u);
+        loader->deviceTable.vkCmdDrawIndexed(frame->commandBuffer, drawRow.indexCount, 1u, drawRow.firstIndex, 0, 0u);
     }
 
     loader->deviceTable.vkCmdEndRenderPass(frame->commandBuffer);

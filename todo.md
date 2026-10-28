@@ -6,6 +6,15 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-27 note: `examples/hello_triangle.c` was **rewritten as the 46-line simple program** — no flag parsing, no
+    clock, no usage text: one context, a `XUD_HELLO_FRAMES`-frame loop, one triangle, one teardown, every call's answer
+    printed and nothing ignored. The `--hold`/`--frames`/`--help` command line it carried is gone (the frame count is
+    what keeps the window open now); the example is `xud.h` only and still names no driver object.
+- 2026-10-27 note: the frame loop's one `vkCmdDrawIndexed` was **drawing zero instances** — the PFN's order is
+    `(indexCount, instanceCount, firstIndex, vertexOffset, firstInstance)`, so the `0u` in the third slot was a legal
+    draw of no instances, which is a clean validation run, a correct clear and nothing on screen. It is `1u` now, and
+    the comment beside it says the argument order rather than claiming "0 is the draw-once form".
+
 - 2026-10-26 note: the **shapes rung and the public drawing API landed as S23** — see the *Steps complete (S23 …)* section
     at the top of `todo_completed.md`. What landed there: `src/xud/xud_shapes.h/.c` (a new rung between the batch and the
     public API, `xud_shapes_append_triangle()` appending three vertices and three indices **atomically** into the batch's
