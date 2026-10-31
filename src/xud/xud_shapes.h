@@ -2,8 +2,9 @@
  *   xud_shapes.h - the shapes rung: the geometry a draw call appends into the batch
  *
  *   Owns : one function per shape the public draw calls name - today the triangle of the hello
- *          triangle step and the box above it - and the constants and the face tables every shape
- *          here builds its vertices from.
+ *          triangle step, the box above it, the sphere above that, and the line/point and wire
+ *          forms above those - and the constants and the face/edge tables every shape here builds
+ *          its vertices from.
  *   Layer: above the batch, below the public API. This is the "feature modules (shapes, text,
  *   textures, models, audio, camera)" rung of the plan's layer ladder, sitting between the two
  *   rungs it joins: the batch below owns the four SoA streams and the one index buffer a shape's
@@ -27,16 +28,15 @@
  *   space a shape's coordinates are in is, right now, the clip space the vertex shader lands in.
  *   Choosing a space for a shape is a camera + transform decision, and that is the todo.md item
  *   below this one; a shape that invented its own projection would be a second camera the
- *   library does not have. What is also not here, and why: the wire forms (DrawCubeWires,
- *   DrawSphereWires) and DrawMesh. The wires are the same LINE_LIST topology the line and point
- *   forms below now use, so they are no longer a topology question - they are a shape question,
- *   and one this step has not answered: a cube's twelve edges and a sphere's ring/slice grid are
- *   tables this rung would have to write, and the todo item asks for them beside the filled forms
- *   rather than below it. DrawMesh is the mesh / vertex-buffer abstraction, a rung below this item
- *   in todo.md's Later list. One shape per step that wants one, never a family written ahead of
- *   the caller that needs it - the box is here because a caller who has a triangle has a box, the
- *   sphere because a caller who has a box has something round to ask for, and the line because a
- *   caller who has a sphere has an axis to look at.
+ *   library does not have. What is also not here, and why: DrawMesh. The wires are here now - the
+ *   line and point forms landed the LINE_LIST topology they needed, so a wire form is a shape
+ *   question rather than a topology question, and the todo item asks for them beside the filled
+ *   forms rather than below it. DrawMesh is the mesh / vertex-buffer abstraction, a rung below
+ *   this item in todo.md's Later list. One shape per step that wants one, never a family written
+ *   ahead of the caller that needs it - the box is here because a caller who has a triangle has a
+ *   box, the sphere because a caller who has a box has something round to ask for, the line
+ *   because a caller who has a sphere has an axis to look at, and the wires because a caller who
+ *   has a line has the outline of every filled shape already in this rung to draw.
  ***********************************************************************************************/
 
 #ifndef XUD_SHAPES_H_
@@ -235,6 +235,60 @@ static_assert((2u * XUD_SHAPES_SPHERE_INDEX_COUNT) > XUD_BATCH_INDEX_CAPACITY(XU
     "and not of half of one");
 
 /*-----------------------------------------------------------------------------------------------
+ * The wire forms: a cube's eight corners and twelve edges, a sphere's ring/slice grid
+ *-----------------------------------------------------------------------------------------------*/
+
+/* A wire is the same shape's own vertices read through the LINE_LIST topology the line and point
+   forms landed, not a third topology: an edge is two indices naming two vertices, and the pipeline
+   row that draws it is the line's row at the shape's variant. That is why the wire forms are a
+   shape question rather than a topology question, and it is why raylib's DrawCubeWires and
+   DrawSphereWires (raylib.h 1592 and 1596) are the same two shapes with a different rlBegin mode
+   rather than a different kind of object.
+
+   A wire shares its vertices where the filled box does not: an edge's two endpoints are corners
+   shared between three faces, and there is no face whose normal a shared corner would have to
+   contradict. So the wire cube is the 8 corners of one box and the 12 edges of the cube graph
+   (V-E+F = 2 with F = 6, and every corner meets exactly three edges, so E = 3V/2 = 12) rather than
+   the box's 24 corners-of-six-faces - and 24 indices over 8 vertices is 3 per vertex, twice the
+   filled box's 1.5, which is the shape that shows the batch's 3n/2 headroom is a choice from a
+   third side. The sphere's wire grid is the same 17 vertices the filled sphere already places, and
+   its edges are the latitude circles and the meridian polylines - the globe's grid, not the
+   triangulation: the filled sphere's bands are quads closed by a diagonal each, and a diagonal is
+   an artifact of triangulating a quad rather than an edge of the sphere, so the grid has 3V-6 minus
+   those diagonals = slices*(2*rings-1) = 35 edges and 70 indices, BELOW the filled sphere's 90.
+   A wire that drew the diagonals would be drawing the mesh's construction lines rather than the
+   sphere's outline. */
+#define XUD_SHAPES_WIRE_CUBE_CORNER_COUNT 8u
+#define XUD_SHAPES_WIRE_CUBE_EDGE_COUNT 12u
+#define XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT XUD_SHAPES_WIRE_CUBE_CORNER_COUNT
+#define XUD_SHAPES_WIRE_CUBE_INDEX_COUNT (2u * XUD_SHAPES_WIRE_CUBE_EDGE_COUNT)
+#define XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT XUD_SHAPES_SPHERE_VERTEX_COUNT
+#define XUD_SHAPES_WIRE_SPHERE_LATITUDE_EDGE_COUNT ((XUD_SHAPES_SPHERE_RING_COUNT - 1u) * XUD_SHAPES_SPHERE_SLICE_COUNT)
+#define XUD_SHAPES_WIRE_SPHERE_MERIDIAN_EDGE_COUNT (XUD_SHAPES_SPHERE_RING_COUNT * XUD_SHAPES_SPHERE_SLICE_COUNT)
+#define XUD_SHAPES_WIRE_SPHERE_EDGE_COUNT (XUD_SHAPES_WIRE_SPHERE_LATITUDE_EDGE_COUNT + XUD_SHAPES_WIRE_SPHERE_MERIDIAN_EDGE_COUNT)
+#define XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT (2u * XUD_SHAPES_WIRE_SPHERE_EDGE_COUNT)
+
+static_assert((XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT == 8u) && (XUD_SHAPES_WIRE_CUBE_INDEX_COUNT == 24u),
+    "xud_shapes.h: a wire cube is the 8 corners of one box and the 12 edges of the cube graph, which is what the append's fit check "
+    "counts");
+static_assert(XUD_SHAPES_WIRE_CUBE_EDGE_COUNT == ((3u * XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT) / 2u),
+    "xud_shapes.h: every corner of a cube meets exactly three edges and every edge has two ends, so E = 3V/2 - the cube graph's V-E+F = 2 "
+    "with F = 6 is the other half of the same fact");
+static_assert((XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT <= XUD_BATCH_INITIAL_VERTICES)
+        && (XUD_SHAPES_WIRE_CUBE_INDEX_COUNT <= XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+    "xud_shapes.h: one wire cube fits the capacity a context's batch opens at, so drawing one asks nothing of the grow path");
+static_assert(
+    XUD_SHAPES_WIRE_SPHERE_EDGE_COUNT == (XUD_SHAPES_WIRE_SPHERE_LATITUDE_EDGE_COUNT + XUD_SHAPES_WIRE_SPHERE_MERIDIAN_EDGE_COUNT),
+    "xud_shapes.h: the grid's edges are the latitude circles (RING_COUNT-1 rings of SLICE_COUNT edges, each closing) plus the meridian "
+    "polylines (SLICE_COUNT chains of RING_COUNT edges, the two poles included), which is slices*(2*rings-1) the other way round");
+static_assert((XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT == 70u) && (XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT < XUD_SHAPES_SPHERE_INDEX_COUNT),
+    "xud_shapes.h: the wire sphere is 35 edges and 70 indices over the filled sphere's own 17 vertices, which is BELOW the filled one's 90 "
+    "because the grid draws no band diagonal");
+static_assert((XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT == XUD_SHAPES_SPHERE_VERTEX_COUNT),
+    "xud_shapes.h: the wire sphere places the vertices the filled sphere places, in the same order, so the two forms are one vertex layout "
+    "and not two to keep honest");
+
+/*-----------------------------------------------------------------------------------------------
  * The layer's contract
  *-----------------------------------------------------------------------------------------------*/
 
@@ -330,5 +384,44 @@ XudResult xud_shapes_append_sphere(XudBatch* batch, XudVector3 center, float rad
 /// xud_batch_set_topology refuses to move the state; XUD_OK only when the state moved, both vertex
 /// appends and both index appends completed.
 XudResult xud_shapes_append_line(XudBatch* batch, XudVector3 start, XudVector3 end, XudColor color);
+
+/// Pure: append the wire cube - the caller's centre plus three extents, read exactly as the filled
+/// box above reads them (the centre is the centre, the extents are full) - as the 8 corners of one
+/// box and the 24 indices that name the 12 edges of the cube graph, under the batch's LINE_LIST
+/// topology. The corners are shared here rather than repeated per face, which is the opposite of
+/// the filled box's 24: a wire has no face whose normal a shared corner would have to contradict,
+/// so the normal every corner carries is the flat +Z constant above, the same stand-in the line
+/// carries for the same reason. The edge table is the cube graph's own: every corner meets three
+/// edges and every edge is named once, so a wire cube draws 12 edges rather than the 18 a per-face
+/// outline would draw with each shared edge traced twice.
+///
+/// The append is ATOMIC in the same shape as every other shape's: both bounds are read first and a
+/// wire cube that does not fit is refused before a byte is written and before the topology moves.
+///
+/// XUD_INVALID_ARG on a NULL batch; XUD_OUT_OF_MEMORY when the 8 vertices or the 24 indices do not
+/// fit the batch's capacities; XUD_UNSUPPORTED when the batch has no arena mapped to write into or
+/// when xud_batch_set_topology refuses to move the state; XUD_OK only when the state moved, all 8
+/// vertex appends and all 24 index appends completed. A zero or negative extent is not refused, for
+/// the same reason the filled box does not refuse one.
+XudResult xud_shapes_append_cube_wires(XudBatch* batch, XudVector3 center, float width, float height, float length, XudColor color);
+
+/// Pure: append the wire sphere - the caller's centre, radius and tessellation, read as the filled
+/// sphere above reads them - as the SAME 17 vertices the filled sphere places, in the same order,
+/// and the 70 indices that name the globe's grid: the latitude circles and the meridian polylines,
+/// each edge named once. The grid draws no band diagonal, which is why the wire form spends FEWER
+/// indices than the filled one (70 against 90) where every other wire form spends more than its
+/// filled counterpart's vertex count: a diagonal is an artifact of triangulating a quad, not an
+/// edge of a sphere, and a wire that drew it would be drawing the mesh's construction lines.
+///
+/// The append is ATOMIC in the same shape as every other shape's, and for a sphere the INDEX bound
+/// is the one that trips first, the same reading the filled sphere's note states.
+///
+/// XUD_INVALID_ARG on a NULL batch, on a tessellation below the closed-surface minimums above, or
+/// on a radius that is not strictly positive (the same three refusals the filled sphere makes, since
+/// the grid places the same vertices by the same directions); XUD_OUT_OF_MEMORY when the 17
+/// vertices or the 70 indices do not fit the batch's capacities; XUD_UNSUPPORTED when the batch has
+/// no arena mapped to write into or when xud_batch_set_topology refuses to move the state; XUD_OK
+/// only when the state moved, all 17 vertex appends and all 70 index appends completed.
+XudResult xud_shapes_append_sphere_wires(XudBatch* batch, XudVector3 center, float radius, uint32_t rings, uint32_t slices, XudColor color);
 
 #endif /* XUD_SHAPES_H_ */

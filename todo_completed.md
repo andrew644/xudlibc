@@ -1,6 +1,8 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S26, the topology axis and the line/point shapes** — the fourth and
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S27, the wire forms** — the same two shapes the filled box and the filled sphere
+landed, drawn as their outlines on the topology axis S26 grew rather than on a new one (2026-10-31). The step before it
+is **S26, the topology axis and the line/point shapes** — the fourth and
 fifth shapes of the shapes rung, the first two that are not filled, and the reason topology had to stop
 being one row of the pipeline list wearing a name (2026-10-31). The step before it is **S25, the sphere**
 — the third shape of the shapes rung, the first shape whose vertices are
@@ -14,6 +16,90 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S27 The wire forms — the same two shapes drawn as their outlines, on the topology axis S26 grew rather than on a new one, one step, landed as one commit, 2026-10-31)
+
+- [x] ~~**The wire forms of the shapes item**: `xud_draw_cube_wires()`/`xud_draw_sphere_wires()` not in the tree, so a
+    box and a sphere could only be drawn filled and nothing could be drawn as its outline~~ — **done 2026-10-31** for
+    the two wire forms. What is still open of the shapes item is `DrawMesh`, which is the mesh / vertex-buffer rung
+    rather than a shape of this rung's, and `POINT_LIST`, which is a row of the list S26 grew rather than a row it
+    needed.
+
+  **What landed, rung by rung:**
+
+  - **The wire forms are a shape question, not a topology question** — the `LINE_LIST` row already exists since S26, so
+    a wire is that row over another shape's edge set rather than a third topology: raylib's `DrawCubeWires` (raylib.h
+    1592) and `DrawSphereWires` (raylib.h 1596) are the same two shapes as `DrawCube`/`DrawSphere` with a different
+    `rlBegin` mode, and in Vulkan that mode is a row of the pipeline list this rung already has. No new row, no new
+    pipeline, no new batch state: the step is two edge tables and two appends in the same `xud_shapes.h/.c` rung.
+  - **The wire box is the 8 corners of one box and the 12 edges of the cube graph** — V-E+F = 2 with F = 6 and every
+    corner meeting exactly three edges, so E = 3V/2 = 12 — rather than the filled box's 24 corners-of-six-faces. A wire
+    has no face, so there is **no normal a shared corner would have to contradict**, which is the filled box's own
+    reason for splitting its corners in the first place: the two spellings are one fact read two ways, and the wire is
+    the side of it that shares. The corners are numbered by their **bit pattern** (corner i sits at x = +1 when bit 0 of
+    i is set, at y = +1 when bit 1 is, at z = +1 when bit 2 is), and the numbering is load-bearing rather than cosmetic:
+    it is what makes the edge table the **graph** rather than twelve pairs to keep honest, because an edge is exactly a
+    pair of corners that differ in one bit, and the twelve rows are the four along x, the four along y and the four along
+    z. The signs are the same -1/+1 spelling the filled box's corner table uses, so a wire cube and a filled cube given
+    the same centre and extents are the same box in space, one drawn as its outline — the wire is the outline OF that
+    box rather than a second box.
+  - **24 indices over 8 vertices is 3 per vertex, twice the filled box's 1.5** — the third side of the batch's `3n/2`
+    index headroom being a *choice* rather than a bound (the sphere showed it from above at 90 over 17, the line from
+    level at 2 over 2), and the side that spends it fastest per vertex, so the **index** bound is the one that trips a
+    wire while the vertex bound has slots to spare. Both bounds are read before anything at all changes, including the
+    topology state below — a check that read only the vertices would be a wire cube written into a batch that cannot
+    name its edges.
+  - **The wire sphere is the globe's GRID, not the mesh's wireframe** — the same 17 vertices the filled sphere places,
+    in the same order (the header asserts the vertex count IS the filled one's, so the two forms are one vertex layout
+    rather than two to keep honest), joined by 15 latitude edges ((`RING_COUNT`-1 circles of `SLICE_COUNT` edges, each
+    closing so the last slice's neighbour is the first) plus 20 meridian edges (`SLICE_COUNT` chains of `RING_COUNT`
+    edges, the two poles included) = 35 edges and 70 indices, **BELOW** the filled sphere's 90 — because a band's
+    diagonal is an artefact of triangulating a quad rather than an edge of a sphere, and a wire that drew the diagonals
+    would be drawing the mesh's construction lines rather than the sphere's outline. The header's edge-count macro is
+    now the two halves named (`LATITUDE_EDGE_COUNT` + `MERIDIAN_EDGE_COUNT`) with the assert stating that spelling and
+    the closed form `slices*(2*rings-1)` are the same number, so the test can count the two halves separately.
+  - **A wire continues the run it is on** — a wire sphere beside a wire box moves no state and records no row, because
+    the topology is a state the batch carries rather than a per-call switch; a wire box beside a filled one closes the
+    filled box's run into a `TRIANGLE` row and leaves the wire's own run pending, so the frame's replay draws the box
+    through the `TRIANGLE_LIST` row and the wire through the `LINE_LIST` one. The refusal half is checked on the same
+    axis: a refused wire leaves the **topology state** alone as well as the counters, because a wire that moved the
+    state before refusing would have closed the batch's pending run into a row of `LINE_LIST` indices that were never
+    written.
+  - **The tests read the graph rather than a table** — the wire box's corners are checked to sit at plus or minus half
+    the extents in EVERY axis (exact rather than against a tolerance, because the extents are dyadic), the eight to be
+    eight different points, every edge's two corners to differ in exactly **ONE** axis (an edge along a face diagonal
+    differs in two and fails), every corner to be named by exactly three edges (which is what says the twelve pairs are
+    the cube's graph rather than twelve arbitrary pairs of corners, and what a corner the table forgot would fail) and
+    no pair named twice. The wire sphere's edges are checked in **grid** terms rather than in index arithmetic: two
+    small test helpers turn a vertex index into its ring and longitude (the top pole is ring 0, the bottom pole is ring
+    `rings` rather than `rings-1`, because the rows between the poles are `RING_COUNT`-1 of them), and every edge is
+    checked to be same-ring-one-longitude-apart (the circle closing) or same-longitude-adjacent-rings, a pole joining the
+    ring it bounds — while the **band-diagonal count is checked to be zero**, which is the grid-not-the-mesh claim read
+    off the arena rather than asserted. 15 latitude + 20 meridian, 35 distinct, 70 indices.
+  - **A C `static_assert` cannot name an array element**, so the wire tables' corner references being inside the eight
+    corners is not asserted in `xud_shapes.c` the way the table's row counts are — it is a runtime fact, and the shapes
+    area's graph check is what reads it every run. The assert that replaced the one that would not compile states that
+    reason rather than pretending the fact is compile-time.
+  - **The GPU half draws a wire box beside a line in a real frame** — 68 indices in the frame, its `LINE` row now 26
+    indices long and its `TRIANGLE` row 42, and the check is that the wire recorded **no extra row** mid-frame while the
+    state stayed on the `LINE` row, which is the other half of the topology-is-a-state claim seen through a real frame;
+    the validation layer installed in this build is what would report a frame that drew a wire's indices through the
+    triangle pipeline. A wire box beside a sphere that filled the index headroom is refused through a real context, with
+    the topology state checked as well as the counters.
+
+  **What this step did NOT land, and stays open:** `POINT_LIST` (still declared out — a point is a short line, see S26);
+  `DrawMesh`, which is the mesh / vertex-buffer rung rather than a shape of this rung's; **sharing vertices between a
+  wire and a filled shape in one frame** — a wire sphere and a filled sphere at the same centre place the same 17
+  vertices twice rather than once, and sharing them across two calls is the mesh rung, not this one; a public blend-mode
+  call; the handle layer's material record; and the camera + transform math that would make a shape's coordinates world
+  -space rather than clip-space.
+
+  **The build/test bar at this step:** `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` clean over `src/xud`,
+  `ninja -C build` clean, headless `./build/xud_test` **2574 checks / 0 failures** (up from 2522 at S26), `XUD_GPU_TESTS=1
+  ./build/xud_test` **3309 checks / 0 failures** (up from 3241) and validation-clean, the `-DXUD_SANITIZERS=ON` build
+  green at the same counts with the same **72 bytes in 3 allocations** of pre-existing leak (GLFW's libdecor/gdk strings
+  and the core area's two bringup-boundary partial contexts, identical on the archived previous HEAD), and the whole tree
+  warning-free under clang 22.
 
 ## Steps complete (S26 The topology axis and the line/point shapes — the first two shapes that are not filled, one step, landed as one commit, 2026-10-31)
 

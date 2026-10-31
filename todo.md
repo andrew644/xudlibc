@@ -200,6 +200,19 @@ nged
 
 - [ ] Shapes module, the rest of it (`DrawLine3D`, `DrawPoint3D` and the wire forms, `DrawMesh` — 3D only,
     there is no 2D shape family in the API)
+    - 2026-10-31 note: **the wire forms of this item landed as S27** — `xud_draw_cube_wires()`/`xud_draw_sphere_wires()`
+      and the `xud_shapes_append_cube_wires()`/`xud_shapes_append_sphere_wires()` halves they share with the line, in the
+      same `xud_shapes.h/.c` rung, on the topology axis S26 grew rather than on a new one: a wire is the `LINE_LIST` row
+      over another shape's edge set, which is raylib's `DrawCubeWires`/`DrawSphereWires` read literally (the same box,
+      a different `rlBegin` mode). The two edge sets are the facts the step is about: the wire box is the **8 corners of
+      one box and the 12 edges of the cube graph** (E = 3V/2, the cube's V-E+F = 2 with F = 6) rather than the filled
+      box's 24 corners-of-six-faces — a wire has no face, so there is no normal a shared corner would contradict — and
+      24 indices over 8 vertices is **3 per vertex, twice the filled box's 1.5**, the third side of the batch's 3n/2
+      headroom being a choice; the wire sphere is the **globe's grid, not the mesh's wireframe** — the same 17 vertices
+      the filled sphere places in the same order, joined by 15 latitude edges and 20 meridian edges = 35 edges and 70
+      indices, **BELOW** the filled one's 90, because a band's diagonal is an artefact of triangulating a quad rather
+      than an edge of a sphere. What is still open of this item: `POINT_LIST` (a row of the list S26 grew, not a row it
+      needed) and `DrawMesh`, which is the mesh / vertex-buffer rung rather than a shape of this rung's.
     - 2026-10-31 note: **the line and point forms of this item landed as S26** — `xud_draw_line_3d()`/`xud_draw_point_3d()`
       and the `xud_shapes_append_line()` half they share with the triangle, the box and the sphere, in the same
       `xud_shapes.h/.c` rung, plus the **topology axis** they needed: the pipeline rung's variant list became a

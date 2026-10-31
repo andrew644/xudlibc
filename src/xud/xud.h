@@ -7,9 +7,10 @@
  *          the library reads, the XudResult error enum, the two value types a caller passes
  *          down (XudVector3 / XudColor), the one XudHandle currency and its kind tags, the
  *          opaque XudContext owner type, the xud_init_context()/xud_close_context() life-
- *          cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d
- *          () / xud_draw_cube() / xud_draw_sphere() / xud_draw_line_3d() / xud_draw_point_3d()
- *          / xud_end_drawing()), and the runtime Vulkan query xud_vulkan_supported().
+ *          cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d()
+ *          / xud_draw_cube() / xud_draw_sphere() / xud_draw_line_3d() / xud_draw_point_3d() /
+ *          xud_draw_cube_wires() / xud_draw_sphere_wires() / xud_end_drawing()), and the runtime
+ *          Vulkan query xud_vulkan_supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
  *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
  *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
@@ -392,6 +393,35 @@ XudResult xud_draw_line_3d(XudContext* context, XudVector3 startPos, XudVector3 
 /// r with no batch; XUD_UNSUPPORTED on a context that never completed bring-up; XUD_OUT_OF_MEMORY
 /// when the two vertices or the two indices do not fit the batch.
 XudResult xud_draw_point_3d(XudContext* context, XudVector3 position, XudColor color);
+
+/// Draw a cube's wires in 3D space, raylib's DrawCubeWires (raylib.h 1592, "Draw cube wires", whose
+/// arguments are (position, width, height, length, color)): the same box the filled xud_draw_cube()
+/// above is given the same way - centre, three full extents, axis-aligned - drawn as the 12 edges of
+/// the cube graph over the 8 corners of one box rather than as the filled form's 24 corners-of-six
+/// faces. The two forms are the same box in space at the same arguments, and the wire is its outline:
+/// the corners are shared here because a wire has no face whose normal a shared corner would have to
+/// contradict, so every corner carries the flat +Z the line and the flat shapes carry. The indices are
+/// assembled under the batch's LINE_LIST topology, which is why a frame that draws a filled cube and
+/// a wire cube is TWO rows through two pipeline rows rather than one row at whichever topology came
+/// last. XUD_INVALID_ARG on a NULL context or a renderer with no batch; XUD_UNSUPPORTED on a context
+/// that never completed bring-up; XUD_OUT_OF_MEMORY when the 8 vertices or the 24 indices do not fit
+/// the batch.
+XudResult xud_draw_cube_wires(XudContext* context, XudVector3 position, float width, float height, float length, XudColor color);
+
+/// Draw a sphere's wires in 3D space, raylib's DrawSphereWires (raylib.h 1596, "Draw sphere", whose
+/// arguments are (centerPos, radius, rings, slices, color) - the tessellation is the caller's there,
+/// and here it is the header's, for the reason xud_draw_sphere() above states: a tessellation is a
+/// claim about the batch's capacity rather than about the sphere). The grid is the globe's grid rather
+/// than the mesh's wireframe: the latitude circles and the meridian polylines, each edge named once,
+/// over the SAME 17 vertices the filled sphere places in the same order - so the wire form spends 70
+/// indices, BELOW the filled form's 90, because a band's diagonal is an artifact of triangulating a
+/// quad rather than an edge of a sphere, and a wire that drew it would be drawing the mesh's
+/// construction lines. The tessellation is the header's default here, so a wire sphere and a filled
+/// sphere in one frame are the same 17 vertices placed twice rather than one layout read twice -
+/// sharing them across two calls would be a mesh rung, which is the item below this one. XUD_INVALID_ARG
+/// on a NULL context or a renderer with no batch; XUD_UNSUPPORTED on a context that never completed
+/// bring-up; XUD_OUT_OF_MEMORY when the 17 vertices or the 70 indices do not fit the batch.
+XudResult xud_draw_sphere_wires(XudContext* context, XudVector3 centerPos, float radius, XudColor color);
 
 /// End canvas drawing and swap buffers: the public frame boundary, closed. It runs one frame -
 /// acquire, record, upload, bind, draw the batch's recorded rows, submit, present - through the

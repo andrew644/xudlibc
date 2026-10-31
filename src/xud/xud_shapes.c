@@ -2,16 +2,18 @@
  *
  *   xud_shapes.c - the shapes rung and the public draw call above it
  *
- *   Owns : xud_shapes_append_triangle(), xud_shapes_append_cube() and xud_shapes_append_sphere(),
- *          the geometry the public draw calls name, the three public calls above them (xud_draw_
- *          triangle_3d(), xud_draw_cube(), xud_draw_sphere()) and the one guard those public calls
- *          share. Nothing else - no driver call, no loader row, no Vulkan or GLFW symbol the link
- *          er could see. The trigonometry the sphere reads is <math.h>'s, which is host arithmetic
- *          on the caller's floats rather than a driver row, and it is the only system header this
- *          file takes. The whole file is host work on the
- *          batch's own counters and the batch's own arena, which is what keeps it testable with
- *          no device present and keeps a machine with no Vulkan loader answering the same refu
- *          sals as one with a loader and no window open.
+ *   Owns : xud_shapes_append_triangle(), xud_shapes_append_cube(), xud_shapes_append_sphere(),
+ *          xud_shapes_append_line(), xud_shapes_append_cube_wires() and xud_shapes_append_sphere
+ *          _wires(), the geometry the public draw calls name, the seven public calls above them (xud
+ *          _draw_triangle_3d(), xud_draw_cube(), xud_draw_sphere(), xud_draw_line_3d(), xud_draw
+ *          _point_3d(), xud_draw_cube_wires(), xud_draw_sphere_wires()) and the one guard those
+ *          public calls share. Nothing else - no driver call, no loader row, no Vulkan or GLFW
+ *          symbol the linker could see. The trigonometry the sphere reads is <math.h>'s, which is
+ *          host arithmetic on the caller's floats rather than a driver row, and it is the only
+ *          system header this file takes. The whole file is host work on the batch's own counters
+ *          and the batch's own arena, which is what keeps it testable with no device present and
+ *          keeps a machine with no Vulkan loader answering the same refusals as one with a loader
+ *          and no window open.
  *   Layer: shapes (above the batch, below the public API). The public call sits in this file for
  *          the same reason raylib's DrawTriangle3D sits in rshapes.c: the shape IS the public cal
  *          l's job, and the public header is the declaration of it rather than its implementa
@@ -119,6 +121,61 @@ static_assert(sizeof(XUD_SHAPES_CUBE_CORNER) / (sizeof(XUD_SHAPES_CUBE_CORNER[0]
     "xud_shapes.c: the corner table has one row of four corners per face, which is the 24 the append's fit check counts");
 static_assert(sizeof(XUD_SHAPES_CUBE_TRIANGLE_CORNER) / sizeof(XUD_SHAPES_CUBE_TRIANGLE_CORNER[0]) == XUD_SHAPES_CUBE_FACE_INDEX_COUNT,
     "xud_shapes.c: two triangles per face is six corner references per face, which is the 36 the append's index bound is written against");
+
+/*-----------------------------------------------------------------------------------------------
+ * The wire cube's tables: the 8 corners of one box and the 12 edges of the cube graph
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The corners are numbered by their BIT PATTERN: corner i sits at x = +1 when bit 0 of i is set, at
+   y = +1 when bit 1 is and at z = +1 when bit 2 is. The numbering is load-bearing rather than
+   cosmetic - it is what makes the edge table below the graph rather than a list of twelve pairs to
+   keep honest, because an edge is exactly a pair of corners that differ in one bit, and the twelve
+   rows below are the four edges along x (bit 0 differing), the four along y (bit 1) and the four
+   along z (bit 2). Every corner appears in exactly three rows and every edge appears once, which is
+   the reason a wire cube is 12 edges rather than the 18 a per-face outline would trace with each
+   shared edge drawn twice. The signs are the same -1/+1 spelling the filled box's corner table
+   above uses, so a wire cube and a filled cube at the same centre and extents have the same eight
+   corners in space - the wire is the outline OF that box rather than a second box. */
+static const float XUD_SHAPES_WIRE_CUBE_CORNER[XUD_SHAPES_WIRE_CUBE_CORNER_COUNT][3] = {
+    { -1.0f, -1.0f, -1.0f }, /* 0b000 */
+    { 1.0f, -1.0f, -1.0f }, /* 0b001 */
+    { -1.0f, 1.0f, -1.0f }, /* 0b010 */
+    { 1.0f, 1.0f, -1.0f }, /* 0b011 */
+    { -1.0f, -1.0f, 1.0f }, /* 0b100 */
+    { 1.0f, -1.0f, 1.0f }, /* 0b101 */
+    { -1.0f, 1.0f, 1.0f }, /* 0b110 */
+    { 1.0f, 1.0f, 1.0f }, /* 0b111 */
+};
+
+/* The twelve edges, in the three groups of four the bit numbering above makes: the four along x,
+   the four along y, the four along z. Each pair is ordered low-index-first, and the order is NOT
+   load-bearing here the way a face's winding is above - a line has no front face, so LINE_LIST
+   reads a pair as a segment rather than as an oriented one, and the pipeline's cull mode is NONE. */
+static const uint32_t XUD_SHAPES_WIRE_CUBE_EDGE[XUD_SHAPES_WIRE_CUBE_EDGE_COUNT][2] = {
+    { 0u, 1u },
+    { 2u, 3u },
+    { 4u, 5u },
+    { 6u, 7u }, /* along x: bit 0 differs */
+    { 0u, 2u },
+    { 1u, 3u },
+    { 4u, 6u },
+    { 5u, 7u }, /* along y: bit 1 differs */
+    { 0u, 4u },
+    { 1u, 5u },
+    { 2u, 6u },
+    { 3u, 7u }, /* along z: bit 2 differs */
+};
+
+static_assert(sizeof(XUD_SHAPES_WIRE_CUBE_CORNER) / (sizeof(XUD_SHAPES_WIRE_CUBE_CORNER[0][0]) * 3u) == XUD_SHAPES_WIRE_CUBE_CORNER_COUNT,
+    "xud_shapes.c: the corner table has one row per corner of one box, which is the 8 the append's vertex bound is written against");
+static_assert(sizeof(XUD_SHAPES_WIRE_CUBE_EDGE) / (sizeof(XUD_SHAPES_WIRE_CUBE_EDGE[0][0]) * 2u) == XUD_SHAPES_WIRE_CUBE_EDGE_COUNT,
+    "xud_shapes.c: the edge table has one row per edge of the cube graph, which is the 12 whose twice is the 24 the append's index bound "
+    "is written against");
+static_assert((XUD_SHAPES_WIRE_CUBE_EDGE_COUNT * 2u) == XUD_SHAPES_WIRE_CUBE_INDEX_COUNT,
+    "xud_shapes.c: the edge table is read two indices per row, which is the 24 the append's index bound is written against - the table's "
+    "own "
+    "corner references being inside the eight corners is NOT asserted here because a C static_assert cannot name an array element, and the "
+    "shapes area's graph check is what reads it every run instead");
 
 /*-----------------------------------------------------------------------------------------------
  * The shape: three vertices, then the three indices that name them
@@ -642,6 +699,295 @@ XudResult xud_shapes_append_line(XudBatch* batch, XudVector3 start, XudVector3 e
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The wire cube: the 8 corners of one box, then the 24 indices that name the 12 edges
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_shapes_append_cube_wires(XudBatch* batch, XudVector3 center, float width, float height, float length, XudColor color) {
+    float half[3];
+    float pos[3];
+    float uv[2];
+    float normal[3];
+    uint8_t rgba[4];
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t first = 0u;
+    uint32_t row = 0u;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The batch's counters, read the same way every other shape's append reads them: this is the
+       half that makes the append atomic. */
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* Both bounds, before anything at all changes - including the topology state below. A wire cube
+       is the shape that shows the batch's 3n/2 index headroom is a choice rather than a bound from
+       a THIRD side: 24 indices over 8 vertices is 3 per vertex, twice the filled box's 1.5 (the
+       sphere showed the same fact from above, at 90 over 17). So the index bound is the one that
+       trips here while the vertex bound has 64 slots to spare, and a check that read only the
+       vertices would be a wire cube written into a batch that cannot name its edges. */
+    if ((vertexCount + XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT) > vertexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+    if ((indexCount + XUD_SHAPES_WIRE_CUBE_INDEX_COUNT) > batch->indexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    /* The topology moves before a byte is written, in the same shape as the line's append: an edge
+       is a segment, so the wire cube's indices are assembled as LINE_LIST and the run that was
+       pending under the old topology closes into a row of the same batch. This is raylib's DrawCube
+       Wires shape read literally - the same box, a different rlBegin mode. */
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_LINES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The extents are the caller's FULL sizes, halved here exactly as the filled box halves them
+       above: the caller's position is the box's CENTRE, so a wire cube and a filled cube given the
+       same arguments are the same box in space, one drawn as its outline. */
+    half[0] = width * XUD_SHAPES_CUBE_HALF_EXTENT;
+    half[1] = height * XUD_SHAPES_CUBE_HALF_EXTENT;
+    half[2] = length * XUD_SHAPES_CUBE_HALF_EXTENT;
+
+    uv[0] = XUD_SHAPES_UV_S;
+    uv[1] = XUD_SHAPES_UV_T;
+    normal[0] = XUD_SHAPES_FLAT_NORMAL_X;
+    normal[1] = XUD_SHAPES_FLAT_NORMAL_Y;
+    normal[2] = XUD_SHAPES_FLAT_NORMAL_Z;
+    rgba[0] = color.r;
+    rgba[1] = color.g;
+    rgba[2] = color.b;
+    rgba[3] = color.a;
+
+    /* The eight corners, in the bit-pattern order the edge table is written against. The normal is
+       the flat +Z constant rather than a face's normal, and that is the opposite of the filled box's
+       reason for carrying 24 vertices: a wire has no face, so there is no normal a shared corner
+       would have to contradict, and the corner is shared. */
+    first = vertexCount;
+
+    for (row = 0u; row < XUD_SHAPES_WIRE_CUBE_CORNER_COUNT; row++) {
+        pos[0] = center.x + (XUD_SHAPES_WIRE_CUBE_CORNER[row][0] * half[0]);
+        pos[1] = center.y + (XUD_SHAPES_WIRE_CUBE_CORNER[row][1] * half[1]);
+        pos[2] = center.z + (XUD_SHAPES_WIRE_CUBE_CORNER[row][2] * half[2]);
+
+        result = xud_batch_append_vertex(batch, pos, uv, rgba, normal);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    /* The 24 indices, two per edge, naming the eight corners this call just appended. xud_batch
+       _append_index refuses an index at or above the live vertex count, and the table's own bounds
+       are asserted above against the eight corners, so these cannot cross that bound. */
+    for (row = 0u; row < XUD_SHAPES_WIRE_CUBE_EDGE_COUNT; row++) {
+        result = xud_batch_append_index(batch, first + XUD_SHAPES_WIRE_CUBE_EDGE[row][0]);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + XUD_SHAPES_WIRE_CUBE_EDGE[row][1]);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The wire sphere: the 17 vertices the filled sphere places, then the 70 indices that name the grid
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_shapes_append_sphere_wires(
+    XudBatch* batch, XudVector3 center, float radius, uint32_t rings, uint32_t slices, XudColor color) {
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    uint64_t vertexNeed = 0ull;
+    uint64_t indexNeed = 0ull;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t first = 0u;
+    uint32_t topPole = 0u;
+    uint32_t bottomPole = 0u;
+    uint32_t ring = 0u;
+    uint32_t slice = 0u;
+    uint32_t a = 0u;
+    uint32_t b = 0u;
+    float dir[3];
+    float step = 0.0f;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The same three refusals the filled sphere makes above, because this form places the same
+       vertices by the same directions: below either minimum there is no grid to draw (one ring is
+       a pole and nothing between it), and a radius that is not strictly positive has no surface and
+       no radial direction. The test is written "not greater" so a NaN radius is refused here rather
+       than appended as a NaN position. */
+    if ((rings < XUD_SHAPES_SPHERE_RING_MIN) || (slices < XUD_SHAPES_SPHERE_SLICE_MIN)) {
+        return XUD_INVALID_ARG;
+    }
+    if (!(radius > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The two counts, computed WIDE in the same shape as the filled sphere's: rings and slices are
+       the caller's uint32_t, so the product can wrap below the batch's own bound and a wrapped
+       count is a shape that passes the fit check and then writes past the arena. The edge count is
+       the grid's, not the mesh's: the latitude circles are (rings-1) rings of slices closing edges
+       and the meridian polylines are slices chains of rings edges, the two poles included, which is
+       slices*(2*rings-1) and which xud_shapes.h asserts both ways. */
+    vertexNeed = 2ull + (((uint64_t)rings - 1ull) * (uint64_t)slices);
+    indexNeed = 2ull * (uint64_t)slices * (((2ull * (uint64_t)rings)) - 1ull);
+
+    /* Both bounds, and for a sphere the index one is the one that trips - the grid shares the
+       sphere's vertices, so it spends 70 indices over the same 17 vertices, which is BELOW the
+       filled sphere's 90 because the grid draws no band diagonal, and still four times the batch's
+       3n/2 per-vertex headroom. */
+    if (((uint64_t)vertexCount + vertexNeed) > (uint64_t)vertexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+    if (((uint64_t)indexCount + indexNeed) > (uint64_t)batch->indexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_LINES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The vertices, in the order the indices below number them and by the same helper the filled
+       sphere uses: the top pole first, then the rows between the poles from the top down, SLICE_CO
+       UNT vertices a row, then the bottom pole. The two forms are ONE vertex layout rather than two
+       to keep honest, which is what the header's assert states - and the normal is the radial direct
+       ion the helper passes, because a wire sphere's vertices are the sphere's own surface vertices
+       even though a wire cube's corners have no face to give them a normal. */
+    first = vertexCount;
+    topPole = first;
+    bottomPole = first + 1u + ((rings - 1u) * slices);
+
+    dir[0] = 0.0f;
+    dir[1] = 1.0f;
+    dir[2] = 0.0f;
+    result = xud_shapes_sphere_vertex(batch, center, radius, dir, color);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    step = ((2.0f * XUD_SHAPES_SPHERE_PI) / (float)slices);
+
+    for (ring = 1u; ring < rings; ring++) {
+        const float latitude = XUD_SHAPES_SPHERE_PI * (float)ring / (float)rings;
+        const float sinLatitude = sinf(latitude);
+        const float cosLatitude = cosf(latitude);
+
+        for (slice = 0u; slice < slices; slice++) {
+            const float longitude = step * (float)slice;
+
+            dir[0] = sinLatitude * cosf(longitude);
+            dir[1] = cosLatitude;
+            dir[2] = sinLatitude * sinf(longitude);
+
+            result = xud_shapes_sphere_vertex(batch, center, radius, dir, color);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    dir[0] = 0.0f;
+    dir[1] = -1.0f;
+    dir[2] = 0.0f;
+    result = xud_shapes_sphere_vertex(batch, center, radius, dir, color);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The grid's edges, in the two groups the count above is made of, and every edge is named ONCE
+       - the latitude circles first, each closing so the last slice's neighbour is the first one, in
+       the same no-seam reading the filled sphere's note states. A ring's circle is drawn as slices
+       segments rather than as a strip because LINE_LIST reads pairs, and a strip would be a second
+       topology row of the list this rung grew rather than the one it already has. */
+    for (ring = 1u; ring < rings; ring++) {
+        for (slice = 0u; slice < slices; slice++) {
+            a = first + 1u + (((ring - 1u) * slices) + slice);
+            b = first + 1u + (((ring - 1u) * slices) + ((slice + 1u) % slices));
+            result = xud_batch_append_index(batch, a);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, b);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    /* The meridian polylines, one per longitude, in three groups: the top pole down to the first
+       ring, the ring-to-ring runs, and the last ring down to the bottom pole. The middle loop is
+       written ring + 1 < rings rather than ring < rings - 1 so rings == 2 (the closed-surface
+       minimum) has no underflow to hide behind: there are no ring-to-ring runs at that tessellation
+       and the two pole groups are the whole grid. */
+    for (slice = 0u; slice < slices; slice++) {
+        a = topPole;
+        b = first + 1u + slice;
+        result = xud_batch_append_index(batch, a);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, b);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    for (ring = 1u; (ring + 1u) < rings; ring++) {
+        for (slice = 0u; slice < slices; slice++) {
+            a = first + 1u + (((ring - 1u) * slices) + slice);
+            b = first + 1u + ((ring * slices) + slice);
+            result = xud_batch_append_index(batch, a);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, b);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    for (slice = 0u; slice < slices; slice++) {
+        a = first + 1u + (((rings - 2u) * slices) + slice);
+        b = bottomPole;
+        result = xud_batch_append_index(batch, a);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, b);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The one guard every public draw call above this rung needs
  *-----------------------------------------------------------------------------------------------*/
 
@@ -739,4 +1085,28 @@ XudResult xud_draw_point_3d(XudContext* context, XudVector3 position, XudColor c
     end.z += XUD_SHAPES_POINT_HALF_LENGTH;
 
     return xud_shapes_append_line(batch, start, end, color);
+}
+
+XudResult xud_draw_cube_wires(XudContext* context, XudVector3 position, float width, float height, float length, XudColor color) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_cube_wires(batch, position, width, height, length, color);
+}
+
+XudResult xud_draw_sphere_wires(XudContext* context, XudVector3 centerPos, float radius, XudColor color) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_sphere_wires(batch, centerPos, radius, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color);
 }

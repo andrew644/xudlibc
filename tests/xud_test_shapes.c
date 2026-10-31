@@ -2,10 +2,12 @@
  *
  *   xud_test_shapes.c - the shapes rung and the public drawing API above it
  *
- *   Owns : the tests of one rung - xud_shapes_append_triangle(), xud_shapes_append_cube(), xud
- *          _shapes_append_sphere() and xud_shapes_append_line(), the geometry xud_draw_triangle_3d
- *          (), xud_draw_cube(), xud_draw_sphere() and xud_draw_line_3d()/xud_draw_point_3d() name,
- *          and the public frame pair xud_begin_drawing()/xud_end_drawing().
+ *   Owns : the tests of one rung - xud_shapes_append_triangle(), xud_shapes_append_cube(),
+ *          xud_shapes_append_sphere(), xud_shapes_append_line(), xud_shapes_append_cube_wires()
+ *          and xud_shapes_append_sphere_wires(), the geometry xud_draw_triangle_3d(), xud_draw_cub
+ *          e(), xud_draw_sphere(), xud_draw_line_3d()/xud_draw_point_3d() and xud_draw_cube_wires()
+ *          /xud_draw_sphere_wires() name, and the public frame pair xud_begin_drawing()/xud_end_dra
+ *          wing().
  *          Nothing else - the batch's own appends are the batch area's, the frame loop's is the
  *          frame area's, and the context's lifecycle is the core area's.
  *   Layer: tests, above the batch area and below the core area, which is the layer order: the
@@ -54,6 +56,68 @@ static uint8_t xudTestArena[(XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE)
    ttered through the checks, so a check that fails by more than this is a shape bug rather than a
    rounding artefact. */
 #define XUD_TEST_SHAPES_SPHERE_TOLERANCE 1e-5f
+
+/* The grid coordinate of one vertex of the wire sphere, read off its index the way the append
+   numbers them: the top pole is ring 0, the bottom pole is ring rings, and a row vertex is
+   ring 1..rings-1 at its own longitude - which is why the bottom pole answers rings rather than
+   rings-1: the rows between the poles are RING_COUNT-1 of them, so the levels are rings+1 rather
+   than rings. The two helpers exist so the checks below can state the grid's adjacency in GRID
+   terms rather than in index arithmetic - which is what makes a band DIAGONAL (adjacent rings AND
+   different longitudes) a checkable refusal rather than a line the test happens not to look at.
+   A pole has no longitude of its own, so it answers 0 and the adjacency helper is the one that
+   treats a pole specially. */
+static uint32_t xudTestWireRing(uint32_t v, uint32_t first, uint32_t rings, uint32_t slices) {
+    const uint32_t bottom = first + 1u + ((rings - 1u) * slices);
+
+    if (v == first) {
+        return 0u;
+    }
+    if (v == bottom) {
+        return rings;
+    }
+    return 1u + ((v - (first + 1u)) / slices);
+}
+
+static uint32_t xudTestWireLon(uint32_t v, uint32_t first, uint32_t rings, uint32_t slices) {
+    const uint32_t bottom = first + 1u + ((rings - 1u) * slices);
+
+    if ((v == first) || (v == bottom)) {
+        return 0u;
+    }
+    return (v - (first + 1u)) % slices;
+}
+
+/* One edge of the globe's GRID, not of the filled sphere's mesh: a latitude step is two vertices
+   of the same ring one longitude apart (and the circle closes, so the step wraps), a meridian
+   step is two vertices of the same longitude in adjacent rings, and a pole is adjacent to every
+   vertex of the ring it bounds and to nothing else. A pair that is adjacent in rings AND in
+   longitudes is a band diagonal, which is an artefact of triangulating a quad rather than an
+   edge of a sphere - so the helper says 0 for one and the check under it counts them. */
+static uint32_t xudTestWireAdjacent(uint32_t a, uint32_t b, uint32_t first, uint32_t rings, uint32_t slices) {
+    const uint32_t ra = xudTestWireRing(a, first, rings, slices);
+    const uint32_t rb = xudTestWireRing(b, first, rings, slices);
+    const uint32_t la = xudTestWireLon(a, first, rings, slices);
+    const uint32_t lb = xudTestWireLon(b, first, rings, slices);
+    const uint32_t dRing = (ra > rb) ? (ra - rb) : (rb - ra);
+    const uint32_t dLon = (la > lb) ? (la - lb) : (lb - la);
+
+    /* A pole is adjacent to every vertex of the one ring it bounds and to nothing else, which is
+       the same as saying it is one ring away - a pole has no longitude to compare. */
+    if ((ra == 0u) || (ra == rings)) {
+        return (dRing == 1u) ? 1u : 0u;
+    }
+    if ((rb == 0u) || (rb == rings)) {
+        return (dRing == 1u) ? 1u : 0u;
+    }
+    if (ra == rb) {
+        /* The circle closes, so a step of slices-1 the other way is a step of one. */
+        return ((dLon == 1u) || ((slices - dLon) == 1u)) ? 1u : 0u;
+    }
+    if (dRing == 1u) {
+        return (la == lb) ? 1u : 0u;
+    }
+    return 0u;
+}
 
 /*-----------------------------------------------------------------------------------------------
  * The pure half: the shape against a batch this area built itself
@@ -125,6 +189,19 @@ static void xud_test_shapes_pure(void) {
     xud_check(xud_draw_point_3d(&shell, center, color) == XUD_UNSUPPORTED, "shapes/point-draw-no-renderer",
         "and the point is the same guard, one rung above the same two codes - it is a line, so it is "
         "refused as one");
+    xud_check(xud_shapes_append_cube_wires(NULL, center, width, height, length, color) == XUD_INVALID_ARG,
+        "shapes/wire-cube-append-no-batch", "and so is a wire box - the guard is the same one, one rung above the same two codes");
+    xud_check(xud_draw_cube_wires(NULL, center, width, height, length, color) == XUD_INVALID_ARG, "shapes/wire-cube-draw-no-context",
+        "a public wire box call with no context is refused");
+    xud_check(xud_draw_cube_wires(&shell, center, width, height, length, color) == XUD_UNSUPPORTED, "shapes/wire-cube-draw-no-renderer",
+        "a context with no renderer has no batch to append into, and the refusal is reported");
+    xud_check(xud_shapes_append_sphere_wires(NULL, center, 0.4f, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color)
+            == XUD_INVALID_ARG,
+        "shapes/wire-sphere-append-no-batch", "and so is a wire sphere - the guard is the same one");
+    xud_check(xud_draw_sphere_wires(NULL, center, 0.4f, color) == XUD_INVALID_ARG, "shapes/wire-sphere-draw-no-context",
+        "a public wire sphere call with no context is refused");
+    xud_check(xud_draw_sphere_wires(&shell, center, 0.4f, color) == XUD_UNSUPPORTED, "shapes/wire-sphere-draw-no-renderer",
+        "and a context with no renderer has no batch to append into - the wire sphere is refused by the same two codes the filled one is");
     xud_check(xud_begin_drawing(NULL) == XUD_INVALID_ARG, "frames/begin-no-context", "a frame boundary with no context is refused");
     xud_check(xud_begin_drawing(&shell) == XUD_UNSUPPORTED, "frames/begin-no-renderer", "and so is one whose renderer rung is gone");
     xud_check(xud_end_drawing(NULL) == XUD_INVALID_ARG, "frames/end-no-context", "a frame boundary cannot be closed with no context");
@@ -858,7 +935,429 @@ static void xud_test_shapes_pure(void) {
 
     /* The rows the split above allocated are this area's to release: the batch is a stack record
        here rather than one xud_batch_open allocated, and the batch area frees its own rows the same
-       way at the end of its pure half.
+       way at the end of its pure half. The count and the topology state are reset with them, because
+       xud_batch_layout() restarts the live counts but not the recorded rows - a layout is a new set
+       of buffers, not a new set of rows, and the wire section below reads its own rows from index 0.
+    */
+    free(b.draws);
+    b.draws = NULL;
+    b.drawCapacity = 0u;
+    b.drawCount = 0u;
+    b.currentTopology = XUD_BATCH_TOPOLOGY_TRIANGLES;
+
+    /*--- the wire forms: the same two shapes, on the LINE row of the pipeline list ----------*/
+
+    /* The wire box beside nothing else: 8 corners and 12 edges, which is the box's own graph and
+       not six faces' corners - a wire has no face whose normal a shared corner would contradict,
+       which is the filled box's reason for splitting its corners in the first place. The checks
+       below read the GRAPH off the arena rather than off the table the append was written from:
+       every corner on the box, every edge along one axis, every corner named by exactly three
+       edges, no edge named twice - which is what would catch an edge table written as six faces'
+       boundaries or as twelve pairs that do not form a cube. */
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "shapes/wire-layout",
+        "a batch at the capacity a context opens at lays out for the wire forms");
+
+    result = xud_shapes_append_cube_wires(&b, center, width, height, length, color);
+    xud_check(result == XUD_OK, "shapes/wire-cube-ok", "a wire box appends into an empty batch");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_LINES, "shapes/wire-cube-moved-topology",
+        "and the append moved the batch's topology state, which is the shape owning the state change rather than the caller");
+    xud_check(b.drawCount == 0u, "shapes/wire-cube-recorded-no-row",
+        "and no row was recorded, because the batch had no pending run to close - an empty run is not a row");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "shapes/wire-stats",
+        "and the counters answer after it");
+    xud_check((vertexCount == XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_WIRE_CUBE_INDEX_COUNT),
+        "shapes/wire-cube-costs-eight-and-twelve",
+        "8 vertices and 24 indices, so a wire box costs 3 indices per vertex - TWICE the filled box's 1.5, which is the other side of the "
+        "headroom note: a wire is the shape that spends the headroom fastest per vertex");
+
+    /* The graph, read rather than remembered: the corners are the eight points at plus or minus
+       half the extents in every axis (so the shape is a BOX and not a cube, and a corner that sat
+       at the wrong extent would fail the on-box count), the edges are the twelve pairs that differ
+       in exactly ONE axis (an edge that ran along a face diagonal would differ in two and fail),
+       every corner is named by exactly three of them (which is what says the twelve pairs are the
+       cube's graph rather than twelve arbitrary pairs of corners), and no pair is named twice.
+       The extents are dyadic, so the comparisons are exact rather than against a tolerance. */
+    {
+        const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+        const float centre[3] = { center.x, center.y, center.z };
+        const float half[3] = { width * 0.5f, height * 0.5f, length * 0.5f };
+        float pos[XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT][3];
+        float nrm[XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT][3];
+        uint32_t idx[XUD_SHAPES_WIRE_CUBE_INDEX_COUNT];
+        uint32_t seen[XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT];
+        uint32_t v = 0u;
+        uint32_t row = 0u;
+        uint32_t k = 0u;
+        uint32_t onBox = 0u;
+        uint32_t distinctCorners = 0u;
+        uint32_t flatNormal = 0u;
+        uint32_t zeroUv = 0u;
+        uint32_t colourRows = 0u;
+        uint32_t indexInRange = 0u;
+        uint32_t namedExactly3 = 0u;
+        uint32_t axisEdge = 0u;
+        uint32_t distinctEdges = 0u;
+
+        for (v = 0u; v < XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT; v++) {
+            seen[v] = 0u;
+        }
+        for (v = 0u; v < XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT; v++) {
+            float uvRow[2];
+            float offset[3];
+            uint32_t onThisCorner = 1u;
+            uint32_t a = 0u;
+
+            memcpy(&pos[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + ((size_t)v * XUD_BATCH_STREAM_POS_SIZE), sizeof(pos[v]));
+            memcpy(
+                &nrm[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + ((size_t)v * XUD_BATCH_STREAM_NORMAL_SIZE), sizeof(nrm[v]));
+            memcpy(uvRow, arena + b.streamOffset[XUD_BATCH_STREAM_UV] + ((size_t)v * XUD_BATCH_STREAM_UV_SIZE), sizeof(uvRow));
+
+            if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + ((size_t)v * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                    XUD_BATCH_STREAM_COLOR_SIZE)
+                == 0) {
+                colourRows++;
+            }
+            if ((uvRow[0] == XUD_SHAPES_UV_S) && (uvRow[1] == XUD_SHAPES_UV_T)) {
+                zeroUv++;
+            }
+            if ((nrm[v][0] == 0.0f) && (nrm[v][1] == 0.0f) && (nrm[v][2] == 1.0f)) {
+                flatNormal++;
+            }
+            for (k = 0u; k < 3u; k++) {
+                offset[k] = pos[v][k] - centre[k];
+                if (fabsf(fabsf(offset[k]) - half[k]) > 0.0f) {
+                    onThisCorner = 0u;
+                }
+            }
+            if (onThisCorner != 0u) {
+                onBox++;
+            }
+            for (a = 0u; a < v; a++) {
+                uint32_t same = 1u;
+                for (k = 0u; k < 3u; k++) {
+                    if (pos[a][k] != pos[v][k]) {
+                        same = 0u;
+                    }
+                }
+                if (same != 0u) {
+                    onThisCorner = 0u;
+                }
+            }
+            if (onThisCorner != 0u) {
+                distinctCorners++;
+            }
+        }
+        for (row = 0u; row < XUD_SHAPES_WIRE_CUBE_INDEX_COUNT; row++) {
+            memcpy(&idx[row], arena + b.indexOffset + ((size_t)row * XUD_BATCH_INDEX_SIZE), sizeof(idx[row]));
+        }
+        for (row = 0u; row < XUD_SHAPES_WIRE_CUBE_INDEX_COUNT; row++) {
+            if (idx[row] < XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT) {
+                indexInRange++;
+            }
+        }
+        for (v = 0u; v < XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT; v++) {
+            for (row = 0u; row < XUD_SHAPES_WIRE_CUBE_INDEX_COUNT; row++) {
+                if (idx[row] == v) {
+                    seen[v]++;
+                }
+            }
+        }
+        for (v = 0u; v < XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT; v++) {
+            if (seen[v] == 3u) {
+                namedExactly3++;
+            }
+        }
+        for (row = 0u; row < XUD_SHAPES_WIRE_CUBE_INDEX_COUNT; row += 2u) {
+            const uint32_t a = idx[row];
+            const uint32_t b2 = idx[row + 1u];
+            uint32_t differing = 0u;
+            uint32_t e = 0u;
+            uint32_t duplicate = 0u;
+
+            if ((a < XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT) && (b2 < XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT)) {
+                for (e = 0u; e < 3u; e++) {
+                    if (pos[a][e] != pos[b2][e]) {
+                        differing++;
+                    }
+                }
+                if (differing == 1u) {
+                    axisEdge++;
+                }
+            }
+            for (e = 0u; e < row; e += 2u) {
+                const uint32_t c = idx[e];
+                const uint32_t d = idx[e + 1u];
+                if (((c == a) && (d == b2)) || ((c == b2) && (d == a))) {
+                    duplicate = 1u;
+                }
+            }
+            if (duplicate == 0u) {
+                distinctEdges++;
+            }
+        }
+
+        xud_check(onBox == XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT, "shapes/wire-cube-corners-on-the-box",
+            "every corner sits at plus or minus half the extents in EVERY axis, which is the caller's box rather than one the shape "
+            "invented - and exact, because the extents are dyadic");
+        xud_check(distinctCorners == XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT, "shapes/wire-cube-corners-are-distinct",
+            "and the eight corners are eight different points, which is what a wire box that reused a filled box's 24 face-corners would "
+            "fail");
+        xud_check(flatNormal == XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT, "shapes/wire-cube-normals-are-flat",
+            "every normal is the flat +Z the line and the triangle use, which is what says a wire box has no per-face normal to invent - "
+            "there is no face to have one");
+        xud_check(zeroUv == XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT, "shapes/wire-cube-uv-is-zero",
+            "and the header's zero uv at all eight, the same reason the filled box's uv is zero");
+        xud_check(colourRows == XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT, "shapes/wire-cube-colour-at-every-corner",
+            "the caller's four bytes at all eight corners");
+        xud_check(indexInRange == XUD_SHAPES_WIRE_CUBE_INDEX_COUNT, "shapes/wire-cube-indices-in-range",
+            "every index names one of the eight corners, so no index reaches into whatever the batch holds beside the wire box");
+        xud_check(namedExactly3 == XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT, "shapes/wire-cube-every-corner-has-three-edges",
+            "and every corner is named by exactly three edges, which is the cube's graph: twelve pairs of corners that were not the cube's "
+            "edges would fail here, and so would a corner the table forgot");
+        xud_check(axisEdge == XUD_SHAPES_WIRE_CUBE_EDGE_COUNT, "shapes/wire-cube-edges-are-axis-edges",
+            "every edge's two corners differ in exactly ONE axis, so the twelve edges run along the box's axes rather than along a face "
+            "diagonal or across the box");
+        xud_check(distinctEdges == XUD_SHAPES_WIRE_CUBE_EDGE_COUNT, "shapes/wire-cube-edges-are-twelve-distinct",
+            "and no edge is named twice, so 24 indices are twelve edges rather than twelve edges plus twelve repeats");
+    }
+
+    /* The wire sphere beside the wire box: the same 17 vertices the filled sphere places, joined
+       by the globe's grid rather than by the mesh's triangles - 35 edges, 70 indices, BELOW the
+       filled sphere's 90 because a band's diagonal is an artefact of triangulating a quad rather
+       than an edge of a sphere. The checks below are that claim read off the arena: every edge is
+       a grid step (same ring one longitude apart, the circle closing, or same longitude adjacent
+       rings, a pole joining the ring it bounds), and no edge is a band diagonal. */
+    result = xud_shapes_append_sphere_wires(
+        &b, center, XUD_TEST_SHAPES_SPHERE_RADIUS, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color);
+    xud_check(result == XUD_OK, "shapes/wire-sphere-ok", "a wire sphere appends beside the wire box (94 of the 96 index slots)");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_LINES, "shapes/wire-sphere-same-row",
+        "and the state did not move, so the wire sphere CONTINUES the wire box's run rather than splitting a row - a topology is a state, "
+        "not a per-call switch");
+    xud_check(b.drawCount == 0u, "shapes/wire-sphere-recorded-no-row", "and still no row was recorded");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "shapes/wire-both-stats",
+        "and the counters answer after both wire forms");
+    xud_check((vertexCount == (XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT + XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT))
+            && (indexCount == (XUD_SHAPES_WIRE_CUBE_INDEX_COUNT + XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT)),
+        "shapes/wire-both-costs",
+        "25 vertices and 94 indices, so the wire sphere costs 17 and 70 - BELOW the filled sphere's 90, which is the grid's own count and "
+        "not the mesh's");
+    xud_check(XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT < XUD_SHAPES_SPHERE_INDEX_COUNT, "shapes/wire-sphere-is-below-the-filled-one",
+        "70 indices against the filled sphere's 90, which is what says the wire sphere draws the globe's grid rather than the mesh's "
+        "wireframe - a band's diagonal is an artefact of triangulating a quad, not an edge of a sphere");
+
+    {
+        const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+        const float radius = XUD_TEST_SHAPES_SPHERE_RADIUS;
+        const float tolerance = XUD_TEST_SHAPES_SPHERE_TOLERANCE;
+        const float centre[3] = { center.x, center.y, center.z };
+        const uint32_t first = XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT;
+        const uint32_t rings = XUD_SHAPES_SPHERE_RING_COUNT;
+        const uint32_t slices = XUD_SHAPES_SPHERE_SLICE_COUNT;
+        float pos[XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT][3];
+        float nrm[XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT][3];
+        uint32_t idx[XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT];
+        uint32_t seen[XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT];
+        uint32_t v = 0u;
+        uint32_t row = 0u;
+        uint32_t k = 0u;
+        uint32_t onSphere = 0u;
+        uint32_t unitNormal = 0u;
+        uint32_t radialNormal = 0u;
+        uint32_t zeroUv = 0u;
+        uint32_t colourRows = 0u;
+        uint32_t indexInRange = 0u;
+        uint32_t namesOwn = 0u;
+        uint32_t vertexNamed = 0u;
+        uint32_t gridEdge = 0u;
+        uint32_t diagonal = 0u;
+        uint32_t latitudeEdge = 0u;
+        uint32_t meridianEdge = 0u;
+        uint32_t distinctEdges = 0u;
+
+        for (v = 0u; v < XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT; v++) {
+            seen[v] = 0u;
+        }
+        for (v = 0u; v < XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT; v++) {
+            float uvRow[2];
+            float normal2 = 0.0f;
+            float radial = 0.0f;
+            float offset2 = 0.0f;
+
+            memcpy(&pos[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (((size_t)(first + v)) * XUD_BATCH_STREAM_POS_SIZE),
+                sizeof(pos[v]));
+            memcpy(&nrm[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (((size_t)(first + v)) * XUD_BATCH_STREAM_NORMAL_SIZE),
+                sizeof(nrm[v]));
+            memcpy(uvRow, arena + b.streamOffset[XUD_BATCH_STREAM_UV] + (((size_t)(first + v)) * XUD_BATCH_STREAM_UV_SIZE), sizeof(uvRow));
+
+            if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + (((size_t)(first + v)) * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                    XUD_BATCH_STREAM_COLOR_SIZE)
+                == 0) {
+                colourRows++;
+            }
+            if ((uvRow[0] == XUD_SHAPES_UV_S) && (uvRow[1] == XUD_SHAPES_UV_T)) {
+                zeroUv++;
+            }
+            for (k = 0u; k < 3u; k++) {
+                const float off = pos[v][k] - centre[k];
+                offset2 += off * off;
+                normal2 += nrm[v][k] * nrm[v][k];
+                radial += off * nrm[v][k];
+            }
+            if (fabsf(offset2 - (radius * radius)) <= tolerance) {
+                onSphere++;
+            }
+            if (fabsf(normal2 - 1.0f) <= tolerance) {
+                unitNormal++;
+            }
+            if (fabsf(radial - radius) <= tolerance) {
+                radialNormal++;
+            }
+        }
+        for (row = 0u; row < XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT; row++) {
+            memcpy(&idx[row], arena + b.indexOffset + (((size_t)(XUD_SHAPES_WIRE_CUBE_INDEX_COUNT + row)) * XUD_BATCH_INDEX_SIZE),
+                sizeof(idx[row]));
+        }
+        for (row = 0u; row < XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT; row++) {
+            if (idx[row] < (first + XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT)) {
+                indexInRange++;
+            }
+            if (idx[row] >= first) {
+                namesOwn++;
+            }
+        }
+        for (v = 0u; v < XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT; v++) {
+            for (row = 0u; row < XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT; row++) {
+                if (idx[row] == (first + v)) {
+                    seen[v]++;
+                }
+            }
+        }
+        for (v = 0u; v < XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT; v++) {
+            if (seen[v] >= 1u) {
+                vertexNamed++;
+            }
+        }
+        for (row = 0u; row < XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT; row += 2u) {
+            const uint32_t a = idx[row];
+            const uint32_t b2 = idx[row + 1u];
+            const uint32_t ra = xudTestWireRing(a, first, rings, slices);
+            const uint32_t rb = xudTestWireRing(b2, first, rings, slices);
+            const uint32_t la = xudTestWireLon(a, first, rings, slices);
+            const uint32_t lb = xudTestWireLon(b2, first, rings, slices);
+            const uint32_t dRing = (ra > rb) ? (ra - rb) : (rb - ra);
+            const uint32_t dLon = (la > lb) ? (la - lb) : (lb - la);
+            uint32_t e = 0u;
+            uint32_t duplicate = 0u;
+
+            if ((a >= first) && (b2 >= first) && (xudTestWireAdjacent(a, b2, first, rings, slices) != 0u)) {
+                gridEdge++;
+                if ((ra == rb) && (ra != 0u) && (ra != rings)) {
+                    latitudeEdge++;
+                } else if (dRing == 1u) {
+                    meridianEdge++;
+                }
+            }
+            /* A band diagonal is two vertices in ADJACENT rings at DIFFERENT longitudes: the
+               filled sphere's triangles name them, because a quad band needs a diagonal to be two
+               triangles, but a quad band is not a sphere and the diagonal is not an edge of one.
+               This counts them, and the check under it is that the count is zero. */
+            if ((dRing == 1u) && (dLon != 0u) && (ra != 0u) && (rb != 0u) && (ra != rings) && (rb != rings)) {
+                diagonal++;
+            }
+            for (e = 0u; e < row; e += 2u) {
+                const uint32_t c = idx[e];
+                const uint32_t d = idx[e + 1u];
+                if (((c == a) && (d == b2)) || ((c == b2) && (d == a))) {
+                    duplicate = 1u;
+                }
+            }
+            if (duplicate == 0u) {
+                distinctEdges++;
+            }
+        }
+
+        xud_check(onSphere == XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT, "shapes/wire-sphere-vertices-at-the-radius",
+            "every vertex is one radius from the centre, the same claim the filled sphere's check makes and the same tolerance, because "
+            "the "
+            "two forms place their vertices with the same helper");
+        xud_check(unitNormal == XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT, "shapes/wire-sphere-normals-are-unit",
+            "and every normal is a unit vector, which is what says the wire form did not drop the NORMAL stream just because a line has no "
+            "use for one");
+        xud_check(radialNormal == XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT, "shapes/wire-sphere-normals-are-radial",
+            "and every one points at its own vertex, so the wire sphere's normals are the sphere's rather than the flat +Z the wire BOX "
+            "beside them uses");
+        xud_check(zeroUv == XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT, "shapes/wire-sphere-uv-is-zero", "the header's zero uv at all 17");
+        xud_check(colourRows == XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT, "shapes/wire-sphere-colour-at-every-vertex",
+            "the caller's four bytes at all 17");
+        xud_check((indexInRange == XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT) && (namesOwn == XUD_SHAPES_WIRE_SPHERE_INDEX_COUNT),
+            "shapes/wire-sphere-indices-name-its-own-vertices",
+            "every index names one of the wire sphere's own 17 vertices, not one of the wire box's corners beside them - which is what the "
+            "absolute-indexing rule needs and what a firstIndex left at zero would fail");
+        xud_check(vertexNamed == XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT, "shapes/wire-sphere-every-vertex-named",
+            "and every vertex is named by at least one edge, so the grid is not a row of vertices with a hole in it - the two poles are "
+            "named by the five meridian edges each");
+        xud_check(gridEdge == XUD_SHAPES_WIRE_SPHERE_EDGE_COUNT, "shapes/wire-sphere-edges-are-grid-steps",
+            "all 35 edges (70 indices) are grid steps: same ring one longitude apart (the circle closing) or same longitude adjacent "
+            "rings, a pole "
+            "joining the ring it bounds");
+        xud_check(diagonal == 0u, "shapes/wire-sphere-has-no-band-diagonal",
+            "and NOT one of them is a band diagonal, which is the grid-not-the-mesh claim read off the arena - 35 edges rather than the "
+            "filled sphere's 30 triangles' 45 distinct edges");
+        xud_check((latitudeEdge == (XUD_SHAPES_WIRE_SPHERE_EDGE_COUNT - XUD_SHAPES_WIRE_SPHERE_MERIDIAN_EDGE_COUNT))
+                && (meridianEdge == XUD_SHAPES_WIRE_SPHERE_MERIDIAN_EDGE_COUNT),
+            "shapes/wire-sphere-edges-are-fifteen-plus-twenty",
+            "15 latitude edges (three circles of five) and 20 meridian edges (five chains of four), which is the grid's own count read as "
+            "its two halves rather than as one number");
+        xud_check(distinctEdges == XUD_SHAPES_WIRE_SPHERE_EDGE_COUNT, "shapes/wire-sphere-edges-are-thirty-five-distinct",
+            "and no edge is named twice, so 70 indices are 35 edges rather than 35 edges with repeats in them");
+    }
+
+    /* A wire box beside a filled one in one batch, which is the row split seen from the wire side
+       rather than from the line's: the wire's append closes the filled box's run into a TRIANGLE
+       row and the wire's own run stays pending, so the frame's replay draws the box through the
+       TRIANGLE_LIST row and the wire through the LINE_LIST one. */
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "shapes/wire-split-layout",
+        "a fresh batch lays out for the split check");
+    result = xud_shapes_append_cube(&b, center, width, height, length, color);
+    xud_check(result == XUD_OK, "shapes/filled-cube-before-wires-ok", "a filled box appends first");
+    result = xud_shapes_append_cube_wires(&b, center, width, height, length, color);
+    xud_check(result == XUD_OK, "shapes/wire-cube-beside-filled-ok", "and a wire box appends beside it, 60 of the 96 index slots");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_LINES, "shapes/wire-after-filled-moved-topology",
+        "and the append moved the state, which is the split's own precondition");
+    xud_check(b.drawCount == 1u, "shapes/wire-after-filled-split-one-row", "and closed the filled box's run into one row mid-append");
+    xud_check((b.draws[0u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES) && (b.draws[0u].indexCount == XUD_SHAPES_CUBE_INDEX_COUNT),
+        "shapes/wire-after-filled-first-row-is-the-filled-box's",
+        "and that row is a TRIANGLE row over the filled box's 36 indices, which is the row the frame loop draws through the TRIANGLE_LIST "
+        "pipeline");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "shapes/wire-split-stats",
+        "and the counters answer after the split");
+    xud_check((vertexCount == (XUD_SHAPES_CUBE_VERTEX_COUNT + XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT))
+            && (indexCount == (XUD_SHAPES_CUBE_INDEX_COUNT + XUD_SHAPES_WIRE_CUBE_INDEX_COUNT)),
+        "shapes/wire-split-counts", "32 vertices and 60 indices, so the split moved no count at all");
+
+    /* The refusal half of the same claim, on the wire sphere: its 70 indices do not fit beside the
+       60 already live, and the refusal has to leave the TOPOLOGY state alone as well as the
+       counters - a wire sphere that moved the state before refusing would have closed the batch's
+       pending run into a row for a shape that was never drawn. */
+    result = xud_shapes_append_sphere_wires(
+        &b, center, XUD_TEST_SHAPES_SPHERE_RADIUS, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color);
+    xud_check(result == XUD_OUT_OF_MEMORY, "shapes/wire-sphere-over-index-headroom-refused",
+        "a wire sphere that does not fit the index headroom is refused with the batch's own code");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_LINES, "shapes/refused-wire-sphere-left-topology-alone",
+        "and the topology state is where it was, so the refused wire sphere split nothing");
+    xud_check(b.drawCount == 1u, "shapes/refused-wire-sphere-recorded-no-row", "and no row was recorded for it");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/stats-after-wire-refusal", "and the counters are still readable after the refusal");
+    xud_check((vertexCount == (XUD_SHAPES_CUBE_VERTEX_COUNT + XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT))
+            && (indexCount == (XUD_SHAPES_CUBE_INDEX_COUNT + XUD_SHAPES_WIRE_CUBE_INDEX_COUNT)),
+        "shapes/refused-wire-sphere-wrote-nothing",
+        "and the refused wire sphere wrote nothing, so the batch still holds its filled box and its wire box and nothing else");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/invariant-after-wire-refusal",
+        "and the invariant still holds over the refusal, so nothing half-written is in the batch");
+
+    /* The rows the split above allocated are this area's to release: the batch is a stack record
+       here rather than one xud_batch_open allocated, and the batch area frees its own rows the
+       same way at the end of its pure half.
     */
     free(b.draws);
     b.draws = NULL;
@@ -979,6 +1478,37 @@ static void xud_test_shapes_gpu(void) {
                 "gpu-shapes/line-costs-two-vertices", "32 vertices in the frame, 2 of them the line's, so the row split moved no count");
             xud_check(indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + (XUD_SHAPES_CUBE_INDEX_COUNT + XUD_SHAPES_LINE_INDEX_COUNT)),
                 "gpu-shapes/line-costs-two-indices", "44 indices, 2 of them the line's, inside the initial capacity's headroom");
+
+            /* The wire box beside the line is the shape that does NOT split: it is on the same row
+               as the line already is, so it continues the line's run rather than closing it, which
+               is the other half of the topology-is-a-state claim seen through a real frame. The
+               frame's replay is still two rows - the triangles-and-box run through the TRIANGLE_LIST
+               pipeline and the line-and-wire-box run through the LINE_LIST one - and the validation
+               layer installed in this build is what would report it if the frame bound the wrong row
+               or drew a wire's 26 indices through the triangle pipeline. */
+            result = xud_draw_cube_wires(context, cubeCentre, 0.8f, 0.8f, 0.8f, white);
+            xud_check(result == XUD_OK, "gpu-shapes/wire-cube-draw-ok", "the public wire box call appends into the same open frame");
+            xud_check(drawCount == 1u, "gpu-shapes/wire-cube-recorded-no-extra-row",
+                "and still exactly one row recorded mid-frame, so the wire box continued the line's run rather than splitting a second one "
+                "- "
+                "a topology is a state the batch carries, not a per-call switch");
+            xud_check(context->renderer->batch->currentTopology == XUD_BATCH_TOPOLOGY_LINES,
+                "gpu-shapes/wire-cube-left-topology-on-the-line-row", "and the state is still the LINE row the line moved it to");
+            xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+                "gpu-shapes/stats-after-wire-cube", "and the counters answer after it");
+            xud_check(vertexCount
+                    == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u)
+                        + (XUD_SHAPES_CUBE_VERTEX_COUNT + (XUD_SHAPES_LINE_VERTEX_COUNT + XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT))),
+                "gpu-shapes/wire-cube-costs-eight-vertices",
+                "40 vertices in the frame, 8 of them the wire box's corners rather than a filled "
+                "box's 24 face-corners");
+            xud_check(indexCount
+                    == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u)
+                        + (XUD_SHAPES_CUBE_INDEX_COUNT + (XUD_SHAPES_LINE_INDEX_COUNT + XUD_SHAPES_WIRE_CUBE_INDEX_COUNT))),
+                "gpu-shapes/wire-cube-costs-24-indices",
+                "68 indices, 24 of them the wire box's, so the frame's LINE row is 26 indices long and its TRIANGLE row 42 - both inside "
+                "the "
+                "initial capacity's headroom");
         } else {
             result = xud_draw_sphere(context, sphereCentre, XUD_TEST_SHAPES_SPHERE_RADIUS, blue);
             xud_check(result == XUD_OK, "gpu-shapes/sphere-draw-ok", "the public sphere call appends into the context's own batch");
@@ -1028,6 +1558,27 @@ static void xud_test_shapes_gpu(void) {
                     && (indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + XUD_SHAPES_SPHERE_INDEX_COUNT)),
                 "gpu-shapes/refusal-wrote-nothing",
                 "and the refused box wrote nothing, so the frame still draws its two triangles and its sphere");
+
+            /* A wire box refused beside a full sphere, which is the third side of the headroom fact
+               seen through a real context: a wire box spends 3 indices per vertex, so it is the
+               shape that wants the headroom most per vertex, and it is refused by the same bound the
+               box and the line are refused by. The check is the TOPOLOGY state as well as the
+               counters, because a wire that moved the state before refusing would have closed this
+               frame's run into a row of LINE_LIST indices that were never written - and this frame
+               is the one the frame loop replays through a real pipeline. */
+            result = xud_draw_cube_wires(context, cubeCentre, 0.8f, 0.8f, 0.8f, white);
+            xud_check(result == XUD_OUT_OF_MEMORY, "gpu-shapes/wire-cube-beside-sphere-refused",
+                "a wire box does not fit beside a sphere that filled the index headroom, and the batch's own code says so");
+            xud_check(context->renderer->batch->currentTopology == XUD_BATCH_TOPOLOGY_TRIANGLES,
+                "gpu-shapes/refused-wire-cube-left-topology-alone",
+                "and the topology state is where it was, so the refused wire box split nothing and recorded no row for a shape that was "
+                "never drawn");
+            xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+                "gpu-shapes/stats-after-wire-refusal", "and the counters are still readable after the refusal");
+            xud_check((vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u) + XUD_SHAPES_SPHERE_VERTEX_COUNT))
+                    && (indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + XUD_SHAPES_SPHERE_INDEX_COUNT)),
+                "gpu-shapes/refused-wire-cube-wrote-nothing",
+                "and the refused wire box wrote nothing, so the frame still draws its two triangles and its sphere and nothing else");
         }
 
         result = xud_end_drawing(context);
