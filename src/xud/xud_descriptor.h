@@ -458,6 +458,15 @@ XudResult xud_descriptor_fill_write_info(XudDescriptor* descriptor);
 /// G on a NULL descriptor.
 XudResult xud_descriptor_fill_uniform_block(XudDescriptor* descriptor);
 
+/// Pure: set 0's block VP matrix, written from a matrix the rung above chooses. The block's viewProj
+/// member is float[16] in column-major order (element index = column*4 + row, which is how the
+/// block's viewProj member is read as a GLSL mat4) and this is the ONE place that member is written
+/// from outside the rung's own identity default - the setter exists so the camera rung above hands
+/// a matrix down rather than reaching into the block's field, which is the repo's accessor rule read
+/// upward. XUD_INVALID_ARG on a NULL descriptor or a NULL matrix; the copy is element for element,
+/// so a matrix that aliases the block's own member is a copy rather than an overwrite.
+XudResult xud_descriptor_set_view_proj(XudDescriptor* descriptor, const float* viewProj);
+
 /// Pure: the memory-type mask a staging arena needs - the AND of every caps memoryTypes row that
 /// carries VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, so a buffer bound to a type in this mask is a buffe
 /// r whose bytes the CPU can write. Zero means the driver has no host-visible type at all, which is

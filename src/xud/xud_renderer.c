@@ -17,7 +17,11 @@
  *          is frame closed -> framebuffer array closed -> the context's swapchain recreated at the
  *          window's FRAMEBUFFER extent -> the pass's depth image recreated at it -> rows reopened
  *          -> frame reopened, and the batch, the pipeline and the descriptor are not touched at all
- *          because none of them names an extent.
+ *          because none of them names an extent. What the draw entry above does every frame, be
+ *          fore the frame loop runs, is hand the camera this rung holds to the camera rung, which
+ *          writes the frame's view-projection matrix into set 0's block - the block is copied into
+ *          the descriptor's staging arena BY the frame loop, so a matrix written after that copy
+ *          would be a matrix the NEXT frame uploaded rather than this one.
  *   Layer: above the frame loop, below the public API. This is the rung of the plan's layer
  *          ladder ("xudrl renderer (passes, pipelines, batches, buffers)") and the rung xud_init
  *          _context() wires, which is what makes the context's renderer field live rather than a
@@ -74,6 +78,7 @@
 #include "xud.h"
 #include "xud_allocator.h"
 #include "xud_batch.h"
+#include "xud_camera.h" /* Required for: xud_camera_apply, the camera rung's write of set 0's matrix */
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_frame.h"
@@ -254,11 +259,38 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
 
 XudResult xud_renderer_draw(
     XudRenderer* renderer, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain, uint32_t* outImageIndex) {
+    float aspect = 0.0f;
+    const XudCamera3D* camera = NULL;
+
     if ((renderer == NULL) || (outImageIndex == NULL)) {
         return XUD_INVALID_ARG;
     }
     if ((renderer->pipeline == NULL) || (renderer->renderPass == NULL) || (renderer->framebuffers == NULL) || (renderer->frame == NULL)
         || (renderer->descriptor == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The camera's matrix, placed in set 0's block BEFORE the frame loop copies the block into the
+       descriptor's staging arena: that copy is of the block's bytes, so a matrix written after it
+       would be a matrix the NEXT frame uploaded rather than this one. The aspect is the extent thi
+       s frame renders at, read off the swapchain's own recorded create info rather than off the wi
+       ndow's requested one (AGENTS.md: on a scaled session the two differ, and the one that is a
+       fact about this frame is the one the viewport is set from) - and recomputed every frame rather
+       than stored, which is what keeps a resize from leaving a matrix built for the old extent in
+       the block. No camera live is not "leave the block alone": it is the identity matrix, so the
+       block's matrix is a function of THIS frame's camera state rather than of whatever the last
+       frame's camera wrote.
+    */
+    if (swapchain->createInfo.imageExtent.height > 0u) {
+        aspect = (float)swapchain->createInfo.imageExtent.width / (float)swapchain->createInfo.imageExtent.height;
+    }
+    camera = (renderer->cameraWanted != 0u) ? &renderer->camera : NULL;
+    if (xud_camera_apply(renderer->descriptor, camera, aspect) != XUD_OK) {
+        /* A camera the renderer holds that is no longer usable - a caller that tampered the record
+           after the begin call that validated it, or a zero-height extent, which is the state a
+           swapchain that never completed its create is in. The frame is refused rather than drawn
+           with the matrix the last frame left in the block.
+        */
         return XUD_INVALID_ARG;
     }
 

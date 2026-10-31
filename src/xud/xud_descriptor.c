@@ -426,6 +426,33 @@ XudResult xud_descriptor_fill_uniform_block(XudDescriptor* descriptor) {
     return XUD_OK;
 }
 
+XudResult xud_descriptor_set_view_proj(XudDescriptor* descriptor, const float* viewProj) {
+    float* block = NULL;
+    const float* source = NULL;
+    uint32_t elementCount = 0u;
+    uint32_t index = 0u;
+
+    if ((descriptor == NULL) || (viewProj == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    block = descriptor->uniformBlock.viewProj;
+    source = viewProj;
+    elementCount = (uint32_t)(sizeof(descriptor->uniformBlock.viewProj) / sizeof(descriptor->uniformBlock.viewProj[0]));
+
+    /* Element for element rather than one memcpy over the block: viewProj is ONE member of a struct
+       whose other members this rung does not touch, and a copy that named a byte count and an
+       offset inside the block would be a layout assumption rather than a field access. The count
+       comes from the member's own sizeof rather than from a 16 written here, so the copy follows
+       the member's width whatever the layout declares.
+    */
+    for (index = 0u; index < elementCount; index++) {
+        block[index] = source[index];
+    }
+
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The staging arena of set 0's block - the pure half: its create-info, its memory rule and the
  * upload's one region

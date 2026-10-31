@@ -53,6 +53,7 @@ void xud_test_allocator(void);
 void xud_test_descriptor(void);
 void xud_test_batch(void);
 void xud_test_shapes(void); /* the shapes rung and the public drawing API: the atomic append, the frame pair */
+void xud_test_camera(void); /* the camera rung and the public camera pair: the basis, the frustum, the matrix's geometry */
 void xud_test_core(void);
 
 #endif /* XUD_TEST_HARNESS_H_ */

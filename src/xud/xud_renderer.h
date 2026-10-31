@@ -62,6 +62,8 @@
 #include "volk.h" /* Required for: the loader's entry-point tables - and it must come before
                      <vulkan/vulkan.h>, which the header below it includes; volk.h errors when
                      VULKAN_H_ is already in (AGENTS.md, include-order trap) */
+#include "xud_camera.h" /* Required for: XudCamera3D (xud.h's, which this header reaches) and the
+                           camera rung's apply, which the draw entry above runs every frame */
 #include "xud_allocator.h"
 #include "xud_batch.h"
 #include "xud_descriptor.h"
@@ -107,6 +109,16 @@ struct XudRenderer {
     uint32_t framebufferCount; /* the count xud_frame_draw() is handed, recorded here so the
                                   draw entry above does not have to reach into the array's own
                                   field - and so that it cannot disagree with it */
+    XudCamera3D camera; /* the camera the caller last asked for, AS GIVEN: a value this rung owns
+                          rather than a pointer to a caller's record, so a caller's local camera go
+                          ing out of scope cannot leave a dangling read here. Nothing reads it but
+                          the draw entry below, which hands it to the camera rung. */
+    uint32_t cameraWanted; /* 0 = no camera live, non-zero = the record above is what the next frame
+                              is drawn with. A flag rather than a NULL sentinel because the record
+                              is a value and not a pointer, and the draw entry below turns the flag
+                              back into the NULL the camera rung reads as "write the identity matrix"
+                              - which is what makes the block's matrix a function of THIS frame's
+                              camera state rather than of whatever the last frame's camera wrote. */
 };
 
 /*-----------------------------------------------------------------------------------------------

@@ -9,13 +9,13 @@
  *          opaque XudContext owner type, the xud_init_context()/xud_close_context() life-
  *          cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d()
  *          / xud_draw_cube() / xud_draw_sphere() / xud_draw_line_3d() / xud_draw_point_3d() /
- *          xud_draw_cube_wires() / xud_draw_sphere_wires() / xud_end_drawing()), and the runtime
- *          Vulkan query xud_vulkan_supported().
+ *          xud_draw_cube_wires() / xud_draw_sphere_wires() / xud_begin_camera_3d() / xud_end_
+ *          camera_3d() / xud_end_drawing()), and the runtime Vulkan query xud_vulkan_supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
  *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
  *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
  *          xud_pipeline.h/.c, xud_renderpass.h/.c, xud_frame.h/.c, xud_renderer.h/.c, xud_alloca
- *          tor.h/.c, xud_descriptor.h/.c, xud_batch.h/.c and xud_shapes.h/.c - and user code inclu
+ *          tor.h/.c, xud_descriptor.h/.c, xud_batch.h/.c, xud_camera.h/.c and xud_shapes.h/.c - and user code inclu
  *          des this header only; tests may include the internal ones.
  *          Every layer below this one is in the tree now, and every one of them stays internal be
  *          hind the two exceptions this note names: nothing about a VkDevice, its queues, a
@@ -161,6 +161,29 @@ typedef struct XudColor {
 static_assert(sizeof(XudColor) == 4u,
     "xud.h: a colour is the four bytes the batch's COLOR stream holds, so the public type and the "
     "stream's element are one number and not a conversion");
+
+/// The one 3D camera a frame is drawn with - raylib's Camera3D (reference/raylib/rcamera.h 102:
+/// position, target, up, fovy) plus the two frustum planes, which raylib's Camera aggregate carries
+/// (rcore.h, not in reference/) and this library has no aggregate to carry them, so they sit on the
+/// one record. A value type in the same bucket as the two above: a caller hands it DOWN, it names
+/// nothing the library owns, and it has no lifetime, no close and no handle of its own. The camera
+/// is the one perspective camera the whole scope is drawn with (AGENTS.md: 3D only, one camera, one
+/// depth buffer, one render pass) and the two planes are the caller's because the scene's depth
+/// budget is the caller's - the library's depth buffer is D32_SFLOAT and maps [near,far] to [0,1],
+/// so a scene that states its own planes gets the whole depth range across its own geometry.
+typedef struct XudCamera3D {
+    XudVector3 position; /* the eye, in world units                                       */
+    XudVector3 target; /* what it looks at - the forward vector is target - position    */
+    XudVector3 up; /* the rotation axis, raylib's "rotation over its axis"         */
+    float fovy; /* the vertical aperture in degrees, raylib's fovy              */
+    float near; /* the near plane's distance from the eye, in world units       */
+    float far; /* the far plane's distance from the eye, in world units        */
+} XudCamera3D;
+
+static_assert(sizeof(XudCamera3D) == 48u,
+    "xud.h: the camera is twelve floats - nine of vectors plus three of the aperture and the two "
+    "planes - align 4 and no padding past a float, so the record a caller declares is the record "
+    "the camera rung reads");
 
 /*-----------------------------------------------------------------------------------------------
  * The handle - the one currency every caller-addressable object is named by
@@ -422,6 +445,29 @@ XudResult xud_draw_cube_wires(XudContext* context, XudVector3 position, float wi
 /// on a NULL context or a renderer with no batch; XUD_UNSUPPORTED on a context that never completed
 /// bring-up; XUD_OUT_OF_MEMORY when the 17 vertices or the 70 indices do not fit the batch.
 XudResult xud_draw_sphere_wires(XudContext* context, XudVector3 centerPos, float radius, XudColor color);
+
+/// Put a 3D camera in the scene: the public BeginCamera3D() of raylib's camera pair (reference/ray
+/// lib/rcamera.h 369, raylib.h's BeginCamera3D()), whose camera is a global the library holds and
+/// whose state therefore cannot be validated at the call. Here the record is the caller's and this
+/// call copies it into the renderer that owns the frame loop, and it is VALIDATED here: a camera
+/// that is degenerate (an eye sitting on its target, a zero up vector, an up parallel to the eye's
+/// forward, a fovy at or past 0 or 180 degrees, a near plane at or behind the eye, a far plane at
+/// or behind the near, any of them NaN) answers XUD_INVALID_ARG and leaves the camera that was
+/// already live alone, so a refused begin is a frame drawn with the previous camera rather than a
+/// frame drawn with a NaN matrix. A begin while a camera is already live REPLACES it rather than
+/// stacking it - the scope is one camera per frame (AGENTS.md), so there is no camera stack here.
+/// XUD_INVALID_ARG on a NULL context or a degenerate camera; XUD_UNSUPPORTED on a context that ne
+/// ver completed bring-up.
+XudResult xud_begin_camera_3d(XudContext* context, const XudCamera3D camera);
+
+/// Take the 3D camera away: the public EndCamera3D() of the same pair. The frames drawn after here
+/// are drawn with no camera at all, which is the identity matrix the descriptor rung opens set 0's
+/// block with - the block's matrix is rewritten every frame from the camera state the renderer hol
+/// ds rather than left at whatever the previous frame's camera put in it, which is what makes a
+/// camera that began and ended inside one frame a no-op rather than a leak of state into the next
+/// frame. XUD_ALREADY when no camera was live (the state is already the one this call asks for);
+/// XUD_INVALID_ARG on a NULL context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_end_camera_3d(XudContext* context);
 
 /// End canvas drawing and swap buffers: the public frame boundary, closed. It runs one frame -
 /// acquire, record, upload, bind, draw the batch's recorded rows, submit, present - through the

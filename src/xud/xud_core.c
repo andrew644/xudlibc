@@ -39,6 +39,7 @@
 #include "xud_core.h"
 #include "xud.h"
 #include "xud_batch.h" /* Required for: xud_batch_reset, the public frame boundary's opening half runs on */
+#include "xud_camera.h" /* Required for: xud_camera_validate, the public camera pair's refusal */
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_diagnostics.h"
@@ -542,6 +543,66 @@ XudResult xud_end_drawing(XudContext* context) {
     if ((result != XUD_OK) && (result != XUD_ALREADY)) {
         return result;
     }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The public camera pair, above the context
+ *
+ * raylib's BeginCamera3D()/EndCamera3D() (reference/raylib/rcamera.h) read in the repo's own way:
+ * raylib's camera is a global the library holds, which is why its Begin call cannot validate the
+ * camera it is handed and why two windows cannot have two cameras; here the record is the caller's
+ * and the ONE place it can be stored is the renderer that owns the frame loop, so the validation
+ * happens at the call that asks and the storage happens in the owner that holds it. A camera is a
+ * value in the renderer rather than a pointer to a caller's record, so a caller's local camera go
+ * ing out of scope at the end of a frame cannot leave the next frame reading a dead record.
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_begin_camera_3d(XudContext* context, const XudCamera3D camera) {
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->renderer == NULL) {
+        /* The same answer the frame pair above gives for the same reason: a context with no rendere
+           r is a context that never completed bring-up, and there is no owner here to store the
+           camera in. Reported, not ignored.
+        */
+        return XUD_UNSUPPORTED;
+    }
+
+    /* Validated BEFORE it is stored, which is the half the pair buys against raylib's: a degenerate
+       camera is refused at the call that asked for it rather than at the frame that draws it, and
+       the camera that was already live is left alone rather than replaced by a record that would
+       produce a NaN matrix. The frame's own math asks the same test again below, because the rendere
+   r's record is a value a caller could have tampered since this call.
+    */
+    if (xud_camera_validate(&camera) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    context->renderer->camera = camera;
+    context->renderer->cameraWanted = 1u;
+
+    return XUD_OK;
+}
+
+XudResult xud_end_camera_3d(XudContext* context) {
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->renderer == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+    if (context->renderer->cameraWanted == 0u) {
+        /* No camera live: the state this call asks for is the state present, which is the repo's
+           idiom for an idempotent ask rather than a refusal. The record itself is left as it was
+           given - the flag is what governs, and a begin after here replaces the whole record.
+        */
+        return XUD_ALREADY;
+    }
+
+    context->renderer->cameraWanted = 0u;
 
     return XUD_OK;
 }

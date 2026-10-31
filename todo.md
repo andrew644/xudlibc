@@ -6,6 +6,14 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-31 note: **the camera landed as S28** — see the *Steps complete (S28 …)* section at the top of
+    `todo_completed.md`: `src/xud/xud_camera.h`/`.c` (the basis, the frustum, the product), `xud_descriptor_set_view_proj()`
+    as the descriptor rung's own setter for set 0's `viewProj`, `XudCamera3D` in `xud.h`, the public pair
+    `xud_begin_camera_3d()`/`xud_end_camera_3d()` in `xud_core.c`, the renderer holding a copy plus a `cameraWanted` flag
+    and rewriting the block every frame at the swapchain's recorded extent, and the new test area
+    `tests/xud_test_camera.c`. What is still open of that item is the example using it — `examples/breakout_3d.c` still
+    projects its own quads by hand and still cannot use a public shape call, which is the next step.
+
 - 2026-10-31 note: **`examples/breakout_3d.c` grew the input and the clock rungs it had been
     standing in for** — the run now ends on the player holding Escape, and the game is played with
     the left/right arrows (A/D too) rather than only watched. Input comes from GLFW directly, which
@@ -306,7 +314,6 @@ nged
 
 ## Later
 
-- [ ] Camera + transform math (one perspective 3D camera; the 2D scope was settled out 2026-10-23, see Decided below)
 - [ ] Textures + samplers (create, upload via staging copies, mipmaps, sampler variants)
 - [ ] Mesh / vertex-buffer abstraction (**one buffer per attribute stream**, SoA, decided 2026-10-23) + handle table
     (index+generation — the public-API currency, **landed 2026-10-24 as S10**, see Completed below)

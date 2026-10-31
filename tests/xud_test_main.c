@@ -13,7 +13,10 @@
  *          tested against a device before the rungs above it are tested at all. The shapes area
  *          runs above the batch and below the core, which is the layer order: the shape is chec
  *          ked against a batch the area built itself, and the public calls are checked against a
- *          real context inside that area's own GPU half.
+ *          real context inside that area's own GPU half. The camera area runs above the shapes and
+ *          below the core, which is the layer order: the matrix is checked by transforming points
+ *          with no context in sight, and the public pair is checked against a renderer shell in the
+ *          pure half and against a real context in the GPU half.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -49,6 +52,7 @@ int main(void) {
     xud_test_descriptor();
     xud_test_batch();
     xud_test_shapes();
+    xud_test_camera();
     xud_test_core();
 
     printf("checks: %d  failures: %d\n", xudChecks, xudFailures);

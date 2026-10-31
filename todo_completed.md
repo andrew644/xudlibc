@@ -1,6 +1,10 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S27, the wire forms** — the same two shapes the filled box and the filled sphere
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
+rather than the bytes a frame is drawn from: the camera's orthonormal basis, the symmetric frustum at the extent a frame
+renders at, the product in the block's column-major order, mapped to Vulkan's [0,1] depth rather than OpenGL's [-1,1],
+and the public pair that puts a camera in and takes it out (2026-10-31). The step before it is **S27, the wire forms** —
+the same two shapes the filled box and the filled sphere
 landed, drawn as their outlines on the topology axis S26 grew rather than on a new one (2026-10-31). The step before it
 is **S26, the topology axis and the line/point shapes** — the fourth and
 fifth shapes of the shapes rung, the first two that are not filled, and the reason topology had to stop
@@ -17,7 +21,84 @@ k, and the rebuild that follows (2026-10-26). The step before it is **S21, the s
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
 
-## Steps complete (S27 The wire forms — the same two shapes drawn as their outlines, on the topology axis S26 grew rather than on a new one, one step, landed as one commit, 2026-10-31)
+## Steps complete (S28 The camera — the first rung whose job is the matrix a frame is drawn with, the depth range it is mapped to and the public pair that scopes a camera to a frame, one step, landed as one commit, 2026-10-31)
+
+- [x] ~~**Camera + transform math (one perspective 3D camera)**~~ — **done 2026-10-31** as the camera rung. What is
+    still open of it is the example that uses it: `examples/breakout_3d.c` still projects its own quads by hand and
+    still cannot use a public shape call, which is the next step rather than part of this one.
+
+  **What landed, rung by rung:**
+
+  - **A new rung, not a new argument on an old one** — `src/xud/xud_camera.h`/`.c` sits above the descriptor (it writes
+    set 0's block through the descriptor rung's own setter, it does not reach into the block's field) and below the
+    renderer, which is the owner that holds the camera and the extent. The whole rung is host arithmetic on the caller's
+    floats: no driver call, no loader row, no Vulkan or GLFW symbol the linker could see, and `<math.h>` is its only
+    system header — which is why the rung's correctness is answerable with no device present at all.
+  - **`XudCamera3D` is a public value type in `xud.h`**, beside `XudVector3` and `XudColor`: `position`, `target`, `up`,
+    `fovy` (raylib's four, rcamera.h 102) plus the two frustum planes this rung needs and raylib's `Camera` carries. It
+    is handed DOWN, so it has no lifetime, no close and no handle — the bucket of value types a caller passes down, not
+    the currency the handle table hands out.
+  - **The matrix's two conventions, and the reason they are checked rather than remembered**: the ORDER is projection
+    times view (the point is a column vector, `solid.vert` multiplies `viewProj * modelMatrix * position`, the block's
+    `viewProj` is `float[16]` column-major, element index = column*4 + row) and the RANGE is Vulkan's [0,1] with the
+    pipeline's LESS compare, so the near plane maps to 0 and the far plane to 1 rather than to -1 and +1. A matrix built
+    for [-1,1] is not "off by a scale of two": it puts the whole frustum below zero once clipped, which is what made the
+    breakout example's geometry fight the clear value of 1.0 before this rung existed.
+  - **The refusals are written as "not in range" rather than "out of range"**, so a NaN fovy, a NaN near plane, a NaN far
+    plane, a NaN aspect, an eye on its target, a zero up vector and an up parallel to the forward all answer `XUD_INVALI
+    D_ARG` rather than producing a NaN matrix the driver then reads as a frustum containing the whole world. The public
+    `xud_begin_camera_3d()` validates BEFORE storing, so a degenerate camera is refused at the call that asked for it
+    rather than at the frame that draws it; `xud_camera_fill_view_proj()` asks again, because the renderer's record is a
+    value a caller could have tampered since.
+  - **The renderer holds a COPY plus a `cameraWanted` flag**, not a pointer to a caller's local, and it rewrites the
+    block every frame from that state — with no camera live it writes the IDENTITY, which is the one matrix `xud_descri
+    ptor_fill_uniform_block()` opens the block with. The block is rewritten rather than left behind, which is what makes
+    a camera that began and ended inside one frame a no-op rather than a leak of state into the next frame.
+  - **The aspect is read off the swapchain's own recorded `imageExtent`, never off the window's requested extent** — the
+    same source the resize step's rule is written against, so a scaled session cannot leave a matrix built for the old
+    extent beside a swapchain at the new one.
+  - **The camera area's checks transform POINTS rather than comparing elements to a remembered table.** The expected
+    values come from the pinhole's own closed forms stated in the test's words — depth `far*(d-near)/(d*(far-near))`,
+    framing `h*focal/(d*aspect)` with `focal = cot(fovy/2)` — so the test and the implementation agree about the GEOMETRY
+    and disagree about the ALGEBRA, which is what makes a wrong product visible. A check that compared `m[11]` to -1
+    would pass a matrix that is transposed-and-mirrored, the single most likely way to write a projection wrong.
+  - **What the area pins, beyond the arithmetic**: the eye's own point has a clip `w` of zero (the pinhole's w is the
+    distance in front of the eye) and a point behind the eye has a NEGATIVE one, which is the sign the -Z view conventi
+    on and the LESS compare are both written against; nearer distances give strictly smaller depths and the whole frust
+    um stays inside [0,1], which is what says nothing is being clamped to the clear value; a point to the camera's RIGH
+    T is at a positive NDC x, so the basis is not mirrored — the one thing a cross product written in the other order
+    would break; doubling the aspect halves the horizontal NDC and leaves the vertical one alone, so a wider window sho
+    ws more world rather than a stretched one; 60/90/120-degree apertures frame the same point at their own cotangent's
+    distance, so `fovy` is the full angle's half; a camera rotated onto another axis frames its OWN right as +x, so the
+    basis came from the camera and not from the world; and a tilted `up` is undone by the basis rather than shearing the
+    frame, so the basis is orthonormal rather than the caller's up read literally.
+  - **The public pair is the repo's idempotent shape**: `xud_end_camera_3d()` answers `XUD_ALREADY` when no camera was
+    live, `XUD_INVALID_ARG` on a NULL context and `XUD_UNSUPPORTED` on a context that never completed bring-up; a second
+    `xud_begin_camera_3d()` while one is live REPLACES it rather than stacking it (the scope is one camera per frame),
+    and a refused begin leaves the previously live camera exactly where it was.
+  - **The descriptor got a setter rather than the camera reaching into the block**: `xud_descriptor_set_view_proj()` is
+    the one place the block's `viewProj` member is written, and its element count comes from the member's own `sizeof`
+    rather than from a 16 written at the call site — which is also what caught a real bug here: the first form of that
+    count, `sizeof(*block) / sizeof(block[0])` on a decayed `float*`, answered **1**, so only one of the sixteen elemen
+    ts was being copied and the identity check failed headlessly with no driver in sight.
+
+  **Verified here (2026-10-31, this machine):** `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` clean over
+  `src/xud/*.c` (with `-I src/external -I build/gen`); the headless suite green at **2639 checks, 0 failures** (was 2574
+  — the camera area's pure half is 65 checks and runs with no device present); `XUD_GPU_TESTS=1` green at **3396 checks,
+  0 failures** (was 3309) and validation-clean, with the GPU half reading the block's sixteen floats back after a real
+  frame and comparing them against the pure function's matrix at the swapchain's recorded extent, so the wiring — the
+  matrix the shader read IS the matrix the caller asked for — is a checked fact rather than a hypothesis; the `-fsanit
+    izer` build green at the same 2639 with `ASAN_OPTIONS=detect_leaks=0` and no `runtime error` line, and its leak repo
+  rt unchanged at **72 bytes in 3 allocations (32+32+8)**, the validation layer's pair around `vkCreateDevice` and GLFW
+  's libdecor, all inside the dlopen'd driver; the clang 22 build clean and green at the same counts; `ar -t build/libx
+  ud.a` now **42** objects (was 41 — `xud_camera.c.o` is the one addition, 21 GLFW + Volk + 20 xud), `nm -u build/xud_t
+  est | grep -E "vk|glfw"` still empty and `ldd` still names no `libvulkan`, so the camera rung added no link-time Vulkan
+  fact; `AGENTS.md`'s two "41 objects total" facts updated to 42.
+
+  **Not exercised here:** the example using it. `examples/breakout_3d.c` still carries its own `xud_breakout_project()`
+  and its own clip-space quads, so the camera rung's first GPU consumer today is the test area rather than a runnable
+  demo — which is the next step, and the reason the camera landed as its own step rather than folded into it.
+
 
 - [x] ~~**The wire forms of the shapes item**: `xud_draw_cube_wires()`/`xud_draw_sphere_wires()` not in the tree, so a
     box and a sphere could only be drawn filled and nothing could be drawn as its outline~~ — **done 2026-10-31** for
