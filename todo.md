@@ -6,6 +6,27 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-31 note: **`examples/breakout_3d.c` grew the camera's own sweep as S30** — see the *Steps complete
+    (S30 …)* section at the top of `todo_completed.md`: the camera is now put in EVERY frame rather than once
+    for the run (a begin while one is live REPLACES it, `xud_core.c`, and the renderer holds the record as a
+    VALUE copy, which is what makes a per-frame local legal here at all), and its two angles are the frame's
+    own slow sine swings — yaw sweeping the field left/right at ±24° over an 18 s period, pitch sweeping it
+    up/down at ±14° over a 13 s one, so the pair's combined direction repeats only at their 234 s least
+    common multiple, past the run's cap. The eye ORBITS the field's centre at a fixed radius `EYE_D` 3.4
+    rather than sitting on +Z, which is what makes the parallax between the three brick layers the thing the
+    sweep shows off. The fit asserts moved onto the SPHERE the playfield box sits in rather than the box's
+    own three half-extents, because a sphere's fit reads the same from every angle and a box's own fit is
+    only true along the axis it is aligned to — S29's head-on fit is exactly the one a turning camera breaks.
+    That restatement moved the numbers: `EYE_D` 3.4 and the two planes at 1.8/4.8 (the old 2.4/1.5/3.5 sit
+    INSIDE the sphere once the fit is the sphere's), the aperture unchanged at 45.2397°, and the box's own
+    corners inside the frustum at every angle of the sweep — probed headlessly through the library's own
+    camera rung over 4001 samples of the sweep × the box's 8 corners, worst ndc x 0.4926 / y 0.7169, depth
+    0.4063..0.9436, zero corners clipped and no camera refused. The pitch's own assert is the camera basis's
+    degeneracy (an eye over the target's vertical has an up parallel to its forward, which the rung refuses);
+    the sweep stays 76° clear of it. This supersedes the S29 note's framing sentence and its ndc numbers
+    below: the framing is no longer unchanged, the camera turns. Suite unchanged at 2639 headless / 3396
+    GPU, the GPU example run is validation-clean (36 stderr lines, INFO only) and exits 0.
+
 - 2026-10-31 note: **`examples/breakout_3d.c` landed on the camera as S29** — see the *Steps complete
     (S29 …)* section at the top of `todo_completed.md`: the example's own `xud_breakout_project()` is gone, the
     scene is drawn through `xud_begin_camera_3d()`/`xud_end_camera_3d()` and its quads are WORLD-space

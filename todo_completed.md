@@ -1,6 +1,6 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S29, the example on the camera** — the first GPU consumer of S28's camera rung: the example's own projection gone, its quads in world space, its aperture derived from its own focus distance rather than chosen, and its fit asserts restated against what is actually visible (2026-10-31). The step before it is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S30, the example's camera sweep** — the same example turning its camera instead of holding it still: the eye orbiting the field's centre at a fixed radius, the two angles being the frame's own slow swings, and the fit asserts moved onto the sphere the playfield box sits in because a box's own fit is only true along the axis it is aligned to (2026-10-31). The step before it is **S29, the example on the camera** — the first GPU consumer of S28's camera rung: the example's own projection gone, its quads in world space, its aperture derived from its own focus distance rather than chosen, and its fit asserts restated against what is actually visible (2026-10-31). The step before that is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
 rather than the bytes a frame is drawn from: the camera's orthonormal basis, the symmetric frustum at the extent a frame
 renders at, the product in the block's column-major order, mapped to Vulkan's [0,1] depth rather than OpenGL's [-1,1],
 and the public pair that puts a camera in and takes it out (2026-10-31). The step before it is **S27, the wire forms** —
@@ -20,6 +20,74 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S30 The example's camera sweep — the same example turning its camera rather than holding it still: the eye orbiting the field's centre, the two angles being the frame's own, and the fit moved onto the sphere the box sits in because a box's own fit is only true head-on, one step, landed as one commit, 2026-10-31)
+
+- [x] ~~**The example's own still camera**~~ — **done 2026-10-31** as S30. Not a library step: `examples/breakout_3d.c`
+    only, no library file and no public-API change. What was open here is the *Examples set + README* Later item's
+    own half — the example that uses the camera has been using it STILL, and the user asked for one that turns.
+
+  **What landed, and the two facts that made it a step rather than a spin of numbers:**
+
+  - **The camera is put in EVERY frame rather than once for the run** — `xud_breakout_camera_at(now)` builds the
+    frame's record and the loop's own `xud_begin_camera_3d()` call hands it over beside `xud_begin_drawing()`. This
+    is legal because a begin while a camera is already live REPLACES it rather than stacking it (`xud_core.c`) and
+    because the renderer holds the camera as a VALUE copy, so a per-frame local going out of scope cannot leave the
+    next frame reading a dead record — the one fact S28's note states is what makes the per-frame form legal at all
+    rather than a lifetime bug. The `xud_end_camera_3d()` after the run is unchanged, and is still the half of the
+    pair's contract the example can show.
+  - **The two angles are the frame's own slow swings** — yaw sweeping the field left/right at ±24° over an 18 s
+    period, pitch sweeping it up/down at ±14° over a 13 s one. Two DIFFERENT periods, so the pair's combined
+    direction repeats only at their least common multiple, 234 s, which is past the run's 60 s cap: one period
+    would be an orbit that puts the same direction back on screen every period, which is what the user's "show off
+    the angles" is not asking for. A sine rather than a triangle wave because the swing's extremes are the point of
+    the example: a triangle wave stops at each extreme with a CORNER (the angle's derivative flips sign there) and
+    a sine stops with a tangent, which is the slow turn a hand can follow. The angles are read from GLFW's wall
+    clock, not from the frame count, for the same reason the step rate is: a frame count would make the sweep's
+    speed a property of the machine's frame rate rather than of the run.
+  - **The eye ORBITS the field's centre at a fixed radius** — `EYE_D` 3.4 world units replaces `EYE_Z` on +Z, and
+    the eye is the orbit's own point, the unit direction (sin(yaw)cos(pitch), sin(pitch), cos(yaw)cos(pitch))
+    scaled by `EYE_D`. A fixed radius is what makes the parallax between the three brick layers the thing the sweep
+    shows off: a camera that only pivoted at a fixed eye would change the view direction without ever moving
+    between the layers.
+  - **The fit asserts had to move onto the sphere the box sits in** — this is the step's real fact. S29's four
+    asserts fit the box's own three half-extents at the box's NEAREST depth along the view axis, which is only
+    true while the box is aligned to that axis: it is exactly the fit a turning camera breaks. The sphere of
+    radius R around the field's centre contains the box from EVERY angle, so the three asserts that hold against
+    it hold across the whole sweep: the eye outside the sphere, the aperture covering the sphere's tangent cone,
+    and the two planes bracketing the sphere (its nearest point D-R, its farthest D+R). The cone's cotangent is
+    sqrt(D²-R²)/R and the rung's focal length is FOCUS_D world units, so covering it is FOCUS_D ≤ that, which
+    squared and cleared of roots is (FOCUS_D²+1)·R² ≤ D² — an INTEGER constant expression in squared milli-units,
+    which is why the macro is the square of the radius rather than the radius itself (a sqrt is not an integer
+    constant expression, and a float static_assert is a `-Wpedantic` error here).
+  - **The numbers therefore moved, and the aperture did not** — `EYE_D` 3.4 (was: eye at 2.4 on +Z), the two
+    planes at 1.8/4.8 (were 1.5/3.5), the aperture still the derived 2·atan(1/FOCUS_D) = 45.2397°. The old set
+    does not survive the restatement: at D = 2.4 the sphere's own bracket is [1.1216, 3.6784], so the old 1.5
+    near plane and 3.5 far plane are both INSIDE the sphere and the old fit's (FOCUS_D²+1)·R² = 11.0486 against
+    D² = 5.76 fails by a mile. The new set brackets it at 1.8/4.8 and passes the cone fit at 11.0486 ≤ 11.56.
+    The vertical is the binding axis, not the horizontal: the window is wider than tall, so the horizontal scale
+    is the vertical one DIVIDED by the aspect and the vertical cone is the tighter of the two — the old pair of
+    asserts read the horizontal as the binding one because it read the box's own extents rather than a cone.
+  - **The pitch's own assert is the camera basis's degeneracy** — an eye passing over the target's own vertical
+    has an up parallel to its forward, which is the one degeneracy `xud_camera_validate()` refuses rather than
+    answering with a NaN matrix, and it is the one thing an orbiting eye could otherwise walk into. The sweep
+    stays 76° clear of it. The yaw has no such floor: the fit is orientation-free, so any yaw shows the whole
+    box, and past a quarter turn the field is seen edge-on, which is a thin picture rather than a broken one.
+  - **The sweep's fit is a checked fact, not a claim** — probed headlessly through the library's own camera rung
+    (`xud_camera_validate()` + `xud_camera_fill_view_proj()`, no driver, no window): 4001 samples of the two
+    periods' 234 s least common multiple × the playfield box's 8 corners, every one inside NDC on all three axes
+    — worst ndc x 0.4926, y 0.7169, depth 0.4063..0.9436, zero corners clipped, no corner behind the eye, no
+    camera refused. The probe is a scratch program outside the tree, deleted after running; the asserts in the
+    file are the integer form of the same fact.
+  - **The run's own output gained the eye** — the step report line now prints `eye x/y/z`, so a CI log shows the
+    sweep's angles rather than only the game's. Verified on this machine: the run ends on the fallback time cap
+    with exit 0, `xud_close_context` answering `XUD_OK`, the 36 stderr lines being the loader's and the
+    validation layer's INFO only (no ERROR, no WARNING, no VUID), and the printed eye at radius 3.400 exactly
+    off the field's centre at every sample (x to 1.344 = the sweep's 24°, y from +0.818 above the field to
+    -0.214 below it, z 3.034..3.341).
+  - **Unchanged by this step**: the suite (2639 headless / 3396 GPU, both green before and after), the batch's
+    budget (the frame is still eight quads = 48 vertices and 48 indices of the batch's 64 and 96 — the camera
+    moves the matrix, not the bytes), the game's rules, and the fact that no library file was touched.
 
 ## Steps complete (S29 The example on the camera — the first GPU consumer of the camera rung: the example's own projection deleted, its quads moved into world space, its aperture derived from its own focus distance and its fit asserts restated against what is visible, one step, landed as one commit, 2026-10-31)
 

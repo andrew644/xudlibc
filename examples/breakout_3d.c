@@ -4,8 +4,9 @@
  *
  *   Owns : one game - the ball's motion and its bounces, the brick field and the one brick a
  *          contact removes, the paddle and the hand that moves it, the Escape that ends the run,
- *          the one camera the scene is drawn with, and the frame loop that draws the scene every
- *          frame and steps the simulation at a fixed rate in wall time. Nothing else: no batch,
+ *          the one camera the scene is drawn with and the two swings that turn it, and the frame
+ *          loop that draws the scene every frame and steps the simulation at a fixed rate in wall
+ *          time. Nothing else: no batch, no buffer, no projection of its own.
  *          no buffer, no projection of its own.
  *   Layer: examples. Public API (xud.h) plus stdio, math.h's fabsf and GLFW's key state - and
  *          ONE internal header, xud_core.h, for the one field the input needs: the GLFWwindow*
@@ -18,18 +19,24 @@
  *   The game is 3D in the one way this library can make it 3D today: every object has a z, the
  *   ball travels in x, y and z, the bricks sit at three different depths, and the depth buffer
  *   the render pass owns resolves which of them is nearer. What makes that depth VISIBLE is the
- *   camera below, and the camera is the library's - the example states the eye, the aperture and
- *   the two planes, and the camera rung turns them into the one matrix a frame is drawn with,
- *   which is the one thing a reader should understand before changing anything here.
+ *   camera below, and the camera is the library's - the example states the orbit's radius, the
+ *   aperture, the two planes and the two swings, and the camera rung turns them into the one
+ *   matrix a frame is drawn with, which is the one thing a reader should understand before
+ *   changing anything here.
  *
  *   The camera + transform rung is OPEN now, and this example is its first GPU consumer: the pair
  *   xud_begin_camera_3d()/xud_end_camera_3d() puts the scene's one camera in and takes it out, and
  *   the library's camera rung (src/xud/xud_camera.h/.c, landed 2026-10-31 as S28) builds the
  *   camera's basis, the symmetric frustum at the extent a frame renders at and the product of the
- *   two into set 0's viewProj every frame. A shape's coordinates are therefore WORLD coordinates
- *   and the divide happens in the shader, which is what makes the depth buffer's answer the honest
- *   one: the back plane at the far depth and the ball at the near one are resolved by the
- *   pipeline's LESS compare rather than by the order the example draws them in. The quad's depth
+ *   two into set 0's viewProj every frame. The camera is therefore put in EVERY frame rather than
+ *   once for the run: its two angles are the frame's own slow swings - yaw sweeping the field left
+ *   and right, pitch sweeping it up and down, at DIFFERENT periods so the pair's combined
+ *   direction repeats only at their sum's - and the eye orbits the field's centre at a fixed
+ *   radius, which is what makes the parallax between the three brick layers the thing the sweep
+ *   shows off. A shape's coordinates are therefore WORLD coordinates and the divide happens in
+ *   the shader, which is what makes the depth buffer's answer the honest one: the back plane at
+ *   the far depth and the ball at the near one are resolved by the pipeline's LESS compare rather
+ *   than by the order the example draws them in. The quad's depth
  *   is still constant across it, because every quad below lies in a plane of constant z - a quad
  *   that spanned two depths would want the rasteriser's perspective-correct interpolation, which
  *   is a property of the shapes the cube and the sphere calls place rather than of these.
@@ -64,11 +71,11 @@
  *
  *   One public shape call is used here and only one: xud_draw_triangle_3d(). The reason is the
  *   budget below rather than a projection above - with the camera in the frame a cube COULD be
- *   placed for the ball, but the frame's eight quads are 48 vertices and 48 indices of the batch's
- *   64 and 96 and the cube's own 24 and 36 do not fit beside them, so the ball stays a quad and
- *   the sphere's 90 indices stay a claim rather than a spend. A frame that wanted more would be
- *   REFUSED by the batch rather than truncated, and every draw below checks its answer for exactly
- *   that reason.
+ *   placed for the ball, but the frame's nine quads are 54 vertices and 54 indices of the batch's
+ *   64 and 96 and the cube's own 24 and 36 do not fit beside them (78 > 64), so the ball stays a
+ *   quad and the sphere's 90 indices stay a claim rather than a spend. A frame that wanted more
+ *   would be REFUSED by the batch rather than truncated, and every draw below checks its answer
+ *   for exactly that reason.
  *
  *   The batch's capacity is the one budget this example obeys, and the one number it must not
  *   reach for: xud_batch.h's initial capacity is internal and user code includes xud.h only. So
@@ -118,21 +125,42 @@
 #define XUD_BREAKOUT_UNIT 1000
 #define XUD_BREAKOUT_MM(value) ((float)(value) / (float)XUD_BREAKOUT_UNIT)
 
-/* The example's camera, in the library's own terms: the eye sits on +Z looking down -Z at the
-   field's centre, FOCUS_D is the eye-to-focus DISTANCE and the plane at that distance is the one
-   a world unit maps 1:1 in y, so the aperture that buys that framing is the one whose focal
-   length (the cotangent of its half, which is what the camera rung computes) IS FOCUS_D - stated
-   below as a derived macro rather than as a chosen number, because the fit checks below are
-   stated against FOCUS_D in integers and an aperture stated in degrees would be a float claim
-   they could not make. NEAR_D and FAR_D are the camera's two planes, and the depth map is the
-   library's hyperbolic one onto [0,1] rather than a linear map of the example's: every quad
-   below still has one depth, but nothing has to be exact about the map any more, because the
-   pipeline's LESS compare and the clear value of 1.0 are what decide which of two surfaces is
-   seen. */
-#define XUD_BREAKOUT_EYE_Z_MM 2400
+/* The example's camera, in the library's own terms: the eye ORBITS the field's centre at a fixed
+   radius EYE_D and looks back at it from the two swing angles below, FOCUS_D is the eye-to-focus
+   DISTANCE and the plane at that distance is the one a world unit maps 1:1 in y, so the aperture
+   that buys that framing is the one whose focal length (the cotangent of its half, which is what
+   the camera rung computes) IS FOCUS_D - stated below as a derived macro rather than as a chosen
+   number, because the fit checks below are stated against FOCUS_D in integers and an aperture
+   stated in degrees would be a float claim they could not make. NEAR_D and FAR_D are the camera's
+   two planes. The depth map is the library's hyperbolic one onto [0,1] rather than a linear map
+   of the example's: every quad below still has one depth, but nothing has to be exact about the
+   map any more, because the pipeline's LESS compare and the clear value of 1.0 are what decide
+   which of two surfaces is seen. */
+#define XUD_BREAKOUT_EYE_D_MM 3400
 #define XUD_BREAKOUT_FOCUS_D_MM 2400
-#define XUD_BREAKOUT_NEAR_D_MM 1500
-#define XUD_BREAKOUT_FAR_D_MM 3500
+#define XUD_BREAKOUT_NEAR_D_MM 1800
+#define XUD_BREAKOUT_FAR_D_MM 4800
+
+/* The sweep: the camera's two angles, each a slow sine swing of its own, at DIFFERENT periods so
+   the pair's combined direction repeats only at their least common multiple - 234 s, far past the
+   run's cap - rather than as one orbit that would put the same direction back on screen every
+   period. A sine rather than a triangle wave because the swing's extremes are the point here: a
+   triangle wave stops at each extreme with a CORNER (the angle's derivative flips sign there) and
+   a sine stops with a tangent, which is the slow turn a hand can follow. The degrees are INTEGERS
+   because the assert under them is a static_assert and a float one is a -Wpedantic error here.
+   The pitch's floor is the camera basis's own: an eye passing over the target's vertical has an
+   up parallel to its forward, which the camera rung refuses rather than answering with a NaN
+   matrix, and the sweep stays 76 degrees clear of that. The yaw's limit is a framing choice and
+   not a refusal - the fit below is orientation-free, so any yaw shows the whole box, and past a
+   quarter turn the field would be seen edge-on, which is a thin picture rather than a broken one. */
+#define XUD_BREAKOUT_YAW_MAX_DEG 24
+#define XUD_BREAKOUT_PITCH_MAX_DEG 14
+#define XUD_BREAKOUT_YAW_PERIOD_SECONDS 18.0
+#define XUD_BREAKOUT_PITCH_PERIOD_SECONDS 13.0
+
+static_assert((XUD_BREAKOUT_PITCH_MAX_DEG < 90),
+    "breakout_3d.c: the eye never passes over the target's own vertical, so the camera's up stays off its forward and the basis stays "
+    "non-degenerate");
 
 /* The playfield box, in world units: the ball bounces inside it, the brick field sits inside it
    and its far wall is the back plane the frame loop draws. */
@@ -140,28 +168,44 @@
 #define XUD_BREAKOUT_HALF_Y_MM 620
 #define XUD_BREAKOUT_HALF_Z_MM 500
 
-/* The world half-extent VISIBLE at a distance from the eye, in milli-units: the pinhole's focal
-   length is FOCUS_D world units, so the visible half-height at a distance d is d/FOCUS_D world
-   units - which GROWS with the distance, the direction a nearer part of the scene has to be
-   checked against. The integer division rounds DOWN, which is the safe direction for an assert
-   that a shape FITS inside what is visible. */
-#define XUD_BREAKOUT_VISIBLE_HALF_Y_MM(distance) ((distance) * XUD_BREAKOUT_UNIT / (XUD_BREAKOUT_FOCUS_D_MM))
-#define XUD_BREAKOUT_VISIBLE_HALF_X_MM(distance)                                                                                           \
-    ((XUD_BREAKOUT_VISIBLE_HALF_Y_MM(distance) * (int)XUD_BREAKOUT_WINDOW_WIDTH) / (int)XUD_BREAKOUT_WINDOW_HEIGHT)
+/* The sphere the fit below is stated against: the playfield box inside ONE radius of the field's
+   centre, in SQUARED milli-units. The fit is stated against the sphere rather than against the
+   box's own three half-extents because the camera below SWINGS: a sphere's fit reads the same
+   from every angle, so one set of asserts covers the whole sweep, while a box's own fit is only
+   true along the axis it is aligned to - and the head-on fit this replaces is exactly the one a
+   swinging camera breaks. The square is what keeps the assert an integer one: the radius itself
+   would be a sqrt, and a sqrt is not an integer constant expression. */
+#define XUD_BREAKOUT_BOX_SPAN_SQ_MM2                                                                                                       \
+    ((XUD_BREAKOUT_HALF_X_MM * XUD_BREAKOUT_HALF_X_MM) + (XUD_BREAKOUT_HALF_Y_MM * XUD_BREAKOUT_HALF_Y_MM)                                 \
+        + (XUD_BREAKOUT_HALF_Z_MM * XUD_BREAKOUT_HALF_Z_MM))
 
-/* The frustum fit: the box's NEAREST depth is EYE_Z - HALF_Z, and if the box fits the visible
-   extent there it fits it everywhere, because the visible extent only grows with distance from
-   the eye. These four asserts are the reason the game is on screen at all rather than a claim
-   that it is; the two distance ones are the other half of the same fit, that no vertex of the
-   scene is ever behind the eye or past the far distance. */
-static_assert((XUD_BREAKOUT_EYE_Z_MM - XUD_BREAKOUT_HALF_Z_MM) >= XUD_BREAKOUT_NEAR_D_MM,
-    "breakout_3d.c: the nearest point of the box is in front of the near distance, so no vertex of the scene is ever behind the eye");
-static_assert((XUD_BREAKOUT_EYE_Z_MM + XUD_BREAKOUT_HALF_Z_MM) <= XUD_BREAKOUT_FAR_D_MM,
-    "breakout_3d.c: and the farthest point of it is inside the far distance, so the whole box is inside the mapped z range");
-static_assert(XUD_BREAKOUT_HALF_Y_MM <= XUD_BREAKOUT_VISIBLE_HALF_Y_MM(XUD_BREAKOUT_EYE_Z_MM - XUD_BREAKOUT_HALF_Z_MM),
-    "breakout_3d.c: the playfield's half-height fits the frustum at the box's nearest depth, so nothing in the game is clipped out");
-static_assert(XUD_BREAKOUT_HALF_X_MM <= XUD_BREAKOUT_VISIBLE_HALF_X_MM(XUD_BREAKOUT_EYE_Z_MM - XUD_BREAKOUT_HALF_Z_MM),
-    "breakout_3d.c: and so is its half-width, which is the same fit read across the aspect");
+/* The four fit asserts, every one of them the sphere's own and every one of them free of the
+   camera's angle - which is the whole point of a camera that turns:
+   - the eye OUTSIDE the sphere, so the tangent cone under it exists at all;
+   - the aperture covering that cone. The cone's cotangent is sqrt(D^2-R^2)/R and the rung's focal
+     length is FOCUS_D world units, so covering it is FOCUS_D <= that, which squared and cleared
+     of roots is (FOCUS_D^2 + 1)*R^2 <= D^2 - all in integers, the UNIT scaling putting the world
+     units back. The VERTICAL is the binding axis: the window is wider than tall, so the
+     horizontal scale is the vertical one DIVIDED by the aspect and the vertical cone is the
+     tighter fit. A wider aperture or a nearer eye is what fails it, and failing it is a scene
+     clipped out at the sweep's extremes rather than a game drawn on a smaller part of the window.
+   - the two planes bracketing the sphere: the sphere's nearest point is D-R and its farthest is
+     D+R, so a pair that brackets it brackets the box from EVERY angle, which is what says the
+     whole mapped depth range lands across the whole scene rather than across a slice of it.
+   The int64 casts are the products' own: the milli-units squared reach ~1e13 and an int is 32 bits. */
+static_assert((int64_t)XUD_BREAKOUT_EYE_D_MM * (int64_t)XUD_BREAKOUT_EYE_D_MM > (int64_t)XUD_BREAKOUT_BOX_SPAN_SQ_MM2,
+    "breakout_3d.c: the eye orbits OUTSIDE the sphere the playfield box sits in, so the cone the fit below reads exists at all");
+static_assert(((int64_t)XUD_BREAKOUT_FOCUS_D_MM * (int64_t)XUD_BREAKOUT_FOCUS_D_MM + (int64_t)XUD_BREAKOUT_UNIT * XUD_BREAKOUT_UNIT)
+            * (int64_t)XUD_BREAKOUT_BOX_SPAN_SQ_MM2
+        <= (int64_t)XUD_BREAKOUT_EYE_D_MM * (int64_t)XUD_BREAKOUT_EYE_D_MM * (int64_t)XUD_BREAKOUT_UNIT * XUD_BREAKOUT_UNIT,
+    "breakout_3d.c: the aperture covers the cone the sphere subtends at the eye, so the WHOLE box is inside the frustum at every angle of "
+    "the sweep and not head-on only");
+static_assert((int64_t)(XUD_BREAKOUT_EYE_D_MM - XUD_BREAKOUT_NEAR_D_MM) * (int64_t)(XUD_BREAKOUT_EYE_D_MM - XUD_BREAKOUT_NEAR_D_MM)
+        >= (int64_t)XUD_BREAKOUT_BOX_SPAN_SQ_MM2,
+    "breakout_3d.c: the near plane sits outside the sphere, so no point of the scene is ever clipped away by it, from any angle");
+static_assert((int64_t)(XUD_BREAKOUT_FAR_D_MM - XUD_BREAKOUT_EYE_D_MM) * (int64_t)(XUD_BREAKOUT_FAR_D_MM - XUD_BREAKOUT_EYE_D_MM)
+        >= (int64_t)XUD_BREAKOUT_BOX_SPAN_SQ_MM2,
+    "breakout_3d.c: and the far plane sits outside it on the far side, so the whole mapped depth range lands across the whole scene");
 
 /* The ball is a BOX rather than a sphere for two reasons that are the same reason: the sphere's
    tessellation is the library's (xud_shapes.h's claim about the batch's capacity) and its
@@ -226,8 +270,8 @@ static_assert(XUD_BREAKOUT_BRICK_Z_STEP_MM > (XUD_BREAKOUT_BRICK_HALF_Z_MM + XUD
     "breakout_3d.c: two bricks the ball could overlap in x and y are further apart in depth than a ball and a brick's own half-extents sum "
     "to, so the ball is never inside two at once and one brick per step is the whole test");
 
-/* The float form of the distances above, which is what the game and the projection actually use. */
-#define XUD_BREAKOUT_EYE_Z XUD_BREAKOUT_MM(XUD_BREAKOUT_EYE_Z_MM)
+/* The float form of the distances above, which is what the game and the camera actually use. */
+#define XUD_BREAKOUT_EYE_D XUD_BREAKOUT_MM(XUD_BREAKOUT_EYE_D_MM)
 #define XUD_BREAKOUT_FOCUS_D XUD_BREAKOUT_MM(XUD_BREAKOUT_FOCUS_D_MM)
 #define XUD_BREAKOUT_NEAR_D XUD_BREAKOUT_MM(XUD_BREAKOUT_NEAR_D_MM)
 #define XUD_BREAKOUT_FAR_D XUD_BREAKOUT_MM(XUD_BREAKOUT_FAR_D_MM)
@@ -240,6 +284,8 @@ static_assert(XUD_BREAKOUT_BRICK_Z_STEP_MM > (XUD_BREAKOUT_BRICK_HALF_Z_MM + XUD
    above are the integer form of the same fact, stated against the focal length rather than against
    an aperture. */
 #define XUD_BREAKOUT_DEGREES_PER_RADIANS (180.0f / 3.1415926535897932f)
+#define XUD_BREAKOUT_RADIANS_PER_TURN                                                                                                      \
+    (2.0f * 3.1415926535897932f) /* one full period of the sweep's own sine, so a period's argument is one there-and-back */
 #define XUD_BREAKOUT_FOVY_DEG ((2.0f * atanf(1.0f / XUD_BREAKOUT_FOCUS_D)) * XUD_BREAKOUT_DEGREES_PER_RADIANS)
 #define XUD_BREAKOUT_HALF_X XUD_BREAKOUT_MM(XUD_BREAKOUT_HALF_X_MM)
 #define XUD_BREAKOUT_HALF_Y XUD_BREAKOUT_MM(XUD_BREAKOUT_HALF_Y_MM)
@@ -628,6 +674,43 @@ static uint32_t xud_breakout_step(XudBreakoutBall* ball, XudBreakoutPaddle* padd
 static uint32_t xud_breakout_missed(XudBreakoutBall* ball) { return ((ball->position.y - ball->half.y) < -XUD_BREAKOUT_HALF_Y) ? 1u : 0u; }
 
 /*-----------------------------------------------------------------------------------------------
+ * The camera - the one the frame is drawn with, rebuilt from the run's clock every frame
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The scene's one camera as ONE frame asks for it: the eye sits at the orbit's radius from the
+   field's CENTRE, at the frame's own two swing angles, and looks back at that centre. The eye's
+   three components are the orbit's own arithmetic - the unit direction (sin(yaw)cos(pitch),
+   sin(pitch), cos(yaw)cos(pitch)) scaled by EYE_D - so the eye-to-target distance is EYE_D
+   EXACTLY at every angle, which is the one fact the fit asserts above are stated against: they
+   say the sphere the box sits in is inside the frustum from EVERY angle at that distance, so
+   nothing here restates them per frame and nothing here has to know which angle this frame is
+   at. The up stays the world's +Y, and the pitch's own assert above is what keeps it off the
+   forward - an eye passing over the target's vertical is the one degeneracy the camera rung
+   refuses, and it is the one thing an orbiting eye could otherwise walk into.
+   The angles are read from GLFW's wall clock rather than from the frame count, for the same
+   reason the step rate is: a frame count would make the sweep's speed a property of the machine's
+   frame rate rather than of the run. The camera is decoration rather than a rule, so the clock
+   being the run's rather than the step's is what makes it slow on every machine, and the game's
+   own rules below still depend only on the step count. */
+static XudCamera3D xud_breakout_camera_at(double seconds) {
+    const float yawDegrees
+        = (float)XUD_BREAKOUT_YAW_MAX_DEG * sinf((float)(seconds / XUD_BREAKOUT_YAW_PERIOD_SECONDS) * XUD_BREAKOUT_RADIANS_PER_TURN);
+    const float pitchDegrees
+        = (float)XUD_BREAKOUT_PITCH_MAX_DEG * sinf((float)(seconds / XUD_BREAKOUT_PITCH_PERIOD_SECONDS) * XUD_BREAKOUT_RADIANS_PER_TURN);
+    const float yawRadians = yawDegrees / XUD_BREAKOUT_DEGREES_PER_RADIANS;
+    const float pitchRadians = pitchDegrees / XUD_BREAKOUT_DEGREES_PER_RADIANS;
+
+    return (XudCamera3D) { .position = (XudVector3) { .x = XUD_BREAKOUT_EYE_D * sinf(yawRadians) * cosf(pitchRadians),
+                               .y = XUD_BREAKOUT_EYE_D * sinf(pitchRadians),
+                               .z = XUD_BREAKOUT_EYE_D * cosf(yawRadians) * cosf(pitchRadians) },
+        .target = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f },
+        .up = (XudVector3) { .x = 0.0f, .y = 1.0f, .z = 0.0f },
+        .fovy = XUD_BREAKOUT_FOVY_DEG,
+        .near = XUD_BREAKOUT_NEAR_D,
+        .far = XUD_BREAKOUT_FAR_D };
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The frame loop
  *-----------------------------------------------------------------------------------------------*/
 
@@ -694,32 +777,17 @@ int main(void) {
     double accumulator = 0.0;
     uint32_t steps = 0u;
 
-    /* The scene's one camera, put in for the whole run rather than per frame: the pair is raylib's
-       BeginCamera3D()/EndCamera3D() shape, the record is the caller's and the library copies it
-       into the renderer that owns the frame loop, so the frames drawn between the two calls are
-       the frames drawn with it. The eye is on +Z looking down -Z at the field's centre (the same
-       eye the fit asserts above are stated against), the aperture is the derived one whose focal
-       length IS FOCUS_D, and the two planes are the game's own depth budget - the asserts above
-       are what say every vertex of the scene sits between them, which is what says the whole depth
-       range lands across the whole scene rather than across a slice of it. */
-    const XudCamera3D camera = (XudCamera3D) { .position = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = XUD_BREAKOUT_EYE_Z },
-        .target = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f },
-        .up = (XudVector3) { .x = 0.0f, .y = 1.0f, .z = 0.0f },
-        .fovy = XUD_BREAKOUT_FOVY_DEG,
-        .near = XUD_BREAKOUT_NEAR_D,
-        .far = XUD_BREAKOUT_FAR_D };
-
-    result = xud_begin_camera_3d(context, camera);
-    printf("breakout_3d: xud_begin_camera_3d -> %s\n", xud_result_name(result));
-    if (result != XUD_OK) {
-        const XudResult closed = xud_close_context(&context);
-
-        printf("xud_close_context -> %s\n", xud_result_name(closed));
-        return 1;
-    }
+    /* The camera is NOT put in here: the frame loop below puts its own swing in every frame and
+       takes it out after the run, so the camera a frame is drawn with is that frame's own angle
+       rather than one angle for the whole run - see the camera builder above and the begin call
+       beside xud_begin_drawing below. The pair is still raylib's BeginCamera3D()/EndCamera3D()
+       shape, and the record is still the caller's: what changed is only WHICH frame's record it
+       is, not who owns it. */
 
     for (frame = 0u;; frame++) {
         const XudBreakoutInput input = xud_breakout_read_input(glfwWindow);
+        const double now = glfwGetTime();
+        const XudCamera3D camera = xud_breakout_camera_at(now);
         uint32_t alive = 0u;
         uint32_t hit = XUD_BREAKOUT_NO_BRICK;
         uint32_t stepped = 0u;
@@ -729,7 +797,7 @@ int main(void) {
             escapeWanted = 1u;
             break;
         }
-        if (glfwGetTime() >= XUD_BREAKOUT_MAX_SECONDS) {
+        if (now >= XUD_BREAKOUT_MAX_SECONDS) {
             printf("frame %u: the fallback time cap is reached, and the run stops here\n", frame);
             timedOut = 1u;
             break;
@@ -737,12 +805,12 @@ int main(void) {
 
         /* The accumulator GLFW's own timer feeds: one interval of wall time is one step of the
            game, and the frame that arrives before the interval is up simply does not step. */
-        {
-            const double now = glfwGetTime();
-
-            accumulator += (now - last);
-            last = now;
-        }
+        /* The accumulator GLFW's own timer feeds: one interval of wall time is one step of the
+           game, and the frame that arrives before the interval is up simply does not step. The
+           clock is read ONCE per frame, above, and is the same reading the camera's swing above
+           reads - one frame, one clock. */
+        accumulator += (now - last);
+        last = now;
 
         if (accumulator >= XUD_BREAKOUT_STEP_SECONDS) {
             accumulator -= XUD_BREAKOUT_STEP_SECONDS;
@@ -772,9 +840,21 @@ int main(void) {
                 alive = (uint32_t)XUD_BREAKOUT_BRICK_COUNT;
             }
             if ((steps % XUD_BREAKOUT_REPORT_EVERY) == 0u) {
-                printf("step %u: bricks %u/%u, misses %u, ball x %+.3f y %+.3f z %+.3f, paddle x %+.3f\n", steps, alive,
-                    (uint32_t)XUD_BREAKOUT_BRICK_COUNT, misses, ball.position.x, ball.position.y, ball.position.z, paddle.centre.x);
+                printf("step %u: bricks %u/%u, misses %u, ball x %+.3f y %+.3f z %+.3f, paddle x %+.3f, eye x %+.3f y %+.3f z %+.3f\n",
+                    steps, alive, (uint32_t)XUD_BREAKOUT_BRICK_COUNT, misses, ball.position.x, ball.position.y, ball.position.z,
+                    paddle.centre.x, camera.position.x, camera.position.y, camera.position.z);
             }
+        }
+
+        /* The camera put in EVERY frame rather than once for the run: a begin while one is already
+           live REPLACES it rather than stacking it (xud_core.c), so the frame's own swing is the
+           frame's own matrix, and the record is a VALUE the library copies into the renderer that
+           owns the frame loop - which is what makes a per-frame local camera legal here at all,
+           the next frame cannot be left reading a record that went out of scope with this one. */
+        result = xud_begin_camera_3d(context, camera);
+        if (result != XUD_OK) {
+            printf("frame %u: xud_begin_camera_3d -> %s\n", frame, xud_result_name(result));
+            break;
         }
 
         result = xud_begin_drawing(context);
