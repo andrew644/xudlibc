@@ -6,6 +6,38 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-31 note: **`examples/breakout_3d.c` grew the input and the clock rungs it had been
+    standing in for** — the run now ends on the player holding Escape, and the game is played with
+    the left/right arrows (A/D too) rather than only watched. Input comes from GLFW directly, which
+    is the temporary half asked for until xud has an Input wrapper: the example includes `xud_core.h`
+    — its ONE exception to "user code includes xud.h only" — to reach `context->window.glfwWindow`,
+    the GLFW window the CONTEXT already owns, and calls `glfwPollEvents()` + `glfwGetKey()` on it. It
+    creates no window of its own (a second GLFW window would be a second surface in the same session
+    and the game would be played on a window nothing draws to), and `xud_window.h` is what brings
+    `<GLFW/glfw3.h>` AFTER `<vulkan/vulkan.h>`, so glfw3.h's own include-order trap (its Vulkan
+    declarations sit inside `#if defined(VK_VERSION_1_0)`) is satisfied by the ladder rather than by
+    the example naming GLFW's include dir. `glfwPollEvents()` is load-bearing: GLFW's Wayland backend
+    receives key events through an epoll loop that only its poll/wait forms drain (wl_window.c 2938
+    → handleEvents) and nothing else in this tree polls GLFW. The paddle is the player's while a key
+    is held and the game's own autopilot while none is — that coexistence is what keeps an unattended
+    run a game rather than a ball that always falls out. The same rung brings GLFW's timer: `glfwGet
+    Time()` paces the game at 60 steps a second in WALL time, and it has to because GLFW's window runs
+    as fast as it can — measured here at about 3250 frames a second, so one step per frame was a ball
+    crossing the field fifty times a second, a blur a hand cannot play and cannot time an Escape
+    against. The fallback end of a run is therefore 60 seconds of wall time (`-DXUD_BREAKOUT_MAX
+    _SECONDS=N` overrides) rather than a frame count, and clearing the field re-ARMS it for a new round
+    rather than ending the run, because the run's end is the player's now. This supersedes the "No input
+    and no clock" sentence in the breakout note below. Verified here: the paced run does 298 steps in
+    5.0 s (60/s) over 16235 frames (~3250 fps); the escape path — forced at step 200 in a scratch copy
+    outside the tree, since no key event can be sent to a real window from here — prints "ended by
+    escape", closes with `XUD_OK` and exits 0, and the time-cap path does the same at the cap, both
+    validation-clean (36 stderr lines, INFO only, no ERROR, no WARNING, no VUID); the unattended run
+    stays open past the old 900-frame end. NOT exercised on this machine: an actual key press. niri is
+    the compositor (`XDG_CURRENT_DESKTOP=niri`) and it advertises `wl_seat`/`wl_keyboard`, which is
+    what GLFW's Wayland backend binds (wl_window.c 2091 `wl_seat_get_keyboard`, and GLFW 3.5.1 has no
+    focus-based modern input), so the path exists — the press itself is the user's to test. Suite
+    unchanged: 2574 headless, 3309 GPU, 2574 under sanitizers, all green.
+
 - 2026-10-31 note: **`examples/breakout_3d.c` landed** — the first example that is a game rather than a
     drawing: a ball, a paddle and a field of 6 bricks at three depth layers, and the collisions that
     bounce the ball off the walls, off a brick's shallowest-overlapping axis and off the paddle's top

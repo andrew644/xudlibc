@@ -3,13 +3,16 @@
  *   breakout_3d.c - a 3D breakout: a ball, a paddle, a field of bricks in three depth layers
  *
  *   Owns : one game - the ball's motion and its bounces, the brick field and the one brick a
- *          contact removes, the paddle's chase rule, the example's own projection that places
- *          every quad in clip space, and the frame loop that draws one frame per step of that
- *          simulation. Nothing else: no input, no clock, no camera, no batch, no buffer.
- *   Layer: examples. Public API only (xud.h) plus stdio and math.h's fabsf. One context, one
- *          frame loop, and the public calls the game needs - xud_init_context(),
+ *          contact removes, the paddle and the hand that moves it, the Escape that ends the run,
+ *          the example's own projection that places every quad in clip space, and the frame loop
+ *          that draws the scene every frame and steps the simulation at a fixed rate in wall time.
+ *          Nothing else: no camera, no batch, no buffer.
+ *   Layer: examples. Public API (xud.h) plus stdio, math.h's fabsf and GLFW's key state - and
+ *          ONE internal header, xud_core.h, for the one field the input needs: the GLFWwindow*
+ *          the context owns. Everything else the game calls is public - xud_init_context(),
  *          xud_begin_drawing(), xud_draw_triangle_3d() for every quad, xud_end_drawing() and
- *          xud_close_context() - and nothing below xud.h.
+ *          xud_close_context() - and the reason that one exception is here, and why it is the
+ *          narrowest form of it, is the input note below.
  *
  *   The game is 3D in the one way this library can make it 3D today: every object has a z, the
  *   ball travels in x, y and z, the bricks sit at three different depths, and the depth buffer
@@ -32,14 +35,29 @@
  *       the rasteriser's interpolation needs. A quad that spanned two depths would want
  *       perspective-correct interpolation, and that is the camera + transform step's to own.
  *
- *     - No input wrapper, so nothing moves the paddle: the game drives it with its own rule
- *       (the paddle chases the ball at a bounded speed, a bound slower than the ball's fastest
- *       x, so the game sometimes misses). This example is a game that plays itself, and the
- *       half that is not the library's is the hand on the paddle rather than the game.
+ *     - No input wrapper in xud (todo.md's Input wrapper item is a Later rung, not an open bug),
+ *       so the example reads GLFW directly: xud_breakout_read_input() polls and queries the key
+ *       state of the window the CONTEXT already owns. It is the temporary half of the input rung
+ *       and it is deliberately the narrowest form of it - the example creates no window of its
+ *       own (a second GLFW window would be a second surface competing for the same session, and
+ *       the game would be played on a window nothing draws to), and it reaches the context's own
+ *       window for one type, the GLFWwindow*, and nothing else. The paddle is the player's while
+ *       a key is held and the game's own autopilot while none is, which is what keeps the example
+ *       a game that plays itself when nobody is at a keyboard AND a game the player can play.
+ *       glfwPollEvents() is not decoration: GLFW's Wayland backend receives key events through an
+ *       epoll loop that only glfwPollEvents() and its wait forms drain (wl_window.c 2938 ->
+ *       handleEvents), so a frame that never polls is a frame whose key state can never change,
+ *       and nothing else in this tree polls GLFW.
  *
- *     - No clock, so the simulation steps a fixed amount per frame rather than per second. The
- *       game is deterministic: no clock, no randomness, no filesystem, one fixed starting
- *       layout, so two runs of this example are the same run.
+ *     - No clock in xud (todo.md's Clock item is a Later rung, not an open bug), so the example
+ *       borrows GLFW's timer: glfwGetTime() is the same temporary rung as the key state, and it is
+ *       what paces the game to a fixed step rate in wall time rather than one step per frame. It
+ *       has to, because GLFW's window runs as fast as it can - measured here at about 3200 frames
+ *       a second - and a game that stepped once per frame would be a game whose ball crosses the
+ *       field fifty times a second, which is a blur a hand cannot play and cannot time an Escape
+ *       against. The game's own rules stay deterministic: no randomness, no filesystem, one fixed
+ *       starting layout, so two runs with nobody at the keyboard play the same game - though not
+ *       for the same number of steps, which is now wall time's.
  *
  *   One public shape call is used here and only one: xud_draw_triangle_3d(). The reason is the
  *   projection above. xud_draw_cube() places its 24 corners from a centre and three extents IN
@@ -62,7 +80,20 @@
 #include <math.h> /* Required for: fabsf, the interval overlap every collision below reads */
 #include <stdio.h>
 
-#include "xud.h"
+#include "xud.h" /* Required for: the whole public API the game is written against */
+#include "xud_core.h" /* Required for: struct XudContext's fields, and specifically the ONE field
+                        below it that the input needs - context->window, whose GLFWwindow* is what
+                        glfwGetKey is called on. This is the example's single exception to "user
+                        code includes xud.h only", and it is the temporary input rung's own:
+                        xud_core.h is the whole ladder, so it brings xud_window.h with it, and
+                        xud_window.h brings <GLFW/glfw3.h> AFTER <vulkan/vulkan.h>, which is the
+                        order GLFW's own header warns about (glfw3.h's Vulkan declarations sit
+                        inside #if defined(VK_VERSION_1_0), so including <GLFW/glfw3.h> here
+                        directly, first, would drop them and name GLFW's include dir ourselves -
+                        the vendored tree's include dir is already on the path the xud target
+                        exports PUBLIC). Nothing below xud.h is CALLED from here: GLFW's objects
+                        are already in the xud archive (CMakeLists.txt, glfw_vendor as an OBJECT
+                        target), so the only new link fact is glfwPollEvents and glfwGetKey. */
 
 /*-----------------------------------------------------------------------------------------------
  * The window, the example's own camera and the playfield box
@@ -236,16 +267,35 @@ static_assert(XUD_BREAKOUT_FRAME_VERTEX_COUNT <= 64u,
     "bound");
 static_assert(XUD_BREAKOUT_FRAME_INDEX_COUNT <= 96u, "breakout_3d.c: and so are its indices, which is the other half of the same budget");
 
-/* The window's stay-open frame count, and the interval the game's own state is printed at -
-   enough frames that the ball crosses the field several times and the depth is legible, and no
-   feature of the library's own. There is no clock, so this is a frame count rather than a
-   duration: see the note above. */
-#define XUD_BREAKOUT_FRAMES 900u
+/* The step rate the game plays at, in wall time, and the reason it is in wall time at all: see
+   the note above. One step per frame, SKIPPED until the accumulator crosses this interval, is what
+   makes the game playable at the same speed on any machine - and its honest limit is that a machine
+   slower than this rate runs the game slower rather than catching steps up. */
+#define XUD_BREAKOUT_STEP_SECONDS (1.0 / 60.0)
+
+/* The run's fallback cap, in seconds: the run's real end is the player holding Escape (see the
+   input note above), and this is the half that keeps a run with nobody at a keyboard - a CI run,
+   a headless one, a terminal whose window is in front of nobody - from hanging forever. glfwGet
+   Time() measures from the window's creation, which xud_init_context() does, so this is the run's
+   own time rather than the process's. Overridable at build time (-DXUD_BREAKOUT_MAX_SECONDS=N).
+   Sixty seconds is enough for a hand to reach Escape and enough for the game to clear the field
+   several times, which is what the round counter below is for. */
+#ifndef XUD_BREAKOUT_MAX_SECONDS
+#define XUD_BREAKOUT_MAX_SECONDS 60.0
+#endif
 #define XUD_BREAKOUT_REPORT_EVERY 60u
 
 /*-----------------------------------------------------------------------------------------------
  * The game's own state
  *-----------------------------------------------------------------------------------------------*/
+
+/* What one frame of the player's hand asks for: whether to end the run, and which way the paddle
+   should go. A direction of 0 means no key was held this frame, which is the case the autopilot
+   below answers rather than a third rule. */
+typedef struct XudBreakoutInput {
+    uint32_t escapeWanted;
+    int32_t paddleDirection; /* -1 left, 0 none, +1 right */
+} XudBreakoutInput;
 
 typedef struct XudBreakoutBall {
     XudVector3 position;
@@ -317,6 +367,79 @@ static XudResult xud_breakout_draw_quad(XudContext* context, XudVector3 centre, 
     }
 
     return xud_draw_triangle_3d(context, c0, c2, c3, colour);
+}
+
+/* How many bricks are still in the field - the frame loop's own count, read from the bricks' own
+   alive flags rather than carried beside them, so the count cannot drift from what the field is. */
+static uint32_t xud_breakout_count_alive(XudBreakoutBrick* bricks) {
+    uint32_t alive = 0u;
+    uint32_t index = 0u;
+
+    for (index = 0u; index < (uint32_t)XUD_BREAKOUT_BRICK_COUNT; index++) {
+        if (bricks[index].alive != 0u) {
+            alive++;
+        }
+    }
+
+    return alive;
+}
+
+/* A new round: the same field, the same six bricks, re-armed. The reason the game does this
+   rather than ending is that the run's end is the player's Escape now, not the field's being
+   empty - an empty field is a win, and a win that ends the run would make the longest part of the
+   example, the part after the win, unreachable. The ball is reset beside it so a new round starts
+   from the layout rather than from wherever the last one left it. */
+static void xud_breakout_rearm_field(XudBreakoutBrick* bricks) {
+    uint32_t index = 0u;
+
+    for (index = 0u; index < (uint32_t)XUD_BREAKOUT_BRICK_COUNT; index++) {
+        bricks[index].alive = 1u;
+    }
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The input rung - GLFW read directly, see the note at the top of the file
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The window the CONTEXT owns, reached once rather than per frame, and guarded rather than assumed
+   non-NULL: xud_init_context() answers XUD_OK only for a context that owns a window (the surface
+   is a rung every XUD_OK context owns), so NULL here is not an expected state - and answering it
+   rather than assuming it is what keeps a NULL window from being a glfwGetKey call on NULL. */
+static GLFWwindow* xud_breakout_glfw_window(XudContext* context) {
+    if ((context == NULL) || (context->window == NULL)) {
+        return NULL;
+    }
+
+    return context->window->glfwWindow;
+}
+
+/* One frame's read of the player's hand. glfwPollEvents() runs first and every frame: GLFW's Wayland
+   backend receives key events through an epoll loop that only glfwPollEvents() and its wait forms
+   drain (wl_window.c 2938 -> handleEvents), so polling is what makes glfwGetKey able to answer
+   GLFW_PRESS at all, and nothing else in this tree polls GLFW. The escape test is "not RELEASE"
+   rather than "== PRESS" because glfwGetKey answers GLFW_REPEAT for a key held past the frame it
+   was first read on - a test on PRESS alone would let a held Escape keep the run going on the
+   frames between two PRESS reads, and the run would end on a frame chosen by the key repeat rate
+   rather than on the frame the player pressed it. */
+static XudBreakoutInput xud_breakout_read_input(GLFWwindow* glfwWindow) {
+    XudBreakoutInput input = (XudBreakoutInput) { .escapeWanted = 0u, .paddleDirection = 0 };
+
+    if (glfwWindow == NULL) {
+        return input;
+    }
+
+    glfwPollEvents();
+    input.escapeWanted = (glfwGetKey(glfwWindow, GLFW_KEY_ESCAPE) != GLFW_RELEASE) ? 1u : 0u;
+    {
+        const uint32_t left
+            = (glfwGetKey(glfwWindow, GLFW_KEY_LEFT) != GLFW_RELEASE) || (glfwGetKey(glfwWindow, GLFW_KEY_A) != GLFW_RELEASE);
+        const uint32_t right
+            = (glfwGetKey(glfwWindow, GLFW_KEY_RIGHT) != GLFW_RELEASE) || (glfwGetKey(glfwWindow, GLFW_KEY_D) != GLFW_RELEASE);
+
+        input.paddleDirection = (left != 0u) ? -1 : ((right != 0u) ? 1 : 0);
+    }
+
+    return input;
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -419,9 +542,15 @@ static uint32_t xud_breakout_hit_brick(XudBreakoutBall* ball, XudBreakoutBrick* 
 /* The paddle's chase: the paddle moves toward the ball's x at its own bounded speed, and the
    bound is BELOW the ball's fastest x so the chase sometimes loses. The paddle is kept inside
    the box so it cannot be pushed out of the playfield by a ball that is at a wall. */
-static void xud_breakout_step_paddle(XudBreakoutPaddle* paddle, XudBreakoutBall* ball) {
+/* The paddle's two hands, and the reason both exist: the player's while a key is held (the
+   paddle's own speed, the same bound the autopilot uses, so a key held the wrong way cannot make
+   the paddle faster than the game thought it was) and the game's own chase while none is, which
+   is what keeps an unattended run a game rather than a ball that always falls out. The clamp is
+   the same either way, so neither hand can push the paddle out of the box. */
+static void xud_breakout_step_paddle(XudBreakoutPaddle* paddle, XudBreakoutBall* ball, int32_t direction) {
     const float delta = ball->position.x - paddle->centre.x;
-    const float step = (delta > paddle->speed) ? paddle->speed : ((delta < -paddle->speed) ? -paddle->speed : delta);
+    const float chase = (delta > paddle->speed) ? paddle->speed : ((delta < -paddle->speed) ? -paddle->speed : delta);
+    const float step = (direction != 0) ? ((direction < 0) ? -paddle->speed : paddle->speed) : chase;
     const float limit = XUD_BREAKOUT_HALF_X - paddle->half.x;
 
     paddle->centre.x += step;
@@ -461,8 +590,8 @@ static void xud_breakout_catch(XudBreakoutBall* ball, XudBreakoutPaddle* paddle)
    ball that crossed the paddle's plane this step is caught, and a brick is read last so a ball
    that both caught and hit is caught first. The brick index returned is what the frame loop
    prints; XUD_BREAKOUT_NO_BRICK means nothing was removed this step. */
-static uint32_t xud_breakout_step(XudBreakoutBall* ball, XudBreakoutPaddle* paddle, XudBreakoutBrick* bricks) {
-    xud_breakout_step_paddle(paddle, ball);
+static uint32_t xud_breakout_step(XudBreakoutBall* ball, XudBreakoutPaddle* paddle, XudBreakoutBrick* bricks, int32_t paddleDirection) {
+    xud_breakout_step_paddle(paddle, ball, paddleDirection);
 
     ball->position.x += ball->velocity.x;
     xud_breakout_bounce_wall(&ball->position.x, &ball->velocity.x, ball->half.x, XUD_BREAKOUT_HALF_X);
@@ -500,6 +629,9 @@ int main(void) {
     uint32_t frame = 0u;
     uint32_t misses = 0u;
     uint32_t cleared = 0u;
+    uint32_t rounds = 1u;
+    uint32_t escapeWanted = 0u;
+    uint32_t timedOut = 0u;
     XudResult result = xud_init_context(&context, XUD_BREAKOUT_WINDOW_WIDTH, XUD_BREAKOUT_WINDOW_HEIGHT);
 
     printf("breakout_3d: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_BREAKOUT_WINDOW_WIDTH, XUD_BREAKOUT_WINDOW_HEIGHT,
@@ -536,18 +668,79 @@ int main(void) {
 
     xud_breakout_reset_ball(&ball, 0u);
 
-    for (frame = 0u; frame < XUD_BREAKOUT_FRAMES; frame++) {
-        const uint32_t hit = xud_breakout_step(&ball, &paddle, bricks);
-        uint32_t alive = 0u;
+    /* The window the CONTEXT owns, reached once rather than per frame: the context owns exactly
+       one and its own note in xud_core.h says a window is a rung every XUD_OK context owns, so
+       NULL here is not expected - and it is answered rather than assumed, because a NULL window
+       would be a glfwGetKey call on NULL. */
+    GLFWwindow* glfwWindow = xud_breakout_glfw_window(context);
+    if (glfwWindow == NULL) {
+        printf("breakout_3d: the context owns no window to read input from, so the run is the autopilot's alone\n");
+    }
 
-        if (hit != XUD_BREAKOUT_NO_BRICK) {
-            cleared++;
-            printf("frame %u: the ball cleared brick %u\n", frame, hit);
+    /* The run's clock and its step accumulator. glfwGetTime() is GLFW's own timer (clock_gettime
+       behind it, and the window's creation is where it starts), and it is the same temporary rung
+       as the key state - see the note above for why the game needs a rate at all. */
+    double last = glfwGetTime();
+    double accumulator = 0.0;
+    uint32_t steps = 0u;
+
+    for (frame = 0u;; frame++) {
+        const XudBreakoutInput input = xud_breakout_read_input(glfwWindow);
+        uint32_t alive = 0u;
+        uint32_t hit = XUD_BREAKOUT_NO_BRICK;
+        uint32_t stepped = 0u;
+
+        if (input.escapeWanted != 0u) {
+            printf("frame %u: escape is held, and the run stops here\n", frame);
+            escapeWanted = 1u;
+            break;
         }
-        if (xud_breakout_missed(&ball) != 0u) {
-            misses++;
-            printf("frame %u: the ball fell out at the bottom, miss %u\n", frame, misses);
-            xud_breakout_reset_ball(&ball, frame);
+        if (glfwGetTime() >= XUD_BREAKOUT_MAX_SECONDS) {
+            printf("frame %u: the fallback time cap is reached, and the run stops here\n", frame);
+            timedOut = 1u;
+            break;
+        }
+
+        /* The accumulator GLFW's own timer feeds: one interval of wall time is one step of the
+           game, and the frame that arrives before the interval is up simply does not step. */
+        {
+            const double now = glfwGetTime();
+
+            accumulator += (now - last);
+            last = now;
+        }
+
+        if (accumulator >= XUD_BREAKOUT_STEP_SECONDS) {
+            accumulator -= XUD_BREAKOUT_STEP_SECONDS;
+            stepped = 1u;
+        }
+
+        if (stepped != 0u) {
+            steps++;
+            hit = xud_breakout_step(&ball, &paddle, bricks, input.paddleDirection);
+
+            if (hit != XUD_BREAKOUT_NO_BRICK) {
+                cleared++;
+                printf("step %u: the ball cleared brick %u\n", steps, hit);
+            }
+            if (xud_breakout_missed(&ball) != 0u) {
+                misses++;
+                printf("step %u: the ball fell out at the bottom, miss %u\n", steps, misses);
+                xud_breakout_reset_ball(&ball, steps);
+            }
+
+            alive = xud_breakout_count_alive(bricks);
+            if (alive == 0u) {
+                rounds++;
+                printf("step %u: the field is cleared, round %u re-arms it\n", steps, rounds);
+                xud_breakout_rearm_field(bricks);
+                xud_breakout_reset_ball(&ball, steps);
+                alive = (uint32_t)XUD_BREAKOUT_BRICK_COUNT;
+            }
+            if ((steps % XUD_BREAKOUT_REPORT_EVERY) == 0u) {
+                printf("step %u: bricks %u/%u, misses %u, ball x %+.3f y %+.3f z %+.3f, paddle x %+.3f\n", steps, alive,
+                    (uint32_t)XUD_BREAKOUT_BRICK_COUNT, misses, ball.position.x, ball.position.y, ball.position.z, paddle.centre.x);
+            }
         }
 
         result = xud_begin_drawing(context);
@@ -607,24 +800,10 @@ int main(void) {
             printf("frame %u: xud_end_drawing -> %s\n", frame, xud_result_name(result));
             break;
         }
-
-        for (uint32_t index = 0u; index < (uint32_t)XUD_BREAKOUT_BRICK_COUNT; index++) {
-            if (bricks[index].alive != 0u) {
-                alive++;
-            }
-        }
-        if ((frame % XUD_BREAKOUT_REPORT_EVERY) == 0u) {
-            printf("frame %u: bricks %u/%u, misses %u, ball x %+.3f y %+.3f z %+.3f, paddle x %+.3f\n", frame, alive,
-                (uint32_t)XUD_BREAKOUT_BRICK_COUNT, misses, ball.position.x, ball.position.y, ball.position.z, paddle.centre.x);
-        }
-
-        if (alive == 0u) {
-            printf("frame %u: the field is cleared, and the game has nothing left to clear\n", frame);
-            break;
-        }
     }
 
-    printf("breakout_3d: %u frames, %u/%u bricks cleared, %u misses\n", frame, cleared, (uint32_t)XUD_BREAKOUT_BRICK_COUNT, misses);
+    printf("breakout_3d: %u frames, %u steps, %u rounds, %u bricks cleared, %u misses, ended by %s\n", frame, steps, rounds, cleared,
+        misses, (escapeWanted != 0u) ? "escape" : ((timedOut != 0u) ? "the fallback time cap" : "a draw call refusing"));
 
     const XudResult closed = xud_close_context(&context);
     printf("xud_close_context -> %s\n", xud_result_name(closed));
