@@ -329,6 +329,12 @@ nged
     - 2026-10-26 note: the frame pair above this item — `xud_begin_drawing()`/`xud_end_drawing()` — landed with S23, so
       the public boundary a shape appends into is no longer missing; see the same section.
 
+- [ ] Set 0's `cameraPos` (`XudFrameUniformRow::cameraPos`, `xud_descriptor.h` 153) is **decoration today**: no shader
+    reads it (`solid.vert` reads only `viewProj` out of the block) and the camera rung does not fill it. Filling it is
+    the fog / lighting step's to own, not the camera's — S28's camera rung has the job it was given (the matrix a frame
+    is drawn with) done and complete, and S29 put the example on it. Say so here rather than in a code comment, so a
+    reader of the block knows which of its two halves are live and which are a placeholder.
+
 ## Later
 
 - [ ] Textures + samplers (create, upload via staging copies, mipmaps, sampler variants)

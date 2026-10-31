@@ -142,15 +142,20 @@ static_assert(XUD_DESCRIPTOR_POOL_SIZE_COUNT == XUD_DESCRIPTOR_SET_COUNT,
  *-----------------------------------------------------------------------------------------------*/
 
 /* set 0's one uniform buffer: the per-frame block of the design sketch - VP matrix, camera pos, t
- *  ime, fog, ambient, light count. The sketch's block also names a fixed-size light ARRAY, and th
- *  e light element type (position, colour, intensity, direction, type) is the light step's decisi
- *  on, not one this rung can make without inventing that subsystem; XUD_DESCRIPTOR_UNIFORM_BLOCK_
- *  SIZE is the one place that decision has to grow, and growing it is a recreate at init, which i
- *  s legal - it is the runtime recreate the same rule forbids that is at issue.
+ *  ime, fog, ambient, light count. Only viewProj is LIVE today: xud_descriptor_open() zeroes the
+ *  whole block, xud_descriptor_fill_uniform_block() puts the identity in viewProj and the camera
+ *  rung (xud_camera.h/.c, S28) overwrites it every frame with xud_descriptor_set_view_proj(), and
+ *  solid.vert reads nothing else out of the block - cameraPos, time, fog, ambient and lightCount
+ *  are the sketch's placeholders, zero forever until the step that wants one lands. The sketch's
+ *  block also names a fixed-size light ARRAY, and the light element type (position, colour, inten
+ *  sity, direction, type) is the light step's decision, not one this rung can make without invent
+ *  ing that subsystem; XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE is the one place that decision has to
+ *  grow, and growing it is a recreate at init, which is legal - it is the runtime recreate the sam
+ *  e rule forbids that is at issue.
  */
 typedef struct XudFrameUniformRow {
     float viewProj[16]; /* 64 B - the VP matrix, column-major, the same 64 B the push row carries */
-    float cameraPos[3]; /* 12 B - the camera position, for the sketch's distance-based fog */
+    float cameraPos[3]; /* 12 B - the camera position, the sketch's fog input, zero today: no shader reads it */
     float time; /* 4 B - seconds since the context was brought up */
     float fog[4]; /* 16 B - rgb + density */
     float ambient[4]; /* 16 B - rgb + intensity */
