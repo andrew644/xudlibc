@@ -41,6 +41,7 @@ int main(void) {
     xud_test_device();
     xud_test_gpu_bringup();
     xud_test_window();
+    xud_test_input();
     xud_test_swapchain();
     xud_test_handle();
     xud_test_shader();

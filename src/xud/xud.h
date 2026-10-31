@@ -4,13 +4,18 @@
  *
  *   Owns : the public API surface and nothing else - version macros, build-time config
  *          switches (XUD_VALIDATE / XUD_GPU_TESTS), the runtime environment-variable names
- *          the library reads, the XudResult error enum, the two value types a caller passes
- *          down (XudVector3 / XudColor), the one XudHandle currency and its kind tags, the
- *          opaque XudContext owner type, the xud_init_context()/xud_close_context() life-
- *          cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d()
+ *          the library reads, the XudResult error enum, the value types a caller passes
+ *          down (XudVector2 / XudVector3 / XudColor), the one XudHandle currency and its kind
+ *          tags, the opaque XudContext owner type, the xud_init_context()/xud_close_context()
+ *          life-cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d()
  *          / xud_draw_cube() / xud_draw_sphere() / xud_draw_line_3d() / xud_draw_point_3d() /
  *          xud_draw_cube_wires() / xud_draw_sphere_wires() / xud_begin_camera_3d() / xud_end_
- *          camera_3d() / xud_end_drawing()), and the runtime Vulkan query xud_vulkan_supported().
+ *          camera_3d() / xud_end_drawing()), the input API above the input rung (raylib's keybo
+ *          ard and mouse half - xud_is_key_pressed() / xud_is_key_pressed_repeat() / xud_is_key_
+ *          down() / xud_is_key_released() / xud_is_key_up() / xud_get_key_pressed() / xud_get_ch
+ *          ar_pressed() / xud_get_key_name() / xud_set_exit_key() / xud_get_exit_key() and the
+ *          mouse block below it), the key and mouse-button tokens that API's queries take, and
+ *          the runtime Vulkan query xud_vulkan_supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
  *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
  *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
@@ -66,6 +71,7 @@ extern "C" {
 #endif
 
 #include <assert.h> /* Required for: static_assert, the layout check on XudHandle below */
+#include <stdbool.h> /* Required for: bool - the input queries' answers, which are states rather than codes */
 #include <stdint.h> /* Required for: uint32_t - window extents and handle fields */
 
 /*-----------------------------------------------------------------------------------------------
@@ -130,11 +136,12 @@ const char* xud_result_name(XudResult result);
 /*-----------------------------------------------------------------------------------------------
  * The value types a caller passes down
  *
- * These are raylib's own two - Vector3 (reference/raylib/raylib.h 222) and Color (253) - and
- * they are value types in the opposite bucket from the handle below: a handle ADDRESSES an
- * object the library owns and a caller never reaches into, and these two carry the bytes a
- * caller hands DOWN for the library to write into the batch's streams. Nothing here owns a
- * driver name, so neither type has a lifetime, a close or an error code of its own.
+ * These are raylib's own - Vector2 (reference/raylib/raylib.h 221), Vector3 (222) and Color (253)
+ * - and they are value types in the opposite bucket from the handle below: a handle ADDRESSES an
+ * object the library owns and a caller never reaches into, and these carry the bytes a
+ * caller hands DOWN - a shape's point into the batch's streams, a mouse position out of the
+ * input rung's records. Nothing here owns a driver name, so no one of them has a lifetime, a
+ * close or an error code of its own.
  *
  * The colour is four uint8_t in R,G,B,A order, which is the byte order the batch's COLOR strea
  * m's VkFormat is in (xud_batch.h's note: VK_FORMAT_R8G8B8A8_UNORM, and the reason that forma
@@ -149,6 +156,15 @@ typedef struct XudVector3 {
     float y; /* vector y component */
     float z; /* vector z component */
 } XudVector3;
+
+/// The one 2-component vector a mouse position and a mouse delta are named by - raylib's Vector2
+/// (reference/raylib/raylib.h 221), the same two float fields, and the one public type the input
+/// API's position and delta queries fill rather than a pair of loose coordinates: raylib's GetMou
+/// sePosition, GetMouseDelta and GetMouseWheelMoveV all return this.
+typedef struct XudVector2 {
+    float x; /* vector x component */
+    float y; /* vector y component */
+} XudVector2;
 
 /// The one colour a shape is filled with - raylib's Color, R8G8B8A8, four bytes and no more.
 typedef struct XudColor {
@@ -486,6 +502,293 @@ XudResult xud_end_camera_3d(XudContext* context);
 /// e batch alone.
 XudResult xud_end_drawing(XudContext* context);
 
+/*-----------------------------------------------------------------------------------------------
+ * The input API - raylib's keyboard and mouse half, above the input rung
+ *
+ * This is raylib's input surface (reference/raylib/raylib.h 1202-1241: IsKeyPressed, IsKeyPressed
+ * Repeat, IsKeyDown, IsKeyReleased, IsKeyUp, GetKeyPressed, GetCharPressed, GetKeyName, SetExitKey
+ * and the mouse block below it) above the input rung: the state machine is xud_input.h's and the
+ * window it reads is the context's, so a caller names a key or a button and never a GLFWwindow*.
+ * The tokens below are raylib's own enum values (raylib.h 587-720) mirrored as macros because they
+ * are the numbering this rung's state rows are indexed by - xud_input.h static_asserts the mirror
+ * against GLFW's own tokens, so the public mirror, GLFW's state array and this rung's rows cannot
+ * drift apart.
+ *
+ * The state a query answers about is the state as of the poll that OPENED this frame: xud_end_dra
+ * wing() runs one glfwPollEvents() per frame, which is raylib's own order for the frame pair (ray
+ * lib.h 1100: "By default EndDrawing() does this job: draws everything + SwapScreenBuffer() + mana
+ * ge frame timing + PollInputEvents()"). Nothing here polls on demand, so a query between two polls
+ * reads the same records rather than a fresh window state, and a press a caller cannot see yet is
+ * a press in a frame that has not ended yet.
+ *
+ * What is NOT here, and why: raylib's gamepad block (GLFW's joystick/gamepad rung is a separate
+ * subsystem - a device with its own lifetime, its own queries and its own mapping table, and noth
+ * ing in this tree opens one) and its touch block (GLFW's Wayland backend registers no touch listen
+ * er at all, so there is no touch state above this window to read), and raylib's SetMouseCursor (a
+ * GLFWcursor this rung would have to own and destroy, and GLFW's own table calls four of the ten
+ * standard shapes only "Maybe" on a Wayland theme).
+ *-----------------------------------------------------------------------------------------------*/
+
+/* raylib's KeyboardKey enum (reference/raylib/raylib.h 587-704), one name per token with raylib's
+   own values - which are GLFW's, and the assert in xud_input.h is what pins that. XUD_KEY_NULL is
+   the "no key" the queue queries answer with, not a key to query: GLFW's key state starts at the
+   printable range, so the queries below refuse a token below XUD_KEY_SPACE as XUD_INVALID_ARG rat
+   her than answering "up" for a key that does not exist. The four tokens raylib carries below that
+   range (KEY_BACK, KEY_MENU, KEY_VOLUME_UP, KEY_VOLUME_DOWN) name Android's keys rather than keys
+   GLFW's Wayland window has state for, so they are not mirrored here.
+*/
+#define XUD_KEY_NULL 0
+#define XUD_KEY_APOSTROPHE 39
+#define XUD_KEY_COMMA 44
+#define XUD_KEY_MINUS 45
+#define XUD_KEY_PERIOD 46
+#define XUD_KEY_SLASH 47
+#define XUD_KEY_ZERO 48
+#define XUD_KEY_ONE 49
+#define XUD_KEY_TWO 50
+#define XUD_KEY_THREE 51
+#define XUD_KEY_FOUR 52
+#define XUD_KEY_FIVE 53
+#define XUD_KEY_SIX 54
+#define XUD_KEY_SEVEN 55
+#define XUD_KEY_EIGHT 56
+#define XUD_KEY_NINE 57
+#define XUD_KEY_SEMICOLON 59
+#define XUD_KEY_EQUAL 61
+#define XUD_KEY_A 65
+#define XUD_KEY_B 66
+#define XUD_KEY_C 67
+#define XUD_KEY_D 68
+#define XUD_KEY_E 69
+#define XUD_KEY_F 70
+#define XUD_KEY_G 71
+#define XUD_KEY_H 72
+#define XUD_KEY_I 73
+#define XUD_KEY_J 74
+#define XUD_KEY_K 75
+#define XUD_KEY_L 76
+#define XUD_KEY_M 77
+#define XUD_KEY_N 78
+#define XUD_KEY_O 79
+#define XUD_KEY_P 80
+#define XUD_KEY_Q 81
+#define XUD_KEY_R 82
+#define XUD_KEY_S 83
+#define XUD_KEY_T 84
+#define XUD_KEY_U 85
+#define XUD_KEY_V 86
+#define XUD_KEY_W 87
+#define XUD_KEY_X 88
+#define XUD_KEY_Y 89
+#define XUD_KEY_Z 90
+#define XUD_KEY_LEFT_BRACKET 91
+#define XUD_KEY_BACKSLASH 92
+#define XUD_KEY_RIGHT_BRACKET 93
+#define XUD_KEY_GRAVE 96
+#define XUD_KEY_SPACE 32
+#define XUD_KEY_ESCAPE 256
+#define XUD_KEY_ENTER 257
+#define XUD_KEY_TAB 258
+#define XUD_KEY_BACKSPACE 259
+#define XUD_KEY_INSERT 260
+#define XUD_KEY_DELETE 261
+#define XUD_KEY_RIGHT 262
+#define XUD_KEY_LEFT 263
+#define XUD_KEY_DOWN 264
+#define XUD_KEY_UP 265
+#define XUD_KEY_PAGE_UP 266
+#define XUD_KEY_PAGE_DOWN 267
+#define XUD_KEY_HOME 268
+#define XUD_KEY_END 269
+#define XUD_KEY_CAPS_LOCK 280
+#define XUD_KEY_SCROLL_LOCK 281
+#define XUD_KEY_NUM_LOCK 282
+#define XUD_KEY_PRINT_SCREEN 283
+#define XUD_KEY_PAUSE 284
+#define XUD_KEY_F1 290
+#define XUD_KEY_F2 291
+#define XUD_KEY_F3 292
+#define XUD_KEY_F4 293
+#define XUD_KEY_F5 294
+#define XUD_KEY_F6 295
+#define XUD_KEY_F7 296
+#define XUD_KEY_F8 297
+#define XUD_KEY_F9 298
+#define XUD_KEY_F10 299
+#define XUD_KEY_F11 300
+#define XUD_KEY_F12 301
+#define XUD_KEY_LEFT_SHIFT 340
+#define XUD_KEY_LEFT_CONTROL 341
+#define XUD_KEY_LEFT_ALT 342
+#define XUD_KEY_LEFT_SUPER 343
+#define XUD_KEY_RIGHT_SHIFT 344
+#define XUD_KEY_RIGHT_CONTROL 345
+#define XUD_KEY_RIGHT_ALT 346
+#define XUD_KEY_RIGHT_SUPER 347
+#define XUD_KEY_KB_MENU 348
+#define XUD_KEY_KP_0 320
+#define XUD_KEY_KP_1 321
+#define XUD_KEY_KP_2 322
+#define XUD_KEY_KP_3 323
+#define XUD_KEY_KP_4 324
+#define XUD_KEY_KP_5 325
+#define XUD_KEY_KP_6 326
+#define XUD_KEY_KP_7 327
+#define XUD_KEY_KP_8 328
+#define XUD_KEY_KP_9 329
+#define XUD_KEY_KP_DECIMAL 330
+#define XUD_KEY_KP_DIVIDE 331
+#define XUD_KEY_KP_MULTIPLY 332
+#define XUD_KEY_KP_SUBTRACT 333
+#define XUD_KEY_KP_ADD 334
+#define XUD_KEY_KP_ENTER 335
+#define XUD_KEY_KP_EQUAL 336
+
+/* raylib's MouseButton enum (reference/raylib/raylib.h 711-720) - the same seven buttons GLFW's
+   mouse-button state array is indexed by, and the assert in xud_input.h is what pins that too.
+*/
+#define XUD_MOUSE_BUTTON_LEFT 0
+#define XUD_MOUSE_BUTTON_RIGHT 1
+#define XUD_MOUSE_BUTTON_MIDDLE 2
+#define XUD_MOUSE_BUTTON_SIDE 3
+#define XUD_MOUSE_BUTTON_EXTRA 4
+#define XUD_MOUSE_BUTTON_FORWARD 5
+#define XUD_MOUSE_BUTTON_BACK 6
+
+/// True if the key transitioned from not held to held at the poll that opened this frame - raylib's
+/// IsKeyPressed (raylib.h 1202), "pressed once": a key held across three frames answers true at the
+/// first of them and false at the two below it. XUD_INVALID_ARG on a NULL out-param, a NULL context
+/// or a key outside GLFW's queryable range (XUD_KEY_NULL included - it names "no key"); XUD_UNSUPP
+/// ORTED on a context whose input rung never came up.
+XudResult xud_is_key_pressed(bool* outPressed, XudContext* context, int key);
+
+/// True if the key is held AND was already held at the poll below this one - raylib's IsKeyPressed
+/// Repeat (raylib.h 1203), which is how a caller tells a held key that is repeating (a key held
+/// down long enough that the window system is re-announcing it) from one that was pressed at this
+/// frame. XUD_INVALID_ARG as above; XUD_UNSUPPORTED as above.
+XudResult xud_is_key_pressed_repeat(bool* outRepeat, XudContext* context, int key);
+
+/// True if the key is held at the poll that opened this frame, however it got there - raylib's IsKe
+/// yDown (raylib.h 1204), the one query of this family that is not about a transition, which is wh
+/// at a held-down-while-moving control reads through. XUD_INVALID_ARG as above; XUD_UNSUPPORTED as
+/// above.
+XudResult xud_is_key_down(bool* outDown, XudContext* context, int key);
+
+/// True if the key transitioned from held to not held at the poll that opened this frame - raylib's
+/// IsKeyReleased (raylib.h 1205), "released once", the mirror of xud_is_key_pressed. XUD_INVALID_AR
+/// G as above; XUD_UNSUPPORTED as above.
+XudResult xud_is_key_released(bool* outReleased, XudContext* context, int key);
+
+/// True if the key is not held at the poll that opened this frame - raylib's IsKeyUp (raylib.h 1206
+/// ), "NOT being pressed". XUD_INVALID_ARG as above; XUD_UNSUPPORTED as above.
+XudResult xud_is_key_up(bool* outUp, XudContext* context, int key);
+
+/// The next key that transitioned into held at the poll that opened this frame, in the order the po
+/// ll's scan found them, and 0 when the queue is drained - raylib's GetKeyPressed (raylib.h 1207),
+/// "call it multiple times for keys queued, returns 0 when the queue is empty". The queue's bound i
+/// s the key count and the proof beside it is why no press can be dropped from it. XUD_INVALID_ARG
+/// on a NULL out-param or a NULL context; XUD_UNSUPPORTED as above.
+XudResult xud_get_key_pressed(int* outKey, XudContext* context);
+
+/// The next codepoint the window's keyboard typed since the poll below this one, and 0 when the que
+/// ue is drained - raylib's GetCharPressed (raylib.h 1208), and the only way a caller sees a charac
+/// ter at all on this backend, because a codepoint is only ever delivered through GLFW's char call
+/// back (wl_window.c 1372). XUD_OUT_OF_RESOURCES once, after the queue is drained, when more codepo
+/// intes arrived between two polls than the queue holds: the list was cut, and saying so is what ma
+/// kes it a report rather than a silent truncation. XUD_INVALID_ARG on a NULL out-param or a NULL c
+/// ontext; XUD_UNSUPPORTED as above.
+XudResult xud_get_char_pressed(int* outChar, XudContext* context);
+
+/// The name of a key on the CURRENT keyboard layout rather than on the layout the tokens above name
+/// d - raylib's GetKeyName (raylib.h 1209), "returns string 'q' for KEY_A on an AZERTY keyboard",
+/// which is what lets a caller bind an action to whatever key types the letter it wants. The point
+/// er is the name GLFW resolved for this key on this layout, NULL when the key types nothing, and
+/// it is GLFW's own storage: valid until the next poll, not to be freed and not to be kept past th
+/// e frame that ends at it. XUD_INVALID_ARG on a NULL out-param, a NULL context or a key outside GL
+/// F W's queryable range; XUD_UNSUPPORTED as above.
+XudResult xud_get_key_name(const char** outName, XudContext* context, int key);
+
+/// Record the key that ends a run - raylib's SetExitKey (raylib.h 1210), ESC to start with, XUD_KEY
+/// _NULL for none. This rung RECORDS it and the library never exits a process of its own: the cal
+/// ler asks for it with xud_get_exit_key() and acts, which is what keeps a window that is closed b
+/// y a key press a decision the caller made rather than one made inside the library. XUD_INVALID_AR
+/// G on a NULL context or on a key that is neither XUD_KEY_NULL nor inside GLFW's queryable range;
+/// XUD_UNSUPPORTED as above.
+XudResult xud_set_exit_key(XudContext* context, int key);
+
+/// The key that ends a run, as this rung records it - the query beside the setter above, so the def
+/// ault is readable rather than only knowable by convention. XUD_INVALID_ARG on a NULL out-param or
+/// a NULL context; XUD_UNSUPPORTED as above.
+XudResult xud_get_exit_key(int* outKey, XudContext* context);
+
+/// True if the mouse button transitioned from not held to held at the poll that opened this frame -
+/// raylib's IsMouseButtonPressed (raylib.h 1228). XUD_INVALID_ARG on a NULL out-param, a NULL conte
+/// xt or a button outside GLFW's mouse-button range; XUD_UNSUPPORTED as above.
+XudResult xud_is_mouse_button_pressed(bool* outPressed, XudContext* context, int button);
+
+/// True if the mouse button is held at the poll that opened this frame - raylib's IsMouseButtonDown
+/// (raylib.h 1229). XUD_INVALID_ARG as above; XUD_UNSUPPORTED as above.
+XudResult xud_is_mouse_button_down(bool* outDown, XudContext* context, int button);
+
+/// True if the mouse button transitioned from held to not held at the poll that opened this frame -
+/// raylib's IsMouseButtonReleased (raylib.h 1230). XUD_INVALID_ARG as above; XUD_UNSUPPORTED as abo
+/// ve.
+XudResult xud_is_mouse_button_released(bool* outReleased, XudContext* context, int button);
+
+/// True if the mouse button is not held at the poll that opened this frame - raylib's IsMouseButto
+/// nUp (raylib.h 1231). XUD_INVALID_ARG as above; XUD_UNSUPPORTED as above.
+XudResult xud_is_mouse_button_up(bool* outUp, XudContext* context, int button);
+
+/// The cursor's X, as this rung's offset and scale sit above the position the window reported at th
+/// e poll that opened this frame - raylib's GetMouseX (raylib.h 1232), and the same number xud_get_
+/// mouse_position() fills. XUD_INVALID_ARG on a NULL out-param or a NULL context; XUD_UNSUPPORTED a
+/// s above.
+XudResult xud_get_mouse_x(int* outX, XudContext* context);
+
+/// The cursor's Y, as this rung's offset and scale sit above the position the window reported at th
+/// e poll that opened this frame - raylib's GetMouseY (raylib.h 1233). XUD_INVALID_ARG as above; XU
+/// D_UNSUPPORTED as above.
+XudResult xud_get_mouse_y(int* outY, XudContext* context);
+
+/// The cursor's position, as this rung's offset and scale sit above the position the window reporte
+/// d at the poll that opened this frame - raylib's GetMousePosition (raylib.h 1234). XUD_INVALID_AR
+/// G on a NULL out-param or a NULL context; XUD_UNSUPPORTED as above.
+XudResult xud_get_mouse_position(XudVector2* outPosition, XudContext* context);
+
+/// How far the cursor moved between the poll below this frame and the one that opened it - raylib's
+/// GetMouseDelta (raylib.h 1235), "the delta between frames", stated against the two polls rather t
+/// han against the two calls because nothing here polls on demand. XUD_INVALID_ARG on a NULL out-p
+/// aram or a NULL context; XUD_UNSUPPORTED as above.
+XudResult xud_get_mouse_delta(XudVector2* outDelta, XudContext* context);
+
+/// Ask the window system to place the cursor - raylib's SetMousePosition (raylib.h 1236). On this
+/// backend the answer is XUD_UNSUPPORTED and nothing moved: GLFW's Wayland half refuses to place a
+/// cursor it cannot see outside the window (wl_window.c 2970, "The platform does not support settin
+/// g the cursor position"), and the refusal is GLFW's own answer read back rather than a guess abo
+/// ut the backend. XUD_INVALID_ARG on a NULL context; XUD_UNSUPPORTED on a context whose input run
+/// g never came up, on a window that is gone, or on a window system that will not place the cursor.
+XudResult xud_set_mouse_position(XudContext* context, int x, int y);
+
+/// Move the origin the cursor's position is read against - raylib's SetMouseOffset (raylib.h 1237
+/// ), the one half of the transform above the raw position that is a shift rather than a divisor.
+/// XUD_INVALID_ARG on a NULL context; XUD_UNSUPPORTED as above.
+XudResult xud_set_mouse_offset(XudContext* context, int offsetX, int offsetY);
+
+/// Divide the cursor's position by a scale - raylib's SetMouseScale (raylib.h 1238), which is how a
+/// caller reads a window that renders at a different extent than it shows at. A scale of zero, or
+/// one that is not finite, is refused as XUD_INVALID_ARG rather than turned into a division by zero
+/// or an infinity behind the queries' backs. XUD_UNSUPPORTED as above.
+XudResult xud_set_mouse_scale(XudContext* context, float scaleX, float scaleY);
+
+/// The wheel movement of whichever axis moved more between the poll below this frame and the one th
+/// at opened it - raylib's GetMouseWheelMove (raylib.h 1239), the one number a scroll-driven zoom
+/// reads. XUD_INVALID_ARG on a NULL out-param or a NULL context; XUD_UNSUPPORTED as above.
+XudResult xud_get_mouse_wheel_move(float* outMove, XudContext* context);
+
+/// The wheel movement on both axes between the poll below this frame and the one that opened it -
+/// raylib's GetMouseWheelMoveV (raylib.h 1240), for a scroll that can move on either axis. XUD_INV
+/// ALID_ARG on a NULL out-param or a NULL context; XUD_UNSUPPORTED as above.
+XudResult xud_get_mouse_wheel_move_v(XudVector2* outMove, XudContext* context);
 #ifdef __cplusplus
 }
 #endif

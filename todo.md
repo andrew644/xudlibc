@@ -6,8 +6,27 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- 2026-10-31 note: **the example's game objects are boxes now as S32** — see the *Steps complete (S32 …)* section at
-  the top of `todo_completed.md`: `examples/breakout_3d.c` only, no library file, no public API change, no new test.
+- 2026-10-31 note: **the public input API and the input rung landed as S33** — see the *Steps complete (S33
+  …)* section now at the top of `todo_completed.md`: `src/xud/xud_input.h`/`.c` (the rung — one GLFW window's
+  key/button state kept as a state machine, the two queues, the cursor transform, the wheel), the public input
+  API in `xud.h` (24 calls in raylib's shape, `XudVector2` added as its value type, `XUD_KEY_*`/`XUD_MOUSE_BUTTON_*`
+  tokens pinned to GLFW's numbering by a `static_assert` mirror), the rung opened and closed by the context's own
+  bring-up/teardown, `xud_input_poll()` run ONCE per frame by `xud_end_drawing()`, and the new test area
+  `tests/xud_test_input.c`. Suite 2781 headless / 3568 GPU, 0 failures (was 2660 / 3427).
+- 2026-10-31 note: **`examples/breakout_3d.c` is on the public input API as S33** — the example's one exception
+  to "user code includes `xud.h` only" is gone: it no longer includes `xud_core.h`, no longer names a `GLFWwindow*`,
+  and no longer calls `glfwPollEvents()`/`glfwGetKey()`. `xud_breakout_read_input()` takes the `XudContext*` and
+  asks the library's rung — `xud_get_exit_key()` for the key that ends the run (ESC, the rung's own default rather
+  than the example's choice) and `xud_is_key_down()` for that key and for the paddle's LEFT/RIGHT/A/D, `down` and
+  not `pressed` because a held key answers `pressed` at the first frame only. The example still makes exactly ONE
+  direct GLFW call, `glfwGetTime()` for the wall-time step rate — the clock is not an input question and there is
+  still no clock in xud (raylib's `GetFrameTime`/`GetFPS` are not in this library, and a public time query is a
+  public-API-surface change, so it is an ask — see Blocked). Suite 2781 headless / 3568 GPU, 0
+  failures; the run starts, draws and reports `xud_init_context -> XUD_OK` with no "no input rung" line, so the
+  queries answer on a real window.
+- 2026-10-31 note: **the example's game objects are boxes now as S32** — see the *Steps complete (S32 …)* section
+  at the top of `todo_completed.md`: `examples/breakout_3d.c` only, no library file, no public API change, no new test.
+  The ball, the paddle and every brick are drawn through a new `xud_breakout_draw_box()` reaching `xud_draw_cube()`
   The ball, the paddle and every brick are drawn through a new `xud_breakout_draw_box()` reaching `xud_draw_cube()`
   from the half-extents every object already carries, which is the solid the game's own collisions were already
   testing (an AABB test against a half-extent and a quad drawn at one constant `z` were two different solids); the
@@ -104,6 +123,11 @@ step, just move it, so the active tracker stays short and the log stays complete
     what GLFW's Wayland backend binds (wl_window.c 2091 `wl_seat_get_keyboard`, and GLFW 3.5.1 has no
     focus-based modern input), so the path exists — the press itself is the user's to test. Suite
     unchanged: 2574 headless, 3309 GPU, 2574 under sanitizers, all green.
+
+    Superseded as S33: the INPUT half of that note is gone — the example no longer includes `xud_core.h`, no longer
+    names the `GLFWwindow*` the context owns, and no longer calls `glfwPollEvents()`/`glfwGetKey()`; it reads the
+    public input API and the poll that makes that state current is `xud_end_drawing()`'s. The CLOCK half is still
+    as written: `glfwGetTime()` is still the example's one direct GLFW call.
 
 - 2026-10-31 note: **`examples/breakout_3d.c` landed** — the first example that is a game rather than a
     drawing: a ball, a paddle and a field of 6 bricks at three depth layers, and the collisions that
@@ -395,7 +419,10 @@ nged
 - [ ] 3D model loading (glTF 2.0 — format decision still open, see Blocked)
 - [ ] Text/font rendering
 - [ ] Audio wrapper
-- [ ] Input wrapper (keyboard/mouse/gamepad over GLFW)
+- [ ] Input: gamepad / touch state and `SetMouseCursor` (the keyboard+mouse half of raylib's input surface landed
+    as S33, see Completed — what is open here is the half GLFW's Wayland backend cannot serve: no touch events, no
+    gamepad, `_glfwSetCursorPosWayland` answering `GLFW_FEATURE_UNAVAILABLE`, and owning/destroying a cursor shape
+    being a different decision again; a joystick is a separate subsystem, not a gap in the rung that landed)
 - [ ] Examples set + README
     - 2026-10-31 note: three examples exist today — `hello_context.c`, `hello_triangle.c` and `breakout_3d.c`
       (the first that is a GAME rather than a drawing, and the first that draws more than one shape in a
@@ -670,4 +697,7 @@ nged
   plus the material kind's slot array) is the handle layer's step, and a public create/close pair is a public-API-surface
   change AGENTS.md's *Ask before* rule puts the ask on.
 - Audio: vendor miniaudio vs no audio (ask)
+- Frame clock: raylib's `GetFrameTime`/`GetFPS` as a public query (a public-API-surface change, so an ask) vs the
+  example's `glfwGetTime()` — the example's ONE remaining direct GLFW call, and the only reason it still names GLFW
+  at all; the game needs a rate in wall time because GLFW's window runs at ~3250 frames a second (ask)
 - Text/font: own bitmap atlas vs vendored `stb_truetype`/fontstash (ask)

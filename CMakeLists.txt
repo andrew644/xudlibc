@@ -263,6 +263,7 @@ add_library(xud STATIC
     src/xud/xud_physical.c
     src/xud/xud_device.c
     src/xud/xud_window.c
+    src/xud/xud_input.c
     src/xud/xud_swapchain.c
     src/xud/xud_allocator.c
     src/xud/xud_descriptor.c
@@ -342,6 +343,7 @@ add_executable(xud_test
     tests/xud_test_device.c
     tests/xud_test_gpu_bringup.c
     tests/xud_test_window.c
+    tests/xud_test_input.c
     tests/xud_test_swapchain.c
     tests/xud_test_handle.c
     tests/xud_test_shader.c

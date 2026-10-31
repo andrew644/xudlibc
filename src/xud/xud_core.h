@@ -35,6 +35,7 @@
 #include "xud_device.h" /* Required for: XudDevice, the VkDevice plus its queue row, its enabled features/extensions and its two role queue records - the context owns one from the device layer on */
 #include "xud_diagnostics.h" /* Required for: XudDiagnostics, the diagnostics struct the context owns once validation is on */
 #include "xud_handle.h" /* Required for: XudHandleTable, the per-kind slot arrays behind the public XudHandle currency - the context owns one from the handle step on, and it is the FIRST rung torn down because a handle records an object of every rung below it */
+#include "xud_input.h" /* Required for: XudInput, the input rung the context owns above the window it reads - GLFW's char and scroll callbacks are registered on that window, so the teardown order below makes this rung die before the window it was registered on */
 #include "xud_instance.h" /* Required for: XudInstance, the VkInstance the context owns from the instance layer on */
 #include "xud_loader.h" /* Required for: XudLoader, the loader the context owns from bring-up on */
 #include "xud_physical.h" /* Required for: XudPhysicalDevice, the chosen handle plus the caps the context owns from the physical layer on */
@@ -98,6 +99,18 @@ struct XudContext {
        lives inside it.
      */
     XudWindow* window; /* a GLFW window plus the VkSurfaceKHR it was handed            */
+
+    /* Owned from the input rung on, opened right above the window it reads: this rung is what the
+       public input API reads, and it owns nothing of the driver's - one host allocation, GLFW's char
+       and scroll callbacks registered on the window below it and the window's user pointer, which is
+       GLFW's own payload slot for that window. It is a bring-up requirement rather than an optional
+       rung: the public input calls answer XUD_UNSUPPORTED on a context that has no rung, and a con
+       text that never had one is not a state the library leaves behind. It goes BEFORE the surface
+       and the window in the teardown order for the reason the callbacks are its: a char or scroll
+       event arriving after this rung is gone would call a callback naming freed memory, so the run
+       g is unregistered while the GLFW window it was registered on is still alive.
+    */
+    XudInput* input; /* raylib's keyboard and mouse state above this window           */
 
     XudInstance* instance; /* the VkInstance plus the create-info that produced it       */
 

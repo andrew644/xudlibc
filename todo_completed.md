@@ -1,6 +1,13 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S32, the example's game objects as boxes** — the user's "they appear flat" report, first half: the ball, the paddle and every brick drawn as the box whose half-extents the game's collisions already test, and a frame of 198 vertices / 294 indices settling at the batch's 256/384 through the boundary's grow (2026-10-31). The step before it is **S31, the batch's capacity ask and the grow at the public frame boundary** — the half of the growth path that had a tested rung and no caller: a frame that wanted more than the batch had room for stops one shape SHORT of full, because a shape's append is atomic, so its counts say nothing about the ask and the batch needed a place to leave it (2026-10-31). The step before it is **S30, the example's camera sweep** — the same example turning its camera instead of holding it still: the eye orbiting the field's centre at a fixed radius, the two angles being the frame's own slow swings, and the fit asserts moved onto the sphere the playfield box sits in because a box's own fit is only true along the axis it is aligned to (2026-10-31). The step before it is **S29, the example on the camera** — the first GPU consumer of S28's camera rung: the example's own projection gone, its quads in world space, its aperture derived from its own focus distance rather than chosen, and its fit asserts restated against what is actually visible (2026-10-31). The step before that is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S33, the public input API and the input rung** — raylib's input surface as 24 public
+  calls over one internal rung that keeps one GLFW window's key/button state as a state machine, polled once per
+  frame by the frame boundary, and the same example that had been reading GLFW directly now reading the library
+  instead (2026-10-31). The step before it is **S32, the example's game objects as boxes** — the user's "they appear
+  flat" report, first half: the ball, the paddle and every brick drawn as the box whose half-extents the game's
+  collisions already test, and a frame of 198 vertices / 294 indices settling at the batch's 256/384 through the
+  boundary's grow (2026-10-31). The step before it is **S31, the batch's capacity ask and the grow at the public
+  frame boundary** — the half of the growth path that had a tested rung and no caller: a frame that wanted more than the batch had room for stops one shape SHORT of full, because a shape's append is atomic, so its counts say nothing about the ask and the batch needed a place to leave it (2026-10-31). The step before it is **S30, the example's camera sweep** — the same example turning its camera instead of holding it still: the eye orbiting the field's centre at a fixed radius, the two angles being the frame's own slow swings, and the fit asserts moved onto the sphere the playfield box sits in because a box's own fit is only true along the axis it is aligned to (2026-10-31). The step before it is **S29, the example on the camera** — the first GPU consumer of S28's camera rung: the example's own projection gone, its quads in world space, its aperture derived from its own focus distance rather than chosen, and its fit asserts restated against what is actually visible (2026-10-31). The step before that is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
 rather than the bytes a frame is drawn from: the camera's orthonormal basis, the symmetric frustum at the extent a frame
 renders at, the product in the block's column-major order, mapped to Vulkan's [0,1] depth rather than OpenGL's [-1,1],
 and the public pair that puts a camera in and takes it out (2026-10-31). The step before it is **S27, the wire forms** —
@@ -20,6 +27,116 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S33 The public input API and the input rung — raylib's input shape over GLFW's Wayland backend: one window's key and mouse state kept as a state machine so `pressed` means the frame a key started being held, the two queues and the cursor transform that are the only input GLFW delivers as events rather than as state, the poll belonging to the frame boundary rather than to a query, and the example that had been reading GLFW directly reading the library instead, one step, landed as one commit, 2026-10-31)
+
+- 2026-10-31 note: **the input rung and the public input API landed**. What landed, file for file:
+
+    - **`src/xud/xud_input.h`/`.c`, the new rung** (the layer above the window, below the public API). It owns one
+      host allocation (`XudInput`: `keyState`/`keyPrevious`, `buttonState`/`buttonPrevious`, the key queue, the char
+      queue, `charTruncated`, `exitKey`, the cursor's raw/scaled/delta rows, the pending/settled wheel rows, the
+      mouse offset and scale), two GLFW callbacks registered on the window and the window's user pointer; it borrows
+      the `XudWindow` and never destroys it. The four rungs `xud_input.h` declares are `xud_input_open()` (register
+      the char + scroll callbacks, take the payload slot, seed `exitKey` to `XUD_KEY_ESCAPE` — raylib's own default,
+      raylib.h 1210's comment says the default is ESC), `xud_input_poll()` (GLFW's state read into the rows), `xud_input_advance()`
+      (the transition table, the queues, the delta, the wheel — **the pure half**, taking byte snapshots of GLFW's
+      state rather than a window) and `xud_input_close()` (clear the payload slot while the GLFW window is still
+      alive, so teardown never leaves a callback naming a freed rung).
+    - **The public API in `xud.h`**: 24 calls in raylib's shape — `xud_is_key_pressed`/`_pressed_repeat`/`_down`/`_released`/`_up`
+      (raylib's `IsKeyPressed`/`IsKeyPressedRepeat`/`IsKeyDown`/`IsKeyReleased`/`IsKeyUp`, raylib.h 1202-1206), `xud_get_key_pressed`,
+      `xud_get_char_pressed`, `xud_get_key_name`, `xud_set_exit_key`/`xud_get_exit_key`, the four mouse-button
+      queries, `xud_get_mouse_x`/`_y`/`_position`/`_delta`, `xud_set_mouse_position`/`_offset`/`_scale`,
+      `xud_get_mouse_wheel_move`/`_move_v` — plus `XudVector2` as the value type the cursor and wheel queries
+      answer with, and `XUD_KEY_*`/`XUD_MOUSE_BUTTON_*` token macros so a caller's token is never a GLFW name.
+      `xud_input.h` carries the `static_assert` mirror pinning every `XUD_KEY_*` to its `GLFW_KEY_*` (the mirror is
+      generated from raylib's `KEY_*` list and GLFW's `GLFW_KEY_*` list, and it is what makes raylib's `KEY_ZERO`
+      → `GLFW_KEY_0`, `KEY_GRAVE` → `GLFW_KEY_GRAVE_ACCENT` and `KEY_KB_MENU` → `GLFW_KEY_MENU` a checked fact
+      rather than a table someone trusts); `xud.h` needed `<stdbool.h>` for the queries' out-params.
+    - **The context owns the rung**: `xud_core.h` gained `XudInput* input`, `xud_init_context()` opens it after the
+      window rung (directly above it, before the instance — the rung reaches the window, so it opens where the window is
+      live rather than at the far end of the ladder) and `xud_close_context()` closes it after the surface close and
+      before the window itself, so a rung is never live beside a window it is not registered on; `xud_end_drawing()`
+      guards `context->input` and calls `xud_input_poll()` once per frame, after the submit/present and before the
+      resize step.
+    - **`tests/xud_test_input.c`, the new area** (22nd), wired into `xud_test_harness.h`, `xud_test_main.c` and
+      `CMakeLists.txt`'s explicit source list. The headless half drives `xud_input_advance()` with synthetic byte
+      snapshots — the whole transition table (RELEASE/PRESS/REPEAT × the four states), both queues and their drain
+      order, the cursor transform under offset and scale, the wheel accumulator, the exit-key record, the setter
+      refusals and the rung guards — and drives the public queries against a synthetic context/rung pair, so the
+      default run asserts the whole meaning of the rung with no window system and no driver present. The GPU half
+      goes through the real lifecycle (`xud_init_context()`/`xud_close_context()`) and asserts what only a driver can:
+      GLFW's payload slot names the rung, the poll answers, `glfwGetKeyName` answers, the cursor reads inside the
+      window's extent, the wheel rows start at zero, and `xud_set_mouse_position()` refuses.
+    - **`examples/breakout_3d.c` migrated off GLFW's input**: `xud_breakout_read_input()` takes the `XudContext*`
+      and asks `xud_get_exit_key()` + `xud_is_key_down()`; the example no longer includes `xud_core.h`, no longer
+      names a `GLFWwindow*`, no longer calls `glfwPollEvents()`/`glfwGetKey()`, and its file-top note says so. Its
+      one remaining direct GLFW call is `glfwGetTime()`, the clock, which is not an input question and is still
+      open in todo.md's Blocked list as an ask.
+
+    The decisions the step had to make, and why:
+
+    - **A key is a state machine, not a live query.** GLFW has `glfwGetKey` (a state) and nothing else; raylib has
+      five key queries because it keeps the previous frame's state itself (`rlgl`/`rcore`'s key arrays). Keeping
+      `keyState`/`keyPrevious` in the rung is what makes `xud_is_key_pressed` mean "the frame it started being held"
+      rather than "every frame it is held", and it is what makes the paddle and the Escape in the example behave on
+      the frame the player pressed rather than on a frame chosen by the key repeat rate. `GLFW_REPEAT` is a third
+      state, not a synonym for `GLFW_PRESS`: the rung records it, `xud_is_key_pressed_repeat` answers it (raylib's
+      `IsKeyPressedRepeat`, raylib.h 1203), and `down`/`up` read it as held/not-released so a held key never reads as released.
+    - **The poll belongs to the frame boundary, not to a query.** A poll inside a query would make two queries in
+      one frame read different states, and no poll at all is a frame whose key state can never change — GLFW's Wayland
+      backend receives key events through an epoll loop only its poll/wait forms drain (`wl_window.c` 2941 →
+      `handleEvents`, and `handleEvents` is defined at 1377). `xud_end_drawing()` is the public frame boundary and
+      the poll sits there rather than in a query: two queries in one frame have to read ONE state, which is what a
+      state machine beside the frame gives them and what a GLFW read inside each query would not.
+    - **The char and scroll callbacks are the only way to get those two inputs.** `glfwGetChar` and `glfwGetScroll`
+      do not exist in the vendored 3.5.1 headers (grepped, neither name is there): `wl_window.c` 1372 calls
+      `_glfwInputChar` → the window's character callback and 1605 calls `_glfwInputScroll` → the window's scroll
+      callback. So `xud_input_open()` registers both, and a callback finds the rung it belongs to through GLFW's own
+      payload slot (`glfwSetWindowUserPointer`/`glfwGetWindowUserPointer`, `window.c`), which is why the rung stores
+      itself there and why `xud_input_close()` clears it while the window is still alive.
+    - **Queue capacities are facts, not guesses.** `XUD_INPUT_KEY_QUEUE_MAX == XUD_INPUT_KEY_COUNT` because at most
+      one press transition can occur per key between two polls, so the key queue cannot overflow and the rung asserts
+      that rather than handling it. The char queue CAN overflow — GLFW re-emits codepoints for a key held across
+      polls — so overflow sets `charTruncated` and `xud_get_char_pressed` answers `XUD_OUT_OF_RESOURCES` rather than
+      returning a cut list as if it were whole (raylib's `GetCharPressed` has no answer to give, and this library's
+      rule is that nothing is silently ignored).
+    - **A refusal is a fact about the backend, not a stub.** GLFW's Wayland half reads a cursor (`_glfwGetCursorPosWayland`
+      reads `wl.cursorPosX/Y`) but `_glfwSetCursorPosWayland` answers `GLFW_FEATURE_UNAVAILABLE`, so `xud_set_mouse_position()`
+      asks GLFW's real error query (`glfwGetError` — there is no `glfwGetLastError` in 3.5.1) and re-reads the cursor
+      to confirm the placement, and a refusal is `XUD_UNSUPPORTED`. `xud_set_mouse_cursor()` (raylib's `SetMouseCursor`)
+      is NOT in this rung: it would mean owning/destroying GLFW's cursor objects against a Wayland theme's incomplete
+      cursor set, and it is recorded open in todo.md rather than left as a function that does nothing.
+    - **Gamepad and touch are not this rung** — GLFW's Wayland backend has no touch events and no gamepad, and a
+      joystick is a separate subsystem. The open half of raylib's input surface stays open in todo.md's Later list
+      rather than being stubbed here.
+
+    Verified today (all four of AGENTS.md's commit-bar conditions):
+
+    - `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror -I src/xud -I src/external -I build/gen` is clean
+      over every `src/xud/*.c` (the `static_assert` key mirror compiles under gcc 16.2.1 and clang 22.1.8 — the
+      second-opinion build `cmake -B build-clang -DCMAKE_C_COMPILER=clang` is green too), and `./scripts/format.sh --check`
+      is green over `src/xud tests examples`.
+    - Suite **2781 headless / 3568 GPU, 0 failures** (was 2660 / 3427 — the +121 headless and +141 GPU are the new
+      area's two halves), the GPU run validation-clean (INFO only, no ERROR, no WARNING, no VUID) with the Khronos
+      layer installed.
+    - The example runs on a real Wayland window: `xud_init_context(640, 360) -> XUD_OK`, no "no input rung" line (so
+      `xud_get_exit_key()` and the four `xud_is_key_down()` calls answer on the real rung), and the game plays itself
+      (the autopilot's paddle still chases the ball while no key is held, `step 125: the ball cleared brick 1` …).
+      **NOT exercised on this machine: an actual key press** — no key event can be sent to a real window from here, and
+      the transition table that a press would drive is asserted headlessly instead, against synthetic GLFW state.
+      niri is the compositor (`XDG_CURRENT_DESKTOP=niri`) and it advertises `wl_seat`/`wl_keyboard`, which is what
+      GLFW's Wayland backend binds (`wl_window.c` 2093 `wl_seat_get_keyboard`), so the path exists and the press is
+      the user's to test.
+    - The `-fsanitizer` build (`cmake -B build-san -DXUD_SANITIZERS=ON`) is unchanged at its 3 pre-existing bring-up-boundary
+      leaks — **72 bytes / 3 allocations**, the same count as the S31 and S32 notes carry — and the area's synthetic
+      `XudInput` and `XudContext` are `calloc`'d and `free`d on every path, so the rung's allocation/free pair reports
+      nothing new. The `xud_input_open()` allocation itself lives behind a window and is exercised by the GPU run, not
+      by this one.
+
+    What is still open around this rung, deliberately: the clock (the example's one remaining GLFW call, an ask),
+    `SetMouseCursor` (a cursor-shape decision), gamepad/touch (a separate subsystem), and the char queue's
+    `XUD_INPUT_CHAR_QUEUE_MAX` 64 being a fixed row rather than a growable one (a full queue is reported, never
+    silently cut).
 
 ## Steps complete (S32 The example's game objects as boxes — the first half of the user's "they appear flat" report
 

@@ -42,6 +42,7 @@ void xud_test_physical(void);
 void xud_test_device(void);
 void xud_test_gpu_bringup(void);
 void xud_test_window(void);
+void xud_test_input(void); /* the input rung and the public input API: the transition table, the two queues, the cursor's transform */
 void xud_test_swapchain(void);
 void xud_test_handle(void);
 void xud_test_shader(void);

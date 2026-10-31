@@ -15,7 +15,7 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 | Path | What | Rules |
 | --- | --- | --- |
 | `src/xud/` | Library sources (`xud.h` public header + one `.c`/`.h` per module) | Where all library code lives |
-| `tests/` | Unit tests — **split 2026-10-25 into one TU per area** (`xud_test_harness.h`/`.c` = the shared counters, the one named check and the GPU gate; `xud_test_main.c` = the runner; `xud_test_<area>.c` × 20) | Headless by default; GPU tests gated by `XUD_GPU_TESTS=1`; the runner's area order is explicit in `CMakeLists.txt`, not globbed |
+| `tests/` | Unit tests — **split 2026-10-25 into one TU per area** (`xud_test_harness.h`/`.c` = the shared counters, the one named check and the GPU gate; `xud_test_main.c` = the runner; `xud_test_<area>.c` × 22) | Headless by default; GPU tests gated by `XUD_GPU_TESTS=1`; the runner's area order is explicit in `CMakeLists.txt`, not globbed |
 | `examples/` | Runnable demos | Small, one concern each |
 | `shaders/` | GLSL sources (`solid.vert`/`solid.frag` present today) | Compiled at build time by CMake into `build/gen/` — never at runtime, never committed as `.spv` |
 | `src/external/` | Vendored third-party deps (raylib's own convention) — **present today**: `volk.h`/`volk.c` (Volk) + a full `glfw/` source tree (GLFW 3.5.1) + `PROVENANCE.md` | Settled 2026-10-23 (see *Settled decisions*): **committed with its license files**, never edited in place; **Volk is built in now** (`volk.c` compiled into the `xud` archive, `src/external` on the include path), and so is the **GLFW tree** (the OBJECT target `glfw_vendor`, **Wayland** backend: 21 GLFW objects in the archive, 42 objects total, the four Wayland libs linked PUBLIC into `xud` — see *Verified GLFW Wayland build*) |
@@ -129,6 +129,8 @@ GLFW window (extent, input, framebuffer-size)
                    └─ swapchain (VkSurfaceKHR from GLFW, recreate on resize)
                        └─ xudrl renderer (passes, pipelines, batches, buffers)
                            └─ feature modules (shapes, text, textures, models, audio, camera)
+                               ├─ input rung (XudInput: one GLFW window's key/mouse state as a state machine — it
+                               │   borrows the window at the BOTTOM of the ladder, not the rung above it)
                                └─ xud.h public API (raylib-shaped)
 ```
 
@@ -155,8 +157,21 @@ BeginDrawing: acquire image (semaphore) → reset+begin cmd → viewport/scissor
               OWN recorded range, stageFlags/offset/size read off descriptor->pushRange, not constants of the
               loop's) → one vkCmdDrawIndexed per recorded draw row → end render pass
 EndDrawing: end cmd → submit (graphics, acquire semaphore waited, per-image fence) → present (queue)
-            → wait+reset that fence → reset the batch
+            → wait+reset that fence → poll the input rung (glfwPollEvents, ONE per frame, before the resize step)
+            → the recreate ask, acted on here
+            (the batch's reset is the OPENING half now — xud_begin_drawing() grows on the capacity ask in a loop
+            before it resets, settled with S31)
 ```
+
+## Input rules (the input rung is GLFW, and GLFW is a rung too — these are the point of the rung)
+
+- **Input is a rung, not a query layer, and the public API above it is raylib's shape**: `xud_is_key_pressed`/`_pressed_repeat`/`_down`/`_released`/`_up`, `xud_get_key_pressed`, `xud_get_char_pressed`, `xud_get_key_name`, `xud_set_exit_key`/`xud_get_exit_key`, the four mouse-button queries, the cursor/`XudVector2` queries and setters, and the two wheel queries. raylib's `IsKeyPressed`/`IsKeyDown`/`SetExitKey`/`GetMousePosition`/`GetMouseWheelMove` names are what `xud.h` mirrors; the tokens it hands out are `XUD_KEY_*` and `XUD_MOUSE_BUTTON_*` macros pinned to GLFW's numbering by a `static_assert` mirror in `xud_input.h`, so a caller's token is never a GLFW name and the mirror is a compile-time fact rather than a table someone trusts.
+- **A key is a state machine, not a live query.** `XudInput` keeps `keyState`/`keyPrevious` (and the button pair) so `pressed`/`down`/`released`/`up` are transitions between two polls rather than one GLFW read each — which is what makes raylib's `pressed` mean "the frame it started being held" instead of "every frame it is held". `xud_input_advance()` is the pure half of that machine: it takes byte snapshots of GLFW's state, not a window, so the whole transition table, the two queues, the cursor delta and the wheel accumulator are assertable with no window system and no driver present.
+- **The poll belongs to the frame boundary, not to a query**: `xud_end_drawing()` calls `xud_input_poll()` once per frame, after the submit/present and before the resize step. A poll inside a query would make two queries in one frame read different states, and no poll at all is a frame whose key state can never change — GLFW's Wayland backend receives key events through an epoll loop only its poll/wait forms drain (`wl_window.c` 2941 → `handleEvents`). `xud_breakout_read_input()` in the example polls nothing for exactly this reason.
+- **GLFW's own payload slot carries the rung**: the char and scroll callbacks are the only two pieces of input GLFW delivers to anything other than a state query (`glfwGetChar`/`glfwGetScroll` do not exist in the vendored 3.5.1 headers), so `xud_input_open()` registers both and stores the `XudInput` in `glfwSetWindowUserPointer` — the only way a callback can find the rung it belongs to — and `xud_input_close()` clears that slot while the GLFW window is still alive, so teardown never leaves a callback naming a freed rung.
+- **A queue that overflowed is reported, not dropped silently**: key-queue capacity is `XUD_INPUT_KEY_QUEUE_MAX == XUD_INPUT_KEY_COUNT` (at most one press transition per key between polls, so it cannot overflow and the assert says so), but a char queue can — GLFW re-emits codepoints for a key held across polls — so overflow sets `charTruncated` and `xud_get_char_pressed` answers `XUD_OUT_OF_RESOURCES` rather than returning a cut list as if it were whole.
+- **A refusal is a fact about the backend, not a stub**: GLFW's Wayland half reads a cursor (`_glfwGetCursorPosWayland` reads `wl.cursorPosX/Y`) but `_glfwSetCursorPosWayland` answers `GLFW_FEATURE_UNAVAILABLE`, so `xud_set_mouse_position()` asks GLFW's real error query (`glfwGetError`) and re-reads the cursor to confirm the placement, and a refusal is `XUD_UNSUPPORTED`. `xud_set_mouse_cursor()` is NOT in this rung: owning/destroying GLFW's cursor objects and a Wayland theme's incomplete cursor set is a different decision, and it is recorded as open rather than left as a function that does nothing.
+- **Gamepad and touch are not this rung**: GLFW's Wayland backend has no touch events and no gamepad, and a joystick is a separate subsystem — the open half of raylib's input surface stays open in `todo.md` rather than being stubbed here.
 
 ## Testing rules
 

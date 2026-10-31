@@ -8,14 +8,14 @@
  *          loop that draws the scene every frame and steps the simulation at a fixed rate in wall
  *          time. Nothing else: no batch, no buffer, no projection of its own.
  *          no buffer, no projection of its own.
- *   Layer: examples. Public API (xud.h) plus stdio, math.h's fabsf and GLFW's key state - and
- *          ONE internal header, xud_core.h, for the one field the input needs: the GLFWwindow*
- *          the context owns. Everything else the game calls is public - xud_init_context(),
- *          xud_begin_camera_3d(), xud_begin_drawing(), xud_draw_triangle_3d() for the back plane,
- *          xud_draw_cube() for the ball, the paddle and every brick, xud_end_drawing(), xud_end_
- *          camera_3d() and
- *          xud_close_context() - and the reason that one exception is here, and why it is the
- *          narrowest form of it, is the input note below.
+ *   Layer: examples. Public API (xud.h) plus stdio, math.h's fabsf and GLFW's timer - and nothing
+ *          else: the input the game reads is the library's own public input API, so the example na
+ *          mes no window, no GLFWwindow* and no internal header. Everything the game calls is publi
+ *          c - xud_init_context(), xud_begin_camera_3d(), xud_begin_drawing(), xud_draw_triangle_3d
+ *          () for the back plane, xud_draw_cube() for the ball, the paddle and every brick, the inp
+ *          ut queries below, xud_end_drawing(), xud_end_camera_3d() and xud_close_context() - and th
+ *          e one thing that is not public is the clock, which is not an input question at all and i
+ *          s the clock note below.
  *
  *   The game is 3D in the one way this library can make it 3D today: every object has a z, the
  *   ball travels in x, y and z, the bricks sit at three different depths, and the depth buffer
@@ -47,27 +47,28 @@
  *   example stands in for each of them in the smallest way that keeps the example honest about
  *   which half is whose:
  *
- *     - No input wrapper in xud (todo.md's Input wrapper item is a Later rung, not an open bug),
- *       so the example reads GLFW directly: xud_breakout_read_input() polls and queries the key
- *       state of the window the CONTEXT already owns. It is the temporary half of the input rung
- *       and it is deliberately the narrowest form of it - the example creates no window of its
- *       own (a second GLFW window would be a second surface competing for the same session, and
- *       the game would be played on a window nothing draws to), and it reaches the context's own
- *       window for one type, the GLFWwindow*, and nothing else. The paddle is the player's while
- *       a key is held and the game's own autopilot while none is, which is what keeps the example
- *       a game that plays itself when nobody is at a keyboard AND a game the player can play.
- *       glfwPollEvents() is not decoration: GLFW's Wayland backend receives key events through an
- *       epoll loop that only glfwPollEvents() and its wait forms drain (wl_window.c 2938 ->
- *       handleEvents), so a frame that never polls is a frame whose key state can never change,
- *       and nothing else in this tree polls GLFW.
+ *     - The input wrapper LANDED (the input rung, src/xud/xud_input.h/.c, and the public input API
+ *       in xud.h), so the example reads the library's input API and not GLFW's key state: xud_brea
+ *       kout_read_input() asks the context's own rung whether the exit key is held and whether the
+ *       paddle's keys are held, through xud_get_exit_key() and xud_is_key_down(). It creates no win
+ *       dow of its own (a second GLFW window would be a second surface competing for the same sessi
+ *       on, and the game would be played on a window nothing draws to) and it reaches no window at
+ *       all - the state it reads is the rung's, and the poll that makes that state current is xud_en
+ *       d_drawing()'s, one per frame, which is why the example polls nothing: GLFW's Wayland backen
+ *       d receives a key event only when its event loop runs (wl_window.c 2941 -> handleEvents, insi
+ *       de glfwPollEvents), so a frame that never polls is a frame whose key state can never change.
+ *       "Held" is xud_is_key_down rather than xud_is_key_pressed, for both controls, and the reaso
+ *       n is in the note beside the function below.
  *
- *     - No clock in xud (todo.md's Clock item is a Later rung, not an open bug), so the example
- *       borrows GLFW's timer: glfwGetTime() is the same temporary rung as the key state, and it is
- *       what paces the game to a fixed step rate in wall time rather than one step per frame. It
- *       has to, because GLFW's window runs as fast as it can - measured here at about 3200 frames
- *       a second - and a game that stepped once per frame would be a game whose ball crosses the
- *       field fifty times a second, which is a blur a hand cannot play and cannot time an Escape
- *       against. The game's own rules stay deterministic: no randomness, no filesystem, one fixed
+ *     - No clock in xud (todo.md's frame-clock item is an open ASK in Blocked, not a bug this step
+ *       should have fixed), so the example borrows GLFW's timer: glfwGetTime() is the ONE GLFW call
+ *       this example still makes, and it is not an input question - the input is the library's, the
+ *       clock is not. It is what paces the game to a fixed step rate in wall time rather than one st
+ *       ep per frame. It has to, because GLFW's window runs as fast as it can - measured here at abo
+ *       ut 3200 frames a second - and a game that stepped once per frame would be a game whose ball
+ *       crosses the field fifty times a second, which is a blur a hand cannot play and cannot time
+ *       an Escape against. The game's own rules stay deterministic: no randomness, no filesystem, on
+ *       e fixed
  *       starting layout, so two runs with nobody at the keyboard play the same game - though not
  *       for the same number of steps, which is now wall time's.
  *
@@ -98,20 +99,18 @@
 #include <math.h> /* Required for: fabsf, the interval overlap every collision below reads */
 #include <stdio.h>
 
-#include "xud.h" /* Required for: the whole public API the game is written against */
-#include "xud_core.h" /* Required for: struct XudContext's fields, and specifically the ONE field
-                        below it that the input needs - context->window, whose GLFWwindow* is what
-                        glfwGetKey is called on. This is the example's single exception to "user
-                        code includes xud.h only", and it is the temporary input rung's own:
-                        xud_core.h is the whole ladder, so it brings xud_window.h with it, and
-                        xud_window.h brings <GLFW/glfw3.h> AFTER <vulkan/vulkan.h>, which is the
-                        order GLFW's own header warns about (glfw3.h's Vulkan declarations sit
-                        inside #if defined(VK_VERSION_1_0), so including <GLFW/glfw3.h> here
-                        directly, first, would drop them and name GLFW's include dir ourselves -
-                        the vendored tree's include dir is already on the path the xud target
-                        exports PUBLIC). Nothing below xud.h is CALLED from here: GLFW's objects
-                        are already in the xud archive (CMakeLists.txt, glfw_vendor as an OBJECT
-                        target), so the only new link fact is glfwPollEvents and glfwGetKey. */
+#include "xud.h" /* Required for: the whole public API the game is written against, the input quer
+                    ies below included - the input needs no header of its own, and no internal heade
+                    r at all */
+#include <GLFW/glfw3.h> /* Required for: glfwGetTime, the ONE GLFW call this example still makes, an
+                          d the only reason it still names GLFW at all - see the clock note above. Th
+                          e include-order rule AGENTS.md records for glfw3.h (its Vulkan declarations s
+                          it inside #if defined(VK_VERSION_1_0), so <vulkan/vulkan.h> has to be seen f
+                          irst) is not a trap here: this example calls no Vulkan declaration through
+                          GLFW, only the timer, so the declarations it would drop are ones it never n
+                          ames. GLFW's objects are already in the xud archive (CMakeLists.txt, glfw_ve
+                          ndor as an OBJECT target) and its include dir is on the path the xud target
+                          exports PUBLIC, so the only new link fact is glfwGetTime. */
 
 /*-----------------------------------------------------------------------------------------------
  * The window, the example's own camera and the playfield box
@@ -543,47 +542,58 @@ static void xud_breakout_rearm_field(XudBreakoutBrick* bricks) {
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The input rung - GLFW read directly, see the note at the top of the file
+ * The hand - the public input API above the context
  *-----------------------------------------------------------------------------------------------*/
 
-/* The window the CONTEXT owns, reached once rather than per frame, and guarded rather than assumed
-   non-NULL: xud_init_context() answers XUD_OK only for a context that owns a window (the surface
-   is a rung every XUD_OK context owns), so NULL here is not an expected state - and answering it
-   rather than assuming it is what keeps a NULL window from being a glfwGetKey call on NULL. */
-static GLFWwindow* xud_breakout_glfw_window(XudContext* context) {
-    if ((context == NULL) || (context->window == NULL)) {
-        return NULL;
-    }
+/* One frame's read of the player's hand, through the public input calls: the state a query answers
+   about is the state as of the poll that OPENED this frame, and xud_end_drawing() runs that poll at
+   the end of every frame - GLFW's Wayland backend receives a key event only when its event loop ru
+   ns, so a poll is what makes the queries able to answer at all, and the frame pair is where this l
+   ibrary runs one. Nothing here polls, and nothing here reaches the window: the rung the context ow
+   ns is what the queries read.
 
-    return context->window->glfwWindow;
-}
-
-/* One frame's read of the player's hand. glfwPollEvents() runs first and every frame: GLFW's Wayland
-   backend receives key events through an epoll loop that only glfwPollEvents() and its wait forms
-   drain (wl_window.c 2938 -> handleEvents), so polling is what makes glfwGetKey able to answer
-   GLFW_PRESS at all, and nothing else in this tree polls GLFW. The escape test is "not RELEASE"
-   rather than "== PRESS" because glfwGetKey answers GLFW_REPEAT for a key held past the frame it
-   was first read on - a test on PRESS alone would let a held Escape keep the run going on the
-   frames between two PRESS reads, and the run would end on a frame chosen by the key repeat rate
-   rather than on the frame the player pressed it. */
-static XudBreakoutInput xud_breakout_read_input(GLFWwindow* glfwWindow) {
+   "Held" is xud_is_key_down rather than a press, for both controls: a key held past the frame it w
+   as first read on answers pressed ONCE, at the first of those frames, and down at that one and at
+   every one below it - so a test on pressed alone would let a held Escape keep the run going on the
+   frames between two presses, and the paddle would stop moving the moment the window system starte
+   d repeating the key. The exit key is read from the rung rather than written here, so the run end
+   s on whatever key the library records (ESC to start with, raylib's own default) rather than on on
+   e this example decided.
+*/
+static XudBreakoutInput xud_breakout_read_input(XudContext* context) {
     XudBreakoutInput input = (XudBreakoutInput) { .escapeWanted = 0u, .paddleDirection = 0 };
+    int exitKey = 0;
+    bool held = false;
+    bool left = false;
+    bool right = false;
 
-    if (glfwWindow == NULL) {
+    if (context == NULL) {
         return input;
     }
 
-    glfwPollEvents();
-    input.escapeWanted = (glfwGetKey(glfwWindow, GLFW_KEY_ESCAPE) != GLFW_RELEASE) ? 1u : 0u;
-    {
-        const uint32_t left
-            = (glfwGetKey(glfwWindow, GLFW_KEY_LEFT) != GLFW_RELEASE) || (glfwGetKey(glfwWindow, GLFW_KEY_A) != GLFW_RELEASE);
-        const uint32_t right
-            = (glfwGetKey(glfwWindow, GLFW_KEY_RIGHT) != GLFW_RELEASE) || (glfwGetKey(glfwWindow, GLFW_KEY_D) != GLFW_RELEASE);
-
-        input.paddleDirection = (left != 0u) ? -1 : ((right != 0u) ? 1 : 0);
+    if (xud_get_exit_key(&exitKey, context) != XUD_OK) {
+        return input;
+    }
+    if ((exitKey != 0) && (xud_is_key_down(&held, context, exitKey) == XUD_OK) && (held == true)) {
+        input.escapeWanted = 1u;
     }
 
+    if (xud_is_key_down(&left, context, XUD_KEY_LEFT) != XUD_OK) {
+        return input;
+    }
+    if (xud_is_key_down(&held, context, XUD_KEY_A) != XUD_OK) {
+        return input;
+    }
+    left = left || (held == true);
+    if (xud_is_key_down(&right, context, XUD_KEY_RIGHT) != XUD_OK) {
+        return input;
+    }
+    if (xud_is_key_down(&held, context, XUD_KEY_D) != XUD_OK) {
+        return input;
+    }
+    right = right || (held == true);
+
+    input.paddleDirection = (left == true) ? -1 : ((right == true) ? 1 : 0);
     return input;
 }
 
@@ -851,13 +861,18 @@ int main(void) {
 
     xud_breakout_reset_ball(&ball, 0u);
 
-    /* The window the CONTEXT owns, reached once rather than per frame: the context owns exactly
-       one and its own note in xud_core.h says a window is a rung every XUD_OK context owns, so
-       NULL here is not expected - and it is answered rather than assumed, because a NULL window
-       would be a glfwGetKey call on NULL. */
-    GLFWwindow* glfwWindow = xud_breakout_glfw_window(context);
-    if (glfwWindow == NULL) {
-        printf("breakout_3d: the context owns no window to read input from, so the run is the autopilot's alone\n");
+    /* The hand: the context's own input rung, read every frame. A context that owns no rung is a
+       context that never completed bring-up, and the queries answer that rather than answering "no
+       keys" - the probe below is the public way to see it (xud_get_exit_key() is the cheapest of th
+       e queries, and a rung that is not there is the only reason it refuses), so a run in front of n
+       obody is a run the terminal says so about rather than a run that silently stops taking input.
+    */
+    {
+        int exitKeyProbe = 0;
+
+        if (xud_get_exit_key(&exitKeyProbe, context) != XUD_OK) {
+            printf("breakout_3d: the context owns no input rung, so the run is the autopilot's alone\n");
+        }
     }
 
     /* The run's clock and its step accumulator. glfwGetTime() is GLFW's own timer (clock_gettime
@@ -875,7 +890,7 @@ int main(void) {
        is, not who owns it. */
 
     for (frame = 0u;; frame++) {
-        const XudBreakoutInput input = xud_breakout_read_input(glfwWindow);
+        const XudBreakoutInput input = xud_breakout_read_input(context);
         const double now = glfwGetTime();
         const XudCamera3D camera = xud_breakout_camera_at(now);
         uint32_t alive = 0u;

@@ -44,6 +44,7 @@
 #include "xud_device.h"
 #include "xud_diagnostics.h"
 #include "xud_handle.h"
+#include "xud_input.h"
 #include "xud_instance.h"
 #include "xud_loader.h"
 #include "xud_physical.h"
@@ -182,6 +183,20 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         goto fail;
     result = xud_window_required_instance_extensions(context->window, requiredNames, &requiredCount);
+    if (result != XUD_OK)
+        goto fail;
+
+    /* The input rung, above the window it reads and below everything the driver owns: it needs onl
+       y the window, so it opens here rather than at the far end of the ladder where it would be a
+       rung that reached the window from below the swapchain. It owns nothing of the driver's - one
+       host allocation, GLFW's char and scroll callbacks registered on the window below it and GLF
+       W's own payload slot for that window - so it cannot fail for a machine reason (the answers a
+       re XUD_INVALID_ARG, XUD_OUT_OF_MEMORY and XUD_INTERNAL_ERROR for a payload slot someone else
+       already took), and it is a bring-up requirement rather than an optional rung: the public inp
+       ut calls answer XUD_UNSUPPORTED on a context that has no rung, and a context that never had
+       one is not a state the library leaves behind.
+    */
+    result = xud_input_open(&context->input, context->window);
     if (result != XUD_OK)
         goto fail;
 
@@ -447,6 +462,9 @@ XudResult xud_close_context(XudContext** context) {
     rung = xud_window_surface_close(victim->window, victim->loader);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
+    rung = xud_input_close(&victim->input);
+    if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
+        first = rung;
     rung = xud_window_close(&victim->window);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
@@ -561,14 +579,32 @@ XudResult xud_end_drawing(XudContext* context) {
         return XUD_INVALID_ARG;
     }
     if ((context->renderer == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->swapchain == NULL)
-        || (context->physicalDevice == NULL) || (context->window == NULL) || (context->allocator == NULL)) {
-        /* Every rung the frame and the rebuild below need is a context field, and a context missin
-           g one is a context that cannot run a frame at all - the same answer the half above gives
-           for the same reason. */
+        || (context->physicalDevice == NULL) || (context->window == NULL) || (context->allocator == NULL) || (context->input == NULL)) {
+        /* Every rung the frame, the input poll and the rebuild below need is a context field, and a
+           context missing one is a context that cannot run a frame at all - the same answer the hal
+           f above gives for the same reason. */
         return XUD_UNSUPPORTED;
     }
 
     result = xud_renderer_draw(context->renderer, context->loader, context->device, context->swapchain, &imageIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The input poll, at the end of the frame it just presented - raylib's own order for the frame
+       pair (raylib.h 1100 says EndDrawing() is "draws everything + SwapScreenBuffer() + manage
+       frame timing + PollInputEvents()"), and the only glfwPollEvents() this tree runs. It belongs
+       to the frame boundary rather than to a query for two reasons that are one fact: GLFW's Way-
+       land backend delivers a key event only when its loop runs (wl_window.c 1450 is where the
+       compositor's event queue is read out of the window), so a rung that polled nowhere would
+       answer up for every key forever; and a poll run inside a query instead would make two
+       queries in one frame read two different states, which is a frame whose input is not a
+       snapshot. The state the public queries above this rung read is therefore the state as of the
+       poll that OPENED this frame, and a press a caller cannot see yet is a press in a frame that
+       has not ended yet. A poll that refused is reported, not swallowed: the only answers are a
+       rung that is not there (guarded above) and a snapshot byte outside GLFW's three states,
+       which is a state this rung cannot name rather than a row it would misread. */
+    result = xud_input_poll(context->input);
     if (result != XUD_OK) {
         return result;
     }
