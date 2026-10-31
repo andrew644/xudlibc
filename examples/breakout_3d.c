@@ -11,8 +11,9 @@
  *   Layer: examples. Public API (xud.h) plus stdio, math.h's fabsf and GLFW's key state - and
  *          ONE internal header, xud_core.h, for the one field the input needs: the GLFWwindow*
  *          the context owns. Everything else the game calls is public - xud_init_context(),
- *          xud_begin_camera_3d(), xud_begin_drawing(), xud_draw_triangle_3d() for every quad,
- *          xud_end_drawing(), xud_end_camera_3d() and
+ *          xud_begin_camera_3d(), xud_begin_drawing(), xud_draw_triangle_3d() for the back plane,
+ *          xud_draw_cube() for the ball, the paddle and every brick, xud_end_drawing(), xud_end_
+ *          camera_3d() and
  *          xud_close_context() - and the reason that one exception is here, and why it is the
  *          narrowest form of it, is the input note below.
  *
@@ -36,10 +37,11 @@
  *   shows off. A shape's coordinates are therefore WORLD coordinates and the divide happens in
  *   the shader, which is what makes the depth buffer's answer the honest one: the back plane at
  *   the far depth and the ball at the near one are resolved by the pipeline's LESS compare rather
- *   than by the order the example draws them in. The quad's depth
- *   is still constant across it, because every quad below lies in a plane of constant z - a quad
- *   that spanned two depths would want the rasteriser's perspective-correct interpolation, which
- *   is a property of the shapes the cube and the sphere calls place rather than of these.
+ *   than by the order the example draws them in. The ONE quad still below - the back plane - has a
+ *   depth that is constant across it, because it lies in a plane of constant z; the boxes beside it
+ *   span two depths each, and they are the shapes whose corners the rasteriser interpolates
+ *   perspective-correctly, which is the property the note above states and which the boxes below
+ *   are now the ones to exercise.
  *
  *   Two rungs of the library are todo.md's Later items rather than open bugs, and this
  *   example stands in for each of them in the smallest way that keeps the example honest about
@@ -69,20 +71,25 @@
  *       starting layout, so two runs with nobody at the keyboard play the same game - though not
  *       for the same number of steps, which is now wall time's.
  *
- *   One public shape call is used here and only one: xud_draw_triangle_3d(). The reason is the
- *   budget below rather than a projection above - with the camera in the frame a cube COULD be
- *   placed for the ball, but the frame's nine quads are 54 vertices and 54 indices of the batch's
- *   64 and 96 and the cube's own 24 and 36 do not fit beside them (78 > 64), so the ball stays a
- *   quad and the sphere's 90 indices stay a claim rather than a spend. A frame that wanted more
- *   would be REFUSED by the batch rather than truncated, and every draw below checks its answer
- *   for exactly that reason.
+ *   Two public shape calls are used here: xud_draw_triangle_3d() for the back plane's two triangles
+ *   and xud_draw_cube() for the ball, the paddle and every brick. The box is the point of this step
+ *   and not a decoration: every collision in the game is an AABB test against the half-extents each
+ *   object carries, so a quad drawn at a constant z was ONE FACE of the solid the rules
+ *   were already testing, and the objects read flat. Drawing the box the collision tests is what
+ *   makes the picture and the rules the same solid. That frame is 198 vertices and 294 indices,
+ *   which is PAST the batch's initial 64/96 - and the public frame boundary above grows the batch
+ *   on the ask a frame that overflowed leaves behind, so the scene settles at 256/384 after two
+ *   doublings and stays there. The sphere's 90 indices are still a claim rather than a spend: the
+ *   ball is a box because the game's own rule is a box-overlap test, not because of the budget.
  *
- *   The batch's capacity is the one budget this example obeys, and the one number it must not
- *   reach for: xud_batch.h's initial capacity is internal and user code includes xud.h only. So
- *   the budget below is the example's own count of its own shapes, asserted against the two
- *   numbers the library caps it at today (64 vertices, 96 indices) restated here. A frame that
- *   wanted more would be REFUSED by the batch rather than truncated, and every draw below
- *   checks its answer for exactly that reason.
+ *   The batch's CAP is the one budget this example obeys, and the one number it must not reach:
+ *   xud_batch.h's cap is internal and user code includes xud.h only, so the budget below is the
+ *   example's own count of its own shapes, asserted against the two numbers the library caps it at
+ *   today (4096 vertices, 6144 indices) restated here. Past the cap the batch is FULL and full is
+ *   a decision rather than a growth step, so a frame past it is REFUSED rather than truncated - and
+ *   every draw below checks its answer for exactly that reason. Past the INITIAL 64/96 is NOT a
+ *   refusal: the public frame boundary above grows the batch on the ask a frame that overflowed
+ *   leaves behind, which is what this frame relies on.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -207,11 +214,13 @@ static_assert((int64_t)(XUD_BREAKOUT_FAR_D_MM - XUD_BREAKOUT_EYE_D_MM) * (int64_
         >= (int64_t)XUD_BREAKOUT_BOX_SPAN_SQ_MM2,
     "breakout_3d.c: and the far plane sits outside it on the far side, so the whole mapped depth range lands across the whole scene");
 
-/* The ball is a BOX rather than a sphere for two reasons that are the same reason: the sphere's
-   tessellation is the library's (xud_shapes.h's claim about the batch's capacity) and its
-   vertices cannot be projected by this example for the reason the note above states, and its
-   90 indices would spend the batch's whole 96 of their own. A box's own half-extent is what
-   makes every collision below a box-overlap test rather than a swept-volume one. */
+/* The ball is a BOX rather than a sphere, and the reason is the game's own rule rather than the
+   batch's budget: every collision below is an AABB overlap against these half-extents - xud_break
+   out_hit_brick()'s three overlaps and xud_breakout_catch()'s x/z pair - so a ball whose drawn
+   shape were rounder than its collision would be a ball that appears to touch a brick and bounce
+   off nothing, or the reverse. The sphere's 90 indices over the batch's initial 96 are no longer
+   the constraint they used to be: the boundary above grows the batch, so a rounder ball is a
+   shapes-rung question (xud_shapes.h's tessellation claim) rather than a budget one. */
 #define XUD_BREAKOUT_BALL_HALF_MM 50
 #define XUD_BREAKOUT_BALL_SPEED_X_MM 14
 #define XUD_BREAKOUT_BALL_SPEED_Y_MM 11
@@ -239,7 +248,8 @@ static_assert((XUD_BREAKOUT_PADDLE_Y_MM - XUD_BREAKOUT_PADDLE_HALF_Y_MM) >= -XUD
    is a 3D lattice rather than a wall - a wall at one depth would be a breakout whose third
    axis is decoration. The spans are wider than the bricks, so the field is a set of DISTINCT
    bricks rather than one block, and the assert below is what says so. The field is 6 bricks
-   because the budget below is the batch's, not the game's. */
+   because the budget below is the batch's CAP, not the game's - and this frame sits well inside
+   that cap, past the initial capacity the boundary above grows the batch out of. */
 #define XUD_BREAKOUT_BRICK_COLS 3
 #define XUD_BREAKOUT_BRICK_ROWS 2
 #define XUD_BREAKOUT_BRICK_LAYERS 3
@@ -313,25 +323,41 @@ static_assert(XUD_BREAKOUT_BRICK_Z_STEP_MM > (XUD_BREAKOUT_BRICK_HALF_Z_MM + XUD
  * The frame's budget, counted from the example's own shapes
  *-----------------------------------------------------------------------------------------------*/
 
-/* The costs below are the public calls' own documented costs, restated here rather than read:
-   a triangle is three vertices and three indices, and every quad this example draws is two
-   triangles. The two numbers the asserts are written against are the batch's capacity today -
-   64 vertices and 96 indices, xud_batch.h's initial capacity, which is internal and which user
-   code does not reach. A frame that wanted more would be refused by the batch rather than
-   truncated, and the draw loop below checks every answer for exactly that reason. */
+/* The costs below are the public calls' own documented costs, restated here rather than read: a
+   triangle is three vertices and three indices, a quad is two of those, and a box is 24 vertices
+   and 36 indices - the box is spelled as six faces' four corners rather than as a shared mesh,
+   which is why it needs a normal per face rather than one per corner and why its index spend is
+   1.5 per vertex rather than a manifold's 4.7. The two numbers the asserts are written against
+   are the batch's CAP today - 4096 vertices and 6144 indices, xud_batch.h's XUD_BATCH_MAX_VERTICES
+   and its 3n/2 index capacity, both internal and both restated here - and NOT its initial 64/96,
+   which this frame is deliberately past. Being past the initial capacity is the point of the step
+   this example is on: the public frame boundary above grows the batch on the ask a frame that
+   overflowed leaves behind, so a scene bigger than the initial capacity settles at the capacity
+   that holds it - 198 vertices and 294 indices here, which is 256/384 after two doublings - and
+   stays there, because the grow retires the ask it answered. What the example still must not do
+   is exceed the CAP: past it the batch is full, full is a decision rather than a growth step, and
+   the frame's appends are refused - which is why every draw below checks its answer. */
 #define XUD_BREAKOUT_TRIANGLE_VERTEX_COUNT 3u
 #define XUD_BREAKOUT_TRIANGLE_INDEX_COUNT 3u
 #define XUD_BREAKOUT_QUAD_TRIANGLE_COUNT 2u
-#define XUD_BREAKOUT_FRAME_QUAD_COUNT (XUD_BREAKOUT_BRICK_COUNT + 3) /* the field, the paddle, the ball, the back plane */
+#define XUD_BREAKOUT_BOX_VERTEX_COUNT 24u
+#define XUD_BREAKOUT_BOX_INDEX_COUNT 36u
+#define XUD_BREAKOUT_FRAME_QUAD_COUNT 1u /* the back plane only: it is the one thing in the scene that has no thickness to give */
+#define XUD_BREAKOUT_BOX_COUNT (XUD_BREAKOUT_BRICK_COUNT + 2u) /* the field, the paddle, the ball */
 #define XUD_BREAKOUT_FRAME_VERTEX_COUNT                                                                                                    \
-    (XUD_BREAKOUT_FRAME_QUAD_COUNT * XUD_BREAKOUT_QUAD_TRIANGLE_COUNT * XUD_BREAKOUT_TRIANGLE_VERTEX_COUNT)
+    (XUD_BREAKOUT_BOX_COUNT * XUD_BREAKOUT_BOX_VERTEX_COUNT + (XUD_BREAKOUT_QUAD_TRIANGLE_COUNT * XUD_BREAKOUT_TRIANGLE_VERTEX_COUNT))
 #define XUD_BREAKOUT_FRAME_INDEX_COUNT                                                                                                     \
-    (XUD_BREAKOUT_FRAME_QUAD_COUNT * XUD_BREAKOUT_QUAD_TRIANGLE_COUNT * XUD_BREAKOUT_TRIANGLE_INDEX_COUNT)
+    (XUD_BREAKOUT_BOX_COUNT * XUD_BREAKOUT_BOX_INDEX_COUNT + (XUD_BREAKOUT_QUAD_TRIANGLE_COUNT * XUD_BREAKOUT_TRIANGLE_INDEX_COUNT))
 
-static_assert(XUD_BREAKOUT_FRAME_VERTEX_COUNT <= 64u,
-    "breakout_3d.c: a frame's whole field of quads fits the batch's capacity today, so no draw in the loop is ever refused for being at a "
-    "bound");
-static_assert(XUD_BREAKOUT_FRAME_INDEX_COUNT <= 96u, "breakout_3d.c: and so are its indices, which is the other half of the same budget");
+static_assert(XUD_BREAKOUT_FRAME_VERTEX_COUNT <= 4096u,
+    "breakout_3d.c: a frame's whole field of boxes fits the batch's cap, so no draw in the loop is ever refused for being at a bound - the "
+    "cap is xud_batch.h's, internal, restated here because user code reaches xud.h only");
+static_assert(XUD_BREAKOUT_FRAME_INDEX_COUNT <= 6144u,
+    "breakout_3d.c: and so are its indices, which is the other half of the same budget, at the batch's own 3n/2");
+static_assert((XUD_BREAKOUT_FRAME_VERTEX_COUNT > 64u) || (XUD_BREAKOUT_FRAME_INDEX_COUNT > 96u),
+    "breakout_3d.c: this frame is deliberately PAST the batch's initial 64/96, which is the point of the grow at the public boundary above "
+    "- "
+    "a frame that fit the initial capacity would never ask the batch to grow at all, and this example would be showing nothing");
 
 /* The step rate the game plays at, in wall time, and the reason it is in wall time at all: see
    the note above. One step per frame, SKIPPED until the accumulator crosses this interval, is what
@@ -423,6 +449,69 @@ static XudResult xud_breakout_draw_quad(XudContext* context, XudVector3 centre, 
     }
 
     return xud_draw_triangle_3d(context, c0, c2, c3, colour);
+}
+
+/* The box the shapes rung's xud_draw_cube() names, reached from the half-extents every object in
+   this game carries rather than from a size a reader would have to halve again. This is the half
+   that makes the picture and the rules the SAME solid: every collision in the game below is an
+   AABB test against these halves - xud_breakout_hit_brick()'s overlapX/overlapY/overlapZ and
+   xud_breakout_catch()'s x/z overlap - so a quad drawn at a constant z was a picture of one face
+   of the box the rules were already testing. Drawing the box the collision tests is what makes
+   the ball, the paddle and the bricks read as solids with sides rather than as flat rectangles,
+   and it is only affordable because the frame boundary above grows the batch on the ask a frame
+   that overflowed leaves behind (see xud_batch.h's capacity-ask note): this frame's one back-plane
+   quad plus eight boxes is 198 vertices and 294 indices, which is past the initial 64/96 and is
+   what the boundary grows to (256/384) within two doublings. */
+static XudResult xud_breakout_draw_box(XudContext* context, XudVector3 centre, XudVector3 half, XudColor colour) {
+    return xud_draw_cube(context, centre, half.x * 2.0f, half.y * 2.0f, half.z * 2.0f, colour);
+}
+
+/* The frame's whole scene in one call: the back plane's two triangles, then every LIVE brick,
+   the paddle and the ball as the boxes their collisions already test. The back plane is first for
+   the reason its own note below states, and the note says why the order is a habit rather than a
+   requirement: the camera rung's matrix maps the near plane to 0 and the far plane to 1, the
+   pipeline's LESS compare against the clear value of 1.0 decides which of two overlapping things
+   is seen, and the library never sorts. The return is the FIRST refusal found, or XUD_OK when the
+   frame's every shape fit - and a refusal is the batch's decision rather than the run's, which is
+   what the caller below does with it. */
+static XudResult xud_breakout_draw_scene(XudContext* context, XudBreakoutBall* ball, XudBreakoutPaddle* paddle, XudBreakoutBrick* bricks) {
+    /* The back plane first, and first on purpose for a reason that is no longer the reason it
+       used to be: it is the farthest thing in the scene and the one quad that makes the depth
+       legible at all, and the playfield's front cross-section does project LARGER than it,
+       because the back plane is at the far distance and the ball at the near one, so a ball
+       at the front is drawn outside the back plane's own edges. But the ORDER is no longer
+       what resolves which of the two is seen - the camera rung's matrix maps the near plane
+       to 0 and the far plane to 1, and the pipeline's LESS compare against the clear value of
+       1.0 decides, so a frame that drew the ball before the back plane would show the same
+       game. The library never sorts and the opaque variant needs no order, so this stays the
+       honest habit rather than a requirement. */
+    XudResult result = xud_breakout_draw_quad(context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = -XUD_BREAKOUT_HALF_Z },
+        XUD_BREAKOUT_HALF_X, XUD_BREAKOUT_HALF_Y, (XudColor) { .r = 18u, .g = 22u, .b = 40u, .a = 255u });
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    for (uint32_t index = 0u; index < (uint32_t)XUD_BREAKOUT_BRICK_COUNT; index++) {
+        if (bricks[index].alive == 0u) {
+            continue;
+        }
+        result = xud_breakout_draw_box(context, bricks[index].centre, bricks[index].half, bricks[index].colour);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    /* The paddle as the slab it is, at its own centre rather than as its front face: the slab
+       spans the playfield's WHOLE depth (its half-depth IS the box's, by definition - see the
+       note on XUD_BREAKOUT_PADDLE_HALF_Z_MM), so the face the player watches is the face the
+       box's own sides put a lit edge against, and the depth the box occupies is the depth the
+       catch's z-overlap already tests. */
+    result = xud_breakout_draw_box(context, paddle->centre, paddle->half, (XudColor) { .r = 240u, .g = 240u, .b = 240u, .a = 255u });
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_breakout_draw_box(context, ball->position, ball->half, (XudColor) { .r = 255u, .g = 60u, .b = 60u, .a = 255u });
 }
 
 /* How many bricks are still in the field - the frame loop's own count, read from the bricks' own
@@ -725,6 +814,7 @@ int main(void) {
     uint32_t rounds = 1u;
     uint32_t escapeWanted = 0u;
     uint32_t timedOut = 0u;
+    uint32_t settling = 0u; /* the run's short frames: see the note beside the scene call below */
     XudResult result = xud_init_context(&context, XUD_BREAKOUT_WINDOW_WIDTH, XUD_BREAKOUT_WINDOW_HEIGHT);
 
     printf("breakout_3d: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_BREAKOUT_WINDOW_WIDTH, XUD_BREAKOUT_WINDOW_HEIGHT,
@@ -863,53 +953,27 @@ int main(void) {
             break;
         }
 
-        /* The back plane first, and first on purpose for a reason that is no longer the reason it
-           used to be: it is the farthest thing in the scene and the one quad that makes the depth
-           legible at all, and the playfield's front cross-section does project LARGER than it,
-           because the back plane is at the far distance and the ball at the near one, so a ball
-           at the front is drawn outside the back plane's own edges. But the ORDER is no longer
-           what resolves which of the two is seen - the camera rung's matrix maps the near plane
-           to 0 and the far plane to 1, and the pipeline's LESS compare against the clear value of
-           1.0 decides, so a frame that drew the ball before the back plane would show the same
-           game. The library never sorts and the opaque variant needs no order, so this stays the
-           honest habit rather than a requirement. */
-        result = xud_breakout_draw_quad(context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = -XUD_BREAKOUT_HALF_Z }, XUD_BREAKOUT_HALF_X,
-            XUD_BREAKOUT_HALF_Y, (XudColor) { .r = 18u, .g = 22u, .b = 40u, .a = 255u });
-        if (result != XUD_OK) {
-            printf("frame %u: the back plane -> %s\n", frame, xud_result_name(result));
-            break;
-        }
-
-        for (uint32_t index = 0u; index < (uint32_t)XUD_BREAKOUT_BRICK_COUNT; index++) {
-            if (bricks[index].alive == 0u) {
-                continue;
-            }
-            result
-                = xud_breakout_draw_quad(context, bricks[index].centre, bricks[index].half.x, bricks[index].half.y, bricks[index].colour);
-            if (result != XUD_OK) {
-                printf("frame %u: brick %u -> %s\n", frame, index, xud_result_name(result));
-                break;
-            }
-        }
-        if (result != XUD_OK) {
-            break;
-        }
-
-        /* The paddle's front face, at the front of the slab rather than at its centre: the slab
-           spans the whole depth, so the face is the nearest thing the paddle has and the face
-           that is drawn is the face the player would be watching. */
-        result = xud_breakout_draw_quad(context,
-            (XudVector3) { .x = paddle.centre.x, .y = paddle.centre.y, .z = paddle.centre.z + paddle.half.z }, paddle.half.x, paddle.half.y,
-            (XudColor) { .r = 240u, .g = 240u, .b = 240u, .a = 255u });
-        if (result != XUD_OK) {
-            printf("frame %u: the paddle -> %s\n", frame, xud_result_name(result));
-            break;
-        }
-
-        result = xud_breakout_draw_quad(
-            context, ball.position, ball.half.x, ball.half.y, (XudColor) { .r = 255u, .g = 60u, .b = 60u, .a = 255u });
-        if (result != XUD_OK) {
-            printf("frame %u: the ball -> %s\n", frame, xud_result_name(result));
+        /* The whole scene in one call below, and the reason it is one call: a REFUSED shape is not
+           the run's end. The batch recorded the ask the refused shape wanted, and the public
+           boundary above grows the batch for the NEXT frame - so the frames that overflowed the
+           batch's initial capacity are SHORT rather than fatal, and the run carries on until the
+           batch settles at a capacity that holds the scene (this frame's 198 vertices and 294
+           indices settle at 256/384 after two doublings, so the run's first two frames are short
+           and every frame after them is whole). What a refusal still owes is stopping the rest of
+           THIS frame's draws - a batch that refused one append may refuse every one after it - and
+           that is what the scene function's own early return does; the frame it is mid-way through
+           is still closed below, because xud_end_drawing() balances xud_begin_drawing() whatever
+           the scene drew. A refusal that is NOT the batch's decision - a context that never
+           completed bring-up, say - is still the run's end, and the line below is what says so. */
+        result = xud_breakout_draw_scene(context, &ball, &paddle, bricks);
+        if (result == XUD_OUT_OF_MEMORY) {
+            printf(
+                "frame %u: the scene -> %s (the batch refused this frame at its capacity; the boundary above grew it for the next one)\n",
+                frame, xud_result_name(result));
+            settling++;
+            result = XUD_OK; /* the short frame is not the run's end, and is still closed below */
+        } else if (result != XUD_OK) {
+            printf("frame %u: the scene -> %s\n", frame, xud_result_name(result));
             break;
         }
 
@@ -929,8 +993,9 @@ int main(void) {
         printf("breakout_3d: xud_end_camera_3d -> %s\n", xud_result_name(result));
     }
 
-    printf("breakout_3d: %u frames, %u steps, %u rounds, %u bricks cleared, %u misses, ended by %s\n", frame, steps, rounds, cleared,
-        misses, (escapeWanted != 0u) ? "escape" : ((timedOut != 0u) ? "the fallback time cap" : "a draw call refusing"));
+    printf("breakout_3d: %u frames, %u steps, %u rounds, %u bricks cleared, %u misses, %u short frames, ended by %s\n", frame, steps,
+        rounds, cleared, misses, settling,
+        (escapeWanted != 0u) ? "escape" : ((timedOut != 0u) ? "the fallback time cap" : "a draw call refusing"));
 
     const XudResult closed = xud_close_context(&context);
     printf("xud_close_context -> %s\n", xud_result_name(closed));

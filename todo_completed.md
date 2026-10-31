@@ -1,6 +1,6 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S31, the batch's capacity ask and the grow at the public frame boundary** — the half of the growth path that had a tested rung and no caller: a frame that wanted more than the batch had room for stops one shape SHORT of full, because a shape's append is atomic, so its counts say nothing about the ask and the batch needed a place to leave it (2026-10-31). The step before it is **S30, the example's camera sweep** — the same example turning its camera instead of holding it still: the eye orbiting the field's centre at a fixed radius, the two angles being the frame's own slow swings, and the fit asserts moved onto the sphere the playfield box sits in because a box's own fit is only true along the axis it is aligned to (2026-10-31). The step before it is **S29, the example on the camera** — the first GPU consumer of S28's camera rung: the example's own projection gone, its quads in world space, its aperture derived from its own focus distance rather than chosen, and its fit asserts restated against what is actually visible (2026-10-31). The step before that is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S32, the example's game objects as boxes** — the user's "they appear flat" report, first half: the ball, the paddle and every brick drawn as the box whose half-extents the game's collisions already test, and a frame of 198 vertices / 294 indices settling at the batch's 256/384 through the boundary's grow (2026-10-31). The step before it is **S31, the batch's capacity ask and the grow at the public frame boundary** — the half of the growth path that had a tested rung and no caller: a frame that wanted more than the batch had room for stops one shape SHORT of full, because a shape's append is atomic, so its counts say nothing about the ask and the batch needed a place to leave it (2026-10-31). The step before it is **S30, the example's camera sweep** — the same example turning its camera instead of holding it still: the eye orbiting the field's centre at a fixed radius, the two angles being the frame's own slow swings, and the fit asserts moved onto the sphere the playfield box sits in because a box's own fit is only true along the axis it is aligned to (2026-10-31). The step before it is **S29, the example on the camera** — the first GPU consumer of S28's camera rung: the example's own projection gone, its quads in world space, its aperture derived from its own focus distance rather than chosen, and its fit asserts restated against what is actually visible (2026-10-31). The step before that is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
 rather than the bytes a frame is drawn from: the camera's orthonormal basis, the symmetric frustum at the extent a frame
 renders at, the product in the block's column-major order, mapped to Vulkan's [0,1] depth rather than OpenGL's [-1,1],
 and the public pair that puts a camera in and takes it out (2026-10-31). The step before it is **S27, the wire forms** —
@@ -20,6 +20,36 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S32 The example's game objects as boxes — the first half of the user's "they appear flat" report
+
+- [x] ~~**The game objects in `examples/breakout_3d.c` have no thickness**~~ — **done 2026-10-31** as S32, the
+    first half of the flat-objects item (the shading half stays open in `todo.md`). `examples/breakout_3d.c` only:
+    no library file, no public API change, no new test.
+    - The example gained `xud_breakout_draw_box()`, which reaches `xud_draw_cube()` from the half-extents every
+      object in the game already carries (`XudBreakoutBall`/`XudBreakoutPaddle`/`XudBreakoutBrick`'s `half`), and
+      the brick loop, the paddle and the ball now call it. The reason a box is the RIGHT fix rather than a
+      decoration: every collision in the game was already an AABB test against those halves — `xud_breakout_hit_brick()`'s
+      `overlapX`/`overlapY`/`overlapZ` and `xud_breakout_catch()`'s x/z pair — so a quad drawn at a constant
+      `centre.z` was ONE FACE of the solid the rules were testing, and the picture and the rules were two
+      different solids. The back plane stays a quad: it is the one thing in the scene with no thickness to give.
+    - The frame's budget section is restated against the batch's **CAP** (4096 / 6144, xud_batch.h's own 3n/2)
+      rather than against its initial 64/96, and a third assert now pins the frame deliberately PAST the initial
+      capacity — a frame that fit it would never ask the batch to grow, and the example would be showing nothing.
+    - The frame loop's shape draws moved into `xud_breakout_draw_scene()` so a refusal is decided in ONE place:
+      `XUD_OUT_OF_MEMORY` from a shape is the batch's decision, not the run's end. The batch recorded the ask the
+      refused shape wanted and the public boundary above grew for the NEXT frame, so the frames that overflowed
+      the initial capacity are SHORT rather than fatal, and the run carries on until the batch settles. The run's
+      own count is the fact: **2 short frames**, then every frame whole (198/294 settles at 256/384, two doublings
+      from 64/96, and the grow retires the ask it answered so it does not double every frame after).
+    - The file-top notes are restated to match: two public shape calls rather than one, the budget being the
+      batch's CAP rather than its initial capacity, the ball being a box because the game's RULE is a box-overlap
+      test rather than because of the budget, and the constant-z-quad note now naming the back plane as the ONE
+      quad left rather than every shape below.
+    - Suite unchanged at 2660 headless / 3427 GPU, 0 failures; the GPU example run is validation-clean and exits
+      0 (was ending at "frame 0: brick 2 -> XUD_OUT_OF_MEMORY" after 0 frames, now 204229 frames / 3598 steps /
+      4 rounds / 20 bricks cleared / 3 misses, ended by the fallback time cap); the `-fsanitizer` build unchanged
+      at its 3 pre-existing bring-up-boundary leaks; clang 22 clean; `./scripts/format.sh --check` clean.
 
 ## Steps complete (S31 The batch's capacity ask and the grow at the public frame boundary — the half of the growth path that had a tested rung and no caller: a frame that overflowed left no trace of it in its counts, because a shape's append is atomic, so the batch needed a place to leave the ask and the boundary above needed to read it before it resets, one step, landed as one commit, 2026-10-31)
 

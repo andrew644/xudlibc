@@ -6,6 +6,16 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-31 note: **the example's game objects are boxes now as S32** — see the *Steps complete (S32 …)* section at
+  the top of `todo_completed.md`: `examples/breakout_3d.c` only, no library file, no public API change, no new test.
+  The ball, the paddle and every brick are drawn through a new `xud_breakout_draw_box()` reaching `xud_draw_cube()`
+  from the half-extents every object already carries, which is the solid the game's own collisions were already
+  testing (an AABB test against a half-extent and a quad drawn at one constant `z` were two different solids); the
+  back plane stays a quad because it has no thickness to give. The frame is 198 vertices / 294 indices, deliberately
+  past the batch's initial 64/96, and settles at 256/384 through S31's boundary grow after **2 short frames** — the
+  run went from ending at frame 0 on `brick 2 -> XUD_OUT_OF_MEMORY` to 204229 frames / 3598 steps / 4 rounds, valid
+  ation-clean and exit 0. Suite unchanged at 2660 headless / 3427 GPU, 0 failures.
+
 - 2026-10-31 note: **the batch's capacity ask and the grow at the public frame boundary landed as S31** — see the
   *Steps complete (S31 …)* section at the top of `todo_completed.md`: `XudBatch` gained `wantedVertices`/`wantedIndices`
   beside the capacities and three pure functions (`xud_batch_note_refused()`, `xud_batch_wanted()`, `xud_batch_growth_asked()`),
@@ -317,21 +327,15 @@ nged
 
 ## Next
 
-- [ ] **The game objects in `examples/breakout_3d.c` have no thickness and no shading** — the user's "they appear flat"
-    report, itemised now that S31 has made the first half of it possible. Two halves, and they are different rungs:
-    - **Thickness** is the example's rung: `xud_breakout_draw_quad()` builds four corners that SHARE a `centre.z`, so
-      the ball, the paddle and every brick is one flat rectangle at a constant depth. The fix is to draw them as the
-      boxes S24 landed — `xud_draw_cube()` — which S31 is now able to afford: the field as boxes needs 198 vertices /
-      294 indices, which is 256/384, two doublings from the initial 64/96, and the boundary above grows on the ask the
-      refused frames leave behind. What the example owes after that: the collision half-space tests it already writes
-      against a quad's span have to be restated against a box's own half-extents, and the playfield's back plane stays
-      a quad because it has no thickness to give.
-    - **Shading** is the shader's rung: `shaders/solid.frag` writes `inColor` at location 1 and nothing else, while
-      `shaders/solid.vert` already outputs `outNormal` at location 2, which nothing reads. Reading it — one fixed light
-      direction, a Lambert term, the colour modulated by it — is what makes a box read as a solid rather than as six
-      flat quads of one colour. It is a `shaders/` step: the SPIR-V is compiled at build time and validated in CI, and
-      the vertex stage's `outNormal` is already the channel for it. Ask before picking the light model (see the open
-      questions below).
+- [ ] **The game objects in `examples/breakout_3d.c` still have no shading** — the second half of the user's "they
+    appear flat" report; the thickness half landed as S32 (see the *Steps complete (S32 …)* section at the top of
+    `todo_completed.md`), so the objects are boxes now and their sides are still six faces of one flat colour.
+    `shaders/solid.frag` writes `inColor` at location 1 and nothing else, while `shaders/solid.vert` already outputs
+    `outNormal` at location 2, which nothing reads. Reading it — one fixed light direction, a Lambert term, the
+    colour modulated by it — is what makes a box read as a solid rather than as a hexagonal silhouette whose faces
+    cannot be told apart from each other or from a sphere. It is a `shaders/` step: the SPIR-V is compiled at build
+    time and validated in CI, and the vertex stage's `outNormal` is already the channel for it. Ask before picking
+    the light model (see the open questions below).
 
 - [ ] Shapes module, the rest of it (`DrawLine3D`, `DrawPoint3D` and the wire forms, `DrawMesh` — 3D only,
     there is no 2D shape family in the API)
