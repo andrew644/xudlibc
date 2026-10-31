@@ -6,13 +6,30 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
-- 2026-10-31 note: **the camera landed as S28** — see the *Steps complete (S28 …)* section at the top of
+- 2026-10-31 note: **`examples/breakout_3d.c` landed on the camera as S29** — see the *Steps complete
+    (S29 …)* section at the top of `todo_completed.md`: the example's own `xud_breakout_project()` is gone, the
+    scene is drawn through `xud_begin_camera_3d()`/`xud_end_camera_3d()` and its quads are WORLD-space
+    corners, so the divide happens in the shader once per vertex rather than once per corner in the
+    example. The framing is unchanged — the aperture is DERIVED from the example's own `FOCUS_D` (the
+    focal length is the cotangent of the half of it, so the aperture whose focal length IS `FOCUS_D`
+    world units is 2·atan(1/FOCUS_D) = 45.2397°), and a probe through the library's own camera rung
+    prints the box's own corners at ndc x ±0.4655/±0.7105 and y ±0.5131/±0.7832, which is the same
+    picture the old hand projection made, with the depth now the library's hyperbolic map onto [0,1]
+    (0.8448 at the back wall, 0.3684 at the front one) instead of the example's linear map onto [-1,1]
+    — which is what makes the pipeline's LESS compare, rather than the draw order, decide what is seen.
+    The example's fit asserts are restated in the same integers against the same `FOCUS_D`, with the
+    visible-half macro corrected to `distance/FOCUS_D` (the old macro had it inverted — it asserted the
+    half-extent against the pinhole's SCALE rather than against what is visible, which passed by accident
+    and said nothing); the suite is unchanged at 2639 headless / 3396 GPU, the run is validation-clean
+    (INFO only) and the batch's spend is 54 vertices and 54 indices of the batch's 64 and 96.
+
+- 2026-10-31 note: **the camera landed as S28** — see the *Steps complete (S28 …)* section of
     `todo_completed.md`: `src/xud/xud_camera.h`/`.c` (the basis, the frustum, the product), `xud_descriptor_set_view_proj()`
     as the descriptor rung's own setter for set 0's `viewProj`, `XudCamera3D` in `xud.h`, the public pair
     `xud_begin_camera_3d()`/`xud_end_camera_3d()` in `xud_core.c`, the renderer holding a copy plus a `cameraWanted` flag
     and rewriting the block every frame at the swapchain's recorded extent, and the new test area
-    `tests/xud_test_camera.c`. What is still open of that item is the example using it — `examples/breakout_3d.c` still
-    projects its own quads by hand and still cannot use a public shape call, which is the next step.
+    `tests/xud_test_camera.c`. Its one open remainder was the example using it, and that landed as S29
+    above — nothing of the camera item is open now.
 
 - 2026-10-31 note: **`examples/breakout_3d.c` grew the input and the clock rungs it had been
     standing in for** — the run now ends on the player holding Escape, and the game is played with

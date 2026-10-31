@@ -4,36 +4,40 @@
  *
  *   Owns : one game - the ball's motion and its bounces, the brick field and the one brick a
  *          contact removes, the paddle and the hand that moves it, the Escape that ends the run,
- *          the example's own projection that places every quad in clip space, and the frame loop
- *          that draws the scene every frame and steps the simulation at a fixed rate in wall time.
- *          Nothing else: no camera, no batch, no buffer.
+ *          the one camera the scene is drawn with, and the frame loop that draws the scene every
+ *          frame and steps the simulation at a fixed rate in wall time. Nothing else: no batch,
+ *          no buffer, no projection of its own.
  *   Layer: examples. Public API (xud.h) plus stdio, math.h's fabsf and GLFW's key state - and
  *          ONE internal header, xud_core.h, for the one field the input needs: the GLFWwindow*
  *          the context owns. Everything else the game calls is public - xud_init_context(),
- *          xud_begin_drawing(), xud_draw_triangle_3d() for every quad, xud_end_drawing() and
+ *          xud_begin_camera_3d(), xud_begin_drawing(), xud_draw_triangle_3d() for every quad,
+ *          xud_end_drawing(), xud_end_camera_3d() and
  *          xud_close_context() - and the reason that one exception is here, and why it is the
  *          narrowest form of it, is the input note below.
  *
  *   The game is 3D in the one way this library can make it 3D today: every object has a z, the
  *   ball travels in x, y and z, the bricks sit at three different depths, and the depth buffer
  *   the render pass owns resolves which of them is nearer. What makes that depth VISIBLE is the
- *   projection below, and the projection is the example's own - which is the one thing a reader
- *   should understand before changing anything here.
+ *   camera below, and the camera is the library's - the example states the eye, the aperture and
+ *   the two planes, and the camera rung turns them into the one matrix a frame is drawn with,
+ *   which is the one thing a reader should understand before changing anything here.
  *
- *   Three rungs of the library are todo.md's Later items rather than open bugs, and this
+ *   Two rungs of the library are todo.md's Later items rather than open bugs, and this
  *   example stands in for each of them in the smallest way that keeps the example honest about
  *   which half is whose:
  *
- *     - No camera + transform step. The frame's viewProj and every draw's model matrix are
- *       identity, so a shape's coordinates are clip-space coordinates - the same fact
- *       hello_triangle's note states, at a whole scene's scale. xud_breakout_project() is the
- *       example's own pinhole: it does the divide by the distance from the eye HERE rather than
- *       in the shader, because the shader's w is 1 and the values a draw is handed are already
- *       NDC. That divide is exact for every quad this example draws because every one of them
- *       lies in a plane of constant z - the four corners of a quad share a depth, so they share
- *       the projection's scale and the quad's own depth is constant across it, which is what
- *       the rasteriser's interpolation needs. A quad that spanned two depths would want
- *       perspective-correct interpolation, and that is the camera + transform step's to own.
+ *     - The camera + transform rung is OPEN now, and this example is its first GPU consumer: the
+ *       pair xud_begin_camera_3d()/xud_end_camera_3d() puts the scene's one camera in and takes it
+ *       out, and the library's camera rung (src/xud/xud_camera.h/.c, landed 2026-10-31 as S28)
+ *       builds the camera's basis, the symmetric frustum at the extent a frame renders at and the
+ *       product of the two into set 0's viewProj every frame. A shape's coordinates are therefore
+ *       WORLD coordinates and the divide happens in the shader, which is what makes the depth
+ *       buffer's answer the honest one: the back plane at the far depth and the ball at the near
+ *       one are resolved by the pipeline's LESS compare rather than by the order the example draws
+ *       them in. The quad's depth is still constant across it, because every quad below lies in a
+ *       plane of constant z - a quad that spanned two depths would want the rasteriser's
+ *       perspective-correct interpolation, which is a property of the shapes the cube and the
+ *       sphere calls place rather than of these.
  *
  *     - No input wrapper in xud (todo.md's Input wrapper item is a Later rung, not an open bug),
  *       so the example reads GLFW directly: xud_breakout_read_input() polls and queries the key
@@ -60,11 +64,12 @@
  *       for the same number of steps, which is now wall time's.
  *
  *   One public shape call is used here and only one: xud_draw_triangle_3d(). The reason is the
- *   projection above. xud_draw_cube() places its 24 corners from a centre and three extents IN
- *   THE SPACE IT IS HANDED, and a projected box's corners are not centre +/- half in that space,
- *   so a box this example projected itself would be 12 hand-placed triangles - 36 vertices of
- *   the batch's 64 - and the budget below says no to that. The cube and the sphere calls are for
- *   a scene the camera + transform step places, not for one this example projects by hand.
+ *   budget below rather than a projection above - with the camera in the frame a cube COULD be
+ *   placed for the ball, but the frame's eight quads are 48 vertices and 48 indices of the batch's
+ *   64 and 96 and the cube's own 24 and 36 do not fit beside them, so the ball stays a quad and
+ *   the sphere's 90 indices stay a claim rather than a spend. A frame that wanted more would be
+ *   REFUSED by the batch rather than truncated, and every draw below checks its answer for exactly
+ *   that reason.
  *
  *   The batch's capacity is the one budget this example obeys, and the one number it must not
  *   reach for: xud_batch.h's initial capacity is internal and user code includes xud.h only. So
@@ -114,12 +119,17 @@
 #define XUD_BREAKOUT_UNIT 1000
 #define XUD_BREAKOUT_MM(value) ((float)(value) / (float)XUD_BREAKOUT_UNIT)
 
-/* The example's own pinhole (see the note above): the eye sits on +Z looking down -Z, FOCUS_D
-   is the eye-to-focus DISTANCE and the plane at that distance is the one a world unit maps 1:1
-   in y, so a world unit is half a window height there and half a window width divided by the
-   aspect in x. NEAR_D and FAR_D are the two distances a vertex's z is mapped from, and the map
-   is linear ON PURPOSE: every quad this example draws has one depth, so a linear map is exact
-   and a perspective-correct one would be a second thing for this example to invent. */
+/* The example's camera, in the library's own terms: the eye sits on +Z looking down -Z at the
+   field's centre, FOCUS_D is the eye-to-focus DISTANCE and the plane at that distance is the one
+   a world unit maps 1:1 in y, so the aperture that buys that framing is the one whose focal
+   length (the cotangent of its half, which is what the camera rung computes) IS FOCUS_D - stated
+   below as a derived macro rather than as a chosen number, because the fit checks below are
+   stated against FOCUS_D in integers and an aperture stated in degrees would be a float claim
+   they could not make. NEAR_D and FAR_D are the camera's two planes, and the depth map is the
+   library's hyperbolic one onto [0,1] rather than a linear map of the example's: every quad
+   below still has one depth, but nothing has to be exact about the map any more, because the
+   pipeline's LESS compare and the clear value of 1.0 are what decide which of two surfaces is
+   seen. */
 #define XUD_BREAKOUT_EYE_Z_MM 2400
 #define XUD_BREAKOUT_FOCUS_D_MM 2400
 #define XUD_BREAKOUT_NEAR_D_MM 1500
@@ -131,11 +141,12 @@
 #define XUD_BREAKOUT_HALF_Y_MM 620
 #define XUD_BREAKOUT_HALF_Z_MM 500
 
-/* The world half-extent VISIBLE at a distance from the eye, in milli-units: the pinhole's scale
-   there is FOCUS_D/distance and the focus plane's visible half-height is one world unit, so the
-   visible half-height is FOCUS_D/distance world units. The integer division rounds DOWN, which
-   is the safe direction for an assert that a shape FITS inside what is visible. */
-#define XUD_BREAKOUT_VISIBLE_HALF_Y_MM(distance) ((XUD_BREAKOUT_FOCUS_D_MM * XUD_BREAKOUT_UNIT) / (distance))
+/* The world half-extent VISIBLE at a distance from the eye, in milli-units: the pinhole's focal
+   length is FOCUS_D world units, so the visible half-height at a distance d is d/FOCUS_D world
+   units - which GROWS with the distance, the direction a nearer part of the scene has to be
+   checked against. The integer division rounds DOWN, which is the safe direction for an assert
+   that a shape FITS inside what is visible. */
+#define XUD_BREAKOUT_VISIBLE_HALF_Y_MM(distance) ((distance) * XUD_BREAKOUT_UNIT / (XUD_BREAKOUT_FOCUS_D_MM))
 #define XUD_BREAKOUT_VISIBLE_HALF_X_MM(distance)                                                                                           \
     ((XUD_BREAKOUT_VISIBLE_HALF_Y_MM(distance) * (int)XUD_BREAKOUT_WINDOW_WIDTH) / (int)XUD_BREAKOUT_WINDOW_HEIGHT)
 
@@ -221,6 +232,16 @@ static_assert(XUD_BREAKOUT_BRICK_Z_STEP_MM > (XUD_BREAKOUT_BRICK_HALF_Z_MM + XUD
 #define XUD_BREAKOUT_FOCUS_D XUD_BREAKOUT_MM(XUD_BREAKOUT_FOCUS_D_MM)
 #define XUD_BREAKOUT_NEAR_D XUD_BREAKOUT_MM(XUD_BREAKOUT_NEAR_D_MM)
 #define XUD_BREAKOUT_FAR_D XUD_BREAKOUT_MM(XUD_BREAKOUT_FAR_D_MM)
+
+/* The aperture the fit asserts above are stated against, DERIVED from FOCUS_D rather than chosen:
+   the camera rung takes a vertical aperture in DEGREES and its focal length is the cotangent of
+   the half of it, so the aperture whose focal length IS FOCUS_D world units - the framing a world
+   unit maps 1:1 in y at the focus plane - is 2*atan(1/FOCUS_D) degrees. Runtime arithmetic rather
+   than an assert, because a float static_assert is a -Wpedantic error here and the fit checks
+   above are the integer form of the same fact, stated against the focal length rather than against
+   an aperture. */
+#define XUD_BREAKOUT_DEGREES_PER_RADIANS (180.0f / 3.1415926535897932f)
+#define XUD_BREAKOUT_FOVY_DEG ((2.0f * atanf(1.0f / XUD_BREAKOUT_FOCUS_D)) * XUD_BREAKOUT_DEGREES_PER_RADIANS)
 #define XUD_BREAKOUT_HALF_X XUD_BREAKOUT_MM(XUD_BREAKOUT_HALF_X_MM)
 #define XUD_BREAKOUT_HALF_Y XUD_BREAKOUT_MM(XUD_BREAKOUT_HALF_Y_MM)
 #define XUD_BREAKOUT_HALF_Z XUD_BREAKOUT_MM(XUD_BREAKOUT_HALF_Z_MM)
@@ -332,34 +353,24 @@ static float* xud_breakout_axis(XudVector3* vector, uint32_t axis) {
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The example's own projection - see the note at the top of the file
+ * The quad - the one shape this example draws, in world space
  *-----------------------------------------------------------------------------------------------*/
 
-static XudVector3 xud_breakout_project(XudVector3 world) {
-    const float distance = XUD_BREAKOUT_EYE_Z - world.z;
-    const float scale = XUD_BREAKOUT_FOCUS_D / distance;
-    XudVector3 clip;
-
-    clip.x = (world.x * scale) / XUD_BREAKOUT_ASPECT;
-    clip.y = world.y * scale;
-    clip.z = ((2.0f * (distance - XUD_BREAKOUT_NEAR_D)) / (XUD_BREAKOUT_FAR_D - XUD_BREAKOUT_NEAR_D)) - 1.0f;
-
-    return clip;
-}
-
 /* One quad, drawn as the two triangles a quad is. The four corners are the caller's centre plus
-   or minus the caller's half-extents in the WORLD space above the projection, and each corner
-   is projected on its own - which is the condition the note at the top of the file states: all
-   four share the caller's z, so all four share the projection's scale and the quad's depth is
-   constant across it. The two triangles are (0,1,2) and (0,2,3) over corners in counter-clockwise
-   order seen from +Z, the same winding raylib's DrawTriangle3D documents and the pipeline's
-   front face names; the pipeline culls nothing, so the winding is the shape's own consistency
-   rather than a gate the draw obeys. */
+   or minus the caller's half-extents in WORLD space, and nothing here projects them: the camera
+   the frame loop put in set 0's block is what divides them by the distance from the eye, in the
+   shader, once per vertex rather than once per corner here. All four still share the caller's z,
+   which is the condition the note at the top of the file states for the reason it now states it:
+   a quad of constant depth is a quad whose depth the rasteriser can interpolate exactly, and the
+   two triangles are (0,1,2) and (0,2,3) over corners in counter-clockwise order seen from +Z -
+   the camera above is on +Z looking down -Z, so that is the order seen FROM THE CAMERA, which is
+   the winding the pipeline's front face names; the pipeline culls nothing, so the winding is the
+   shape's own consistency rather than a gate the draw obeys. */
 static XudResult xud_breakout_draw_quad(XudContext* context, XudVector3 centre, float halfX, float halfY, XudColor colour) {
-    const XudVector3 c0 = xud_breakout_project((XudVector3) { .x = centre.x - halfX, .y = centre.y - halfY, .z = centre.z });
-    const XudVector3 c1 = xud_breakout_project((XudVector3) { .x = centre.x + halfX, .y = centre.y - halfY, .z = centre.z });
-    const XudVector3 c2 = xud_breakout_project((XudVector3) { .x = centre.x + halfX, .y = centre.y + halfY, .z = centre.z });
-    const XudVector3 c3 = xud_breakout_project((XudVector3) { .x = centre.x - halfX, .y = centre.y + halfY, .z = centre.z });
+    const XudVector3 c0 = (XudVector3) { .x = centre.x - halfX, .y = centre.y - halfY, .z = centre.z };
+    const XudVector3 c1 = (XudVector3) { .x = centre.x + halfX, .y = centre.y - halfY, .z = centre.z };
+    const XudVector3 c2 = (XudVector3) { .x = centre.x + halfX, .y = centre.y + halfY, .z = centre.z };
+    const XudVector3 c3 = (XudVector3) { .x = centre.x - halfX, .y = centre.y + halfY, .z = centre.z };
 
     XudResult result = xud_draw_triangle_3d(context, c0, c1, c2, colour);
     if (result != XUD_OK) {
@@ -684,6 +695,30 @@ int main(void) {
     double accumulator = 0.0;
     uint32_t steps = 0u;
 
+    /* The scene's one camera, put in for the whole run rather than per frame: the pair is raylib's
+       BeginCamera3D()/EndCamera3D() shape, the record is the caller's and the library copies it
+       into the renderer that owns the frame loop, so the frames drawn between the two calls are
+       the frames drawn with it. The eye is on +Z looking down -Z at the field's centre (the same
+       eye the fit asserts above are stated against), the aperture is the derived one whose focal
+       length IS FOCUS_D, and the two planes are the game's own depth budget - the asserts above
+       are what say every vertex of the scene sits between them, which is what says the whole depth
+       range lands across the whole scene rather than across a slice of it. */
+    const XudCamera3D camera = (XudCamera3D) { .position = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = XUD_BREAKOUT_EYE_Z },
+        .target = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f },
+        .up = (XudVector3) { .x = 0.0f, .y = 1.0f, .z = 0.0f },
+        .fovy = XUD_BREAKOUT_FOVY_DEG,
+        .near = XUD_BREAKOUT_NEAR_D,
+        .far = XUD_BREAKOUT_FAR_D };
+
+    result = xud_begin_camera_3d(context, camera);
+    printf("breakout_3d: xud_begin_camera_3d -> %s\n", xud_result_name(result));
+    if (result != XUD_OK) {
+        const XudResult closed = xud_close_context(&context);
+
+        printf("xud_close_context -> %s\n", xud_result_name(closed));
+        return 1;
+    }
+
     for (frame = 0u;; frame++) {
         const XudBreakoutInput input = xud_breakout_read_input(glfwWindow);
         uint32_t alive = 0u;
@@ -749,12 +784,16 @@ int main(void) {
             break;
         }
 
-        /* The back plane first, and first on purpose: it is the farthest thing in the scene and
-           the one quad that makes the depth legible at all, because the playfield's front
-           cross-section projects LARGER than it does - the back plane is at the far distance and
-           the ball at the front is at the near one, so a ball at the front is drawn outside the
-           back plane's own edges and over it. The library never sorts and the opaque variant
-           needs no order, so this is the honest habit rather than a requirement. */
+        /* The back plane first, and first on purpose for a reason that is no longer the reason it
+           used to be: it is the farthest thing in the scene and the one quad that makes the depth
+           legible at all, and the playfield's front cross-section does project LARGER than it,
+           because the back plane is at the far distance and the ball at the near one, so a ball
+           at the front is drawn outside the back plane's own edges. But the ORDER is no longer
+           what resolves which of the two is seen - the camera rung's matrix maps the near plane
+           to 0 and the far plane to 1, and the pipeline's LESS compare against the clear value of
+           1.0 decides, so a frame that drew the ball before the back plane would show the same
+           game. The library never sorts and the opaque variant needs no order, so this stays the
+           honest habit rather than a requirement. */
         result = xud_breakout_draw_quad(context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = -XUD_BREAKOUT_HALF_Z }, XUD_BREAKOUT_HALF_X,
             XUD_BREAKOUT_HALF_Y, (XudColor) { .r = 18u, .g = 22u, .b = 40u, .a = 255u });
         if (result != XUD_OK) {
@@ -800,6 +839,15 @@ int main(void) {
             printf("frame %u: xud_end_drawing -> %s\n", frame, xud_result_name(result));
             break;
         }
+    }
+
+    /* The camera taken away after the run rather than left live: the pair is a scope, and the
+       frames drawn after here are drawn with no camera at all, which is the identity matrix the
+       descriptor rung opens set 0's block with - nothing of this run's camera state reaches past
+       here, which is the half of the pair's contract the example can show. */
+    result = xud_end_camera_3d(context);
+    if (result != XUD_OK) {
+        printf("breakout_3d: xud_end_camera_3d -> %s\n", xud_result_name(result));
     }
 
     printf("breakout_3d: %u frames, %u steps, %u rounds, %u bricks cleared, %u misses, ended by %s\n", frame, steps, rounds, cleared,

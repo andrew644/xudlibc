@@ -1,6 +1,6 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S29, the example on the camera** — the first GPU consumer of S28's camera rung: the example's own projection gone, its quads in world space, its aperture derived from its own focus distance rather than chosen, and its fit asserts restated against what is actually visible (2026-10-31). The step before it is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
 rather than the bytes a frame is drawn from: the camera's orthonormal basis, the symmetric frustum at the extent a frame
 renders at, the product in the block's column-major order, mapped to Vulkan's [0,1] depth rather than OpenGL's [-1,1],
 and the public pair that puts a camera in and takes it out (2026-10-31). The step before it is **S27, the wire forms** —
@@ -20,6 +20,58 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S29 The example on the camera — the first GPU consumer of the camera rung: the example's own projection deleted, its quads moved into world space, its aperture derived from its own focus distance and its fit asserts restated against what is visible, one step, landed as one commit, 2026-10-31)
+
+- [x] ~~**The example that uses the camera**~~ — **done 2026-10-31** as S29. This is the one remainder S28's
+    entry above left open (`examples/breakout_3d.c` still projecting its own quads by hand and still unable to
+    use a public shape call), and it is now closed: nothing of the camera item is open.
+
+  **What landed, and the two facts that made it a step rather than a rename:**
+
+  - **The example's own projection is deleted, not superseded** — `xud_breakout_project()` is gone and `xud_breakout
+    draw_quad()` now hands its four corners to `xud_draw_triangle_3d()` in WORLD space. The camera rung put the prod
+    uct into set 0's block, `solid.vert` multiplies `viewProj * modelMatrix * position` and the rasteriser divides b
+    y the `w` the multiply produced, so the divide by the distance from the eye happens once per vertex in the shade
+    r instead of once per corner in the example. The example's `Owns:` header, its "Three rungs" list and its shape-
+    call note all moved with it, because the claims they made were claims about a projection that no longer exists.
+  - **The aperture is derived, not chosen** — the example's whole framing is stated against `FOCUS_D` in INTEGER mil
+    li-world-units, and its static asserts have to stay integer ones under `-Wpedantic`. The camera takes degrees, s
+    o the aperture is the one whose focal length IS `FOCUS_D`: focal = cot(half) → `fovy = 2·atan(1/FOCUS_D)` = 45.2
+    397°, computed at runtime once in `main` rather than asserted (a float `static_assert` is a `-Wpedantic` error h
+    ere, and the camera area's framing checks are what pin the conversion itself). The framing is therefore the same
+    one the old hand projection made, and the probe below says so with numbers rather than with a claim.
+  - **The fit asserts were wrong and are corrected** — `XUD_BREAKOUT_VISIBLE_HALF_Y_MM(distance)` read `FOCUS_D*UNI
+    T/distance`, which is the pinhole's SCALE at that distance, not the world half-extent visible there: the visible
+    half-height is `distance/FOCUS_D` world units, which GROWS with the distance and is therefore the direction a n
+    earer part of the scene has to be checked against (the old macro asserted 1263 milli at the box's nearest depth
+    where the truth is 791, and the assert passed either way, so it was a passing check that checked nothing). The
+    macro and its comment are corrected; the four asserts still pass, at 620 ≤ 791 in y and 1000 ≤ 1406 in x.
+  - **The depth map changed shape and nothing had to be exact about it** — the example used to map the two distance
+    s linearly onto [-1,1] "ON PURPOSE", because its own divide had to be exact for its own constant-z quads. The li
+    brary's map is the hyperbolic one onto [0,1] (S28's, with the pipeline's LESS compare and the clear value of 1.0
+    ), and the example no longer cares about exactness at all: the pipeline, not the draw order, decides which of tw
+    o surfaces is seen. The back-plane note in the frame loop says that, and says the ORDER is now habit rather than
+    requirement.
+  - **The batch's budget note changed reason, not number** — with the camera in the frame a cube COULD be placed fo
+    r the ball, so the old reason ("a projected box's corners are not centre±half in the space it is handed") is no
+    longer the reason only one shape call is used. The reason is the budget: the frame's eight quads are 48 vertices
+    and 48 indices of the batch's 64 and 96, and the cube's own 24 and 36 do not fit beside them (72 > 64), so the b
+    all stays a quad and the sphere's 90 indices stay a claim rather than a spend.
+
+  **Verified here (2026-10-31):** the example builds clean under the tree's flags and runs to its own time cap on t
+  his machine's Wayland session, validation-clean — 36 stderr lines, INFO only, no ERROR, no WARNING, no VUID — and
+  the run reaches step 662 in 12 s before a timeout cut it (the run's own cap is 60 s, `-DXUD_BREAKOUT_MAX_SECONDS`
+  overrides). `xud_begin_camera_3d -> XUD_OK` is printed once for the run, not per frame. The framing was checked b
+  y a throwaway probe outside the tree that calls the library's own `xud_camera_fill_view_proj()` with the example'
+  s own camera at the window's own 640/360 aspect: the focal length answers 2.4000 = `FOCUS_D` exactly, the box's b
+  ack wall (d 2.9) corners land at ndc x ±0.4655 / y ±0.5131 and its front wall (d 1.9) at x ±0.7105 / y ±0.7832 —
+  the SAME numbers the old hand projection made for the same corners — and the depth answers 0.8448 at the back wal
+  l and 0.3684 at the front one, inside [0,1] and monotone, so the LESS compare against the clear value of 1.0 pick
+  s the nearer of two surfaces by itself. Suite unchanged: 2639 headless, 3396 GPU, all green; the archive is still
+  42 objects, `nm -u` still names no `vk`/`glfw` symbol and `ldd` still names no `libvulkan`. NOT exercised here: a
+  screenshot of the window (nothing here captures a niri window), so the framing is checked by the probe's numbers
+  rather than by a picture of the pixels; and an actual key press, which stays the user's as S27's note states.
 
 ## Steps complete (S28 The camera — the first rung whose job is the matrix a frame is drawn with, the depth range it is mapped to and the public pair that scopes a camera to a frame, one step, landed as one commit, 2026-10-31)
 
