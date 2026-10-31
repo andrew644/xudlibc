@@ -6,6 +6,36 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-31 note: **`examples/breakout_3d.c` landed** — the first example that is a game rather than a
+    drawing: a ball, a paddle and a field of 6 bricks at three depth layers, and the collisions that
+    bounce the ball off the walls, off a brick's shallowest-overlapping axis and off the paddle's top
+    plane. What makes the game 3D is the example's own pinhole, and that is the one thing a reader
+    should understand before changing it: there is no camera + transform step, so a shape's coordinates
+    are clip-space coordinates and `xud_breakout_project()` does the divide by the distance from the eye
+    THERE rather than in the shader (the shader's `w` is 1). That divide is exact because every quad the
+    example draws lies in a plane of CONSTANT z — four corners sharing a depth share the projection's
+    scale and need no perspective correction — and it is also why `xud_draw_cube()` cannot be used here
+    at all: a projected box's corners are not centre±half in the space it is handed, and a box projected
+    by hand would be 36 vertices of the batch's 64. So ONE public shape call is used and only one.
+    The geometry is stated in INTEGER milli-world-units with the float macros derived from them for one
+    reason: the fit checks the game needs (the box inside the frustum at its NEAREST depth, the field
+    inside the box, a brick inside its span, two bricks too far apart in depth for the ball to be inside
+    both) are `static_assert`s, and a float `static_assert` is a `-Wpedantic` ERROR here, not a warning.
+    The frame budget is the example's own count of its own quads (9 quads = 54 vertices and 54 indices)
+    against the batch's capacity today restated (64/96), because `xud_batch.h` is internal and user code
+    includes `xud.h` only. No input and no clock: the paddle chases the ball at a bounded speed BELOW the
+    ball's fastest x so the game sometimes misses, the bottom of the box is open so a miss is a miss
+    rather than a bounce, and a miss resets the ball rather than ending the run — the game is
+    deterministic, so two runs are the same run. Verified on this machine: the run COMPLETES in 583
+    frames, clears all 6 bricks, takes 1 miss, `xud_close_context` answers `XUD_OK` and exit is 0, with
+    the 36 stderr lines being the loader's and the validation layer's INFO only — no ERROR, no WARNING,
+    no VUID. The projection's own arithmetic was probed separately (a pure-math program, no driver): every
+    quad the game can draw lands inside NDC on all three axes and non-degenerate, and the depth ordering
+    is the one the scene claims (back plane z +0.400 = far, bricks +0.200 to -0.400, paddle -0.600 = near,
+    the same brick 0.112 NDC wide at the far layer and 0.142 at the near one). The headless suite is 2574
+    checks green and the GPU run 3309, both unchanged by this step. The "Examples set + README" item below
+    stays open — one example is not a set.
+
 - 2026-10-31 note: **the sphere landed as S25** — see the *Steps complete (S25 …)* section at the top of
     `todo_completed.md`. What landed there: `xud_shapes_append_sphere()` and the public `xud_draw_sphere()` above it in
     the same `xud_shapes.h/.c` rung, the sphere as a **closed shared-vertex mesh** (17 vertices, 30 triangles, 90 indic
@@ -253,6 +283,9 @@ nged
 - [ ] Audio wrapper
 - [ ] Input wrapper (keyboard/mouse/gamepad over GLFW)
 - [ ] Examples set + README
+    - 2026-10-31 note: three examples exist today — `hello_context.c`, `hello_triangle.c` and `breakout_3d.c`
+      (the first that is a GAME rather than a drawing, and the first that draws more than one shape in a
+      frame); the set and the README are still open.
 
 ## Decided (2026-10-16)
 

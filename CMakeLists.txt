@@ -372,3 +372,9 @@ add_executable(hello_triangle
 )
 
 target_link_libraries(hello_triangle PRIVATE xud)
+
+add_executable(breakout_3d
+    examples/breakout_3d.c
+)
+
+target_link_libraries(breakout_3d PRIVATE xud)
