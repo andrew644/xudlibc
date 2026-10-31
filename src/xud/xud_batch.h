@@ -295,6 +295,19 @@ struct XudBatch {
     VkVertexInputAttributeDescription attributes[XUD_BATCH_STREAM_COUNT];
     VkBufferCopy copyRegions[XUD_BATCH_COPY_REGION_COUNT];
 
+    /* --- the capacity ask: what the largest refused append was asked to hold ---. A shape's
+       append is ATOMIC (xud_shapes.h: a shape that does not fit writes nothing), so a frame that
+       wanted more than the batch had room for never reaches its capacity - it stops one shape
+       short of it. A grow keyed on the live counts would therefore never see that frame's ask at
+       all, and this pair is what makes the ask visible: the largest total a refused append was
+       asked to hold, since the last grow. xud_batch_reset does NOT clear it, and that is deliber
+       ate: the ask belongs to the frame that was just refused, and the frame boundary above reads
+       it BEFORE it resets. xud_batch_layout clears it, which is both what a fresh open starts
+       from and what a grow retires - the grow installs a layout, and the ask was a refusal against
+       the capacities that layout replaces. */
+    uint32_t wantedVertices; /* 0 when nothing has been refused since the last grow */
+    uint32_t wantedIndices; /* the index half of the same ask, read against indexCapacity */
+
     /* --- the flush state: what the pending batch of draws was accumulated under --- */
     uint32_t currentTopology; /* the topology the pending draws are assembled as - raylib's
                                     RLGL.currentBatch->draws[].mode, moved by a shape's
@@ -380,6 +393,29 @@ XudResult xud_batch_fill_vertex_input(XudBatch* batch, const XudDeviceCaps* caps
 /// Buffer's VUID makes a zero-size region a hard error).
 XudResult xud_batch_fill_copy_regions(XudBatch* batch);
 
+/// Pure: record the largest total a refused append was asked to hold, which is what makes a frame
+/// that wanted more than the batch had room for visible to the frame boundary above. The pair is
+/// kept as a MAXIMA rather than a sum: a frame that refused a dozen shapes refused them all
+/// against the same live counts, so it wants the biggest of those asks and not their sum. A
+/// request at or below the current capacities records nothing, so a batch that was never refused
+/// keeps answering 0/0. XUD_INVALID_ARG on a NULL batch.
+XudResult xud_batch_note_refused(XudBatch* batch, uint32_t requestedVertices, uint32_t requestedIndices);
+
+/// Pure: the capacity ask above reads - the largest refused request's vertex and index totals, 0/0
+/// when nothing has been refused since the last grow. This is the headless-testable half of the
+/// whole growth path: the ask, the next capacity and the bound are arithmetic on the batch's own
+/// rows, and only xud_batch_grow's six creates touch a driver. XUD_INVALID_ARG on a NULL batch or
+/// out-pointer.
+XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_t* outIndices);
+
+/// Pure: whether the capacity ask the batch recorded is bigger than the batch can hold - the one
+/// question the frame boundary above needs before it calls xud_batch_grow, and the reason it is
+/// asked rather than answered above: the batch owns BOTH halves of the comparison, the vertex ask
+/// against vertexCapacity and the index ask against indexCapacity, which is xud_batch_layout's
+/// 3n/2 and not a number a caller should restate. 1 when either half exceeds, 0 otherwise. XUD_
+/// INVALID_ARG on a NULL batch or out-pointer.
+XudResult xud_batch_growth_asked(const XudBatch* batch, uint32_t* outAsked);
+
 /// Pure: the invariant the settled decision states - "every stream holds the same vertex count".
 /// Read here as the two halves of it: every stream's capacityBytes divided by its elementSize is
 /// the batch's own vertexCapacity (so one vertex index addresses all four buffers legally and
@@ -437,7 +473,9 @@ XudResult xud_batch_draw_get(const XudBatch* batch, uint32_t index, XudBatchDraw
 /// makes, and the barrier that makes it visible to the transfer is the frame loop's, one rung
 /// up. XUD_INVALID_ARG on a NULL batch or a NULL attribute array; XUD_OUT_OF_MEMORY when the
 /// arena is not mapped (there is nowhere to write, and the grow that would map a bigger one is
-/// xud_batch_grow's) or when the batch is at capacity.
+/// xud_batch_grow's) or when the batch is at capacity. A refusal here is one vertex INSIDE a
+/// shape, which is why the shapes rung reads both bounds itself and notes the refusal at that
+/// boundary rather than this append noting one per vertex.
 XudResult xud_batch_append_vertex(XudBatch* batch, const float pos[3], const float uv[2], const uint8_t color[4], const float normal[3]);
 
 /// Pure: append one index. XUD_INVALID_ARG on a NULL batch or an index at or above the live
@@ -450,7 +488,9 @@ XudResult xud_batch_append_index(XudBatch* batch, uint32_t index);
 /// s the same property the allocator's ring note states for the ring, except that this arena is s
 /// tatic, so it is overwritten in place rather than handed out again. The flush state resets with
 /// the counts: the next frame's first shape starts at the default topology and the opaque variant,
-/// not at whatever the last frame's last shape left behind. XUD_INVALID_ARG on a NULL batch.
+/// not at whatever the last frame's last shape left behind. The capacity ask is NOT reset with the
+/// counts, and that is deliberate: the ask belongs to the frame that was just refused, and the
+/// frame boundary above reads it before it calls this. XUD_INVALID_ARG on a NULL batch.
 XudResult xud_batch_reset(XudBatch* batch);
 
 /// Pure: the counters a caller above reads - the live vertices, the live indices, the capacity,
@@ -488,9 +528,12 @@ XudResult xud_batch_open(XudBatch** outBatch, XudLoader* loader, const XudDevice
 /// asks for and what makes the frame loop's refusal of an over-capacity append the only honest
 /// answer mid-frame. A grow that FAILS leaves the batch retired - no buffers, no mapping - because
 /// the recreate retires before it creates, so the caller above closes the batch rather than appen
-/// ding into it. XUD_UNSUPPORTED at the bound (the batch is full, and full is a decision, not a
-/// growth step); XUD_INVALID_ARG on a NULL batch/loader/device/caps/allocator or a batch that own
-/// s no buffers; the driver-half codes of the creates above.
+/// ding into it. A grow that SUCCEEDS also retires the capacity ask, by way of the layout it instal
+/// ls: the ask was a refusal against the capacities that layout replaces, and leaving it set would
+/// be a batch that keeps doubling for a frame that already fits. XUD_UNSUPPORTED at the bound (the
+/// batch is full, and full is a decision, not a growth step); XUD_INVALID_ARG on a NULL batch/loa
+/// der/device/caps/allocator or a batch that owns no buffers; the driver-half codes of the creates
+/// above.
 XudResult xud_batch_grow(XudBatch* batch, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps, XudAllocator* alloc);
 
 /// Driver: record the batch's upload into a command buffer that has already been begun - five

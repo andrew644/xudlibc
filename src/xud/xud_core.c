@@ -38,7 +38,7 @@
 
 #include "xud_core.h"
 #include "xud.h"
-#include "xud_batch.h" /* Required for: xud_batch_reset, the public frame boundary's opening half runs on */
+#include "xud_batch.h" /* Required for: xud_batch_reset, the public frame boundary's opening half runs on, and xud_batch_growth_asked/xud_batch_grow, the capacity ask the same half reads and the recreate that answers it */
 #include "xud_camera.h" /* Required for: xud_camera_validate, the public camera pair's refusal */
 #include "xud_descriptor.h"
 #include "xud_device.h"
@@ -490,6 +490,8 @@ XudResult xud_close_context(XudContext** context) {
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_begin_drawing(XudContext* context) {
+    XudResult result = XUD_INVALID_ARG;
+
     if (context == NULL) {
         return XUD_INVALID_ARG;
     }
@@ -505,7 +507,49 @@ XudResult xud_begin_drawing(XudContext* context) {
        batch at the end of the frame it completed, so a frame that ran to the end arrives here emp
        ty already. The reset is still the whole point of this call - the frame about to be drawn
        starts from an empty batch whatever the rung below left behind - and a batch that is empty
-       resets to empty, which is why the call is cheap rather than a promise. */
+       resets to empty, which is why the call is cheap rather than a promise.
+
+       The capacity ask is answered BEFORE the reset, and that order is the whole point: the ask
+       belongs to the frame that was just refused, and a shape's append is atomic, so that frame
+       stopped one shape short of full and its live counts say nothing about it. Doubling is the
+       batch's whole growth policy, so a scene bigger than the initial capacity settles in a handf
+       ul of frames and then stays - xud_batch_grow clears the ask it answered, so a frame that now
+       fits asks nothing and the loop does not run again. The grow is a recreate, and this is the
+       one place the public boundary sits between two recordings: xud_frame_draw() waited and reset
+       the frame's fence before it returned, so nothing is in flight that could still be reading a
+       buffer the recreate retires, which is the same guard a swapchain recreate owes its old handle
+       and a depth recreate owes the attachment it replaces. */
+    for (;;) {
+        uint32_t asked = 0u;
+
+        result = xud_batch_growth_asked(context->renderer->batch, &asked);
+        if (result != XUD_OK) {
+            return result;
+        }
+        if (asked == 0u) {
+            break;
+        }
+        if ((context->loader == NULL) || (context->device == NULL) || (context->physicalDevice == NULL) || (context->allocator == NULL)) {
+            /* A context that owns a renderer but not the rungs the grow needs is a context that
+               never completed bring-up. Reported rather than dereferenced - and the ask stays set,
+               so the frame below is refused by its appends rather than drawn short. */
+            return XUD_UNSUPPORTED;
+        }
+        result = xud_batch_grow(
+            context->renderer->batch, context->loader, context->device, &context->physicalDevice->caps, context->allocator);
+        if (result == XUD_UNSUPPORTED) {
+            /* At the batch's bound the batch is FULL, and full is a decision rather than a growth
+               step: the frame below is refused by its appends and the ask stays set, so the next
+               boundary asks again rather than this loop spinning on a grow that cannot happen. */
+            break;
+        }
+        if (result != XUD_OK) {
+            /* A grow that failed left the batch retired - no buffers, no mapping - and a boundary
+               that cannot open a frame is reported, not papered over. */
+            return result;
+        }
+    }
+
     return xud_batch_reset(context->renderer->batch);
 }
 

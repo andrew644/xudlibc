@@ -327,8 +327,13 @@ XudResult xud_close_context(XudContext** context);
 /// about to be drawn starts from an empty one rather than from whatever the frame below left be
 /// hind - the frame loop's own reset at the end of a completed frame is the same property seen
 /// from the other side, and this call is what makes it a public boundary instead of a side effe
-/// ct of a rung a caller cannot name. XUD_INVALID_ARG on a NULL context or on a renderer whose
-/// batch rung is gone; XUD_UNSUPPORTED on a context that never completed bring-up.
+/// ct of a rung a caller cannot name. It GROWS the batch first when the frame before this one
+/// asked for more than it had room for, which is what lets the public surface draw a scene bigge
+/// r than the batch's initial capacity: a shape's append is atomic, so an over-capacity frame sto
+/// ps one shape short of full and its counts say nothing about it, and the ask the refusal records
+/// is what says so (see xud_batch.h's capacity-ask note). XUD_INVALID_ARG on a NULL context or on
+/// a renderer whose batch rung is gone; XUD_UNSUPPORTED on a context that never completed bring-u
+/// p, or on a grow that cannot happen; the grow's own codes when a grow is asked for.
 XudResult xud_begin_drawing(XudContext* context);
 
 /// Draw one filled triangle, counter-clockwise vertex order in raylib's own wording (raylib.h

@@ -32,6 +32,25 @@
 #include <math.h> /* Required for: sinf/cosf, the sphere's latitude and longitude - host arithmetic on the caller's floats, the one system header this file takes */
 
 /*-----------------------------------------------------------------------------------------------
+ * What a refused shape tells the batch
+ *-----------------------------------------------------------------------------------------------*/
+
+/* A refusal is not the end of the story: the frame boundary above can grow the batch for the next
+   frame, and the only way it knows a frame wanted more is the ask the refusal records (see the
+   capacity-ask note in xud_batch.h - an atomic refusal leaves the live counts BELOW capacity, so
+   nothing else in the batch says a frame overflowed). The ask is capped at the batch's own bound
+   rather than recorded as the caller's raw request: past the bound there is nothing to grow to,
+   and a tessellation the caller invented reaches back through a uint32 - the sphere's need is a
+   uint64 product of the caller's rings and slices for exactly that reason. */
+static void xud_shapes_note_refused(XudBatch* batch, uint64_t requestedVertices, uint64_t requestedIndices) {
+    const uint64_t vertexBound = (uint64_t)XUD_BATCH_MAX_VERTICES;
+    const uint64_t indexBound = (uint64_t)XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES);
+
+    (void)xud_batch_note_refused(batch, (uint32_t)((requestedVertices > vertexBound) ? vertexBound : requestedVertices),
+        (uint32_t)((requestedIndices > indexBound) ? indexBound : requestedIndices));
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The box's face tables: the six outward normals and the 24 corner signs
  *-----------------------------------------------------------------------------------------------*/
 
@@ -213,9 +232,11 @@ XudResult xud_shapes_append_triangle(XudBatch* batch, XudVector3 v0, XudVector3 
        inside the library, so it reads it rather than re-deriving it. Neither sum can overflow: the
        header's static_asserts bound the capacity at XUD_BATCH_MAX_VERTICES, four digits. */
     if ((vertexCount + XUD_SHAPES_TRIANGLE_VERTEX_COUNT) > vertexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_TRIANGLE_VERTEX_COUNT, indexCount + XUD_SHAPES_TRIANGLE_INDEX_COUNT);
         return XUD_OUT_OF_MEMORY;
     }
     if ((indexCount + XUD_SHAPES_TRIANGLE_INDEX_COUNT) > batch->indexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_TRIANGLE_VERTEX_COUNT, indexCount + XUD_SHAPES_TRIANGLE_INDEX_COUNT);
         return XUD_OUT_OF_MEMORY;
     }
 
@@ -326,9 +347,11 @@ XudResult xud_shapes_append_cube(XudBatch* batch, XudVector3 center, float width
        can overflow: the header's static_asserts bound the capacity at XUD_BATCH_MAX_VERTICES, four
        digits. */
     if ((vertexCount + XUD_SHAPES_CUBE_VERTEX_COUNT) > vertexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_CUBE_VERTEX_COUNT, indexCount + XUD_SHAPES_CUBE_INDEX_COUNT);
         return XUD_OUT_OF_MEMORY;
     }
     if ((indexCount + XUD_SHAPES_CUBE_INDEX_COUNT) > batch->indexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_CUBE_VERTEX_COUNT, indexCount + XUD_SHAPES_CUBE_INDEX_COUNT);
         return XUD_OUT_OF_MEMORY;
     }
 
@@ -465,9 +488,11 @@ XudResult xud_shapes_append_sphere(XudBatch* batch, XudVector3 center, float rad
        vertices.
      */
     if (((uint64_t)vertexCount + vertexNeed) > (uint64_t)vertexCapacity) {
+        xud_shapes_note_refused(batch, (uint64_t)vertexCount + vertexNeed, (uint64_t)indexCount + indexNeed);
         return XUD_OUT_OF_MEMORY;
     }
     if (((uint64_t)indexCount + indexNeed) > (uint64_t)batch->indexCapacity) {
+        xud_shapes_note_refused(batch, (uint64_t)vertexCount + vertexNeed, (uint64_t)indexCount + indexNeed);
         return XUD_OUT_OF_MEMORY;
     }
 
@@ -641,9 +666,11 @@ XudResult xud_shapes_append_line(XudBatch* batch, XudVector3 start, XudVector3 e
     /* Both bounds, read before anything at all changes - including the topology state below, which
        is why a line that does not fit cannot split a run. */
     if ((vertexCount + XUD_SHAPES_LINE_VERTEX_COUNT) > vertexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_LINE_VERTEX_COUNT, indexCount + XUD_SHAPES_LINE_INDEX_COUNT);
         return XUD_OUT_OF_MEMORY;
     }
     if ((indexCount + XUD_SHAPES_LINE_INDEX_COUNT) > batch->indexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_LINE_VERTEX_COUNT, indexCount + XUD_SHAPES_LINE_INDEX_COUNT);
         return XUD_OUT_OF_MEMORY;
     }
 
@@ -735,9 +762,11 @@ XudResult xud_shapes_append_cube_wires(XudBatch* batch, XudVector3 center, float
        trips here while the vertex bound has 64 slots to spare, and a check that read only the
        vertices would be a wire cube written into a batch that cannot name its edges. */
     if ((vertexCount + XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT) > vertexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT, indexCount + XUD_SHAPES_WIRE_CUBE_INDEX_COUNT);
         return XUD_OUT_OF_MEMORY;
     }
     if ((indexCount + XUD_SHAPES_WIRE_CUBE_INDEX_COUNT) > batch->indexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT, indexCount + XUD_SHAPES_WIRE_CUBE_INDEX_COUNT);
         return XUD_OUT_OF_MEMORY;
     }
 
@@ -860,9 +889,11 @@ XudResult xud_shapes_append_sphere_wires(
        filled sphere's 90 because the grid draws no band diagonal, and still four times the batch's
        3n/2 per-vertex headroom. */
     if (((uint64_t)vertexCount + vertexNeed) > (uint64_t)vertexCapacity) {
+        xud_shapes_note_refused(batch, (uint64_t)vertexCount + vertexNeed, (uint64_t)indexCount + indexNeed);
         return XUD_OUT_OF_MEMORY;
     }
     if (((uint64_t)indexCount + indexNeed) > (uint64_t)batch->indexCapacity) {
+        xud_shapes_note_refused(batch, (uint64_t)vertexCount + vertexNeed, (uint64_t)indexCount + indexNeed);
         return XUD_OUT_OF_MEMORY;
     }
 

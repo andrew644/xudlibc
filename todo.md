@@ -6,6 +6,17 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-31 note: **the batch's capacity ask and the grow at the public frame boundary landed as S31** — see the
+  *Steps complete (S31 …)* section at the top of `todo_completed.md`: `XudBatch` gained `wantedVertices`/`wantedIndices`
+  beside the capacities and three pure functions (`xud_batch_note_refused()`, `xud_batch_wanted()`, `xud_batch_growth_asked()`),
+  the shapes rung notes the ask at its six refusal boundaries, and `xud_begin_drawing()` grows on the ask in a loop
+  BEFORE it resets. The step is a fact rather than a call to `xud_batch_grow()` in the frame loop because a shape's
+  append is ATOMIC: a frame that overflowed stops one shape SHORT of full, so its counts say nothing about the ask it
+  made — 2 boxes of a 3rd refused is 48 vertices live of a 64 capacity, and a grow keyed on the live counts would have
+  seen a batch that was never full. Suite 2660 headless / 3427 GPU, 0 failures (was 2639 / 3396), the GPU run validation
+  clean with the Khronos layer installed, and the `-fsanitizer` build unchanged at its 3 pre-existing bring-up-boundary
+  leaks (probed against a stashed baseline, the same 3 before and after).
+
 - 2026-10-31 note: **`examples/breakout_3d.c` grew the camera's own sweep as S30** — see the *Steps complete
     (S30 …)* section at the top of `todo_completed.md`: the camera is now put in EVERY frame rather than once
     for the run (a begin while one is live REPLACES it, `xud_core.c`, and the renderer holds the record as a
@@ -305,6 +316,22 @@ nged
 
 
 ## Next
+
+- [ ] **The game objects in `examples/breakout_3d.c` have no thickness and no shading** — the user's "they appear flat"
+    report, itemised now that S31 has made the first half of it possible. Two halves, and they are different rungs:
+    - **Thickness** is the example's rung: `xud_breakout_draw_quad()` builds four corners that SHARE a `centre.z`, so
+      the ball, the paddle and every brick is one flat rectangle at a constant depth. The fix is to draw them as the
+      boxes S24 landed — `xud_draw_cube()` — which S31 is now able to afford: the field as boxes needs 198 vertices /
+      294 indices, which is 256/384, two doublings from the initial 64/96, and the boundary above grows on the ask the
+      refused frames leave behind. What the example owes after that: the collision half-space tests it already writes
+      against a quad's span have to be restated against a box's own half-extents, and the playfield's back plane stays
+      a quad because it has no thickness to give.
+    - **Shading** is the shader's rung: `shaders/solid.frag` writes `inColor` at location 1 and nothing else, while
+      `shaders/solid.vert` already outputs `outNormal` at location 2, which nothing reads. Reading it — one fixed light
+      direction, a Lambert term, the colour modulated by it — is what makes a box read as a solid rather than as six
+      flat quads of one colour. It is a `shaders/` step: the SPIR-V is compiled at build time and validated in CI, and
+      the vertex stage's `outNormal` is already the channel for it. Ask before picking the light model (see the open
+      questions below).
 
 - [ ] Shapes module, the rest of it (`DrawLine3D`, `DrawPoint3D` and the wire forms, `DrawMesh` — 3D only,
     there is no 2D shape family in the API)

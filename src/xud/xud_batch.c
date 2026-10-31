@@ -157,11 +157,17 @@ XudResult xud_batch_layout(XudBatch* batch, uint32_t vertexCapacity) {
     batch->stagingBytes = running;
 
     /* The live counts restart here: a layout is a new set of buffers, and a live count that
-       survived into it would be a count naming vertices past the new buffers' contents. */
+       survived into it would be a count naming vertices past the new buffers' contents. The cap
+       acity ask restarts with them for the same reason - the ask was a refusal against the OLD
+       capacities, and a batch that owns the new ones has not been refused anything yet. This is
+       also where a grow retires the ask the frame boundary above asked for, which is what keeps a
+       batch that now fits from doubling again next frame. */
     batch->vertexCount = 0u;
     batch->indexCount = 0u;
     batch->pendingFirstIndex = 0u;
     batch->pendingIndexCount = 0u;
+    batch->wantedVertices = 0u;
+    batch->wantedIndices = 0u;
 
     return XUD_OK;
 }
@@ -535,6 +541,51 @@ XudResult xud_batch_reset(XudBatch* batch) {
     batch->currentTopology = XUD_BATCH_TOPOLOGY_TRIANGLES;
     batch->currentVariant = XUD_BATCH_VARIANT_OPAQUE;
     batch->currentMaterial = XUD_BATCH_NO_MATERIAL;
+
+    return XUD_OK;
+}
+
+XudResult xud_batch_note_refused(XudBatch* batch, uint32_t requestedVertices, uint32_t requestedIndices) {
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The ask is recorded against the batch's OWN capacities, and a request that fits records
+       nothing: a batch that was never refused keeps answering 0/0, which is what makes the frame
+       boundary's grow loop a no-op on an ordinary frame rather than a doubling every frame. The
+       pair is a maxima and not a sum - a frame that refused several shapes refused them all
+       against the same live counts, so the biggest ask is the one the next frame has to hold. */
+    if ((requestedVertices > batch->wantedVertices) && (requestedVertices > batch->vertexCapacity)) {
+        batch->wantedVertices = requestedVertices;
+    }
+    if ((requestedIndices > batch->wantedIndices) && (requestedIndices > batch->indexCapacity)) {
+        batch->wantedIndices = requestedIndices;
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_t* outIndices) {
+    if ((batch == NULL) || (outVertices == NULL) || (outIndices == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outVertices = batch->wantedVertices;
+    *outIndices = batch->wantedIndices;
+
+    return XUD_OK;
+}
+
+XudResult xud_batch_growth_asked(const XudBatch* batch, uint32_t* outAsked) {
+    if ((batch == NULL) || (outAsked == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* Both halves, against the batch's OWN capacities: the vertex ask against vertexCapacity and
+       the index ask against the indexCapacity xud_batch_layout computed as 3n/2 for it. Either
+       half exceeding is enough - a frame that overflows the indices is a frame the next capacity
+       has to hold, and the grow doubles both, so the ratio is kept rather than corrected. */
+    *outAsked = ((batch->wantedVertices > batch->vertexCapacity) || (batch->wantedIndices > batch->indexCapacity)) ? 1u : 0u;
 
     return XUD_OK;
 }

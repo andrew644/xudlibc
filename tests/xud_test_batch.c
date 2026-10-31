@@ -30,6 +30,7 @@
 #include "xud_batch.h" /* Required for: XudBatch, the batch rung's own constants and every fill rung below */
 #include "xud_core.h" /* Required for: XudContext, the owner the GPU half runs the ladder against */
 #include "xud_physical.h" /* Required for: XudDeviceCaps, the vertex-input limits every gate is read off */
+#include "xud_shapes.h" /* Required for: XUD_SHAPES_CUBE_VERTEX_COUNT/XUD_SHAPES_CUBE_INDEX_COUNT, the shape size a refused frame asks the batch to grow for */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
 #include <stdlib.h> /* Required for: free, the draw array this area's own record loop allocates */
 #include <string.h> /* Required for: memset, memcmp, the synthetic rows this area zeroes and compares */
@@ -66,6 +67,9 @@ static void xud_test_batch_pure(void) {
     uint32_t drawCount = 0u;
     VkDeviceSize stagingBytes = 0u;
     uint32_t row = 0u;
+    uint32_t asked = 0u;
+    uint32_t wantedVertices = 0u;
+    uint32_t wantedIndices = 0u;
     const float pos[3] = { 0.0f, 0.0f, 0.0f };
     const float uv[2] = { 0.0f, 0.0f };
     const uint8_t color[4] = { 0u, 0u, 0u, 0u };
@@ -498,6 +502,68 @@ static void xud_test_batch_pure(void) {
         "the counters read back");
     xud_check((vertexCount == capacity) && (indexCount == XUD_BATCH_INDEX_CAPACITY(capacity)), "batch/stats-count-the-appends",
         "both buffers exactly full, which is the two capacities the layout computed read at the live counts");
+
+    /*--- the capacity ask a refused frame leaves behind ----------------------------------------*/
+
+    /* The batch above was filled by APPENDS, one vertex at a time, and never refused a whole shape:
+       it was never asked for more than it had room for, so the ask it leaves for the frame boundar
+       y above is empty. That is the half of the growth path that says an ordinary frame grows noth
+       ing - and it is why a grow keyed on the live counts could not have seen an over-capacity
+       frame at all, since a shape's append is atomic and such a frame stops one shape SHORT of
+       full rather than at it. */
+    xud_check(xud_batch_growth_asked(&b, &asked) == XUD_OK, "batch/growth-asked-reads", "the question the frame boundary asks");
+    xud_check(asked == 0u, "batch/growth-asked-answers-nothing", "a batch that was never refused asks for nothing");
+    xud_check(xud_batch_growth_asked(NULL, &asked) == XUD_INVALID_ARG, "batch/growth-asked-null-batch", "refused");
+    xud_check(xud_batch_growth_asked(&b, NULL) == XUD_INVALID_ARG, "batch/growth-asked-null-out", "refused");
+
+    xud_check(xud_batch_note_refused(NULL, 1u, 1u) == XUD_INVALID_ARG, "batch/note-refused-null-batch", "refused");
+    xud_check(xud_batch_note_refused(&b, capacity, XUD_BATCH_INDEX_CAPACITY(capacity)) == XUD_OK, "batch/note-refused-at-capacity-is-quiet",
+        "a request that FITS records nothing - at the capacity is not a refusal, and a batch that was never refused keeps answering 0/0");
+    xud_check(
+        xud_batch_growth_asked(&b, &asked) == XUD_OK, "batch/note-at-capacity-still-quiet", "the same batch, still asking for nothing");
+    xud_check(asked == 0u, "batch/note-at-capacity-left-the-ask-empty", "and the ask stayed empty, so the boundary's loop did not run");
+
+    /* A cube's 24 vertices over the 64 the batch holds at 40 live: the shape does not fit, and the
+       ask is the TOTAL it was asked to hold, not the shape's size - the next capacity has to hold
+       what is already live plus what the refused shape wanted, which is the only way a grow can
+       tell a frame that overflowed from a frame that merely filled. */
+    xud_check(xud_batch_note_refused(
+                  &b, capacity + XUD_SHAPES_CUBE_VERTEX_COUNT, XUD_BATCH_INDEX_CAPACITY(capacity) + XUD_SHAPES_CUBE_INDEX_COUNT)
+            == XUD_OK,
+        "batch/note-refused-a-cube", "the refusal's ask is recorded");
+    xud_check(
+        (xud_batch_wanted(&b, &wantedVertices, &wantedIndices) == XUD_OK) && (wantedVertices == (capacity + XUD_SHAPES_CUBE_VERTEX_COUNT)),
+        "batch/wanted-reads-the-vertex-ask", "88 vertices, the 64 live plus the cube's 24 - a total, not a shape size");
+    xud_check(wantedIndices == (XUD_BATCH_INDEX_CAPACITY(capacity) + XUD_SHAPES_CUBE_INDEX_COUNT), "batch/wanted-reads-the-index-ask",
+        "and 132 indices over the 96 the layout computed for 64 vertices");
+    xud_check(xud_batch_wanted(NULL, &wantedVertices, &wantedIndices) == XUD_INVALID_ARG, "batch/wanted-null-batch", "refused");
+    xud_check(xud_batch_wanted(&b, NULL, &wantedIndices) == XUD_INVALID_ARG, "batch/wanted-null-out", "refused");
+
+    xud_check(xud_batch_growth_asked(&b, &asked) == XUD_OK, "batch/growth-asked-after-refusal", "the question asked again");
+    xud_check(
+        asked == 1u, "batch/growth-asked-answers-yes", "the ask exceeds the capacity the layout computed, so the boundary above grows");
+
+    /* The ask is a MAXIMA and not a sum: a frame that refused a dozen shapes refused them all
+       against the same live counts, so it wants the biggest of those asks rather than their sum. A
+       smaller ask after a bigger one changes nothing, which is what keeps a frame that refused man
+       y shapes from asking the batch to grow past what it needs. */
+    xud_check(xud_batch_note_refused(&b, capacity + 1u, capacity + 1u) == XUD_OK, "batch/note-smaller-ask",
+        "a smaller refusal is noted after a bigger one");
+    xud_check(
+        (xud_batch_wanted(&b, &wantedVertices, &wantedIndices) == XUD_OK) && (wantedVertices == (capacity + XUD_SHAPES_CUBE_VERTEX_COUNT)),
+        "batch/ask-is-a-maxima-not-a-sum", "and the ask is still the bigger of the two, not the two added together");
+
+    /* The ask is retired by the layout, which is both what a fresh open starts from and what a grow
+       installs - so the check that matters is that a NEW layout does not inherit the old capaci
+       ties' refusal, because a batch that doubled and kept asking would double again next frame, and
+       again, for a scene that already fits. */
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES * 2u) == XUD_OK, "batch/layout-doubled-for-the-ask",
+        "the capacity the ask asked for is a capacity the layout accepts");
+    xud_check((xud_batch_wanted(&b, &wantedVertices, &wantedIndices) == XUD_OK) && (wantedVertices == 0u) && (wantedIndices == 0u),
+        "batch/layout-retired-the-ask",
+        "the new layout starts un-refused, which is what makes the boundary's loop terminate rather than double to the bound every frame");
+    xud_check(xud_batch_growth_asked(&b, &asked) == XUD_OK, "batch/growth-asked-after-the-grow", "the question asked a third time");
+    xud_check(asked == 0u, "batch/grown-batch-asks-for-nothing", "and the grown batch asks for nothing, so the loop ran once and stopped");
 
     /* The host arena is this area's, not the batch's: clearing the pointer says so rather than le
        aving a pointer to a static array in a struct that a driver half would otherwise write into.

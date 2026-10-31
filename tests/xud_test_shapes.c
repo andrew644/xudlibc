@@ -1378,9 +1378,11 @@ static void xud_test_shapes_pure(void) {
 
 /* How many of those frames draw the box rather than the sphere. Two, and the last frame is the
    sphere's: a sphere's 90 indices beside the frame's two triangles' 6 is exactly the initial cap
-   acity's 96-slot index headroom, so the sphere and the box cannot share a frame at that capacity
-   and the GPU half has to spend one frame on each rather than doubling back on a batch it grew.
-   That is the same fact the pure half checks, seen through a real submit and a real present. */
+   acity's 96-slot index headroom, so the sphere and the box cannot share a frame at THAT capacity
+   and the GPU half has to spend one frame on each. The frame after the loop is the other half of
+   that fact - the boundary above grows the batch on the ask the refusals left behind, and the same
+   two shapes then do share a frame at the doubled capacity. That is the same fact the pure half c
+   hecks, seen through a real submit and a real present. */
 #define XUD_TEST_SHAPES_CUBE_FRAMES 2u
 
 static void xud_test_shapes_gpu(void) {
@@ -1391,6 +1393,7 @@ static void xud_test_shapes_gpu(void) {
     uint32_t capacity = 0u;
     uint32_t drawCount = 0u;
     VkDeviceSize stagingBytes = 0u;
+    uint32_t asked = 0u;
     uint32_t frame = 0u;
     XudVector3 v0 = (XudVector3) { .x = -0.5f, .y = -0.5f, .z = 0.0f };
     XudVector3 v1 = (XudVector3) { .x = 0.5f, .y = -0.5f, .z = 0.0f };
@@ -1592,6 +1595,50 @@ static void xud_test_shapes_gpu(void) {
         xud_check(context->renderer->frame->recreateWanted == 0u, "gpu-frames/no-recreate-ask",
             "this machine's swapchain matches its surface, so the acquire answered VK_SUCCESS and nothing was asked for");
     }
+
+    /*--- the frame the refusals above asked for, at the boundary above it ----------------------*/
+
+    /* The frame that refused a box and a wire box beside a sphere that filled the index headroom
+       is the ask the public boundary above answers, and this is the step that makes the public
+       surface able to draw a scene bigger than the batch's initial capacity: the boundary reads
+       that ask BEFORE it resets, grows the batch to the capacity that would hold it, and the SAME
+       frame that could not hold a box beside a sphere at 64/96 now holds one at 128/192. The grow
+       is a recreate, and this is the one place the public boundary sits between two recordings -
+       the frame above waited and reset its fence before it returned, so nothing is in flight that
+       could still be reading a buffer the recreate retires, which is the same guard a swapchain
+       recreate owes its old handle and a depth recreate owes the attachment it replaces. The
+       validation layer installed in this build is what would report it if the recreated buffers
+       were bound while still in use. */
+    result = xud_begin_drawing(context);
+    xud_check(result == XUD_OK, "gpu-shapes/boundary-after-a-refused-frame",
+        "the boundary that follows an over-capacity frame opens, and the grow it ran on the ask that frame left behind answered OK");
+    xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "gpu-shapes/stats-after-the-grown-boundary", "and the counters answer");
+    xud_check(capacity == (XUD_BATCH_INITIAL_VERTICES * 2u), "gpu-shapes/boundary-grew-the-refused-frame",
+        "128 vertices, doubled once from the initial 64 - the ask was a box's 24 beside a frame that had spent 96 of the 96 index slots, "
+        "and one doubling is what holds it");
+    xud_check(xud_batch_growth_asked(context->renderer->batch, &asked) == XUD_OK, "gpu-shapes/growth-asked-after-the-grow",
+        "the question the boundary asks, asked again after the grow");
+    xud_check(asked == 0u, "gpu-shapes/grown-batch-retired-the-ask",
+        "and the grow retired the ask it answered, so the batch does not keep doubling every frame for a scene that already fits - the "
+        "loop ran once and stopped");
+
+    result = xud_draw_sphere(context, sphereCentre, XUD_TEST_SHAPES_SPHERE_RADIUS, blue);
+    xud_check(result == XUD_OK, "gpu-shapes/sphere-in-the-grown-frame", "the sphere appends into the grown batch");
+    result = xud_draw_cube(context, cubeCentre, 0.8f, 0.8f, 0.8f, blue);
+    xud_check(result == XUD_OK, "gpu-shapes/refused-frame-now-fits",
+        "and the box that was REFUSED in the frame above now draws in this one: 41 vertices and 126 indices inside the 128/192 the "
+        "boundary grew to, which is the same frame at the same two shapes at a capacity the batch could not have reached on its own");
+    xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "gpu-shapes/stats-in-the-grown-frame", "and the counters answer after both");
+    xud_check((vertexCount == (XUD_SHAPES_SPHERE_VERTEX_COUNT + XUD_SHAPES_CUBE_VERTEX_COUNT))
+            && (indexCount == (XUD_SHAPES_SPHERE_INDEX_COUNT + XUD_SHAPES_CUBE_INDEX_COUNT)),
+        "gpu-shapes/grown-frame-counts-both-shapes",
+        "41 vertices and 126 indices, the sphere's and the box's, with nothing left over from the frame above");
+
+    result = xud_end_drawing(context);
+    xud_check(result == XUD_OK, "gpu-shapes/end-in-the-grown-frame",
+        "and the grown frame closes through the same buffers the recreate installed");
 
     if (context->validate != 0u) {
         xud_check(context->diagnostics->errorMessages == 0u, "gpu-shapes/validation-clean",

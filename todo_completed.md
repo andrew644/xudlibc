@@ -1,6 +1,6 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S30, the example's camera sweep** — the same example turning its camera instead of holding it still: the eye orbiting the field's centre at a fixed radius, the two angles being the frame's own slow swings, and the fit asserts moved onto the sphere the playfield box sits in because a box's own fit is only true along the axis it is aligned to (2026-10-31). The step before it is **S29, the example on the camera** — the first GPU consumer of S28's camera rung: the example's own projection gone, its quads in world space, its aperture derived from its own focus distance rather than chosen, and its fit asserts restated against what is actually visible (2026-10-31). The step before that is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S31, the batch's capacity ask and the grow at the public frame boundary** — the half of the growth path that had a tested rung and no caller: a frame that wanted more than the batch had room for stops one shape SHORT of full, because a shape's append is atomic, so its counts say nothing about the ask and the batch needed a place to leave it (2026-10-31). The step before it is **S30, the example's camera sweep** — the same example turning its camera instead of holding it still: the eye orbiting the field's centre at a fixed radius, the two angles being the frame's own slow swings, and the fit asserts moved onto the sphere the playfield box sits in because a box's own fit is only true along the axis it is aligned to (2026-10-31). The step before it is **S29, the example on the camera** — the first GPU consumer of S28's camera rung: the example's own projection gone, its quads in world space, its aperture derived from its own focus distance rather than chosen, and its fit asserts restated against what is actually visible (2026-10-31). The step before that is **S28, the camera** — the first rung whose job is the matrix a frame is drawn
 rather than the bytes a frame is drawn from: the camera's orthonormal basis, the symmetric frustum at the extent a frame
 renders at, the product in the block's column-major order, mapped to Vulkan's [0,1] depth rather than OpenGL's [-1,1],
 and the public pair that puts a camera in and takes it out (2026-10-31). The step before it is **S27, the wire forms** —
@@ -20,6 +20,80 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S31 The batch's capacity ask and the grow at the public frame boundary — the half of the growth path that had a tested rung and no caller: a frame that overflowed left no trace of it in its counts, because a shape's append is atomic, so the batch needed a place to leave the ask and the boundary above needed to read it before it resets, one step, landed as one commit, 2026-10-31)
+
+- [x] ~~**The batch cannot hold a scene bigger than its initial capacity, and the grow path has no caller**~~ — **done
+    2026-10-31** as S31. `xud_batch.h/.c` (the ask, its accessors and the layout that retires it), `xud_shapes.c` (the
+    six refusal boundaries that note it), `xud_core.c`/`xud.h` (the public boundary that reads it and grows),
+    `tests/xud_test_batch.c` (the pure half) and `tests/xud_test_shapes.c` (the GPU half). No new dependency, no public
+    type change, no new pipeline row.
+
+  **Why this was open at all — the growth path was already landed and tested:**
+
+  - `xud_batch_grow()` landed as S16 and its GPU checks at `tests/xud_test_batch.c` (the pair that reads `vertexCapacity
+    == XUD_BATCH_INITIAL_VERTICES * 2u` and `growCount == 1u`) pass: a batch doubles and re-creates its five buffers and
+    its mapped arena. What it has never had is a **caller**. `xud_batch_open()` is called once, in `xud_renderer_open()`,
+    at `XUD_BATCH_INITIAL_VERTICES`, and nothing above it ever asks for more — so the public surface can only ever draw
+    a frame that fits 64 vertices / 96 indices, which is **two boxes**.
+
+  **The facts that made this a step rather than a call to `xud_batch_grow()` in the frame loop:**
+
+  - **A frame that overflowed leaves no trace of it in its counts.** A shape's append is ATOMIC — `xud_shapes.h`'s rule
+    is that a shape that does not fit writes NOTHING, and `tests/xud_test_shapes.c`'s `gpu-shapes/refusal-wrote-nothing`
+    and `gpu-shapes/refused-line-left-topology-alone` checks pin that through a real context. A frame that wanted more
+    than the batch had room for therefore stops **one shape short of full**: the breakout field's 9 quads at 54/54 of
+    64/96 became, as boxes, 2 boxes appended and a 3rd refused — 48 vertices live of a 64 capacity, 72 indices of 96.
+    A grow keyed on the live counts would have seen a batch that was never full and grown nothing at all. The ask is
+    something the batch has to **record**, not something the boundary can infer.
+  - **The ask is a TOTAL, not a shape size.** The next capacity has to hold what is already live PLUS what the refused
+    shape wanted: a box's 24 beside a frame that had spent 48 is an ask of 72, and 72 is the capacity the batch has to
+    reach to have drawn that frame. Recording the shape's own size would be a batch that grows for a frame that already
+    fits, forever.
+  - **The ask is a MAXIMA, not a sum.** A frame that refused a dozen shapes refused them all against the SAME live
+    counts, so it wants the biggest of those asks and not their sum — summing them is a batch asked to grow past what
+    the scene needs, one doubling per refused shape.
+  - **The ask is read BEFORE the reset, and the reset does not clear it.** `xud_batch_reset()` runs at the end of a
+    completed frame inside `xud_frame_draw()` and again at the public boundary; an ask cleared by the reset would be
+    gone by the time the boundary looked at it. The ask belongs to the frame that was just refused, so it survives the
+    reset and is retired by the **layout** the grow installs — a new set of capacities is a batch that has not been
+    refused anything yet, which is also what makes the boundary's loop terminate rather than double to the bound every
+    frame.
+  - **A recreate at the public boundary is safe, and that is a fact about the fence, not a hope.** `xud_batch_grow()`
+    destroys the batch's buffers and its mapped arena, and `VUID-vkDestroyBuffer-buffer-00944` ("all uses… must have
+    completed execution") applies to that destruction. `xud_frame_draw()` **waits and resets the frame's fence before
+    it returns**, so at `xud_begin_drawing()` nothing is in flight that could still be reading a buffer the recreate
+    retires — the same guard S22's note states for a swapchain recreate against its `oldSwapchain` (`VUID-vkDestroy
+    SwapchainKHR-swapchain-00965`, which lavvk answered with "can't be called on a `VkSwapchainKHR` that is currently
+    in use by a `VkQueue`") and for a depth recreate against the attachment it replaces. This is the ONE place the
+    public boundary sits between two recordings, which is why the repo's "no `vkCreateBuffer` inside a frame" rule is
+    satisfied here rather than argued around.
+
+  **What landed:**
+
+  - `XudBatch` gained `wantedVertices`/`wantedIndices` beside the capacities, and three pure functions: `xud_batch_note
+    _refused()` (records, capped at the batch's own bound — a sphere's need is a uint64 product of the caller's rings
+    and slices and reaches back through a uint32), `xud_batch_wanted()` (reads the pair) and `xud_batch_growth_asked()`
+    (answers the one question the boundary needs, with BOTH halves of the comparison inside the batch rung because the
+    index half is `xud_batch_layout`'s 3n/2 and not a number a caller should restate). `xud_batch_layout()` retires the
+    ask beside the live counts it restarts.
+  - The shapes rung notes the ask at its **six** refusal boundaries — triangle, box, sphere, line, wire box, wire
+    sphere — because a refusal at the append level is one vertex INSIDE a shape, and the shape is the boundary that
+    knows the total.
+  - `xud_begin_drawing()` grows on the ask in a loop before it resets, and stops at `XUD_UNSUPPORTED`: at the batch's
+    bound the batch is FULL, and full is a decision rather than a growth step, so the frame below is refused by its
+    appends and the ask stays set for the next boundary rather than this loop spinning on a grow that cannot happen.
+
+  **The two numbers this step is about:** the batch's initial 64/96 holds **two** boxes (24 vertices / 36 indices each,
+  and the index bound is the one that trips first, at 96/36 = 2.67); the breakout field as boxes needs 8 boxes + the
+  back plane = 198 vertices / 294 indices, which is 256/384, i.e. two doublings from 64. The GPU check that matters is
+  in `tests/xud_test_shapes.c`: the frame that REFUSED a box beside a sphere that filled the 96-slot index headroom is
+  the frame the boundary above grows for, and the SAME two shapes then draw together at 128/192 — 41 vertices and 126
+  indices — with the ask retired, so the loop ran once and stopped rather than doubling every frame to the bound.
+
+  Suite: **2660 headless / 3427 GPU, 0 failures** (was 2639 / 3396 — +21 pure checks on the ask and +31 GPU checks on
+  the grown frame), `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` clean over `src/xud/*.c`, the GPU run
+  validation-clean with the Khronos layer installed, and the `-fsanitizer` build green.
 
 ## Steps complete (S30 The example's camera sweep — the same example turning its camera rather than holding it still: the eye orbiting the field's centre, the two angles being the frame's own, and the fit moved onto the sphere the box sits in because a box's own fit is only true head-on, one step, landed as one commit, 2026-10-31)
 
