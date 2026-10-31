@@ -22,22 +22,21 @@
  *   the two planes, and the camera rung turns them into the one matrix a frame is drawn with,
  *   which is the one thing a reader should understand before changing anything here.
  *
+ *   The camera + transform rung is OPEN now, and this example is its first GPU consumer: the pair
+ *   xud_begin_camera_3d()/xud_end_camera_3d() puts the scene's one camera in and takes it out, and
+ *   the library's camera rung (src/xud/xud_camera.h/.c, landed 2026-10-31 as S28) builds the
+ *   camera's basis, the symmetric frustum at the extent a frame renders at and the product of the
+ *   two into set 0's viewProj every frame. A shape's coordinates are therefore WORLD coordinates
+ *   and the divide happens in the shader, which is what makes the depth buffer's answer the honest
+ *   one: the back plane at the far depth and the ball at the near one are resolved by the
+ *   pipeline's LESS compare rather than by the order the example draws them in. The quad's depth
+ *   is still constant across it, because every quad below lies in a plane of constant z - a quad
+ *   that spanned two depths would want the rasteriser's perspective-correct interpolation, which
+ *   is a property of the shapes the cube and the sphere calls place rather than of these.
+ *
  *   Two rungs of the library are todo.md's Later items rather than open bugs, and this
  *   example stands in for each of them in the smallest way that keeps the example honest about
  *   which half is whose:
- *
- *     - The camera + transform rung is OPEN now, and this example is its first GPU consumer: the
- *       pair xud_begin_camera_3d()/xud_end_camera_3d() puts the scene's one camera in and takes it
- *       out, and the library's camera rung (src/xud/xud_camera.h/.c, landed 2026-10-31 as S28)
- *       builds the camera's basis, the symmetric frustum at the extent a frame renders at and the
- *       product of the two into set 0's viewProj every frame. A shape's coordinates are therefore
- *       WORLD coordinates and the divide happens in the shader, which is what makes the depth
- *       buffer's answer the honest one: the back plane at the far depth and the ball at the near
- *       one are resolved by the pipeline's LESS compare rather than by the order the example draws
- *       them in. The quad's depth is still constant across it, because every quad below lies in a
- *       plane of constant z - a quad that spanned two depths would want the rasteriser's
- *       perspective-correct interpolation, which is a property of the shapes the cube and the
- *       sphere calls place rather than of these.
  *
  *     - No input wrapper in xud (todo.md's Input wrapper item is a Later rung, not an open bug),
  *       so the example reads GLFW directly: xud_breakout_read_input() polls and queries the key
