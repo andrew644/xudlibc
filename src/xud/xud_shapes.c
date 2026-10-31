@@ -2,9 +2,10 @@
  *
  *   xud_shapes.c - the shapes rung and the public draw call above it
  *
- *   Owns : xud_shapes_append_triangle(), the geometry one public draw call names, and xud_draw_
- *          triangle_3d(), the public call that names it. Nothing else - no driver call, no loader
- *          row, no Vulkan or GLFW symbol the linker could see. The whole file is host work on the
+ *   Owns : xud_shapes_append_triangle() and xud_shapes_append_cube(), the geometry the public draw
+ *          calls name, the two public calls above them (xud_draw_triangle_3d(), xud_draw_cube()) and
+ *          the one guard those public calls share. Nothing else - no driver call, no loader row,
+ *          no Vulkan or GLFW symbol the linker could see. The whole file is host work on the
  *          batch's own counters and the batch's own arena, which is what keeps it testable with
  *          no device present and keeps a machine with no Vulkan loader answering the same refu
  *          sals as one with a loader and no window open.
@@ -23,6 +24,65 @@
 #include "xud.h" /* Required for: XudResult, XudVector3, XudColor */
 #include "xud_batch.h" /* Required for: XudBatch, xud_batch_stats, xud_batch_append_vertex/xud_batch_append_index */
 #include "xud_core.h" /* Required for: struct XudContext, the one owner whose renderer's batch a public draw call appends into */
+
+/*-----------------------------------------------------------------------------------------------
+ * The box's face tables: the six outward normals and the 24 corner signs
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The cube's six faces as DATA rather than as twelve triangles of code: one row per face, the
+   face's OUTWARD normal first and then its four corner SIGNS in counter-clockwise order seen from
+   outside - the same counter-clockwise raylib's DrawTriangle3D documents (raylib.h 1588) and the
+   pipeline's XUD_PIPELINE_FRONT_FACE names. The tests area re-derives all of it from the cross
+   product of a face's two triangles against that face's normal rather than trusting this table
+   being written right.
+
+   The corners are signs, not coordinates: a vertex is the centre plus the sign times that axis's
+   half-extent, so nothing about the caller's centre or extents is in here and the table is 6 rows
+   of 4 corner triples of -1/+1 - and every corner of a box is at +/-half along ALL THREE axes, so
+   a face's row carries that face's own normal sign on the normal's axis rather than a zero there,
+   which is what keeps the 24 corners the 8 corners of one box rather than 12 points inside it. The
+   winding rule the order obeys is the one this comment states: for a face whose tangent axes are u
+   and v, the corners are -u-v, +u-v, +u+v, -u+v in that order and u x v IS the outward normal exac
+    tly, not merely parallel to it, which is what makes that order counter-clockwise when the face
+   is viewed from the side the normal points to and what lets one rule cover all six faces instead
+   of a per-face exception - the u and v named beside each row below are the SIGNED choices that ma
+   ke that equality hold, which is why the six rows differ in corner order rather than in rule. */
+static const float XUD_SHAPES_CUBE_NORMAL[XUD_SHAPES_CUBE_FACE_COUNT][3] = {
+    { 1.0f, 0.0f, 0.0f }, /* +X: u = +Y, v = +Z, u x v = +X */
+    { -1.0f, 0.0f, 0.0f }, /* -X: u = +Z, v = +Y, u x v = -X */
+    { 0.0f, 1.0f, 0.0f }, /* +Y: u = +Z, v = +X, u x v = +Y */
+    { 0.0f, -1.0f, 0.0f }, /* -Y: u = +X, v = +Z, u x v = -Y */
+    { 0.0f, 0.0f, 1.0f }, /* +Z: u = +X, v = +Y, u x v = +Z */
+    { 0.0f, 0.0f, -1.0f }, /* -Z: u = +Y, v = +X, u x v = -Z */
+};
+
+static const float XUD_SHAPES_CUBE_CORNER[XUD_SHAPES_CUBE_FACE_COUNT][XUD_SHAPES_CUBE_FACE_VERTEX_COUNT][3] = {
+    /* +X: u = +Y, v = +Z */
+    { { 1.0f, -1.0f, -1.0f }, { 1.0f, 1.0f, -1.0f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, -1.0f, 1.0f } },
+    /* -X: u = +Z, v = +Y */
+    { { -1.0f, -1.0f, -1.0f }, { -1.0f, -1.0f, 1.0f }, { -1.0f, 1.0f, 1.0f }, { -1.0f, 1.0f, -1.0f } },
+    /* +Y: u = +Z, v = +X */
+    { { -1.0f, 1.0f, -1.0f }, { -1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f, 1.0f }, { 1.0f, 1.0f, -1.0f } },
+    /* -Y: u = +X, v = +Z */
+    { { -1.0f, -1.0f, -1.0f }, { 1.0f, -1.0f, -1.0f }, { 1.0f, -1.0f, 1.0f }, { -1.0f, -1.0f, 1.0f } },
+    /* +Z: u = +X, v = +Y */
+    { { -1.0f, -1.0f, 1.0f }, { 1.0f, -1.0f, 1.0f }, { 1.0f, 1.0f, 1.0f }, { -1.0f, 1.0f, 1.0f } },
+    /* -Z: u = +Y, v = +X */
+    { { -1.0f, -1.0f, -1.0f }, { -1.0f, 1.0f, -1.0f }, { 1.0f, 1.0f, -1.0f }, { 1.0f, -1.0f, -1.0f } },
+};
+
+/* The two triangles of one quad, as corner indices into the four corners above: (0,1,2) and (0,2,
+   3). Both are counter-clockwise in the same order the corners are, so the face is closed by two
+   triangles that share the 0-to-2 diagonal and nothing about the face's shape is in here. */
+static const uint32_t XUD_SHAPES_CUBE_TRIANGLE_CORNER[XUD_SHAPES_CUBE_FACE_INDEX_COUNT] = { 0u, 1u, 2u, 0u, 2u, 3u };
+
+static_assert(sizeof(XUD_SHAPES_CUBE_NORMAL) / (sizeof(XUD_SHAPES_CUBE_NORMAL[0][0]) * 3u) == XUD_SHAPES_CUBE_FACE_COUNT,
+    "xud_shapes.c: the normal table has one row per face of the box");
+static_assert(sizeof(XUD_SHAPES_CUBE_CORNER) / (sizeof(XUD_SHAPES_CUBE_CORNER[0][0][0]) * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT * 3u)
+        == XUD_SHAPES_CUBE_FACE_COUNT,
+    "xud_shapes.c: the corner table has one row of four corners per face, which is the 24 the append's fit check counts");
+static_assert(sizeof(XUD_SHAPES_CUBE_TRIANGLE_CORNER) / sizeof(XUD_SHAPES_CUBE_TRIANGLE_CORNER[0]) == XUD_SHAPES_CUBE_FACE_INDEX_COUNT,
+    "xud_shapes.c: two triangles per face is six corner references per face, which is the 36 the append's index bound is written against");
 
 /*-----------------------------------------------------------------------------------------------
  * The shape: three vertices, then the three indices that name them
@@ -123,10 +183,120 @@ XudResult xud_shapes_append_triangle(XudBatch* batch, XudVector3 v0, XudVector3 
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The public call above it
+ * The box: 24 vertices, then the 36 indices that name them
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_draw_triangle_3d(XudContext* context, XudVector3 v0, XudVector3 v1, XudVector3 v2, XudColor color) {
+XudResult xud_shapes_append_cube(XudBatch* batch, XudVector3 center, float width, float height, float length, XudColor color) {
+    float half[3];
+    float pos[3];
+    float uv[2];
+    float normal[3];
+    float corner[3];
+    uint8_t rgba[4];
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t first = 0u;
+    uint32_t face = 0u;
+    uint32_t row = 0u;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The batch's counters, read the same way the triangle's append reads them: this is the half
+       that makes the append atomic, so it has to be the same read the appends below make. */
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The whole box has to fit, or none of it is appended. Both bounds are checked: the vertex one
+       against the accessor's capacity and the index one against the batch's own indexCapacity,
+       which is the number xud_batch_layout() computed as 3n/2 for that capacity. Both, and not
+       just the vertex one, because an index names a LIVE vertex rather than a new one - a batch wh
+       ose existing content reuses vertices spends more than that 3n/2 and can be full on its index
+       es while it still has twenty-four vertices' worth of room, and a refusal that checked only t
+       he vertices would write a box's 24 vertices into a batch that cannot name them. Neither sum
+       can overflow: the header's static_asserts bound the capacity at XUD_BATCH_MAX_VERTICES, four
+       digits. */
+    if ((vertexCount + XUD_SHAPES_CUBE_VERTEX_COUNT) > vertexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+    if ((indexCount + XUD_SHAPES_CUBE_INDEX_COUNT) > batch->indexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    /* The extents are the caller's FULL sizes, halved here because the caller's position is the
+       box's centre - raylib's DrawCube's own start = position - size*0.5 / end = position +
+       size*0.5, restated here as the half-extent the corner signs are multiplied by. */
+    half[0] = width * XUD_SHAPES_CUBE_HALF_EXTENT;
+    half[1] = height * XUD_SHAPES_CUBE_HALF_EXTENT;
+    half[2] = length * XUD_SHAPES_CUBE_HALF_EXTENT;
+
+    uv[0] = XUD_SHAPES_UV_S;
+    uv[1] = XUD_SHAPES_UV_T;
+    rgba[0] = color.r;
+    rgba[1] = color.g;
+    rgba[2] = color.b;
+    rgba[3] = color.a;
+
+    first = vertexCount;
+
+    /* The 24 vertices, six faces of four. The normal is read per face, not once for the shape:
+       a face's normal belongs to that face alone, which is the reason the box carries 24 vertices
+       rather than the 8 corners it shares between three faces. */
+    for (face = 0u; face < XUD_SHAPES_CUBE_FACE_COUNT; face++) {
+        normal[0] = XUD_SHAPES_CUBE_NORMAL[face][0];
+        normal[1] = XUD_SHAPES_CUBE_NORMAL[face][1];
+        normal[2] = XUD_SHAPES_CUBE_NORMAL[face][2];
+
+        for (row = 0u; row < XUD_SHAPES_CUBE_FACE_VERTEX_COUNT; row++) {
+            corner[0] = XUD_SHAPES_CUBE_CORNER[face][row][0];
+            corner[1] = XUD_SHAPES_CUBE_CORNER[face][row][1];
+            corner[2] = XUD_SHAPES_CUBE_CORNER[face][row][2];
+
+            pos[0] = center.x + (corner[0] * half[0]);
+            pos[1] = center.y + (corner[1] * half[1]);
+            pos[2] = center.z + (corner[2] * half[2]);
+
+            result = xud_batch_append_vertex(batch, pos, uv, rgba, normal);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    /* The indices name the 24 vertices this call just appended, four per face, and the two
+       triangles of a face are the face's own four - so the index is the shape's first vertex plus
+       the face's four plus the corner inside them, and xud_batch_append_index's own bound (an
+       index at or above the live vertex count is a bad argument) is a bound these cannot cross. */
+    for (face = 0u; face < XUD_SHAPES_CUBE_FACE_COUNT; face++) {
+        for (row = 0u; row < XUD_SHAPES_CUBE_FACE_INDEX_COUNT; row++) {
+            result
+                = xud_batch_append_index(batch, first + (face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT) + XUD_SHAPES_CUBE_TRIANGLE_CORNER[row]);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The one guard every public draw call above this rung needs
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The guard is one function rather than one block per public call because every public draw call
+   above this rung reaches the same two fields of the same owner and answers the same two codes:
+   a NULL context is a bad argument and a context missing the rungs it needs is a context that
+   cannot be drawn into at all. It is file-local because it is not the layer's contract - the
+   contract is the shapes and the public calls, and this is the half they all share. */
+static XudResult xud_shapes_context_batch(XudBatch** outBatch, XudContext* context) {
     if (context == NULL) {
         return XUD_INVALID_ARG;
     }
@@ -139,5 +309,35 @@ XudResult xud_draw_triangle_3d(XudContext* context, XudVector3 v0, XudVector3 v1
         return XUD_UNSUPPORTED;
     }
 
-    return xud_shapes_append_triangle(context->renderer->batch, v0, v1, v2, color);
+    *outBatch = context->renderer->batch;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The public calls above it
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_draw_triangle_3d(XudContext* context, XudVector3 v0, XudVector3 v1, XudVector3 v2, XudColor color) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_triangle(batch, v0, v1, v2, color);
+}
+
+XudResult xud_draw_cube(XudContext* context, XudVector3 position, float width, float height, float length, XudColor color) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_cube(batch, position, width, height, length, color);
 }

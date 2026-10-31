@@ -6,6 +6,25 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-27 note: **the box landed as S24** — see the *Steps complete (S24 …)* section at the top of
+    `todo_completed.md`. What landed there: `xud_shapes_append_cube()` and the public `xud_draw_cube()` above it in the
+    same `xud_shapes.h/.c` rung, the box's six faces as **data** (a normal table and a corner-sign table, 6 rows of 4
+    corners of -1/+1, so a box's 24 corners are the 8 corners of one box rather than 12 points inside it), the one cont
+    ext guard the public draw calls now share, and `tests/xud_test_shapes.c` gaining the box's **geometry** checks — t
+    he positions read off the arena and checked to sit on their own face's plane and inside the other two extents, the
+    normals checked to be unit axis vectors, and both triangles of all six faces checked to have cross products along t
+    hat face's OUTWARD normal, which is what would catch a face table written with the wrong winding or the wrong corne
+    r signs. A box is 24 vertices and 36 indices, exactly the batch's 3n/2 index headroom for 24 vertic
+    es — the closed-mesh case of that bound — and **both** capacities are checked rather than only the vertex one,
+    because an index names a live vertex rather than a new one and a batch whose existing content reuses vertic
+    es can be full on its indices while it still has twenty-four vertices' worth of room.
+- 2026-10-27 note: the `-fsanitizer` build answers **72 bytes leaked in 3 allocations (32+32+8)** at exit, and the all
+    three are **inside the dlopen'd driver**, not ours: the frames under `malloc` are `<unknown module>` and the first
+    xud frame is the `vkCreateDevice` call in `xud_device_open`. The count is identical with `VK_INSTANCE_LAYERS=` set
+    empty (so not the validation layer's), identical on the tree as it stood before S23/S24 (probed with `git stash`),
+    and unchanged by either step — so the library's own rungs leak nothing today and the sanitizer build's leak report
+    is a driver fact to expect, not a regression to chase. With `ASAN_OPTIONS=detect_leaks=0` the same build runs the
+    full headless suite green (2433 checks, 0 failures, no ASan/UBSan report).
 - 2026-10-27 note: `examples/hello_triangle.c` was **rewritten as the 46-line simple program** — no flag parsing, no
     clock, no usage text: one context, a `XUD_HELLO_FRAMES`-frame loop, one triangle, one teardown, every call's answer
     printed and nothing ignored. The `--hold`/`--frames`/`--help` command line it carried is gone (the frame count is
@@ -126,14 +145,15 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Next
 
-- [ ] Shapes module, the rest of it (`DrawCube`, `DrawSphere`, `DrawLine3D`, `DrawPoint3D`, `DrawMesh` — 3D only, there
-    is no 2D shape family in the API)
-    - 2026-10-26 note: **one shape of this item landed as S23** — `xud_draw_triangle_3d()` and the `xud_shapes.h/.c` run
-      n it lives in are in the tree, `hello_triangle.c` draws it and `tests/xud_test_shapes.c` tests it; see the *Steps
-      complete (S23 …)* section at the top of `todo_completed.md`. What the rest of this item owes: the shapes that nee
-      d more than a flat normal and a zero uv (a cube's six faces and a sphere's per-vertex normal are the shape's own
-      attribute rows, not constants), and `DrawMesh`, which is the mesh / vertex-buffer abstraction below this item in
-      the *Later* list rather than a shape of this rung's.
+- [ ] Shapes module, the rest of it (`DrawSphere`, `DrawLine3D`, `DrawPoint3D` and the wire forms, `DrawMesh` — 3D only,
+    there is no 2D shape family in the API)
+    - 2026-10-26 note: **a second shape of this item landed as S24** — `xud_draw_cube()` and the `xud_shapes_append_cube
+      ()` half it shares with the triangle, in the same `xud_shapes.h/.c` rung; see the *Steps complete (S24 …)* sectio
+      n at the top of `todo_completed.md`. What the rest of this item owes: the sphere, whose tessellation is a capaci
+      ty decision (the shapes rung is PURE and cannot grow the batch, so a sphere's vertex count is a claim about the b
+      atch's capacity rather than about the shape), the line/point forms and the wire forms, which need `LINE_LIST`/`POI
+      NT_LIST` topologies and so a row of the pipeline list rather than the pipeline's one `TRIANGLE_LIST` row, and `Dra
+      wMesh`, which is the mesh / vertex-buffer abstraction in the *Later* list rather than a shape of this rung's.
     - 2026-10-26 note: the frame pair above this item — `xud_begin_drawing()`/`xud_end_drawing()` — landed with S23, so
       the public boundary a shape appends into is no longer missing; see the same section.
 

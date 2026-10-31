@@ -2,17 +2,24 @@
  *
  *   xud_test_shapes.c - the shapes rung and the public drawing API above it
  *
- *   Owns : the tests of one rung - xud_shapes_append_triangle(), the geometry xud_draw_triangle_
- *          3d() names, and the public frame pair xud_begin_drawing()/xud_end_drawing(). Nothing
- *          else - the batch's own appends are the batch area's, the frame loop's is the frame a
- *          rea's, and the context's lifecycle is the core area's.
+ *   Owns : the tests of one rung - xud_shapes_append_triangle() and xud_shapes_append_cube(), the
+ *          geometry xud_draw_triangle_3d() and xud_draw_cube() name, and the public frame pair xud
+ *          _begin_drawing()/xud_end_drawing(). Nothing else - the batch's own appends are the batch
+ *          area's, the frame loop's is the frame area's, and the context's lifecycle is the core a
+ *          rea's.
  *   Layer: tests, above the batch area and below the core area, which is the layer order: the
  *          shape is checked against a batch the test built itself, with no context and no driver
  *          in sight, and the public calls are checked against a real context in the area's own
  *          GPU half. The pure half is the half the repo's headless-testable rule leans on - the
  *          append is host work on the batch's own counters, so its refusals and its counters are
  *          answerable with no device present, and a machine with no driver gets the same refusals
- *          a machine with a driver gets, which is why the default run stays green.
+ *          a machine with a driver gets, which is why the default run stays green. The box's pure
+ *          half checks GEOMETRY rather than a remembered table: the positions are checked to sit on
+ *          their own face's plane and inside the other two extents, the normals to be unit axis
+ *          vectors, and a face's first triangle to have a cross product that points along that
+ *          face's outward normal - which is what would catch a face table written with the wrong
+ *          winding or the wrong corner signs, and what does not depend on the table being right to
+ *          say it is right.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -44,7 +51,11 @@ static void xud_test_shapes_pure(void) {
     XudVector3 v0;
     XudVector3 v1;
     XudVector3 v2;
+    XudVector3 center;
     XudColor color;
+    float width = 0.0f;
+    float height = 0.0f;
+    float length = 0.0f;
     XudResult result = XUD_OK;
     uint32_t vertexCount = 0u;
     uint32_t indexCount = 0u;
@@ -60,6 +71,14 @@ static void xud_test_shapes_pure(void) {
     v2 = (XudVector3) { .x = 0.0f, .y = 0.5f, .z = 0.0f };
     color = (XudColor) { .r = 255u, .g = 0u, .b = 0u, .a = 255u };
 
+    /* The box's centre and extents: a centre at the origin and three DIFFERENT extents, so the
+       shape under test is a box rather than a cube and a test that assumed eight symmetric corners
+       would be a test of the wrong shape. */
+    center = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+    width = 1.0f;
+    height = 0.5f;
+    length = 2.0f;
+
     /*--- the refusals that need no batch and no context at all -------------------------------*/
 
     xud_check(xud_shapes_append_triangle(NULL, v0, v1, v2, color) == XUD_INVALID_ARG, "shapes/append-no-batch",
@@ -67,6 +86,12 @@ static void xud_test_shapes_pure(void) {
     xud_check(xud_draw_triangle_3d(NULL, v0, v1, v2, color) == XUD_INVALID_ARG, "shapes/draw-no-context",
         "a public draw call with no context is refused");
     xud_check(xud_draw_triangle_3d(&shell, v0, v1, v2, color) == XUD_UNSUPPORTED, "shapes/draw-no-renderer",
+        "a context with no renderer has no batch to append into, and the refusal is reported");
+    xud_check(xud_shapes_append_cube(NULL, center, width, height, length, color) == XUD_INVALID_ARG, "shapes/cube-append-no-batch",
+        "and so is a box - the guard is the same one, one rung above the same two codes");
+    xud_check(xud_draw_cube(NULL, center, width, height, length, color) == XUD_INVALID_ARG, "shapes/cube-draw-no-context",
+        "a public draw call with no context is refused");
+    xud_check(xud_draw_cube(&shell, center, width, height, length, color) == XUD_UNSUPPORTED, "shapes/cube-draw-no-renderer",
         "a context with no renderer has no batch to append into, and the refusal is reported");
     xud_check(xud_begin_drawing(NULL) == XUD_INVALID_ARG, "frames/begin-no-context", "a frame boundary with no context is refused");
     xud_check(xud_begin_drawing(&shell) == XUD_UNSUPPORTED, "frames/begin-no-renderer", "and so is one whose renderer rung is gone");
@@ -175,6 +200,258 @@ static void xud_test_shapes_pure(void) {
         "and no index, so the live count is still six");
     xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/invariant-after-refusal",
         "and the batch's invariant still holds, which is what says nothing half-written is in it");
+
+    /*--- the box: the shape above the triangle, and the first whose attribute rows are the shape's
+       own ----------------------------------------------------------------------------*/
+
+    /* A batch of exactly one box: 24 vertices and 36 indices, and the batch's own index headroom
+       for 24 vertices is exactly 36, so a box spends BOTH of the batch's bounds exactly and the
+       refusal below is a refusal of a whole second box rather than of the half of one that did not
+       fit. */
+    xud_check(
+        xud_batch_layout(&b, XUD_SHAPES_CUBE_VERTEX_COUNT) == XUD_OK, "shapes/cube-layout", "a batch of one box's vertex count lays out");
+    xud_check(b.vertexCapacity == XUD_SHAPES_CUBE_VERTEX_COUNT, "shapes/cube-capacity-is-a-box",
+        "the capacity asked for is the capacity recorded");
+    xud_check(b.indexCapacity == XUD_SHAPES_CUBE_INDEX_COUNT, "shapes/cube-index-capacity-is-exact",
+        "the batch's index headroom for a box's vertex count is exactly a box's index count");
+    xud_check(XUD_SHAPES_CUBE_INDEX_COUNT == XUD_BATCH_INDEX_CAPACITY(XUD_SHAPES_CUBE_VERTEX_COUNT), "shapes/cube-is-the-euler-case",
+        "a box spends 1.5 indices per vertex, which is the 3n/2 the batch sizes its headroom at - the closed-mesh case of that bound");
+    xud_check((XUD_SHAPES_CUBE_VERTEX_COUNT <= XUD_BATCH_INITIAL_VERTICES)
+            && (XUD_SHAPES_CUBE_INDEX_COUNT <= XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+        "shapes/cube-fits-the-initial-capacity",
+        "one box fits the capacity a context's batch opens at, so drawing one asks nothing of the grow path");
+
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+
+    result = xud_shapes_append_cube(&b, center, width, height, length, color);
+    xud_check(result == XUD_OK, "shapes/cube-append-ok", "the box appends");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/cube-stats-after-append", "and the counters answer after it");
+    xud_check(vertexCount == XUD_SHAPES_CUBE_VERTEX_COUNT, "shapes/cube-costs-24-vertices",
+        "24 vertices, four per face, so a corner is not shared between the three faces that want three different normals");
+    xud_check(indexCount == XUD_SHAPES_CUBE_INDEX_COUNT, "shapes/cube-costs-36-indices", "36 indices, two triangles per face");
+    xud_check(drawCount == 0u, "shapes/cube-records-no-draw", "and appending records no draw row, as the triangle's append does");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/cube-invariant", "and the batch's invariant still holds");
+
+    /* The geometry, read off the arena rather than off the table the append was written from: the
+       positions have to sit on their own face's plane and inside the other two extents, the normals
+       have to be unit axis vectors, a face's two triangles have to have cross products that point
+       along that face's OUTWARD normal (the counter-clockwise-from-outside claim the shape states,
+       and the one check here that would notice a face table written with the corners in the wrong
+       order), and every index has to name one of its own face's four corners, exactly twice. The
+       extents below are dyadic (1, 0.5, 2) so every comparison here is exact rather than a toleran
+       ce standing in for a fact. */
+    {
+        const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+        float half[3];
+        float centre[3];
+        float pos[XUD_SHAPES_CUBE_VERTEX_COUNT][3];
+        float nrm[XUD_SHAPES_CUBE_VERTEX_COUNT][3];
+        uint32_t idx[XUD_SHAPES_CUBE_INDEX_COUNT];
+        uint32_t v = 0u;
+        uint32_t face = 0u;
+        uint32_t colourRows = 0u;
+        uint32_t zeroUvRows = 0u;
+        uint32_t unitAxisNormals = 0u;
+        uint32_t onOwnFacePlane = 0u;
+        uint32_t insideOtherExtents = 0u;
+        uint32_t facesWoundOutward = 0u;
+        uint32_t facesShareOneNormal = 0u;
+        uint32_t facesIndexOwnCorners = 0u;
+
+        half[0] = width * XUD_SHAPES_CUBE_HALF_EXTENT;
+        half[1] = height * XUD_SHAPES_CUBE_HALF_EXTENT;
+        half[2] = length * XUD_SHAPES_CUBE_HALF_EXTENT;
+        centre[0] = center.x;
+        centre[1] = center.y;
+        centre[2] = center.z;
+
+        for (v = 0u; v < XUD_SHAPES_CUBE_VERTEX_COUNT; v++) {
+            float uvRow[2];
+            uint32_t nonZero = 0u;
+            uint32_t axis = 0u;
+            uint32_t unit = 0u;
+            float sign = 0.0f;
+            uint32_t k = 0u;
+
+            memcpy(&pos[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + ((size_t)v * XUD_BATCH_STREAM_POS_SIZE), sizeof(pos[v]));
+            memcpy(
+                &nrm[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + ((size_t)v * XUD_BATCH_STREAM_NORMAL_SIZE), sizeof(nrm[v]));
+            memcpy(uvRow, arena + b.streamOffset[XUD_BATCH_STREAM_UV] + ((size_t)v * XUD_BATCH_STREAM_UV_SIZE), sizeof(uvRow));
+
+            if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + ((size_t)v * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                    XUD_BATCH_STREAM_COLOR_SIZE)
+                == 0) {
+                colourRows++;
+            }
+            if ((uvRow[0] == XUD_SHAPES_UV_S) && (uvRow[1] == XUD_SHAPES_UV_T)) {
+                zeroUvRows++;
+            }
+
+            /* A face normal is a unit vector down one axis: one non-zero component, and that
+               component is exactly +1 or -1. The axis and the sign are kept because the two checks
+               below are stated against them - a vertex is on its own face's plane when it is half a
+               box out along the axis its own normal points down, and it is inside the box along the
+               other two. */
+            for (k = 0u; k < 3u; k++) {
+                if (nrm[v][k] != 0.0f) {
+                    nonZero++;
+                    axis = k;
+                    unit = ((nrm[v][k] == 1.0f) || (nrm[v][k] == -1.0f)) ? 1u : 0u;
+                    sign = (nrm[v][k] > 0.0f) ? 1.0f : -1.0f;
+                }
+            }
+            if ((nonZero == 1u) && (unit == 1u)) {
+                unitAxisNormals++;
+                if (((pos[v][axis] - centre[axis]) * sign) == half[axis]) {
+                    onOwnFacePlane++;
+                }
+                for (k = 0u; k < 3u; k++) {
+                    if (k == axis) {
+                        continue;
+                    }
+                    if (((pos[v][k] - centre[k]) < -half[k]) || ((pos[v][k] - centre[k]) > half[k])) {
+                        break;
+                    }
+                    insideOtherExtents++;
+                }
+            }
+        }
+
+        for (v = 0u; v < XUD_SHAPES_CUBE_INDEX_COUNT; v++) {
+            memcpy(&idx[v], arena + b.indexOffset + ((size_t)v * XUD_BATCH_INDEX_SIZE), sizeof(idx[v]));
+        }
+
+        for (face = 0u; face < XUD_SHAPES_CUBE_FACE_COUNT; face++) {
+            const float* p0 = &pos[face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT][0];
+            const float* p1 = &pos[(face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT) + 1u][0];
+            const float* p2 = &pos[(face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT) + 2u][0];
+            const float* p3 = &pos[(face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT) + 3u][0];
+            const float* n = &nrm[face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT][0];
+            float cross[3];
+            float dot = 0.0f;
+            uint32_t seen[XUD_SHAPES_CUBE_FACE_VERTEX_COUNT];
+            uint32_t row = 0u;
+            uint32_t own = 0u;
+            uint32_t named = 0u;
+
+            for (row = 0u; row < XUD_SHAPES_CUBE_FACE_VERTEX_COUNT; row++) {
+                seen[row] = 0u;
+            }
+
+            /* The face's four corners are consecutive vertices, so the face's own normal is the one
+               all four of them carry - checked as all-four-equal rather than assumed, because a
+               face whose four vertices disagree about their normal is a face the rasteriser would
+               shade with a normal of its own invention. */
+            if ((memcmp(&nrm[(face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT) + 1u][0], n, sizeof(nrm[0])) == 0)
+                && (memcmp(&nrm[(face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT) + 2u][0], n, sizeof(nrm[0])) == 0)
+                && (memcmp(&nrm[(face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT) + 3u][0], n, sizeof(nrm[0])) == 0)) {
+                own++;
+            }
+
+            /* The two triangles of the face, (0,1,2) and (0,2,3): each one's cross product has to
+               point along the face's outward normal, which is the whole counter-clockwise-from-out
+               side claim and is checked for both triangles rather than the first. */
+            cross[0] = ((p1[1] - p0[1]) * (p2[2] - p0[2])) - ((p1[2] - p0[2]) * (p2[1] - p0[1]));
+            cross[1] = ((p1[2] - p0[2]) * (p2[0] - p0[0])) - ((p1[0] - p0[0]) * (p2[2] - p0[2]));
+            cross[2] = ((p1[0] - p0[0]) * (p2[1] - p0[1])) - ((p1[1] - p0[1]) * (p2[0] - p0[0]));
+            dot = (cross[0] * n[0]) + (cross[1] * n[1]) + (cross[2] * n[2]);
+            if (dot > 0.0f) {
+                cross[0] = ((p2[1] - p0[1]) * (p3[2] - p0[2])) - ((p2[2] - p0[2]) * (p3[1] - p0[1]));
+                cross[1] = ((p2[2] - p0[2]) * (p3[0] - p0[0])) - ((p2[0] - p0[0]) * (p3[2] - p0[2]));
+                cross[2] = ((p2[0] - p0[0]) * (p3[1] - p0[1])) - ((p2[1] - p0[1]) * (p3[0] - p0[0]));
+                dot = (cross[0] * n[0]) + (cross[1] * n[1]) + (cross[2] * n[2]);
+                if (dot > 0.0f) {
+                    facesWoundOutward++;
+                }
+            }
+
+            /* The face's six indices name its own four corners, and all four of them are named -
+               the two triangles share the 0-to-2 diagonal, so the two corners at the ends of that
+               diagonal are named twice and the other two once each, which is why the claim here is
+               "all four named" rather than "each named twice" and what a face drawn with the wrong
+               four would fail. */
+            for (row = 0u; row < XUD_SHAPES_CUBE_FACE_INDEX_COUNT; row++) {
+                const uint32_t corner = idx[(face * XUD_SHAPES_CUBE_FACE_INDEX_COUNT) + row];
+                if ((corner >= (face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT))
+                    && (corner < ((face + 1u) * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT))) {
+                    seen[corner - (face * XUD_SHAPES_CUBE_FACE_VERTEX_COUNT)]++;
+                }
+            }
+            for (row = 0u; row < XUD_SHAPES_CUBE_FACE_VERTEX_COUNT; row++) {
+                if (seen[row] >= 1u) {
+                    named++;
+                }
+            }
+            if (own == 1u) {
+                facesShareOneNormal++;
+            }
+            if (named == XUD_SHAPES_CUBE_FACE_VERTEX_COUNT) {
+                facesIndexOwnCorners++;
+            }
+        }
+
+        xud_check(colourRows == XUD_SHAPES_CUBE_VERTEX_COUNT, "shapes/cube-colour-at-every-vertex",
+            "the caller's four bytes, in the caller's order, at all 24 vertices - the batch's COLOR stream is per-vertex and a box has one "
+            "colour");
+        xud_check(zeroUvRows == XUD_SHAPES_CUBE_VERTEX_COUNT, "shapes/cube-zero-uv-at-every-vertex",
+            "the header's zero uv at all 24: a box has no texture to unwrap yet, and set 1 is still unallocated");
+        xud_check(unitAxisNormals == XUD_SHAPES_CUBE_VERTEX_COUNT, "shapes/cube-normals-are-unit-axes",
+            "every vertex's normal is a unit vector down one axis, which is the shape's own attribute row rather than the flat +Z "
+            "constant");
+        xud_check(onOwnFacePlane == XUD_SHAPES_CUBE_VERTEX_COUNT, "shapes/cube-vertices-on-own-face-plane",
+            "every vertex sits half a box out along the axis its own normal points down, which is what says the corner table and the "
+            "normal table agree with each other");
+        xud_check(insideOtherExtents == (XUD_SHAPES_CUBE_VERTEX_COUNT * 2u), "shapes/cube-vertices-inside-the-box",
+            "and inside the other two extents along the other two axes, which is the extent the caller asked for rather than one the shape "
+            "invented");
+        xud_check(facesWoundOutward == XUD_SHAPES_CUBE_FACE_COUNT, "shapes/cube-faces-wound-outward",
+            "both triangles of all six faces have cross products along the OUTWARD normal, which is the counter-clockwise-from-outside "
+            "claim and would fail on a face table written with the corners in the wrong order");
+        xud_check(facesShareOneNormal == XUD_SHAPES_CUBE_FACE_COUNT, "shapes/cube-face-shares-one-normal",
+            "all four corners of a face carry that face's normal, so a face has one normal rather than four the rasteriser would have to "
+            "choose between");
+        xud_check(facesIndexOwnCorners == XUD_SHAPES_CUBE_FACE_COUNT, "shapes/cube-indices-name-own-face",
+            "every face's six indices name its own four corners and all four of them are named, so the face is closed and no index reaches "
+            "a neighbour's vertices - the two triangles share the 0-to-2 diagonal, so the diagonal's corners are named twice and the other "
+            "two once");
+    }
+
+    /* The refusal half of the atomicity claim, at a shape boundary twice the triangle's: the second
+       box does not fit and the check is the counters as well as the code. */
+    result = xud_shapes_append_cube(&b, center, width, height, length, color);
+    xud_check(result == XUD_OUT_OF_MEMORY, "shapes/cube-second-refused",
+        "a box that does not fit the batch's capacities is refused with the batch's own code");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/cube-stats-after-refusal", "and the counters are still readable after the refusal");
+    xud_check(vertexCount == XUD_SHAPES_CUBE_VERTEX_COUNT, "shapes/cube-refusal-wrote-no-vertex",
+        "the refused box wrote no vertex, so the live count is still 24");
+    xud_check(
+        indexCount == XUD_SHAPES_CUBE_INDEX_COUNT, "shapes/cube-refusal-wrote-no-index", "and no index, so the live count is still 36");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/cube-invariant-after-refusal",
+        "and the batch's invariant still holds, which is what says nothing half-written is in it");
+
+    /* A box beside a triangle in one batch: the counts add per shape, and the two shapes' index
+       spend is not one number - a box spends 1.5 indices per vertex and a triangle spends 1, so a
+       frame that already holds shapes can be refused for its indices before it is refused for its
+       vertices, which is the reason the box's append checks both bounds. */
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "shapes/cube-mixed-layout",
+        "a batch at the capacity a context opens at lays out");
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+    result = xud_shapes_append_triangle(&b, v0, v1, v2, color);
+    xud_check(result == XUD_OK, "shapes/cube-mixed-triangle", "the triangle appends into it");
+    result = xud_shapes_append_cube(&b, center, width, height, length, color);
+    xud_check(result == XUD_OK, "shapes/cube-mixed-cube", "and the box appends beside it, into the same open batch");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "shapes/cube-mixed-stats",
+        "and the counters answer after both");
+    xud_check(vertexCount == (XUD_SHAPES_TRIANGLE_VERTEX_COUNT + XUD_SHAPES_CUBE_VERTEX_COUNT), "shapes/cube-mixed-vertex-count",
+        "27 vertices, which is the append being per shape rather than per frame");
+    xud_check(indexCount == (XUD_SHAPES_TRIANGLE_INDEX_COUNT + XUD_SHAPES_CUBE_INDEX_COUNT), "shapes/cube-mixed-index-count",
+        "39 indices, 36 of them the box's at 1.5 per vertex and 3 of them the triangle's at 1 per vertex");
+    xud_check(
+        xud_batch_check_invariant(&b) == XUD_OK, "shapes/cube-mixed-invariant", "and the batch's invariant still holds over two shapes");
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -203,6 +480,8 @@ static void xud_test_shapes_gpu(void) {
     XudVector3 v2 = (XudVector3) { .x = 0.0f, .y = 0.5f, .z = 0.0f };
     XudColor red = (XudColor) { .r = 255u, .g = 0u, .b = 0u, .a = 255u };
     XudColor green = (XudColor) { .r = 0u, .g = 255u, .b = 0u, .a = 255u };
+    XudColor blue = (XudColor) { .r = 0u, .g = 0u, .b = 255u, .a = 255u };
+    XudVector3 cubeCentre = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
 
     result = xud_init_context(&context, 64u, 64u);
     xud_check(result == XUD_OK, "gpu-shapes/bringup-completes",
@@ -241,6 +520,23 @@ static void xud_test_shapes_gpu(void) {
             "gpu-shapes/stats-after-two-draws", "and the counters answer after it");
         xud_check(vertexCount == (XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u), "gpu-shapes/two-draws-cost-six-vertices",
             "six vertices in one frame, which is the append being per shape rather than per frame");
+
+        /* The box in the same frame is the shape that needs per-face attribute rows, and it is also
+           the reason the frame's flush is one triangle-list pipeline: 24 vertices and 36 indices
+           appended beside the frame's two triangles, replayed through the same pipeline the tria
+           ngles went through. A line or a point would need a different topology and would not be
+           this rung's to draw (see xud_shapes.h's note), which is what makes a box the shape that
+           can land here today. */
+        result = xud_draw_cube(context, cubeCentre, 0.8f, 0.8f, 0.8f, blue);
+        xud_check(result == XUD_OK, "gpu-shapes/cube-draw-ok", "the public box call appends into the context's own batch");
+        xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "gpu-shapes/stats-after-cube", "and the counters answer after it");
+        xud_check(vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u) + XUD_SHAPES_CUBE_VERTEX_COUNT),
+            "gpu-shapes/cube-costs-24-vertices",
+            "30 vertices in the frame, 24 of them the box's, which is the same count the pure half checked against a batch it built "
+            "itself");
+        xud_check(indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + XUD_SHAPES_CUBE_INDEX_COUNT), "gpu-shapes/cube-costs-36-indices",
+            "42 indices, 36 of them the box's - inside the initial capacity's headroom, so no grow was asked for mid-frame");
 
         result = xud_end_drawing(context);
         xud_check(result == XUD_OK, "gpu-frames/end-ok",

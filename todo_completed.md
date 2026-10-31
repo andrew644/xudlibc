@@ -1,12 +1,75 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S23, the shapes rung and the public drawing API above it** — one triangle appended atomically
-into the batch's four streams and its index buffer, the two value types a caller passes down, the public frame pair and
-the example that draws it (2026-10-26). The step before it is **S22, the resize / recreate step** — the reader of the rec
-reate ask S21 left behind, the window's **framebuffer** extent as the answer to that ask, and the rebuild that follows (2
-026-10-26). The step before it
-is **S21, the swapchain's two out-of-band answer codes** — the second `VkResult` funnel for the acquire/present
-boundary and the `XudFrame.recreateWanted` flag it leaves behind (2026-10-26).
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S24, the box** — the second shape of the shapes
+rung, its six faces as data rather than as twelve triangles of code and its geometry checked against the arena rather
+than remembered (2026-10-27). The step before it is **S23, the shapes rung and the public drawing API above it** — one
+triangle appended atomically into the batch's four streams and its index buffer, the two value types a caller passes do
+wn, the public frame pair and the example that draws it (2026-10-26). The step before it is **S22, the resize / recrea
+te step** — the reader of the recreate ask S21 left behind, the window's **framebuffer** extent as the answer to that as
+k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
+— the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
+d (2026-10-26).
+
+## Steps complete (S24 The box — the second shape of the shapes rung, one step, landed as one commit, 2026-10-27)
+
+- [x] ~~**The box**: `xud_draw_cube()` not in the tree, no shape above the triangle, and the one shape a caller could
+    draw was a triangle, so the first thing a frame needed that is not a constant attribute row was still missing~~ —
+    **done 2026-10-27** for the box. What is still open of the shapes item is the sphere (a tessellation/capacity deci
+    sion), the line/point and wire forms (a topology the pipeline rung does not have) and `DrawMesh` (the mesh rung),
+    and the camera + transform math that would make a shape's coordinates world-space rather than clip-space.
+
+  **What landed, rung by rung:**
+
+  - **The six faces as DATA, not as twelve triangles of code** — `xud_shapes.c`'s two tables: the six outward normals
+    and the 6 rows of 4 corner SIGNS. A box's corner is at +/-half along ALL THREE axes, so a face's row carries that
+    face's own normal sign on the normal's axis rather than a zero there — writing the zero instead is what makes the
+    24 corners collapse to the 12 points inside a box rather than its 8 corners, and the tests area's plane check is
+    what caught that on the first pass. The corners are signs rather than coordinates because nothing about the caller's
+    centre or extents is in the table, and the only axis-aligned box shapes there are are the 8 sign triples.
+  - **One winding rule for all six faces, and the rule is a fact about the tangent axes rather than a per-face excepti
+    on**: for a face whose tangent axes are u and v the corners are -u-v, +u-v, +u+v, -u+v and u x v IS the outward
+    normal exactly, not merely parallel to it. The u and v are chosen SIGNED per face for that reason — which is what
+    lets the same four-corner order cover all six faces instead of a per-face flip, and what makes the tests area's
+    cross-product check a check of the table rather than a check of the code that reads it.
+  - **24 vertices, not 8, and that is the shape's own claim**: a box's corner belongs to three faces and wants three
+    different normals, so the corner is appended three times. The batch has no per-face attribute and no index into a
+    normal table, so the vertex count is the shape's, not the topology's — and the header's own doc says four per face
+    so a face's normal belongs to that face alone.
+  - **The append is atomic in the same shape as the triangle's, and it checks BOTH capacities** — a box costs 24 ve
+    rtices and 36 indices, and 36 is exactly the 3n/2 `xud_batch_layout()` sizes the index headroom at for 24 vertice
+    s, so a box is the closed-mesh case of that bound rather than a shape that needs headroom beyond it. Both bounds
+    are checked rather than only the vertex one because **an index names a live vertex rather than a new one**: a ba
+    tch whose existing content reuses vertices spends more than that 3n/2 and can be full on its indices while it st
+    ill has twenty-four vertices' worth of room, and a refusal that checked only the vertices would write a box's 24
+    vertices into a batch that cannot name them. The header's static_asserts pin 36 == 3n/2 and one box inside the i
+    nitial capacity, so drawing one box asks nothing of the grow path.
+  - **The one context guard the public draw calls share is one function, not one block per call** — `xud_shapes_conte
+    xt_batch()` is file-local because it is not the layer's contract: the contract is the shapes and the public calls,
+    and this is the half every public call above this rung needs, reaching the same two fields of the same owner and an
+    swering the same two codes.
+  - **The tests area checks GEOMETRY, not a remembered table** — the positions are read off the arena and checked to
+    sit half a box out along the axis their own normal points down and inside the other two extents; the normals are
+    checked to be unit axis vectors; both triangles of all six faces are checked to have cross products along that face
+    's OUTWARD normal; and every face's six indices are checked to name its own four corners with all four named. The
+    extents the test uses are dyadic (1, 0.5, 2) so every comparison is exact rather than a tolerance standing in for
+    a fact, and the test's shape is a BOX (three different extents) rather than a cube, so a test that assumed eight
+    symmetric corners would be a test of the wrong shape.
+  - **The index claim is "all four named", not "each named twice"** — the two triangles of a quad share the 0-to-2 dia
+    gonal, so the two corners at its ends are named twice and the other two once each. Saying "each named twice" is wha
+    t the first pass asserted and what the arena answered was false; the face is closed either way and the check that
+    holds is the one the geometry says.
+  - **The GPU half draws the box in the same frame as the two triangles** — 30 vertices and 42 indices in one open bat
+    ch, replayed through the same one triangle-list pipeline, which is the reason a box is a shape this rung can draw
+    today and a line is not. The signal is still the counters rather than a screenshot: the frame's one pipeline is th
+    e unlit solid one and a box's face normal is read by no shader yet, so a box and a triangle are the same pixels to
+    a screenshot and the counters are what say the 24 vertices and 36 indices are in the batch the frame drew.
+
+  **Checked before commit:** `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` clean over `src/xud/*.c`;
+  `./scripts/format.sh --check` clean; the headless run 2433 checks 0 failures; `XUD_GPU_TESTS=1` 3132 checks 0 failu
+    res and validation-clean (no VUID line, the diagnostics area's own synthetic probe lines aside); the `-fsanitizer`
+    build green with `ASAN_OPTIONS=detect_leaks=0` and its 72-byte driver leak unchanged from the tree as it stood bef
+    ore this step (probed with `git stash`, and identical with `VK_INSTANCE_LAYERS=` set empty, so it is the dlopen'd
+    driver's and not the library's); the clang 22 build warning-free and green headless and GPU.
 
 ## Steps complete (S23 The shapes rung and the public drawing API above it — one shape, the frame pair, and the example that draws it, one step, landed as one commit, 2026-10-26)
 

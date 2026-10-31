@@ -8,7 +8,8 @@
  *          down (XudVector3 / XudColor), the one XudHandle currency and its kind tags, the
  *          opaque XudContext owner type, the xud_init_context()/xud_close_context() life-
  *          cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d
- *          () / xud_end_drawing()), and the runtime Vulkan query xud_vulkan_supported().
+ *          () / xud_draw_cube() / xud_end_drawing()), and the runtime Vulkan query xud_vulkan
+ *          _supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
  *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
  *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
@@ -35,10 +36,12 @@
  *          table type and no handle function, so no public call takes or fills one today and no
  *          handle names an object yet); the shapes rung's calls are the geometry a caller draws,
  *          which is what the drawing API above the renderer reaches - xud.h declares the frame pa
- *          ir and one shape, and what is still missing above the renderer is the rest of rayli
- *          b's 3D shape family, the camera + transform math, the handle layer's material record
- *          and the object kinds a public handle would name, which is why a caller can draw a tr
- *          iangle today and nothing else.
+ *          ir and two shapes, and what is still missing above the renderer is the rest of rayli
+ *          b's 3D shape family (the sphere, whose tessellation is a capacity decision, and the line
+ *          /point forms and the wire forms, which need a topology the pipeline rung does not have),
+ *          the camera + transform math, the handle layer's material record and the object kinds a
+ *          public handle would name, which is why a caller can draw a triangle and a box today
+ *          and nothing else, and why no handle names an object yet.
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -286,8 +289,8 @@ XudResult xud_close_context(XudContext** context);
  * The drawing API - the frame pair and the shapes a frame is made of
  *
  * This is the raylib-shaped half of the public surface above the context: BeginDrawing/EndDrawi
- * ng (raylib.h 1048/1049) and the 3D shape calls (DrawTriangle3D, raylib.h 1588). The pair is
- * the public frame boundary and the shape calls are what sits between them, which is the order
+ * ng (raylib.h 1048/1049) and the 3D shape calls (DrawTriangle3D, raylib.h 1588, DrawCube, 1590).
+ * The pair is the public frame boundary and the shape calls are what sits between them, which is the order
  * raylib's own comment states for the pair (raylib.h 1100: "By default EndDrawing() does this
  * job: draws everything + SwapScreenBuffer() + manage frame timing + PollInputEvents()") - the
  * draws append, the end of the frame is what submits and presents them. Nothing here is a stat
@@ -313,6 +316,25 @@ XudResult xud_begin_drawing(XudContext* context);
 /// trix is the camera + transform step's to choose (see todo.md). XUD_INVALID_ARG on a NULL con
 /// text or a renderer with no batch; XUD_UNSUPPORTED on a context that never completed bring-up
 /// ; XUD_OUT_OF_MEMORY when the three vertices or the three indices do not fit the batch.
+XudResult xud_draw_triangle_3d(XudContext* context, XudVector3 v0, XudVector3 v1, XudVector3 v2, XudColor color);
+
+/// Draw one filled box, raylib's DrawCube (raylib.h 1590, "Draw cube", whose arguments are (positi
+/// on, width, height, length, color)): the position is the box's CENTRE and the three floats are
+/// its full extents along x/y/z, which is how raylib's own DrawCube reads them (start = position -
+/// size*0.5, end = position + size*0.5). The box is axis-aligned, because a box that could be rota
+/// ted would be rotated by a model matrix and the model matrix is the camera + transform step's.
+/// It appends 24 vertices - four per face, so a face's outward normal belongs to that face alone -
+/// and the 36 indices that name them, two triangles per face, wound counter-clockwise seen from o
+/// utside; the uv is the zero xud_shapes.h states and the colour is the caller's at every vertex.
+/// The append is atomic in the same shape as the triangle's: a box that does not fit the batch's
+/// capacities is refused before a byte of it is written, and one box fits the batch's initial capa
+/// city with no grow asked for. The coordinates are the shape's own, in the same clip space the
+/// triangle's land in today. XUD_INVALID_ARG on a NULL context or a renderer with no batch; XUD_
+/// UNSUPPORTED on a context that never completed bring-up; XUD_OUT_OF_MEMORY when the 24 vertices
+/// or the 36 indices do not fit the batch (both bounds are checked because an index names a live
+/// vertex rather than a new one, so a batch whose existing content reuses vertices can be full on
+/// its indices while it still has twenty-four vertices' worth of room).
+XudResult xud_draw_cube(XudContext* context, XudVector3 position, float width, float height, float length, XudColor color);
 XudResult xud_draw_triangle_3d(XudContext* context, XudVector3 v0, XudVector3 v1, XudVector3 v2, XudColor color);
 
 /// End canvas drawing and swap buffers: the public frame boundary, closed. It runs one frame -
