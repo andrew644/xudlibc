@@ -1,9 +1,12 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S33, the public input API and the input rung** — raylib's input surface as 24 public
-  calls over one internal rung that keeps one GLFW window's key/button state as a state machine, polled once per
-  frame by the frame boundary, and the same example that had been reading GLFW directly now reading the library
-  instead (2026-10-31). The step before it is **S32, the example's game objects as boxes** — the user's "they appear
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S34, the breakout paddle as the player's only** — the same example's paddle losing the
+  autopilot that had been playing an unattended run for it: it moves only while one of its keys is held, so a frame
+  with no key held is a frame the paddle does not move in and an unattended run is a paddle that stays at the
+  field's centre with a ball falling out beside it (2026-10-31). The step before it is **S33, the public input API
+  and the input rung** — raylib's input surface as 24 public calls over one internal rung that keeps one GLFW
+  window's key/button state as a state machine, polled once per frame by the frame boundary, and the same example
+  that had been reading GLFW directly now reading the library instead (2026-10-31). The step before that is **S32, the example's game objects as boxes** — the user's "they appear
   flat" report, first half: the ball, the paddle and every brick drawn as the box whose half-extents the game's
   collisions already test, and a frame of 198 vertices / 294 indices settling at the batch's 256/384 through the
   boundary's grow (2026-10-31). The step before it is **S31, the batch's capacity ask and the grow at the public
@@ -27,6 +30,42 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S34 The breakout paddle as the player's only — the example's paddle losing the autopilot that had been standing in for a nobody at the keyboard: one hand, one key-held step, and a frame with no key held moving the paddle nowhere at all, one step, landed as one commit, 2026-10-31)
+
+- 2026-10-31 note: **the breakout paddle is the player's only**. What landed, file for file:
+
+    - **`examples/breakout_3d.c` only** — no library file, no public API change, no new test. `xud_breakout_step_paddle()`
+      lost its `ball` argument and the chase computed from it: the step is now the key-held step alone, and a direction
+      of 0 returns before the paddle is touched. The `ball` argument had to go rather than stay unused, because
+      `-Wextra` turns an unused parameter into an error here (`-Wunused-parameter`), and the one call site inside
+      `xud_breakout_step()` follows. The clamp is unchanged — a key held against a wall still cannot push the paddle
+      out of the box — and `XUD_BREAKOUT_PADDLE_SPEED` is still the hand's own rate, still BELOW the ball's fastest x,
+      so a hand that reads the ball late cannot simply outrun it to the far side; the assert beside it is the paddle
+      inside the box's own, untouched.
+    - The three comments that named the autopilot are restated rather than left to contradict the code: the paddle
+      constant's note (the speed is the hand's rate, not the chase's bound), the `XudBreakoutInput` note (a direction
+      of 0 is a frame the paddle is simply still in), and the function's own note (ONE hand, the player's, and an
+      unattended run is a paddle that stays where it started). The "no input rung" probe now says the paddle cannot
+      be moved rather than that the run is the autopilot's.
+
+    Verified here: `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` clean over the tree with `-I src/xud
+    -I src/external -I build/gen`, `./scripts/format.sh --check` green, `ninja -C build` rebuilding only
+    `examples/breakout_3d.c` and its link. Suite UNCHANGED at 2781 headless / 3568 GPU, 0 failures (this step adds no
+    call site and no test), and the `-fsanitizer` build unchanged at 2781 / 0 under `ASAN_OPTIONS=detect_leaks=0` with
+    the same 3 pre-existing bring-up-boundary leaks (72 B in 3 allocations, GLFW's and libdecor's own, inside
+    `_glfwInitWayland` and `xud_device_open` — probed before this step and the same after). The GPU example run at
+    the default 60 s cap: 106910 frames / 3598 steps / 1 round / 2 bricks cleared / 19 misses / 2 short frames,
+    `xud_close_context -> XUD_OK`, exit 0, 36 stderr lines INFO only — no ERROR, no WARNING, no VUID — and
+    `paddle x +0.000` on EVERY report line, which is the claim of this step read directly: the paddle never moved
+    once over 3598 steps with nobody at the keyboard. A 6 s probe (a scratch configure in a gitignored `build-probe/`
+    with `-DCMAKE_C_FLAGS=-DXUD_BREAKOUT_MAX_SECONDS=6.0`, removed after) answers the same at 358 steps: paddle x
+    +0.000 throughout, 1 miss. The consequence of losing the autopilot is visible in the summary: the field no
+    longer clears, so the run is 1 round and 2 bricks cleared rather than S32's 4 rounds — the game is now one the
+    library draws and a hand plays, not one that plays itself. NOT exercised here, as ever from a terminal: an
+    actual key press, so the paddle's key-held half is unchanged code with no driver-side proof beside it; the
+    compositor path is the one the S33 note records (niri, `wl_seat`/`wl_keyboard`, GLFW 3.5.1's
+    `wl_seat_get_keyboard`).
 
 ## Steps complete (S33 The public input API and the input rung — raylib's input shape over GLFW's Wayland backend: one window's key and mouse state kept as a state machine so `pressed` means the frame a key started being held, the two queues and the cursor transform that are the only input GLFW delivers as events rather than as state, the poll belonging to the frame boundary rather than to a query, and the example that had been reading GLFW directly reading the library instead, one step, landed as one commit, 2026-10-31)
 

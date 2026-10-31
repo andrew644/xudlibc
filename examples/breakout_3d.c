@@ -229,9 +229,10 @@ static_assert((int64_t)(XUD_BREAKOUT_FAR_D_MM - XUD_BREAKOUT_EYE_D_MM) * (int64_
 
 /* The paddle is a slab that spans the playfield's WHOLE depth, and that is a game decision
    rather than a shape one: a paddle with a shallow depth would only ever catch a ball that
-   happened to be at its own depth, which is a coin flip rather than a game. Its x speed is
-   BELOW the ball's fastest x, so the chase below sometimes loses and the bottom of the box is
-   what a loss is for. The paddle's own half-depth is the box's half-depth by definition. */
+   happened to be at its own depth, which is a coin flip rather than a game. Its x speed is the
+   hand's own rate, and it stays BELOW the ball's fastest x so a hand that reads the ball late
+   cannot simply outrun it to the far side; the bottom of the box is what a miss is for. The
+   paddle's own half-depth is the box's half-depth by definition. */
 #define XUD_BREAKOUT_PADDLE_HALF_X_MM 220
 #define XUD_BREAKOUT_PADDLE_HALF_Y_MM 45
 #define XUD_BREAKOUT_PADDLE_HALF_Z_MM XUD_BREAKOUT_HALF_Z_MM
@@ -381,8 +382,8 @@ static_assert((XUD_BREAKOUT_FRAME_VERTEX_COUNT > 64u) || (XUD_BREAKOUT_FRAME_IND
  *-----------------------------------------------------------------------------------------------*/
 
 /* What one frame of the player's hand asks for: whether to end the run, and which way the paddle
-   should go. A direction of 0 means no key was held this frame, which is the case the autopilot
-   below answers rather than a third rule. */
+   should go. A direction of 0 means no key was held this frame, and that is a frame the paddle is
+   simply still in - nothing below answers it on the ball's behalf. */
 typedef struct XudBreakoutInput {
     uint32_t escapeWanted;
     int32_t paddleDirection; /* -1 left, 0 none, +1 right */
@@ -694,21 +695,20 @@ static uint32_t xud_breakout_hit_brick(XudBreakoutBall* ball, XudBreakoutBrick* 
     return XUD_BREAKOUT_NO_BRICK;
 }
 
-/* The paddle's chase: the paddle moves toward the ball's x at its own bounded speed, and the
-   bound is BELOW the ball's fastest x so the chase sometimes loses. The paddle is kept inside
-   the box so it cannot be pushed out of the playfield by a ball that is at a wall. */
-/* The paddle's two hands, and the reason both exist: the player's while a key is held (the
-   paddle's own speed, the same bound the autopilot uses, so a key held the wrong way cannot make
-   the paddle faster than the game thought it was) and the game's own chase while none is, which
-   is what keeps an unattended run a game rather than a ball that always falls out. The clamp is
-   the same either way, so neither hand can push the paddle out of the box. */
-static void xud_breakout_step_paddle(XudBreakoutPaddle* paddle, XudBreakoutBall* ball, int32_t direction) {
-    const float delta = ball->position.x - paddle->centre.x;
-    const float chase = (delta > paddle->speed) ? paddle->speed : ((delta < -paddle->speed) ? -paddle->speed : delta);
-    const float step = (direction != 0) ? ((direction < 0) ? -paddle->speed : paddle->speed) : chase;
+/* The paddle's ONE hand: the player's. The paddle moves only while one of its keys is held, at
+   its own bounded speed, and a frame with no key held is a frame that moves it nowhere at all -
+   there is no autopilot here that plays the game for a nobody, so an unattended run is a paddle
+   that stays where it started and a ball that falls out beside it. That is the honest reading of
+   "the paddle is the player's": a game the library cannot play, only draw. The clamp is what
+   keeps a key held against a wall from pushing the paddle out of the box. */
+static void xud_breakout_step_paddle(XudBreakoutPaddle* paddle, int32_t direction) {
     const float limit = XUD_BREAKOUT_HALF_X - paddle->half.x;
 
-    paddle->centre.x += step;
+    if (direction == 0) {
+        return;
+    }
+
+    paddle->centre.x += (direction < 0) ? -paddle->speed : paddle->speed;
     if (paddle->centre.x > limit) {
         paddle->centre.x = limit;
     } else if (paddle->centre.x < -limit) {
@@ -746,7 +746,7 @@ static void xud_breakout_catch(XudBreakoutBall* ball, XudBreakoutPaddle* paddle)
    that both caught and hit is caught first. The brick index returned is what the frame loop
    prints; XUD_BREAKOUT_NO_BRICK means nothing was removed this step. */
 static uint32_t xud_breakout_step(XudBreakoutBall* ball, XudBreakoutPaddle* paddle, XudBreakoutBrick* bricks, int32_t paddleDirection) {
-    xud_breakout_step_paddle(paddle, ball, paddleDirection);
+    xud_breakout_step_paddle(paddle, paddleDirection);
 
     ball->position.x += ball->velocity.x;
     xud_breakout_bounce_wall(&ball->position.x, &ball->velocity.x, ball->half.x, XUD_BREAKOUT_HALF_X);
@@ -871,7 +871,7 @@ int main(void) {
         int exitKeyProbe = 0;
 
         if (xud_get_exit_key(&exitKeyProbe, context) != XUD_OK) {
-            printf("breakout_3d: the context owns no input rung, so the run is the autopilot's alone\n");
+            printf("breakout_3d: the context owns no input rung, so the paddle cannot be moved\n");
         }
     }
 

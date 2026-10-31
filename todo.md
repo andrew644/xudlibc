@@ -6,6 +6,13 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-31 note: **the breakout paddle is the player's only as S34** — `examples/breakout_3d.c` only, no library
+  file, no public API change, no new test: `xud_breakout_step_paddle()` lost its `ball` argument and the chase it
+  computed, so a frame with no key held is a frame the paddle does not move in and an unattended run is a paddle
+  that stays at the field's centre with a ball falling out beside it. Suite unchanged at 2781 headless / 3568 GPU,
+  0 failures; the GPU example run prints `paddle x +0.000` on every report line over 3598 steps, is validation-clean
+  and exits 0. See the *Steps complete (S34 …)* section now at the top of `todo_completed.md`.
+
 - 2026-10-31 note: **the public input API and the input rung landed as S33** — see the *Steps complete (S33
   …)* section now at the top of `todo_completed.md`: `src/xud/xud_input.h`/`.c` (the rung — one GLFW window's
   key/button state kept as a state machine, the two queues, the cursor transform, the wheel), the public input
