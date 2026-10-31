@@ -1,14 +1,143 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S24, the box** — the second shape of the shapes
-rung, its six faces as data rather than as twelve triangles of code and its geometry checked against the arena rather
-than remembered (2026-10-27). The step before it is **S23, the shapes rung and the public drawing API above it** — one
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S25, the sphere** — the third shape of the shapes rung, the first shape whose vertices are
+SHARED and the first whose index spend is above the batch's own headroom, so the shape that made the batch's 3n/2 index
+note a counterexample rather than a case (2026-10-31). The step before it is **S24, the box** — the second shape of the
+shapes rung, its six faces as data rather than as twelve triangles of code and its geometry checked against the arena
+rather than remembered (2026-10-27). The step before it is **S23, the shapes rung and the public drawing API above it** — one
 triangle appended atomically into the batch's four streams and its index buffer, the two value types a caller passes do
 wn, the public frame pair and the example that draws it (2026-10-26). The step before it is **S22, the resize / recrea
 te step** — the reader of the recreate ask S21 left behind, the window's **framebuffer** extent as the answer to that as
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S25 The sphere — the third shape of the shapes rung, the first shape whose vertices are SHARED and whose index spend is above the batch's headroom, one step, landed as one commit, 2026-10-31)
+
+- [x] ~~**The sphere**: `xud_draw_sphere()` not in the tree, and the only shapes a caller could draw were a triangle and
+    a box, so nothing round and nothing with a shared vertex existed anywhere in the API~~ — **done 2026-10-31** for th
+e
+    sphere. What is still open of the shapes item is the line/point and wire forms (a topology the pipeline rung does n
+ot have) and `DrawMesh` (the mesh rung), and the camera + transform math that would make a shape's coordinates world-s
+pace rather than clip-space.
+
+  **What landed, rung by rung:**
+
+  - **The tessellation is a claim about the BATCH's capacity, not about the shape** — this rung is PURE and cannot ask
+    the batch to grow, so the default is the finest tessellation that fits the capacity a context opens its batch at, n
+ot
+    a tessellation the caller picks. It is the finest because a sphere is the shape that spends its indices on **shared
+    vertices**: a closed manifold triangulated surface has F = 2V-4 faces by Euler (3F = 2E and V-E+F = 2), so it needs
+    3F = **6V-12** indices, and the sphere's 90 over its 17 vertices is exactly that — **four times** the 3n/2 per VERT
+EX
+    CAPACITY headroom the batch sizes at. The box's 1.5 per vertex is its SPLIT-per-face spelling (six disconnected qua
+    ds,
+    4 vertices and 6 indices each), not that bound, and the sphere is the first shape in the tree that shows the differ
+ence.
+    So for a sphere the **index** bound is the one that refuses first while the vertex bound has 47 slots to spare — th
+e
+    exact opposite of the triangle's and the box's. The header pins it with static_asserts: 17 vertices / 30 triangles
+    / 90 indices for the default, 90 == 6·17-12, 90 > 3·17/2, one sphere inside the initial headroom and two spheres o
+utside
+    it.
+  - **xud_batch.h's index-capacity note is corrected rather than left to read as a bound** — it said "a closed triangl
+e
+    mesh needs at most 3n/2 indices for n vertices (Euler: 3n/2 faces at 3 indices each, and a batch is a set of closed
+    meshes)", which is the SPLIT-per-face spend wearing the word "bound": a closed manifold mesh needs 6V-12, four tim
+es
+    more, and the sphere is the counterexample in the tree now. The note becomes the choice it actually is — 3n/2 is th
+e
+    headroom for the flat-shaded shapes this rung draws today, a shape that shares its vertices trips the INDEX bound w
+hile
+    the vertex bound still has room, and that is why every shape's append reads BOTH bounds — and the assert and the te
+st
+    check point at it from the other side. Nothing about the macro itself changes: `XUD_BATCH_INDEX_CAPACITY(v)` and th
+e
+    two asserts that size the staging arena against the allocator's blocks are untouched, and a batch asked for more s
+hared-
+    vertex geometry than the headroom holds is still refused rather than resized here (the grow path doubles BOTH, so t
+he
+    ratio is kept rather than corrected, and a caller who wants a finer shared-vertex mesh asks for a bigger capacity —
+    which is the honest boundary of this step, not a fixed one).
+  - **The poles are single vertices, not rows of coincident ones** — a row of SLICE coincident pole vertices makes the
+    pole band's quads half-degenerate (triangles with a zero cross product, which the rasteriser discards and which no
+    winding check can read: a degenerate triangle's facing value is zero, which is neither outward nor inward) and spe
+nds
+    2·SLICE vertices to say what two say. So the vertex count is `2 + (rings-1)*slices` = 17 rather than the `(rings+1
+)*(sli
+    ces+1)` = 30 grid a seam-duplicated row would give, and there is **no seam column either**: the seam exists to make
+    a UV wrap around the longitude, and the UV is the zero constant this header states for every shape here (set 1 is s
+till
+    unallocated and no sampler's array can be addressed), so there is nothing to wrap. A sphere that grows to want a t
+exture
+    will want the seam column back, and that is the texture step's to notice, not one invented here.
+  - **A sphere's normal is its own position direction** — the vertex is the centre plus the radius times a unit direct
+ion and
+    the NORMAL is that same direction unmodified, which is why a sphere shares vertices where a box cannot: a box's co
+rner
+    belongs to three faces and wants three normals, a sphere's vertex wants exactly one and it is the vertex's own. No
+    division by the radius unitises it, which is the same reason a zero radius is refused above rather than divided by
+    here — a zero radius would put a NaN in the NORMAL stream rather than a value the pipeline can read, a stronger re
+ason
+    than the box's flat face has for the same refusal, and the test is written as `!(radius > 0.0f)` so a NaN radius is
+    refused by the same test rather than appended as a NaN position and a NaN normal.
+  - **The two poles are the axis direction, not `sinf`/`cosf` of 0 and PI** — `sin(PI)` is not zero, it is 1.2e-16, so
+    a pole computed from the trigonometry is a pole 1.2e-16 radii off the axis rather than a pole. The three loops get
+    the direction three ways (the poles as an axis, exactly; the rows between from a latitude and a longitude), which is
+    why the one place the vertex spelling lives is one file-local helper rather than three copies of it.
+  - **The counts are computed wide before they are compared** — `rings` and `slices` are the caller's `uint32_t`, so
+    `(rings-1)*slices` is a product that can wrap below the batch's own bound, and a wrapped count is a shape that pass
+es the
+    fit check and then writes past the arena. Wide arithmetic makes the fit check a fact rather than an assumption, an
+d the
+    counts are only used as `uint32_t` once they have passed against a `uint32_t` capacity.
+  - **The tests area checks the mesh, not a remembered table** — every position is one radius from the centre (read as
+    a squared distance), every normal is unit AND points at its own position away from the centre (`dot(offset, normal)
+    is the radius only when the normal is unit and radial — a normal that is one but not the other fails one check and
+    not both, and a normal copied from the flat +Z constant the triangle and the box use fails both), every index name
+s a
+    vertex that exists, every vertex is named by at least one index (the two poles are named by the five fan triangles
+    each, so a mesh with a row missing fails this), every triangle names three **different** vertices, every one has a
+    non-zero cross product, and all 30 are wound counter-clockwise seen from outside. The tolerance is one constant na
+med at
+    the top of the area rather than scattered through the checks, and it exists because a sphere's positions and normal
+s come
+    from `sinf`/`cosf`, which are rounding — unlike the box's dyadic extents, where every comparison above is exact.
+  - **The refusal is checked as an INDEX refusal, with the vertex bound named as the counterexample** — a second sph
+ere is
+    refused while 47 vertices of room remain, and a box beside a sphere is refused while its 24 vertices would fit and
+    its 36 indices would not (90 + 36 = 126 over a 96-slot headroom). The four checks around those two refusals are the
+    same fact the triangle-and-box check states, with the shapes the other way round, and they are what say the append
+    reads both bounds rather than the vertex one.
+  - **The GPU half spends its last frame on the sphere rather than on the box** — a sphere's 90 indices beside the fra
+me's two
+    triangles' 6 is **exactly** the initial capacity's 96-slot index headroom, so a sphere and a box cannot share a fra
+me at
+    that capacity and the area has one frame of each rather than doubling back on a batch it grew. The frame fills the
+    batch's indices while 41 of its vertices are still free, and the box is then refused through a real context with th
+e
+    counters checked unchanged — a shape that wrote part of itself before refusing would leave a real frame loop drawi
+ng half
+    a box through a real pipeline.
+  - **`xud.h`'s duplicate `xud_draw_triangle_3d` declaration is gone** — the second one sat directly under `xud_draw_c
+ube()` a
+    s a leftover of the S23/S24 edits (legal C, a repeated prototype, so nothing in the tree noticed it); it is replac
+ed by
+    the sphere's declaration, which is what makes the header's shape count three rather than two with one of them name
+d twice.
+
+  **Checked before commit:** `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` clean over `src/xud/*.c`;
+  `./scripts/format.sh --check` clean; the headless run 2474 checks 0 failures (was 2433 at S24 — this step adds 41);
+  `XUD_GPU_TESTS=1` 3177 checks 0 failures (was 3132) and validation-clean (no VUID line, the diagnostics area's own s
+ynthetic
+  probe lines aside); the `-fsanitizer` build green with `ASAN_OPTIONS=detect_leaks=0` and its 72-byte driver leak unc
+hanged
+  from the tree as it stood before S24 (the three allocations are the validation layer's `vkCreateDevice` pair and GLF
+W's lib
+  decor, all inside the dlopen'd driver, and nothing this step adds allocates); the clang 22 build warning-free and gr
+een hea
+dless and
+  GPU.
 
 ## Steps complete (S24 The box — the second shape of the shapes rung, one step, landed as one commit, 2026-10-27)
 

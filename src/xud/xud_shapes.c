@@ -2,10 +2,13 @@
  *
  *   xud_shapes.c - the shapes rung and the public draw call above it
  *
- *   Owns : xud_shapes_append_triangle() and xud_shapes_append_cube(), the geometry the public draw
- *          calls name, the two public calls above them (xud_draw_triangle_3d(), xud_draw_cube()) and
- *          the one guard those public calls share. Nothing else - no driver call, no loader row,
- *          no Vulkan or GLFW symbol the linker could see. The whole file is host work on the
+ *   Owns : xud_shapes_append_triangle(), xud_shapes_append_cube() and xud_shapes_append_sphere(),
+ *          the geometry the public draw calls name, the three public calls above them (xud_draw_
+ *          triangle_3d(), xud_draw_cube(), xud_draw_sphere()) and the one guard those public calls
+ *          share. Nothing else - no driver call, no loader row, no Vulkan or GLFW symbol the link
+ *          er could see. The trigonometry the sphere reads is <math.h>'s, which is host arithmetic
+ *          on the caller's floats rather than a driver row, and it is the only system header this
+ *          file takes. The whole file is host work on the
  *          batch's own counters and the batch's own arena, which is what keeps it testable with
  *          no device present and keeps a machine with no Vulkan loader answering the same refu
  *          sals as one with a loader and no window open.
@@ -24,6 +27,7 @@
 #include "xud.h" /* Required for: XudResult, XudVector3, XudColor */
 #include "xud_batch.h" /* Required for: XudBatch, xud_batch_stats, xud_batch_append_vertex/xud_batch_append_index */
 #include "xud_core.h" /* Required for: struct XudContext, the one owner whose renderer's batch a public draw call appends into */
+#include <math.h> /* Required for: sinf/cosf, the sphere's latitude and longitude - host arithmetic on the caller's floats, the one system header this file takes */
 
 /*-----------------------------------------------------------------------------------------------
  * The box's face tables: the six outward normals and the 24 corner signs
@@ -75,6 +79,38 @@ static const float XUD_SHAPES_CUBE_CORNER[XUD_SHAPES_CUBE_FACE_COUNT][XUD_SHAPES
    3). Both are counter-clockwise in the same order the corners are, so the face is closed by two
    triangles that share the 0-to-2 diagonal and nothing about the face's shape is in here. */
 static const uint32_t XUD_SHAPES_CUBE_TRIANGLE_CORNER[XUD_SHAPES_CUBE_FACE_INDEX_COUNT] = { 0u, 1u, 2u, 0u, 2u, 3u };
+
+/*-----------------------------------------------------------------------------------------------
+ * The sphere's vertex row: one unit direction, one radius, one centre
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The sphere's vertices are all built the same way - the centre plus the radius times a UNIT direc
+ *   tion - so the one place that spelling lives is one function rather than three copies of it in
+ *   three loops. The direction is passed in rather than computed here because the three loops get
+ *   it three ways: the two poles get it as an axis (exactly, so the poles are exact rather than
+ *   sin(PI)-rounding), the rows between get it from a latitude and a longitude. The NORMAL is the
+ *   same direction, unmodified: a sphere's normal is radial by definition, so the direction that
+ *   places the vertex is the direction that shades it, and no division by the radius is needed to
+ *   unitise it - which is why a zero radius is refused above rather than divided by here.
+ */
+static XudResult xud_shapes_sphere_vertex(XudBatch* batch, XudVector3 center, float radius, const float dir[3], XudColor color) {
+    float pos[3];
+    float uv[2];
+    uint8_t rgba[4];
+
+    uv[0] = XUD_SHAPES_UV_S;
+    uv[1] = XUD_SHAPES_UV_T;
+    rgba[0] = color.r;
+    rgba[1] = color.g;
+    rgba[2] = color.b;
+    rgba[3] = color.a;
+
+    pos[0] = center.x + (radius * dir[0]);
+    pos[1] = center.y + (radius * dir[1]);
+    pos[2] = center.z + (radius * dir[2]);
+
+    return xud_batch_append_vertex(batch, pos, uv, rgba, dir);
+}
 
 static_assert(sizeof(XUD_SHAPES_CUBE_NORMAL) / (sizeof(XUD_SHAPES_CUBE_NORMAL[0][0]) * 3u) == XUD_SHAPES_CUBE_FACE_COUNT,
     "xud_shapes.c: the normal table has one row per face of the box");
@@ -288,6 +324,213 @@ XudResult xud_shapes_append_cube(XudBatch* batch, XudVector3 center, float width
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The sphere: 17 vertices, then the 90 indices that close it
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_shapes_append_sphere(XudBatch* batch, XudVector3 center, float radius, uint32_t rings, uint32_t slices, XudColor color) {
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    uint64_t vertexNeed = 0ull;
+    uint64_t indexNeed = 0ull;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t first = 0u;
+    uint32_t topPole = 0u;
+    uint32_t bottomPole = 0u;
+    uint32_t ring = 0u;
+    uint32_t slice = 0u;
+    uint32_t a = 0u;
+    uint32_t b = 0u;
+    uint32_t c = 0u;
+    uint32_t d = 0u;
+    float dir[3];
+    float step = 0.0f;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The closed-surface minimums, refused rather than drawn degenerate: fewer than two rings is
+       not a closed surface (there is no row between the two poles to close against) and fewer than
+       three slices is a band whose faces lie on top of each other rather than around an axis. The
+       radius test is written as "not greater" rather than "less or equal" so a NaN radius is refu
+       sed by the same test rather than appended as a NaN position and a NaN normal. */
+    if ((rings < XUD_SHAPES_SPHERE_RING_MIN) || (slices < XUD_SHAPES_SPHERE_SLICE_MIN)) {
+        return XUD_INVALID_ARG;
+    }
+    if (!(radius > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The two counts, computed wide: rings and slices are the caller's uint32_t, so (rings-1)*slic
+       es is a product that can wrap below the batch's own bound and a wrapped count is a shape tha
+       t passes the fit check and then writes past the arena. Wide arithmetic makes the fit check a
+       fact rather than an assumption, and the counts below are only used as uint32_t once they hav
+       e passed against a uint32_t capacity. */
+    vertexNeed = 2ull + (((uint64_t)rings - 1ull) * (uint64_t)slices);
+    indexNeed = 6ull * (uint64_t)slices * ((uint64_t)rings - 1ull);
+
+    /* Both bounds, in the same atomic shape as the triangle's and the box's. For a sphere the INDEX
+       one is the one that trips - the sphere shares its vertices, so it spends the 6V-12 indices a
+       closed MANIFOLD surface needs (90 over its 17 vertices, four times the 3n/2 per vertex CAPACI
+       TY
+       headroom, and the box's 1.5 per vertex is its SPLIT-per-face spelling rather than that bound)
+       ,
+       and the vertex bound has 47 slots to spare (xud_shapes.h's assert states the same fact the ot
+       her
+       way round). Neither bound is enough on its own here either: a batch that is nearly full on ve
+       rtices
+       can still have a sphere's indices, and one that is nearly full on indices can still have its
+       vertices.
+     */
+    if (((uint64_t)vertexCount + vertexNeed) > (uint64_t)vertexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+    if (((uint64_t)indexCount + indexNeed) > (uint64_t)batch->indexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    /* The vertices, in the order the indices below number them: the top pole first, then the rows
+       between the poles from the top down, SLICE_COUNT vertices a row, then the bottom pole. The poles
+       are the axis direction rather than sinf/cosf of 0 and PI so their positions and normals are
+       exact rather than sin(PI)-rounding - and sin(PI) is not zero, it is 1.2e-16, which is what
+       makes a pole computed from it a pole 1.2e-16 radii off the axis rather than a pole.
+     */
+    first = vertexCount;
+    topPole = first;
+    bottomPole = first + 1u + ((rings - 1u) * slices);
+
+    dir[0] = 0.0f;
+    dir[1] = 1.0f;
+    dir[2] = 0.0f;
+    result = xud_shapes_sphere_vertex(batch, center, radius, dir, color);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The longitude step, once: the longitudes are evenly spaced and the last one's neighbour is
+       the first one, which is what makes the mesh closed without a seam column (see the note in
+       xud_shapes.h on why there is no seam to duplicate here). */
+    step = ((2.0f * XUD_SHAPES_SPHERE_PI) / (float)slices);
+
+    for (ring = 1u; ring < rings; ring++) {
+        const float latitude = XUD_SHAPES_SPHERE_PI * (float)ring / (float)rings;
+        const float sinLatitude = sinf(latitude);
+        const float cosLatitude = cosf(latitude);
+
+        for (slice = 0u; slice < slices; slice++) {
+            const float longitude = step * (float)slice;
+
+            dir[0] = sinLatitude * cosf(longitude);
+            dir[1] = cosLatitude;
+            dir[2] = sinLatitude * sinf(longitude);
+
+            result = xud_shapes_sphere_vertex(batch, center, radius, dir, color);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    dir[0] = 0.0f;
+    dir[1] = -1.0f;
+    dir[2] = 0.0f;
+    result = xud_shapes_sphere_vertex(batch, center, radius, dir, color);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The indices, in the three groups the closed mesh is made of, and the winding of all three is
+       the same rule: a face is counter-clockwise seen from OUTSIDE, which is raylib's DrawTriangle
+       3D wording (raylib.h 1588) and the pipeline's XUD_PIPELINE_FRONT_FACE, and the tests area re
+       -derives it from each face's own cross product against the radial direction rather than tru
+       sting this order. The two fans are what the two pole ROWS would have produced had the poles
+       been rows of coincident vertices - one triangle per longitude rather than a quad whose half
+       is degenerate - and the bands are the quads, each closed by the two triangles that share one
+       diagonal. The longitude wraps, which is what makes the mesh closed with no seam column: the
+       last slice's neighbour is the first one.
+     */
+    for (slice = 0u; slice < slices; slice++) {
+        a = topPole;
+        b = first + 1u + ((slice + 1u) % slices);
+        c = first + 1u + slice;
+        result = xud_batch_append_index(batch, a);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, b);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, c);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    for (ring = 1u; (ring + 1u) < rings; ring++) {
+        for (slice = 0u; slice < slices; slice++) {
+            a = first + 1u + (((ring - 1u) * slices) + slice);
+            b = first + 1u + (((ring - 1u) * slices) + ((slice + 1u) % slices));
+            c = first + 1u + ((ring * slices) + ((slice + 1u) % slices));
+            d = first + 1u + ((ring * slices) + slice);
+
+            result = xud_batch_append_index(batch, a);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, b);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, c);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, a);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, c);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, d);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    for (slice = 0u; slice < slices; slice++) {
+        a = first + 1u + (((rings - 2u) * slices) + slice);
+        b = first + 1u + (((rings - 2u) * slices) + ((slice + 1u) % slices));
+        c = bottomPole;
+        result = xud_batch_append_index(batch, a);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, b);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, c);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The one guard every public draw call above this rung needs
  *-----------------------------------------------------------------------------------------------*/
 
@@ -340,4 +583,16 @@ XudResult xud_draw_cube(XudContext* context, XudVector3 position, float width, f
     }
 
     return xud_shapes_append_cube(batch, position, width, height, length, color);
+}
+
+XudResult xud_draw_sphere(XudContext* context, XudVector3 centerPos, float radius, XudColor color) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_sphere(batch, centerPos, radius, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color);
 }

@@ -6,6 +6,59 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-31 note: **the sphere landed as S25** — see the *Steps complete (S25 …)* section at the top of
+    `todo_completed.md`. What landed there: `xud_shapes_append_sphere()` and the public `xud_draw_sphere()` above it in
+    the same `xud_shapes.h/.c` rung, the sphere as a **closed shared-vertex mesh** (17 vertices, 30 triangles, 90 indic
+es —
+    two single-vertex poles plus three rows of five, two fans of five triangles and two bands of five quads, the longit
+ude
+    wrapping so there is no seam column and no row of coincident poles), the normal being the **unit direction that pla
+ced
+    the vertex** (a sphere's normal is radial by definition, which is the reason it shares vertices where a box cannot,
+    and the reason no shader reads a flat constant any more), the tessellation being a claim about the **batch's** capa
+city
+    rather than about the shape (this rung is pure and cannot grow the batch, so the default is the finest that fits th
+e
+    capacity a context opens at), and — the fact this step is really about — that a sphere spends **90 indices over 17
+    vertices**, above the batch's 3n/2 per-vertex headroom, so the **index** bound is the one that refuses a sphere and
+    the vertex bound has 47 slots to spare: the exact opposite of the triangle's and the box's, and the closed-mesh bou
+nd's
+    counterexample. A closed manifold triangulated surface has F = 2V-4 faces by Euler (3F = 2E and V-E+F = 2), so it
+    needs 3F = **6V-12** indices - four times that headroom - and the sphere's 90 over its 17 vertices is exactly 6V-12
+    (xud_shapes.h asserts it); the box's 1.5 per vertex is its SPLIT-per-face spelling (six disconnected quads, 4 verti
+    ces and 6 indices each) rather than that bound. **xud_batch.h's index-capacity note is corrected here rather than le
+    ft
+    to read as a bound** - it said "a closed triangle mesh needs at most 3n/2", which is the split-per-face spend wearin
+    g
+    the word "bound"; the macro itself, the two asserts that size the staging arena against the allocator's blocks and
+    the grow path (which doubles BOTH, so the ratio is kept rather than corrected) are untouched: a batch asked for mor
+    e
+    shared-vertex geometry than its headroom holds is still refused rather than resized, and a caller who wants a fine
+    r
+    shared-vertex mesh asks for a bigger capacity. The tests area check
+s the
+    mesh rather than a table — every position one radius from the centre, every normal unit **and** radial (the two hal
+ves of
+    that claim fail separately, and a normal copied from the flat +Z constant fails both), every index naming a vertex
+    that exists and every vertex named by at least one, every triangle non-degenerate and wound outward — against one n
+amed
+    tolerance rather than exact equality, because a sphere's positions come from `sinf`/`cosf`, which are rounding, unl
+ike the
+    box's dyadic extents. The GPU half's last frame is the sphere's rather than the box's: 6 + 90 indices is **exactl
+y** the
+    initial capacity's 96-slot headroom, so a sphere and a box cannot share a frame at that capacity and the box is the
+refused
+    through a real context with the counters checked unchanged. Also fixed here: `xud.h` carried a **duplicate** `xud_
+draw_t
+    riangle_3d` declaration under `xud_draw_cube()` (legal C, a repeated prototype, so nothing in the tree noticed it) —
+    it is replaced by the sphere's declaration, which is what makes the header's shape count three rather than two with
+    one of them named twice.
+- 2026-10-31 note: the `-fsanitizer` build still answers **72 bytes leaked in 3 allocations (32+32+8)** at exit, uncha
+nged
+    from S24's note above — the three are the validation layer's pair around `vkCreateDevice` and GLFW's libdecor, all
+    inside the dlopen'd driver, and nothing this step adds allocates. With `ASAN_OPTIONS=detect_leaks=0` the same build
+    runs the full headless suite green (2474 checks, 0 failures, no ASan/UBSan report).
+
 - 2026-10-27 note: **the box landed as S24** — see the *Steps complete (S24 …)* section at the top of
     `todo_completed.md`. What landed there: `xud_shapes_append_cube()` and the public `xud_draw_cube()` above it in the
     same `xud_shapes.h/.c` rung, the box's six faces as **data** (a normal table and a corner-sign table, 6 rows of 4
@@ -145,11 +198,18 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Next
 
-- [ ] Shapes module, the rest of it (`DrawSphere`, `DrawLine3D`, `DrawPoint3D` and the wire forms, `DrawMesh` — 3D only,
+- [ ] Shapes module, the rest of it (`DrawLine3D`, `DrawPoint3D` and the wire forms, `DrawMesh` — 3D only,
     there is no 2D shape family in the API)
-    - 2026-10-26 note: **a second shape of this item landed as S24** — `xud_draw_cube()` and the `xud_shapes_append_cube
-      ()` half it shares with the triangle, in the same `xud_shapes.h/.c` rung; see the *Steps complete (S24 …)* sectio
-      n at the top of `todo_completed.md`. What the rest of this item owes: the sphere, whose tessellation is a capaci
+    - 2026-10-31 note: **a third shape of this item landed as S25** — `xud_draw_sphere()` and the `xud_shapes_append_sph
+      ere()` half it shares with the triangle and the box, in the same `xud_shapes.h/.c` rung; see the *Steps complete
+      (S25 …)* section at the top of `todo_completed.md`. What the rest of this item owes: the line/point and wire form
+      s, which need `LINE_LIST`/`POINT_LIST` topologies and so a row of the pipeline list rather than the pipeline's on
+      e `TRIANGLE_LIST` row, and `DrawMesh`, which is the mesh / vertex-buffer abstraction in the *Later* list rather t
+      han a shape of this rung's. The sphere's tessellation is no longer an open question — it is a claim about the bat
+      ch's capacity, settled in xud_shapes.h (see S25's note above).
+    - 2026-10-26 note: **a second shape of this item landed as S24** — `xud_draw_cube()` and the `xud_shapes_append_cub
+      e()` half it shares with the triangle, in the same `xud_shapes.h/.c` rung; see the *Steps complete (S24 …)* secti
+      on at the top of `todo_completed.md`. What the rest of this item owes: the sphere, whose tessellation is a capaci
       ty decision (the shapes rung is PURE and cannot grow the batch, so a sphere's vertex count is a claim about the b
       atch's capacity rather than about the shape), the line/point forms and the wire forms, which need `LINE_LIST`/`POI
       NT_LIST` topologies and so a row of the pipeline list rather than the pipeline's one `TRIANGLE_LIST` row, and `Dra

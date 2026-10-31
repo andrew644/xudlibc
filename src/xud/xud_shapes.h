@@ -28,16 +28,15 @@
  *   Choosing a space for a shape is a camera + transform decision, and that is the todo.md item
  *   below this one; a shape that invented its own projection would be a second camera the
  *   library does not have. What is also not here, and why: the rest of raylib's 3D shape family.
- *   DrawSphere is the next one and it is a tessellation decision - a sphere's vertex count is
- *   (rings+1)*(slices+1), so a default tessellation is a claim about the batch's capacity and the
- *   shapes rung is PURE and cannot ask the batch to grow. DrawLine3D, DrawPoint3D and the wire
- *   forms (DrawCubeWires, DrawSphereWires) are not this rung's to write at all: they are LINE_LIST
- *   and POINT_LIST topologies and the pipeline rung's one topology is TRIANGLE_LIST (xud_pipeline
- *   _h's XUD_PIPELINE_TOPOLOGY), so a line drawn as two thin triangles would be a shape the
+ *   The line and point forms and the wire forms (DrawLine3D, DrawPoint3D, DrawCubeWires,
+ *   DrawSphereWires) are not this rung's to write at all: they are LINE_LIST and POINT_LIST
+ *   topologies and the pipeline rung's one topology is TRIANGLE_LIST (xud_pipeline.h's
+ *   XUD_PIPELINE_TOPOLOGY), so a line drawn as two thin triangles would be a shape the
  *   caller did not ask for and a new pipeline row would be a pipeline-rung decision, not a shape's.
  *   DrawMesh is the mesh / vertex-buffer abstraction, a rung below this item in todo.md's Later
  *   list. One shape per step that wants one, never a family written ahead of the caller that needs
- *   it - the box is here because a caller who has a triangle has a box.
+ *   it - the box is here because a caller who has a triangle has a box, and the sphere is here
+ *   because a caller who has a box has something round to ask for.
  ***********************************************************************************************/
 
 #ifndef XUD_SHAPES_H_
@@ -124,6 +123,79 @@ static_assert(XUD_SHAPES_CUBE_FACE_VERTEX_COUNT == 4u,
     "xud_shapes.h: the face's corner count is the four the face tables and the two-triangle order are written against");
 
 /*-----------------------------------------------------------------------------------------------
+ * The sphere: rings latitude divisions, slices longitudes, and two single-vertex poles
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The sphere of raylib's DrawSphere (reference/raylib/raylib.h 1594, "Draw sphere", whose
+   arguments are (centerPos, radius, color)): the caller's float is the RADIUS and the position is
+   the centre, which is the same centre-not-corner reading DrawCube above already makes.
+
+   The tessellation below is a claim about the BATCH's capacity, not about the shape: this rung is
+   PURE and cannot ask the batch to grow, so a sphere that does not fit the capacity a context
+   opens its batch at is refused rather than drawn, and the default tessellation is the finest one
+   that fits that capacity. It is the finest because a sphere is the shape that spends its indices
+   on SHARED vertices: a closed manifold triangulated surface has F = 2V-4 faces by Euler (3F = 2E
+   and V-E+F = 2), so it needs 3F = 6V-12 indices - FOUR times the 3n/2 per vertex CAPACITY headroo
+   m
+   xud_batch.h's XUD_BATCH_INDEX_CAPACITY sizes (the box's 1.5 per vertex is the SPLIT-per-face spe
+   lling,
+   not that bound) - and the sphere's 90 over its 17 vertices is exactly 6V-12, asserted below. So
+   for a sphere the index bound is the one that refuses first and the vertex bound has 47 slots to
+   spare. The two asserts below are that fact read both ways: one sphere fits the initial headroom
+   and two do not, which is what makes the refusal the tests area checks a refusal of a whole secon
+   d
+   sphere rather than of a half one.
+
+   The poles are single vertices rather than one row of SLICE coincident vertices each: a row of
+   coincident poles makes the pole band's quads half-degenerate - triangles with a zero cross
+   product, which the rasteriser discards and which no winding check can read - and it spends 2*SL
+   ICE vertices to say what two vertices say. So the vertex count is 2 + (rings-1)*slices rather
+   than the (rings+1)*(slices+1) grid a seam-duplicated row would give, and there is no seam column
+   either: the seam exists to make a UV wrap around the longitude, and the UV is the zero constant
+   this header states for every shape here (set 1 is still unallocated and no sampler's array can
+   be addressed), so there is nothing to wrap. A sphere that grows to want a texture will want the
+   seam column back, and that is the texture step's to notice, not one invented here.
+
+   The minimums are the closed-surface counts, not a style choice: two rings are the two poles plus
+   at least one row between them, and three slices are the fewest longitudes that close a band
+   without two faces lying on top of each other. Below either the mesh is not a surface, and it is
+   refused rather than drawn as a degenerate one. */
+#define XUD_SHAPES_SPHERE_RING_MIN 2u
+#define XUD_SHAPES_SPHERE_SLICE_MIN 3u
+#define XUD_SHAPES_SPHERE_RING_COUNT 4u
+#define XUD_SHAPES_SPHERE_SLICE_COUNT 5u
+#define XUD_SHAPES_SPHERE_PI 3.1415926535897932f
+#define XUD_SHAPES_SPHERE_VERTEX_COUNT (2u + ((XUD_SHAPES_SPHERE_RING_COUNT - 1u) * XUD_SHAPES_SPHERE_SLICE_COUNT))
+#define XUD_SHAPES_SPHERE_TRIANGLE_COUNT (2u * XUD_SHAPES_SPHERE_SLICE_COUNT * (XUD_SHAPES_SPHERE_RING_COUNT - 1u))
+#define XUD_SHAPES_SPHERE_INDEX_COUNT (3u * XUD_SHAPES_SPHERE_TRIANGLE_COUNT)
+
+static_assert(
+    (XUD_SHAPES_SPHERE_RING_COUNT >= XUD_SHAPES_SPHERE_RING_MIN) && (XUD_SHAPES_SPHERE_SLICE_COUNT >= XUD_SHAPES_SPHERE_SLICE_MIN),
+    "xud_shapes.h: the default tessellation is inside the tessellation the append accepts, so the default is a tessellation and not a "
+    "refusal");
+static_assert(
+    (XUD_SHAPES_SPHERE_VERTEX_COUNT == 17u) && (XUD_SHAPES_SPHERE_TRIANGLE_COUNT == 30u) && (XUD_SHAPES_SPHERE_INDEX_COUNT == 90u),
+    "xud_shapes.h: the default sphere is 17 vertices (two single poles plus three rows of five) and 90 indices (two fans of five plus two "
+    "bands of five quads), which is what the append's fit check counts");
+static_assert(XUD_SHAPES_SPHERE_INDEX_COUNT == (3u * XUD_SHAPES_SPHERE_TRIANGLE_COUNT),
+    "xud_shapes.h: every triangle of the sphere is named by three indices, which is what makes the index count the triangle count times "
+    "three rather than a second count to keep honest");
+static_assert(XUD_SHAPES_SPHERE_INDEX_COUNT == ((6u * XUD_SHAPES_SPHERE_VERTEX_COUNT) - 12u),
+    "xud_shapes.h: a closed manifold triangulated surface has F = 2V-4 faces by Euler and so 3F = 6V-12 indices, and the sphere's 90 over "
+    "its 17 vertices is exactly that - four times the batch's 3n/2 headroom per vertex, which is why the batch's note calls 3n/2 a choice "
+    "rather than a bound");
+static_assert(XUD_SHAPES_SPHERE_INDEX_COUNT > ((XUD_SHAPES_SPHERE_VERTEX_COUNT * 3u) / 2u),
+    "xud_shapes.h: a sphere spends 90 indices over 17 vertices, which is above the batch's 3n/2 per-vertex headroom, so the sphere is the "
+    "shape whose INDEX bound refuses first and the box's opposite");
+static_assert((XUD_SHAPES_SPHERE_VERTEX_COUNT <= XUD_BATCH_INITIAL_VERTICES)
+        && (XUD_SHAPES_SPHERE_INDEX_COUNT <= XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+    "xud_shapes.h: one sphere fits the capacity a context's batch opens at, so drawing one asks nothing of the grow path - the same claim "
+    "the box's assert makes");
+static_assert((2u * XUD_SHAPES_SPHERE_INDEX_COUNT) > XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES),
+    "xud_shapes.h: two spheres do not fit that same headroom, so the refusal the tests area checks is a refusal of a whole second sphere "
+    "and not of half of one");
+
+/*-----------------------------------------------------------------------------------------------
  * The layer's contract
  *-----------------------------------------------------------------------------------------------*/
 
@@ -174,5 +246,32 @@ XudResult xud_shapes_append_triangle(XudBatch* batch, XudVector3 v0, XudVector3 
 /// box is a flat box and a mirrored one is a mirrored one, and in both cases the shape is still
 /// 24 vertices and 36 indices.
 XudResult xud_shapes_append_cube(XudBatch* batch, XudVector3 center, float width, float height, float length, XudColor color);
+
+/// Pure: append one sphere - the caller's centre plus a radius, read as raylib's DrawSphere reads
+/// them - as the closed mesh above states: two single-vertex poles, RING_COUNT-1 rows of SLICE_CO
+/// UNT vertices between them, and the indices that close it as two fans of SLICE_COUNT triangles
+/// plus (RING_COUNT-2) bands of SLICE_COUNT quads. The vertex is the centre plus the radius times
+/// a unit direction, and the NORMAL is that same unit direction: a sphere's normal is radial by
+/// definition, which is the reason a sphere shares vertices where a box cannot - a box's corner
+/// wants three normals and a sphere's vertex wants exactly one, and it is the vertex's own.
+/// The tessellation is the header's, not the caller's, because a tessellation the caller chose is
+/// a claim about the batch's capacity rather than about the sphere (see the note above); the
+/// append takes rings and slices so the rung's own refusals can be checked at a tessellation the
+/// public call never asks for, and xud_draw_sphere() above passes the header's constants.
+///
+/// The append is ATOMIC in the same shape as the triangle's and the box's, and BOTH of the batch's
+/// bounds are read first - for a sphere the index one is the one that trips, which is the opposite
+/// of the triangle's and is why neither bound is enough on its own here either.
+///
+/// XUD_INVALID_ARG on a NULL batch, on a tessellation below the closed-surface minimums above (fe
+/// wer than two rings is not a closed surface, fewer than three slices is a band whose faces lie
+/// on each other), or on a radius that is not strictly positive (a sphere with no radius has no
+/// surface and no radial direction, and the normal is that direction divided by it - a NaN in a
+/// float stream is not a value the pipeline can read, which is a stronger reason than the box's
+/// flat face has; a NaN radius is refused by the same test); XUD_OUT_OF_MEMORY when the 17 vertic
+/// es or the 90 indices do not fit the batch's capacities; XUD_UNSUPPORTED when the batch has no
+/// arena mapped to write into (the same answer xud_batch_append_vertex gives for the same reason,
+/// one rung up); XUD_OK only when all 17 vertex appends and all 90 index appends completed.
+XudResult xud_shapes_append_sphere(XudBatch* batch, XudVector3 center, float radius, uint32_t rings, uint32_t slices, XudColor color);
 
 #endif /* XUD_SHAPES_H_ */

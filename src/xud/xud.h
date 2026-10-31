@@ -36,11 +36,11 @@
  *          table type and no handle function, so no public call takes or fills one today and no
  *          handle names an object yet); the shapes rung's calls are the geometry a caller draws,
  *          which is what the drawing API above the renderer reaches - xud.h declares the frame pa
- *          ir and two shapes, and what is still missing above the renderer is the rest of rayli
- *          b's 3D shape family (the sphere, whose tessellation is a capacity decision, and the line
- *          /point forms and the wire forms, which need a topology the pipeline rung does not have),
- *          the camera + transform math, the handle layer's material record and the object kinds a
- *          public handle would name, which is why a caller can draw a triangle and a box today
+ *          ir and three shapes, and what is still missing above the renderer is the rest of rayli
+ *          b's 3D shape family (the line/point forms and the wire forms, which need a topology the
+ *          pipeline rung does not have, and DrawMesh, which is the mesh rung), the camera + trans
+ *          form math, the handle layer's material record and the object kinds a public handle wou
+ *          ld name, which is why a caller can draw a triangle, a box and a sphere today
  *          and nothing else, and why no handle names an object yet.
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
@@ -255,8 +255,8 @@ XudResult xud_vulkan_supported(void);
 /// a surface this layer cannot get a swapchain for, a renderer or an allocator this layer cannot
 /// open); no field of XudContext is a sentinel any more, and what is missing is not a field but a
 /// rung above the renderer - the rest of raylib's 3D shape family, the camera + transform math an
-/// d the object kinds a public handle would name - which is why a caller can draw a triangle today
-/// and nothing else, and why no handle names an object yet.
+/// d the object kinds a public handle would name - which is why a caller can draw a triangle, a box
+/// and a sphere today and nothing else, and why no handle names an object yet.
 XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height);
 
 /// Tear the context down in the reverse order of creation - handle table -> renderer -> allocator
@@ -289,7 +289,8 @@ XudResult xud_close_context(XudContext** context);
  * The drawing API - the frame pair and the shapes a frame is made of
  *
  * This is the raylib-shaped half of the public surface above the context: BeginDrawing/EndDrawi
- * ng (raylib.h 1048/1049) and the 3D shape calls (DrawTriangle3D, raylib.h 1588, DrawCube, 1590).
+ * ng (raylib.h 1048/1049) and the 3D shape calls (DrawTriangle3D, raylib.h 1588, DrawCube, 1590,
+ * DrawSphere, 1594).
  * The pair is the public frame boundary and the shape calls are what sits between them, which is the order
  * raylib's own comment states for the pair (raylib.h 1100: "By default EndDrawing() does this
  * job: draws everything + SwapScreenBuffer() + manage frame timing + PollInputEvents()") - the
@@ -335,7 +336,33 @@ XudResult xud_draw_triangle_3d(XudContext* context, XudVector3 v0, XudVector3 v1
 /// vertex rather than a new one, so a batch whose existing content reuses vertices can be full on
 /// its indices while it still has twenty-four vertices' worth of room).
 XudResult xud_draw_cube(XudContext* context, XudVector3 position, float width, float height, float length, XudColor color);
-XudResult xud_draw_triangle_3d(XudContext* context, XudVector3 v0, XudVector3 v1, XudVector3 v2, XudColor color);
+
+/// Draw one filled sphere, raylib's DrawSphere (raylib.h 1594, "Draw sphere", whose arguments are
+/// (centerPos, radius, color)): the position is the sphere's CENTRE and the float is its RADIUS,
+/// which is the same centre-not-corner reading DrawCube above already makes. It appends 17 vertic
+/// es and the 90 indices that close them - two single-vertex poles, three rows of five vertices be
+/// tween them, two fans of five triangles and two bands of five quads - and the NORMAL of every ve
+/// rtex is the unit direction that placed it, which is what makes a sphere share vertices where a
+/// box cannot: a sphere's normal is radial by definition, so the vertex's own direction is the one
+/// that shades it and no corner needs three of them. That sharing is also why the sphere spends the
+/// 6V-12 indices a closed MANIFOLD surface needs (90 over its 17 vertices, four times the 3n/2 per
+/// vertex headroom the batch sizes at - the box's 1.5 per vertex is its SPLIT-per-face spelling rat
+/// her than that bound), and why the INDEX bound is the one that refuses a sphere first (xud_shape
+/// s.h
+/// states the same fact as an assert, both ways round: one sphere fits the batch's initial index hea
+/// droom
+/// and two do not). The tessellation is the header's, not the ca
+/// ller's: a tessellation the caller chose is a claim about the batch's capacity rather than about
+/// the sphere, and this rung is pure and cannot ask the batch to grow. A radius that is not strictl
+/// y positive is refused rather than drawn - a sphere with no radius has no surface and no radial
+/// direction, and the normal is that direction divided by it, so a zero radius would put a NaN in
+/// the NORMAL stream rather than a value the pipeline can read (a stronger reason than the box's
+/// flat face has for the same refusal); a NaN radius is refused by the same test. The append is ato
+/// mic in the same shape as the triangle's and the box's, and BOTH of the batch's bounds are read
+/// first. XUD_INVALID_ARG on a NULL context or a renderer with no batch; XUD_UNSUPPORTED on a con
+/// text that never completed bring-up; XUD_OUT_OF_MEMORY when the 17 vertices or the 90 indices do
+/// not fit the batch.
+XudResult xud_draw_sphere(XudContext* context, XudVector3 centerPos, float radius, XudColor color);
 
 /// End canvas drawing and swap buffers: the public frame boundary, closed. It runs one frame -
 /// acquire, record, upload, bind, draw the batch's recorded rows, submit, present - through the

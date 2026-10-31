@@ -2,11 +2,11 @@
  *
  *   xud_test_shapes.c - the shapes rung and the public drawing API above it
  *
- *   Owns : the tests of one rung - xud_shapes_append_triangle() and xud_shapes_append_cube(), the
- *          geometry xud_draw_triangle_3d() and xud_draw_cube() name, and the public frame pair xud
- *          _begin_drawing()/xud_end_drawing(). Nothing else - the batch's own appends are the batch
- *          area's, the frame loop's is the frame area's, and the context's lifecycle is the core a
- *          rea's.
+ *   Owns : the tests of one rung - xud_shapes_append_triangle(), xud_shapes_append_cube() and xud
+ *          _shapes_append_sphere(), the geometry xud_draw_triangle_3d(), xud_draw_cube() and xud_
+ *          draw_sphere() name, and the public frame pair xud_begin_drawing()/xud_end_drawing().
+ *          Nothing else - the batch's own appends are the batch area's, the frame loop's is the
+ *          frame area's, and the context's lifecycle is the core area's.
  *   Layer: tests, above the batch area and below the core area, which is the layer order: the
  *          shape is checked against a batch the test built itself, with no context and no driver
  *          in sight, and the public calls are checked against a real context in the area's own
@@ -26,6 +26,7 @@
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
 
+#include <math.h> /* Required for: fabsf, the sphere's geometry checks are read against a tolerance rather than exactly, and this area's file is the one that says why */
 #include <string.h> /* Required for: memset, the batch shell and the context shell this area builds itself */
 
 #include "xud.h" /* Required for: XudResult, XudContext, XudVector3, XudColor, the public frame pair and xud_draw_triangle_3d */
@@ -40,6 +41,17 @@
 */
 static uint8_t xudTestArena[(XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE)
     + (XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES) * XUD_BATCH_INDEX_SIZE)];
+
+/* The radius the sphere checks use: dyadic, so the radius times a unit direction is an exact
+   scaling and the only rounding in the positions below is the trigonometry's own. */
+#define XUD_TEST_SHAPES_SPHERE_RADIUS 0.5f
+
+/* The tolerance the sphere's geometry is read against, and why it is a tolerance at all where the
+   box's geometry is read exactly: a sphere's positions and normals come from sinf/cosf, which are
+   rounding, so no equality here can hold - and the tolerance is stated once here rather than sca
+   ttered through the checks, so a check that fails by more than this is a shape bug rather than a
+   rounding artefact. */
+#define XUD_TEST_SHAPES_SPHERE_TOLERANCE 1e-5f
 
 /*-----------------------------------------------------------------------------------------------
  * The pure half: the shape against a batch this area built itself
@@ -92,6 +104,13 @@ static void xud_test_shapes_pure(void) {
     xud_check(xud_draw_cube(NULL, center, width, height, length, color) == XUD_INVALID_ARG, "shapes/cube-draw-no-context",
         "a public draw call with no context is refused");
     xud_check(xud_draw_cube(&shell, center, width, height, length, color) == XUD_UNSUPPORTED, "shapes/cube-draw-no-renderer",
+        "a context with no renderer has no batch to append into, and the refusal is reported");
+    xud_check(
+        xud_shapes_append_sphere(NULL, center, 0.4f, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color) == XUD_INVALID_ARG,
+        "shapes/sphere-append-no-batch", "and so is a sphere - the guard is the same one, one rung above the same two codes");
+    xud_check(xud_draw_sphere(NULL, center, 0.4f, color) == XUD_INVALID_ARG, "shapes/sphere-draw-no-context",
+        "a public draw call with no context is refused");
+    xud_check(xud_draw_sphere(&shell, center, 0.4f, color) == XUD_UNSUPPORTED, "shapes/sphere-draw-no-renderer",
         "a context with no renderer has no batch to append into, and the refusal is reported");
     xud_check(xud_begin_drawing(NULL) == XUD_INVALID_ARG, "frames/begin-no-context", "a frame boundary with no context is refused");
     xud_check(xud_begin_drawing(&shell) == XUD_UNSUPPORTED, "frames/begin-no-renderer", "and so is one whose renderer rung is gone");
@@ -452,6 +471,303 @@ static void xud_test_shapes_pure(void) {
         "39 indices, 36 of them the box's at 1.5 per vertex and 3 of them the triangle's at 1 per vertex");
     xud_check(
         xud_batch_check_invariant(&b) == XUD_OK, "shapes/cube-mixed-invariant", "and the batch's invariant still holds over two shapes");
+
+    /*--- the sphere: the shape whose vertices are SHARED, and the first whose index spend is above
+       the batch's own headroom ----------------------------------------------------------*/
+
+    /* A batch at the capacity a context opens at, rather than one sized at the sphere's own vertex
+       count: a batch of 17 vertices has an index headroom of 25 by the batch's own 3n/2 and could
+       not hold the sphere's 90 indices at all, so the sphere is the shape that cannot be laid out
+       at its own size - which is the same fact the box's layout check states when it sizes a batch
+       at the box's vertex count and finds the headroom exactly right, seen from the other side. The
+       four checks below are that fact read four ways: one sphere fits both bounds, two spheres do
+       not fit the indices, two spheres DO fit the vertices, and the index spend is above the 3n/2
+       the headroom is sized at - which together say the INDEX bound is the one that refuses a
+       sphere and the vertex bound is not, the exact opposite of the triangle's and the box's. */
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "shapes/sphere-layout",
+        "a batch at the capacity a context opens at lays out");
+    xud_check(b.indexCapacity == XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES), "shapes/sphere-index-headroom",
+        "and its index headroom is the batch's own 3n/2 of that capacity");
+    xud_check((XUD_SHAPES_SPHERE_VERTEX_COUNT <= XUD_BATCH_INITIAL_VERTICES) && (XUD_SHAPES_SPHERE_INDEX_COUNT <= b.indexCapacity),
+        "shapes/sphere-fits-the-initial-capacity",
+        "one sphere fits both of that capacity's bounds, so drawing one asks nothing of the grow path");
+    xud_check((2u * XUD_SHAPES_SPHERE_INDEX_COUNT) > b.indexCapacity, "shapes/two-spheres-do-not-fit-the-index-headroom",
+        "two spheres do not fit its indices, which is what makes the refusal below a refusal of a whole second sphere rather than of half "
+        "of one");
+    xud_check((2u * XUD_SHAPES_SPHERE_VERTEX_COUNT) <= XUD_BATCH_INITIAL_VERTICES, "shapes/two-spheres-do-fit-the-vertex-bound",
+        "and two spheres DO fit its vertices, which is what says the index bound is the one that refuses a sphere and the vertex bound is "
+        "not - the opposite of the triangle's and the box's");
+    xud_check(XUD_SHAPES_SPHERE_INDEX_COUNT == ((6u * XUD_SHAPES_SPHERE_VERTEX_COUNT) - 12u), "shapes/sphere-is-the-manifold-bound",
+        "90 indices over 17 vertices is exactly 6V-12, the Euler bound for a closed manifold triangulated surface (F = 2V-4 faces, 3F "
+        "indices), which is four times the 3n/2 per-vertex headroom the batch sizes at and the reason that note is a choice rather than a "
+        "bound");
+    xud_check(XUD_SHAPES_SPHERE_INDEX_COUNT > ((XUD_SHAPES_SPHERE_VERTEX_COUNT * 3u) / 2u), "shapes/sphere-spends-above-the-headroom",
+        "90 indices over 17 vertices is above the 3n/2 per-vertex headroom the batch sizes at, which is the closed-mesh bound's "
+        "counterexample and the reason a sphere shares vertices where a box cannot");
+
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+
+    result = xud_shapes_append_sphere(
+        &b, center, XUD_TEST_SHAPES_SPHERE_RADIUS, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color);
+    xud_check(result == XUD_OK, "shapes/sphere-append-ok", "the sphere appends");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/sphere-stats-after-append", "and the counters answer after it");
+    xud_check(vertexCount == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-costs-17-vertices",
+        "17 vertices, which is two single-vertex poles plus three rows of five - not the 30-vertex grid a seam-duplicated row and pole "
+        "rows would give");
+    xud_check(indexCount == XUD_SHAPES_SPHERE_INDEX_COUNT, "shapes/sphere-costs-90-indices",
+        "90 indices, which is two fans of five triangles plus two bands of five quads, three indices per triangle");
+    xud_check(indexCount == ((6u * vertexCount) - 12u), "shapes/sphere-live-count-is-the-manifold-bound",
+        "and read off the batch's own counters rather than off the header, the live index count is 6V-12 for the live vertex count, so the "
+        "mesh the append wrote is closed rather than a soup with a hole in it");
+    xud_check(
+        drawCount == 0u, "shapes/sphere-records-no-draw", "and appending records no draw row, as the triangle's and the box's appends do");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/sphere-invariant", "and the batch's invariant still holds");
+
+    /* The tessellation and radius refusals, at a tessellation the public call never asks for: the
+       append takes rings and slices so the rung's own minimums are checkable, and the closed-surface
+       minimums are refused rather than drawn degenerate. The NaN radius is refused by the same test
+       the zero and the negative one are - the test is written as "not greater" rather than "less or
+       equal" for exactly that reason, and a NaN radius divided into a normal would be a NaN in a
+       float stream rather than a value the pipeline can read. */
+    xud_check(xud_shapes_append_sphere(
+                  &b, center, XUD_TEST_SHAPES_SPHERE_RADIUS, (XUD_SHAPES_SPHERE_RING_MIN - 1u), XUD_SHAPES_SPHERE_SLICE_COUNT, color)
+            == XUD_INVALID_ARG,
+        "shapes/sphere-rings-below-min", "one ring is not a closed surface, so it is refused rather than drawn as a degenerate one");
+    xud_check(xud_shapes_append_sphere(
+                  &b, center, XUD_TEST_SHAPES_SPHERE_RADIUS, XUD_SHAPES_SPHERE_RING_COUNT, (XUD_SHAPES_SPHERE_SLICE_MIN - 1u), color)
+            == XUD_INVALID_ARG,
+        "shapes/sphere-slices-below-min",
+        "and two longitudes are a band whose faces lie on each other rather than around an axis, so they are refused too");
+    xud_check(
+        xud_shapes_append_sphere(&b, center, 0.0f, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color) == XUD_INVALID_ARG,
+        "shapes/sphere-zero-radius",
+        "a sphere with no radius has no surface and no radial direction, and the normal is that direction divided by it");
+    xud_check(
+        xud_shapes_append_sphere(&b, center, -0.5f, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color) == XUD_INVALID_ARG,
+        "shapes/sphere-negative-radius", "and a negative one is inside-out rather than a sphere the caller asked for");
+    xud_check(
+        xud_shapes_append_sphere(&b, center, NAN, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color) == XUD_INVALID_ARG,
+        "shapes/sphere-nan-radius",
+        "and a NaN radius is refused by the same test, which is why the test is written as not-greater rather than less-or-equal");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/sphere-stats-after-refusals",
+        "and none of those refusals wrote anything, so the counters still answer at the sphere's own counts");
+    xud_check((vertexCount == XUD_SHAPES_SPHERE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_SPHERE_INDEX_COUNT),
+        "shapes/sphere-refusals-wrote-nothing",
+        "17 vertices and 90 indices, which is what says a refused tessellation or radius is atomic and not half a mesh");
+
+    /* The geometry, read off the arena rather than off the loops the append was written from: every
+       position has to be one radius from the centre, every normal has to be a unit vector pointing
+       at that same position away from the centre (which is the sphere's own claim - a normal that
+       is unit but not radial, or radial but not unit, fails one of the two checks and not both),
+       every triangle has to be non-degenerate and wound counter-clockwise from outside, and every
+       index has to name a vertex that exists and every vertex has to be named by at least one. The
+       tolerance is XUD_TEST_SHAPES_SPHERE_TOLERANCE rather than an equality because a sphere's
+       positions and normals come from sinf/cosf, which are rounding - unlike the box's dyadic ext
+       ents, where every comparison above is exact. */
+    {
+        const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+        const float radius = XUD_TEST_SHAPES_SPHERE_RADIUS;
+        const float tolerance = XUD_TEST_SHAPES_SPHERE_TOLERANCE;
+        float centre[3];
+        float pos[XUD_SHAPES_SPHERE_VERTEX_COUNT][3];
+        float nrm[XUD_SHAPES_SPHERE_VERTEX_COUNT][3];
+        uint32_t idx[XUD_SHAPES_SPHERE_INDEX_COUNT];
+        uint32_t seen[XUD_SHAPES_SPHERE_VERTEX_COUNT];
+        uint32_t v = 0u;
+        uint32_t row = 0u;
+        uint32_t onSphere = 0u;
+        uint32_t unitNormal = 0u;
+        uint32_t radialNormal = 0u;
+        uint32_t zeroUv = 0u;
+        uint32_t colourRows = 0u;
+        uint32_t indexInRange = 0u;
+        uint32_t vertexNamed = 0u;
+        uint32_t distinctCorners = 0u;
+        uint32_t nonDegenerate = 0u;
+        uint32_t woundOutward = 0u;
+
+        centre[0] = center.x;
+        centre[1] = center.y;
+        centre[2] = center.z;
+
+        for (v = 0u; v < XUD_SHAPES_SPHERE_VERTEX_COUNT; v++) {
+            seen[v] = 0u;
+        }
+
+        for (v = 0u; v < XUD_SHAPES_SPHERE_VERTEX_COUNT; v++) {
+            float uvRow[2];
+            float offset2 = 0.0f;
+            float normal2 = 0.0f;
+            float radial = 0.0f;
+            uint32_t k = 0u;
+
+            memcpy(&pos[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + ((size_t)v * XUD_BATCH_STREAM_POS_SIZE), sizeof(pos[v]));
+            memcpy(
+                &nrm[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + ((size_t)v * XUD_BATCH_STREAM_NORMAL_SIZE), sizeof(nrm[v]));
+            memcpy(uvRow, arena + b.streamOffset[XUD_BATCH_STREAM_UV] + ((size_t)v * XUD_BATCH_STREAM_UV_SIZE), sizeof(uvRow));
+
+            if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + ((size_t)v * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                    XUD_BATCH_STREAM_COLOR_SIZE)
+                == 0) {
+                colourRows++;
+            }
+            if ((uvRow[0] == XUD_SHAPES_UV_S) && (uvRow[1] == XUD_SHAPES_UV_T)) {
+                zeroUv++;
+            }
+
+            for (k = 0u; k < 3u; k++) {
+                const float off = pos[v][k] - centre[k];
+                offset2 += off * off;
+                normal2 += nrm[v][k] * nrm[v][k];
+                radial += off * nrm[v][k];
+            }
+            if (fabsf(offset2 - (radius * radius)) <= tolerance) {
+                onSphere++;
+            }
+            if (fabsf(normal2 - 1.0f) <= tolerance) {
+                unitNormal++;
+            }
+            /* dot(offset, normal) is the radius only when the normal is unit AND points along the
+               offset: a normal pointing anywhere else scores below, and one pointing back at the
+               centre scores negative. That is the radial claim, checked rather than asserted. */
+            if (fabsf(radial - radius) <= tolerance) {
+                radialNormal++;
+            }
+        }
+
+        for (row = 0u; row < XUD_SHAPES_SPHERE_INDEX_COUNT; row++) {
+            memcpy(&idx[row], arena + b.indexOffset + ((size_t)row * XUD_BATCH_INDEX_SIZE), sizeof(idx[row]));
+        }
+
+        for (row = 0u; row < XUD_SHAPES_SPHERE_INDEX_COUNT; row++) {
+            if (idx[row] < XUD_SHAPES_SPHERE_VERTEX_COUNT) {
+                indexInRange++;
+            }
+        }
+        for (v = 0u; v < XUD_SHAPES_SPHERE_VERTEX_COUNT; v++) {
+            for (row = 0u; row < XUD_SHAPES_SPHERE_INDEX_COUNT; row++) {
+                if (idx[row] == v) {
+                    seen[v]++;
+                }
+            }
+        }
+        for (v = 0u; v < XUD_SHAPES_SPHERE_VERTEX_COUNT; v++) {
+            if (seen[v] >= 1u) {
+                vertexNamed++;
+            }
+        }
+
+        for (row = 0u; row < XUD_SHAPES_SPHERE_TRIANGLE_COUNT; row++) {
+            const uint32_t i0 = idx[row * 3u];
+            const uint32_t i1 = idx[(row * 3u) + 1u];
+            const uint32_t i2 = idx[(row * 3u) + 2u];
+            const float* p0 = (i0 < XUD_SHAPES_SPHERE_VERTEX_COUNT) ? &pos[i0][0] : &pos[0][0];
+            const float* p1 = (i1 < XUD_SHAPES_SPHERE_VERTEX_COUNT) ? &pos[i1][0] : &pos[0][0];
+            const float* p2 = (i2 < XUD_SHAPES_SPHERE_VERTEX_COUNT) ? &pos[i2][0] : &pos[0][0];
+            float e1[3];
+            float e2[3];
+            float cross[3];
+            float outward[3];
+            float cross2 = 0.0f;
+            float facing = 0.0f;
+            uint32_t k = 0u;
+
+            if ((i0 != i1) && (i1 != i2) && (i0 != i2)) {
+                distinctCorners++;
+            }
+
+            for (k = 0u; k < 3u; k++) {
+                e1[k] = p1[k] - p0[k];
+                e2[k] = p2[k] - p0[k];
+            }
+            cross[0] = (e1[1] * e2[2]) - (e1[2] * e2[1]);
+            cross[1] = (e1[2] * e2[0]) - (e1[0] * e2[2]);
+            cross[2] = (e1[0] * e2[1]) - (e1[1] * e2[0]);
+            for (k = 0u; k < 3u; k++) {
+                cross2 += cross[k] * cross[k];
+                outward[k] = ((p0[k] + p1[k] + p2[k]) / 3.0f) - centre[k];
+            }
+            facing = (cross[0] * outward[0]) + (cross[1] * outward[1]) + (cross[2] * outward[2]);
+
+            /* A degenerate triangle has a zero cross product, and the winding check below cannot
+               read one: its facing value is zero too, which is neither positive nor negative. So
+               the two checks are separate rather than one, and the degenerate case is the one the
+               single-vertex poles exist to avoid. */
+            if (cross2 > 0.0f) {
+                nonDegenerate++;
+            }
+            if (facing > 0.0f) {
+                woundOutward++;
+            }
+        }
+
+        xud_check(colourRows == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-colour-at-every-vertex",
+            "the caller's four bytes, in the caller's order, at all 17 vertices - the batch's COLOR stream is per-vertex and a sphere has "
+            "one "
+            "colour");
+        xud_check(zeroUv == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-zero-uv-at-every-vertex",
+            "the header's zero uv at all 17: a sphere has no texture to unwrap yet, and set 1 is still unallocated");
+        xud_check(onSphere == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-vertices-at-the-radius",
+            "every position is one radius from the centre, which is the caller's radius rather than one the shape invented - and it is "
+            "read as a squared distance against a tolerance, because a sphere's positions come from sinf/cosf");
+        xud_check(unitNormal == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-normals-are-unit",
+            "every normal is a unit vector, which is what a lighting-ready NORMAL stream needs and what a normalised-but-not or a zero one "
+            "would fail");
+        xud_check(radialNormal == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-normals-are-radial",
+            "and every one of them points at its own position away from the centre, which is the sphere's own claim and would fail on a "
+            "normal copied from the flat +Z constant the triangle and the box's faces use");
+        xud_check(indexInRange == XUD_SHAPES_SPHERE_INDEX_COUNT, "shapes/sphere-indices-in-range",
+            "every index names a vertex that exists, so no index reaches past the sphere's own 17 into whatever the batch holds beside it");
+        xud_check(vertexNamed == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-every-vertex-named",
+            "and every vertex is named by at least one index, which is what says the mesh is not a row of vertices with a hole in it - the "
+            "two poles are named by the five fan triangles each");
+        xud_check(distinctCorners == XUD_SHAPES_SPHERE_TRIANGLE_COUNT, "shapes/sphere-triangles-have-three-corners",
+            "every triangle names three different vertices, which is what a row of coincident pole vertices would fail and the "
+            "single-vertex poles exist to give");
+        xud_check(nonDegenerate == XUD_SHAPES_SPHERE_TRIANGLE_COUNT, "shapes/sphere-triangles-are-not-degenerate",
+            "and every triangle has a non-zero cross product, which is the winding check's own precondition - a degenerate triangle's "
+            "facing value is zero, which is neither outward nor inward, so it cannot be read as a winding");
+        xud_check(woundOutward == XUD_SHAPES_SPHERE_TRIANGLE_COUNT, "shapes/sphere-triangles-wound-outward",
+            "and all 30 of them are wound counter-clockwise seen from outside, which is the pipeline's front face and would fail on a fan "
+            "or a band written in the other order");
+    }
+
+    /* The refusal half of the atomicity claim, at the shape whose index spend is the batch's counter
+       example: a second sphere fits the vertex bound with 30 vertices to spare and does not fit the
+       index headroom at all, so the refusal is an INDEX refusal and the check is the counters as
+       well as the code. */
+    result = xud_shapes_append_sphere(
+        &b, center, XUD_TEST_SHAPES_SPHERE_RADIUS, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color);
+    xud_check(result == XUD_OUT_OF_MEMORY, "shapes/sphere-second-refused",
+        "a second sphere does not fit the batch's index headroom and is refused with the batch's own code");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/sphere-stats-after-refusal", "and the counters are still readable after the refusal");
+    xud_check(vertexCount == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-refusal-wrote-no-vertex",
+        "the refused sphere wrote no vertex, so the live count is still 17 - and 47 vertices of room remain, which is what says the "
+        "refusal is an index refusal and not a vertex one");
+    xud_check(indexCount == XUD_SHAPES_SPHERE_INDEX_COUNT, "shapes/sphere-refusal-wrote-no-index",
+        "and no index, so the live count is still 90, six slots short of the headroom's 96");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/sphere-invariant-after-refusal",
+        "and the batch's invariant still holds, which is what says nothing half-written is in it");
+
+    /* A box beside a sphere in one batch: the two shapes' index spend is not one number, and the
+       box is refused here for its indices while it still fits the sphere's leftover vertices - the
+       sphere spends 90 indices over 17 vertices and the box needs 36 more over 24, which is 126
+       against a headroom of 96. The same fact the triangle-and-box check above states, with the
+       shapes the other way round. */
+    result = xud_shapes_append_cube(&b, center, width, height, length, color);
+    xud_check(result == XUD_OUT_OF_MEMORY, "shapes/sphere-plus-cube-refused",
+        "a box beside a sphere does not fit the index headroom and is refused");
+    xud_check((XUD_SHAPES_SPHERE_VERTEX_COUNT + XUD_SHAPES_CUBE_VERTEX_COUNT) <= XUD_BATCH_INITIAL_VERTICES,
+        "shapes/sphere-plus-cube-fits-the-vertex-bound",
+        "and it DOES fit the vertex bound, so the refusal is the index bound's and not the vertex one's");
+    xud_check((XUD_SHAPES_SPHERE_INDEX_COUNT + XUD_SHAPES_CUBE_INDEX_COUNT) > XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES),
+        "shapes/sphere-plus-cube-over-the-index-headroom", "90 plus 36 indices is over the 96-slot headroom the capacity sizes at 3n/2");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/sphere-plus-cube-invariant",
+        "and the batch's invariant still holds over the refusal, so the refused box left the sphere alone");
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -465,6 +781,13 @@ static void xud_test_shapes_pure(void) {
    ng pipeline row, bound a set against the wrong layout or pushed past the recorded range would
    be reported here rather than only suspected. */
 #define XUD_TEST_SHAPES_FRAMES 3u
+
+/* How many of those frames draw the box rather than the sphere. Two, and the last frame is the
+   sphere's: a sphere's 90 indices beside the frame's two triangles' 6 is exactly the initial cap
+   acity's 96-slot index headroom, so the sphere and the box cannot share a frame at that capacity
+   and the GPU half has to spend one frame on each rather than doubling back on a batch it grew.
+   That is the same fact the pure half checks, seen through a real submit and a real present. */
+#define XUD_TEST_SHAPES_CUBE_FRAMES 2u
 
 static void xud_test_shapes_gpu(void) {
     XudContext* context = NULL;
@@ -482,6 +805,7 @@ static void xud_test_shapes_gpu(void) {
     XudColor green = (XudColor) { .r = 0u, .g = 255u, .b = 0u, .a = 255u };
     XudColor blue = (XudColor) { .r = 0u, .g = 0u, .b = 255u, .a = 255u };
     XudVector3 cubeCentre = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+    XudVector3 sphereCentre = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
 
     result = xud_init_context(&context, 64u, 64u);
     xud_check(result == XUD_OK, "gpu-shapes/bringup-completes",
@@ -526,17 +850,52 @@ static void xud_test_shapes_gpu(void) {
            appended beside the frame's two triangles, replayed through the same pipeline the tria
            ngles went through. A line or a point would need a different topology and would not be
            this rung's to draw (see xud_shapes.h's note), which is what makes a box the shape that
-           can land here today. */
-        result = xud_draw_cube(context, cubeCentre, 0.8f, 0.8f, 0.8f, blue);
-        xud_check(result == XUD_OK, "gpu-shapes/cube-draw-ok", "the public box call appends into the context's own batch");
-        xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
-            "gpu-shapes/stats-after-cube", "and the counters answer after it");
-        xud_check(vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u) + XUD_SHAPES_CUBE_VERTEX_COUNT),
-            "gpu-shapes/cube-costs-24-vertices",
-            "30 vertices in the frame, 24 of them the box's, which is the same count the pure half checked against a batch it built "
-            "itself");
-        xud_check(indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + XUD_SHAPES_CUBE_INDEX_COUNT), "gpu-shapes/cube-costs-36-indices",
-            "42 indices, 36 of them the box's - inside the initial capacity's headroom, so no grow was asked for mid-frame");
+           can land here today. The last frame of the loop is the sphere's instead, because a sphere
+           and a box cannot share a frame at the initial capacity - see the note on XUD_TEST_SHAPES
+           _CUBE_FRAMES above. */
+        if (frame < XUD_TEST_SHAPES_CUBE_FRAMES) {
+            result = xud_draw_cube(context, cubeCentre, 0.8f, 0.8f, 0.8f, blue);
+            xud_check(result == XUD_OK, "gpu-shapes/cube-draw-ok", "the public box call appends into the context's own batch");
+            xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+                "gpu-shapes/stats-after-cube", "and the counters answer after it");
+            xud_check(vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u) + XUD_SHAPES_CUBE_VERTEX_COUNT),
+                "gpu-shapes/cube-costs-24-vertices",
+                "30 vertices in the frame, 24 of them the box's, which is the same count the pure half checked against a batch it built "
+                "itself");
+            xud_check(indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + XUD_SHAPES_CUBE_INDEX_COUNT),
+                "gpu-shapes/cube-costs-36-indices",
+                "42 indices, 36 of them the box's - inside the initial capacity's headroom, so no grow was asked for mid-frame");
+        } else {
+            result = xud_draw_sphere(context, sphereCentre, XUD_TEST_SHAPES_SPHERE_RADIUS, blue);
+            xud_check(result == XUD_OK, "gpu-shapes/sphere-draw-ok", "the public sphere call appends into the context's own batch");
+            xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+                "gpu-shapes/stats-after-sphere", "and the counters answer after it");
+            xud_check(vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u) + XUD_SHAPES_SPHERE_VERTEX_COUNT),
+                "gpu-shapes/sphere-costs-17-vertices",
+                "23 vertices in the frame, 17 of them the sphere's, which is the shared-vertex count the pure half checked against a batch "
+                "it "
+                "built itself - not the 30 a seam-duplicated sphere would cost");
+            xud_check(indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + XUD_SHAPES_SPHERE_INDEX_COUNT),
+                "gpu-shapes/sphere-costs-90-indices",
+                "96 indices, 90 of them the sphere's, which is exactly the initial capacity's index headroom - the frame fills the batch's "
+                "indices while 41 of its vertices are still free");
+            xud_check(indexCount == XUD_BATCH_INDEX_CAPACITY(capacity), "gpu-shapes/sphere-fills-the-index-headroom",
+                "and that is exactly the headroom the capacity sizes at 3n/2, so the sphere is the shape that spends it all");
+
+            /* A box refused beside a full sphere, through a real context: the refusal is the batch's
+               and not the test's, and the check is the counters as well as the code, because a shape
+               that wrote part of itself before refusing would leave a frame loop drawing half a box
+               through a real pipeline. */
+            result = xud_draw_cube(context, cubeCentre, 0.8f, 0.8f, 0.8f, blue);
+            xud_check(result == XUD_OUT_OF_MEMORY, "gpu-shapes/cube-beside-sphere-refused",
+                "a box does not fit beside a sphere that filled the index headroom, and the batch's own code says so");
+            xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+                "gpu-shapes/stats-after-refusal", "and the counters are still readable after the refusal");
+            xud_check((vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u) + XUD_SHAPES_SPHERE_VERTEX_COUNT))
+                    && (indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + XUD_SHAPES_SPHERE_INDEX_COUNT)),
+                "gpu-shapes/refusal-wrote-nothing",
+                "and the refused box wrote nothing, so the frame still draws its two triangles and its sphere");
+        }
 
         result = xud_end_drawing(context);
         xud_check(result == XUD_OK, "gpu-frames/end-ok",

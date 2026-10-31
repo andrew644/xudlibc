@@ -127,9 +127,25 @@
 #define XUD_BATCH_INITIAL_VERTICES 64u
 #define XUD_BATCH_MAX_VERTICES 4096u
 
-/* The index capacity that goes with a vertex capacity: a closed triangle mesh needs at most
-   3n/2 indices for n vertices (Euler: 3n/2 faces at 3 indices each, and a batch is a set of
-   closed meshes), so 3/2 is the bound rather than a guess. Rounded up. */
+/* The index capacity that goes with a vertex capacity: 3/2 indices per vertex, rounded up, which
+   is the spend of a mesh whose vertices are SPLIT per face - the box's spelling, 24 vertices and
+   36 indices, exactly this number - and NOT a bound for a mesh whose vertices are SHARED. A closed
+   manifold triangulated surface has F = 2V-4 faces by Euler (3F = 2E and V-E+F = 2), so it needs
+   3F = 6V-12 indices, FOUR times this headroom, and the sphere is the first shape in the tree tha
+   t
+   spends it: 17 vertices and 90 indices, exactly 6V-12 (xud_shapes.h asserts that, and the tests a
+   rea
+   reads it off the arena). So 3n/2 is a capacity CHOICE rather than a bound - it is the headroom fo
+   r
+   the flat-shaded shapes this rung draws today, and a shape that shares its vertices trips the INDE
+   X
+   bound while the vertex bound still has room, which is why every shape's append reads BOTH. A bat
+   ch
+   that is asked to hold more shared-vertex geometry than this headroom is not resized here: the gr
+   ow
+   path doubles both, so the ratio is kept rather than corrected, and a caller who wants a finer sha
+   red
+   mesh asks for a bigger capacity. Rounded up. */
 #define XUD_BATCH_INDEX_CAPACITY(v) (((v) * 3u + 1u) / 2u)
 
 #define XUD_BATCH_COPY_REGION_COUNT                                                                                                        \
