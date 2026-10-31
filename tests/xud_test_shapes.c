@@ -2,9 +2,10 @@
  *
  *   xud_test_shapes.c - the shapes rung and the public drawing API above it
  *
- *   Owns : the tests of one rung - xud_shapes_append_triangle(), xud_shapes_append_cube() and xud
- *          _shapes_append_sphere(), the geometry xud_draw_triangle_3d(), xud_draw_cube() and xud_
- *          draw_sphere() name, and the public frame pair xud_begin_drawing()/xud_end_drawing().
+ *   Owns : the tests of one rung - xud_shapes_append_triangle(), xud_shapes_append_cube(), xud
+ *          _shapes_append_sphere() and xud_shapes_append_line(), the geometry xud_draw_triangle_3d
+ *          (), xud_draw_cube(), xud_draw_sphere() and xud_draw_line_3d()/xud_draw_point_3d() name,
+ *          and the public frame pair xud_begin_drawing()/xud_end_drawing().
  *          Nothing else - the batch's own appends are the batch area's, the frame loop's is the
  *          frame area's, and the context's lifecycle is the core area's.
  *   Layer: tests, above the batch area and below the core area, which is the layer order: the
@@ -27,6 +28,7 @@
  ***********************************************************************************************/
 
 #include <math.h> /* Required for: fabsf, the sphere's geometry checks are read against a tolerance rather than exactly, and this area's file is the one that says why */
+#include <stdlib.h> /* Required for: free, the draw rows the topology split allocates in this area's line checks */
 #include <string.h> /* Required for: memset, the batch shell and the context shell this area builds itself */
 
 #include "xud.h" /* Required for: XudResult, XudContext, XudVector3, XudColor, the public frame pair and xud_draw_triangle_3d */
@@ -112,6 +114,17 @@ static void xud_test_shapes_pure(void) {
         "a public draw call with no context is refused");
     xud_check(xud_draw_sphere(&shell, center, 0.4f, color) == XUD_UNSUPPORTED, "shapes/sphere-draw-no-renderer",
         "a context with no renderer has no batch to append into, and the refusal is reported");
+    xud_check(xud_shapes_append_line(NULL, v0, v1, color) == XUD_INVALID_ARG, "shapes/line-append-no-batch",
+        "and so is a line - the guard is the same one, one rung above the same two codes");
+    xud_check(xud_draw_line_3d(NULL, v0, v1, color) == XUD_INVALID_ARG, "shapes/line-draw-no-context",
+        "a public draw call with no context is refused");
+    xud_check(xud_draw_line_3d(&shell, v0, v1, color) == XUD_UNSUPPORTED, "shapes/line-draw-no-renderer",
+        "a context with no renderer has no batch to append into, and the refusal is reported");
+    xud_check(xud_draw_point_3d(NULL, center, color) == XUD_INVALID_ARG, "shapes/point-draw-no-context",
+        "a public draw call with no context is refused");
+    xud_check(xud_draw_point_3d(&shell, center, color) == XUD_UNSUPPORTED, "shapes/point-draw-no-renderer",
+        "and the point is the same guard, one rung above the same two codes - it is a line, so it is "
+        "refused as one");
     xud_check(xud_begin_drawing(NULL) == XUD_INVALID_ARG, "frames/begin-no-context", "a frame boundary with no context is refused");
     xud_check(xud_begin_drawing(&shell) == XUD_UNSUPPORTED, "frames/begin-no-renderer", "and so is one whose renderer rung is gone");
     xud_check(xud_end_drawing(NULL) == XUD_INVALID_ARG, "frames/end-no-context", "a frame boundary cannot be closed with no context");
@@ -768,6 +781,88 @@ static void xud_test_shapes_pure(void) {
         "shapes/sphere-plus-cube-over-the-index-headroom", "90 plus 36 indices is over the 96-slot headroom the capacity sizes at 3n/2");
     xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/sphere-plus-cube-invariant",
         "and the batch's invariant still holds over the refusal, so the refused box left the sphere alone");
+
+    /*--- the line: the shape on the OTHER row of the pipeline list ---------------------------*/
+
+    /* The batch is still the sphere's: 17 vertices and 90 indices, at the capacity a context opens
+       at. A line beside the sphere fits both bounds (92 of the 96-slot index headroom), and the
+       append is the first thing in the tree that moves the batch's topology state - which makes
+       THIS check the row split rather than a shape: the sphere's run closes into a row of the
+       same batch and the line's two indices start the next one, so the frame's upload is still
+       one upload and the frame's replay is two rows through two pipelines.
+    */
+    result = xud_shapes_append_line(&b, v0, v1, color);
+    xud_check(result == XUD_OK, "shapes/line-beside-sphere-ok", "a line appends beside a sphere");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_LINES, "shapes/line-moved-topology",
+        "and the append moved the batch's topology state, which is the shape owning the state change "
+        "rather than the caller");
+    xud_check(b.drawCount == 1u, "shapes/line-split-one-row",
+        "and closed the sphere's run into one row of the same batch, so a frame that draws a sphere "
+        "and a line is two rows rather than one row at whichever topology came last");
+    xud_check((b.draws[0u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES) && (b.draws[0u].indexCount == XUD_SHAPES_SPHERE_INDEX_COUNT),
+        "shapes/line-first-row-is-the-sphere's",
+        "and that row is a TRIANGLE row over the sphere's 90 indices - the row names both axes and "
+        "the pipeline list is indexed by the pair");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/line-stats-after-append", "and the counters answer after it");
+    xud_check((vertexCount == (XUD_SHAPES_SPHERE_VERTEX_COUNT + XUD_SHAPES_LINE_VERTEX_COUNT))
+            && (indexCount == (XUD_SHAPES_SPHERE_INDEX_COUNT + XUD_SHAPES_LINE_INDEX_COUNT)),
+        "shapes/line-costs-two-and-two",
+        "19 vertices and 92 indices, so a line costs two of each - the two indices are not decoration, "
+        "vkCmdDrawIndexed names no buffer and no topology, so a line with no indices is a line the "
+        "frame loop could not draw");
+
+    /* The split back the other way, which is the fact the other half of the axis is a state rather
+       than a one-way switch: a triangle after a line closes the LINE's run and starts a TRIANGLE
+       one, so the frame's rows alternate with the shapes rather than with the calls.
+    */
+    result = xud_shapes_append_triangle(&b, v0, v1, v2, color);
+    xud_check(result == XUD_OK, "shapes/triangle-after-line-ok", "a triangle appends after the line");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_TRIANGLES, "shapes/triangle-moved-topology-back",
+        "and the append moved the state back, so the axis is a state and not a switch");
+    xud_check(b.drawCount == 2u, "shapes/triangle-split-second-row", "and closed the line's run into a second row");
+    xud_check((b.draws[1u].topology == XUD_BATCH_TOPOLOGY_LINES) && (b.draws[1u].indexCount == XUD_SHAPES_LINE_INDEX_COUNT),
+        "shapes/line-second-row-is-the-line's",
+        "and that row is a LINE row over the line's two indices, which is what the LINE_LIST row of the "
+        "pipeline list is drawn through");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "shapes/mixed-stats",
+        "and the counters answer after all three shapes");
+    xud_check((vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT + XUD_SHAPES_SPHERE_VERTEX_COUNT) + XUD_SHAPES_LINE_VERTEX_COUNT))
+            && (indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT + XUD_SHAPES_SPHERE_INDEX_COUNT) + XUD_SHAPES_LINE_INDEX_COUNT)),
+        "shapes/three-shapes-one-batch-counts",
+        "22 vertices and 95 indices, which is the append being per shape rather than per row: the row "
+        "split moved no count at all");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/mixed-invariant",
+        "and the invariant still holds across a row split, which is the half that says the split is a "
+        "record rather than a re-allocation");
+
+    /* The refusal half of the atomicity claim, on the axis rather than on the bytes: the batch has
+       95 of the 96 index slots live, so a line's two more do not fit - and the refusal has to leave
+       the TOPOLOGY state alone as well as the counts, because a refused line that moved the state
+       first would split a run and record a row for a shape that was never drawn.
+    */
+    result = xud_shapes_append_line(&b, v0, v1, color);
+    xud_check(result == XUD_OUT_OF_MEMORY, "shapes/line-over-index-headroom-refused",
+        "a line that does not fit the index headroom is refused with the batch's own code");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_TRIANGLES, "shapes/refused-line-left-topology-alone",
+        "and the topology state is where it was, so a refused line cannot split a run");
+    xud_check(b.drawCount == 2u, "shapes/refused-line-recorded-no-row", "and no row was recorded for it");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/stats-after-line-refusal", "and the counters are still readable after the refusal");
+    xud_check((vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT + XUD_SHAPES_SPHERE_VERTEX_COUNT) + XUD_SHAPES_LINE_VERTEX_COUNT))
+            && (indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT + XUD_SHAPES_SPHERE_INDEX_COUNT) + XUD_SHAPES_LINE_INDEX_COUNT)),
+        "shapes/refused-line-wrote-nothing",
+        "and the refused line wrote nothing, so the frame still draws its sphere, its line and its triangle");
+    xud_check(
+        xud_batch_check_invariant(&b) == XUD_OK, "shapes/invariant-after-line-refusal", "and the invariant still holds over the refusal");
+
+    /* The rows the split above allocated are this area's to release: the batch is a stack record
+       here rather than one xud_batch_open allocated, and the batch area frees its own rows the same
+       way at the end of its pure half.
+    */
+    free(b.draws);
+    b.draws = NULL;
+    b.drawCapacity = 0u;
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -806,6 +901,9 @@ static void xud_test_shapes_gpu(void) {
     XudColor blue = (XudColor) { .r = 0u, .g = 0u, .b = 255u, .a = 255u };
     XudVector3 cubeCentre = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
     XudVector3 sphereCentre = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+    XudVector3 lineStart = (XudVector3) { .x = -0.8f, .y = -0.8f, .z = 0.0f };
+    XudVector3 lineEnd = (XudVector3) { .x = 0.8f, .y = 0.8f, .z = 0.0f };
+    XudColor white = (XudColor) { .r = 255u, .g = 255u, .b = 255u, .a = 255u };
 
     result = xud_init_context(&context, 64u, 64u);
     xud_check(result == XUD_OK, "gpu-shapes/bringup-completes",
@@ -848,11 +946,12 @@ static void xud_test_shapes_gpu(void) {
         /* The box in the same frame is the shape that needs per-face attribute rows, and it is also
            the reason the frame's flush is one triangle-list pipeline: 24 vertices and 36 indices
            appended beside the frame's two triangles, replayed through the same pipeline the tria
-           ngles went through. A line or a point would need a different topology and would not be
-           this rung's to draw (see xud_shapes.h's note), which is what makes a box the shape that
-           can land here today. The last frame of the loop is the sphere's instead, because a sphere
-           and a box cannot share a frame at the initial capacity - see the note on XUD_TEST_SHAPES
-           _CUBE_FRAMES above. */
+           ngles went through. The line beside it is the shape on the OTHER row of the pipeline lis
+           t, and the check under it is the row split: the append closes the triangles-and-box run
+           into a row and starts the line's own, so this frame's flush replays TWO rows through TWO
+           pipelines and the validation layer is installed in this build to say so if it does not. A
+           line and a box cannot share a frame at the initial capacity with a sphere - see the note
+           on XUD_TEST_SHAPES_CUBE_FRAMES above. */
         if (frame < XUD_TEST_SHAPES_CUBE_FRAMES) {
             result = xud_draw_cube(context, cubeCentre, 0.8f, 0.8f, 0.8f, blue);
             xud_check(result == XUD_OK, "gpu-shapes/cube-draw-ok", "the public box call appends into the context's own batch");
@@ -865,6 +964,21 @@ static void xud_test_shapes_gpu(void) {
             xud_check(indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + XUD_SHAPES_CUBE_INDEX_COUNT),
                 "gpu-shapes/cube-costs-36-indices",
                 "42 indices, 36 of them the box's - inside the initial capacity's headroom, so no grow was asked for mid-frame");
+
+            result = xud_draw_line_3d(context, lineStart, lineEnd, white);
+            xud_check(result == XUD_OK, "gpu-shapes/line-draw-ok", "the public line call appends into the same open frame");
+            xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+                "gpu-shapes/stats-after-line", "and the counters answer after it");
+            xud_check(drawCount == 1u, "gpu-shapes/line-split-one-row-mid-frame",
+                "one row recorded MID-frame, before the flush: the line's append closed the triangles-and-box "
+                "run into it, so this frame's replay is two rows through two pipelines rather than one "
+                "row at whichever topology came last - and the validation layer below is what reports "
+                "it if the frame bound the wrong row");
+            xud_check(
+                vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u) + (XUD_SHAPES_CUBE_VERTEX_COUNT + XUD_SHAPES_LINE_VERTEX_COUNT)),
+                "gpu-shapes/line-costs-two-vertices", "32 vertices in the frame, 2 of them the line's, so the row split moved no count");
+            xud_check(indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + (XUD_SHAPES_CUBE_INDEX_COUNT + XUD_SHAPES_LINE_INDEX_COUNT)),
+                "gpu-shapes/line-costs-two-indices", "44 indices, 2 of them the line's, inside the initial capacity's headroom");
         } else {
             result = xud_draw_sphere(context, sphereCentre, XUD_TEST_SHAPES_SPHERE_RADIUS, blue);
             xud_check(result == XUD_OK, "gpu-shapes/sphere-draw-ok", "the public sphere call appends into the context's own batch");
@@ -881,6 +995,25 @@ static void xud_test_shapes_gpu(void) {
                 "indices while 41 of its vertices are still free");
             xud_check(indexCount == XUD_BATCH_INDEX_CAPACITY(capacity), "gpu-shapes/sphere-fills-the-index-headroom",
                 "and that is exactly the headroom the capacity sizes at 3n/2, so the sphere is the shape that spends it all");
+
+            /* A line refused beside a sphere that filled the headroom, through a real context: the
+               refusal is the batch's, and the check is the TOPOLOGY state as well as the counters,
+               because a line that moved the state before refusing would have split the frame's run
+               into a row for a shape that was never drawn - and this frame is the one the frame
+               loop replays, so the row would be a real vkCmdDrawIndexed through the LINE_LIST pipel
+               ine over two indices that were never written.
+            */
+            result = xud_draw_line_3d(context, lineStart, lineEnd, white);
+            xud_check(result == XUD_OUT_OF_MEMORY, "gpu-shapes/line-beside-sphere-refused",
+                "a line does not fit beside a sphere that filled the index headroom, and the batch's own code says so");
+            xud_check(context->renderer->batch->currentTopology == XUD_BATCH_TOPOLOGY_TRIANGLES,
+                "gpu-shapes/refused-line-left-topology-alone", "and the topology state is where it was, so the refused line split nothing");
+            xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+                "gpu-shapes/stats-after-line-refusal", "and the counters are still readable after the refusal");
+            xud_check((vertexCount == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u) + XUD_SHAPES_SPHERE_VERTEX_COUNT))
+                    && (indexCount == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + XUD_SHAPES_SPHERE_INDEX_COUNT)),
+                "gpu-shapes/refused-line-wrote-nothing",
+                "and the refused line wrote nothing, so the frame still draws its two triangles and its sphere");
 
             /* A box refused beside a full sphere, through a real context: the refusal is the batch's
                and not the test's, and the check is the counters as well as the code, because a shape

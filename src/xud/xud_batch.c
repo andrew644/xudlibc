@@ -381,13 +381,13 @@ XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint
     return XUD_OK;
 }
 
-XudResult xud_batch_record_draw(XudBatch* batch, uint32_t variant, uint32_t materialIndex) {
+XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex) {
     XudBatchDraw* rows = NULL;
 
     if (batch == NULL) {
         return XUD_INVALID_ARG;
     }
-    if (variant >= XUD_BATCH_VARIANT_COUNT) {
+    if ((topology >= XUD_BATCH_TOPOLOGY_COUNT) || (variant >= XUD_BATCH_VARIANT_COUNT)) {
         return XUD_INVALID_ARG;
     }
 
@@ -402,12 +402,40 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t variant, uint32_t mate
 
     batch->draws[batch->drawCount].firstIndex = batch->pendingFirstIndex;
     batch->draws[batch->drawCount].indexCount = batch->pendingIndexCount;
+    batch->draws[batch->drawCount].topology = topology;
     batch->draws[batch->drawCount].variant = variant;
     batch->draws[batch->drawCount].materialIndex = materialIndex;
     batch->drawCount++;
 
     batch->pendingFirstIndex = batch->indexCount;
     batch->pendingIndexCount = 0u;
+
+    return XUD_OK;
+}
+
+/* The row split: raylib's rlBegin(mode) on a mode change (reference/raylib/rlgl.h 1454-1478) closes
+   the current run with drawCounter++ and writes the new mode into the new row. It does not draw
+   and it does not end the batch, and neither does this: the batch stays open, the bytes its earlier
+   rows name stay where they are, and the frame's upload still happens once at the boundary. The
+   empty-run guard is raylib's own `if (vertexCount > 0)` beside that drawCounter++. */
+XudResult xud_batch_set_topology(XudBatch* batch, uint32_t topology) {
+    XudResult result = XUD_OK;
+
+    if ((batch == NULL) || (topology >= XUD_BATCH_TOPOLOGY_COUNT)) {
+        return XUD_INVALID_ARG;
+    }
+    if (topology == batch->currentTopology) {
+        return XUD_OK;
+    }
+
+    if (batch->pendingIndexCount != 0u) {
+        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    batch->currentTopology = topology;
 
     return XUD_OK;
 }
@@ -504,6 +532,7 @@ XudResult xud_batch_reset(XudBatch* batch) {
     batch->drawCount = 0u;
     batch->pendingFirstIndex = 0u;
     batch->pendingIndexCount = 0u;
+    batch->currentTopology = XUD_BATCH_TOPOLOGY_TRIANGLES;
     batch->currentVariant = XUD_BATCH_VARIANT_OPAQUE;
     batch->currentMaterial = XUD_BATCH_NO_MATERIAL;
 
@@ -853,6 +882,7 @@ XudResult xud_batch_open(XudBatch** outBatch, XudLoader* loader, const XudDevice
         return XUD_OUT_OF_MEMORY;
     }
 
+    batch->currentTopology = XUD_BATCH_TOPOLOGY_TRIANGLES;
     batch->currentVariant = XUD_BATCH_VARIANT_OPAQUE;
     batch->currentMaterial = XUD_BATCH_NO_MATERIAL;
 

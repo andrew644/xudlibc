@@ -317,17 +317,26 @@ static void xud_test_batch_pure(void) {
     b.pendingFirstIndex = 0u;
     b.pendingIndexCount = 3u;
 
-    xud_check(xud_batch_record_draw(NULL, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL) == XUD_INVALID_ARG, "batch/draw-null-batch",
-        "refused");
-    xud_check(xud_batch_record_draw(&b, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_MATERIAL) == XUD_INVALID_ARG, "batch/draw-bad-variant",
-        "a row that names no variant the plan names is a bad argument, not a row that would bind no pipeline");
-    xud_check(xud_batch_record_draw(&b, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL) == XUD_OK, "batch/draw-recorded",
-        "the first row records");
+    xud_check(xud_batch_record_draw(NULL, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL) == XUD_INVALID_ARG,
+        "batch/draw-null-batch", "refused");
+    xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_COUNT, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL) == XUD_INVALID_ARG,
+        "batch/draw-bad-topology",
+        "a row that names no topology the batch names is a bad argument, not a row that would bind no "
+        "pipeline - the same rule the batch's own invariant check applies to a row's variant, and the "
+        "reason the row is a (topology, variant) pair rather than one index");
+    xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_MATERIAL) == XUD_INVALID_ARG,
+        "batch/draw-bad-variant", "a row that names no variant the plan names is a bad argument, not a row that would bind no pipeline");
+    xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL) == XUD_OK,
+        "batch/draw-recorded", "the first row records");
     xud_check(
         b.draws[0u].firstIndex == 0u, "batch/draw-first-index-is-pending-start", "the row's firstIndex is where the pending batch started");
     xud_check(b.draws[0u].indexCount == 3u, "batch/draw-index-count-is-pending-count",
         "and its indexCount is the pending count - the two arguments of vkCmdDrawIndexed");
     xud_check(b.draws[0u].variant == XUD_BATCH_VARIANT_OPAQUE, "batch/draw-variant", "the variant the row was accumulated under");
+    xud_check(b.draws[0u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES, "batch/draw-topology",
+        "and the topology the row was recorded under - the row names both, and the pipeline list is "
+        "indexed by the pair, which is what makes a line row and a triangle row two rows rather than "
+        "one row drawn at whichever topology came last");
     xud_check(b.draws[0u].materialIndex == XUD_BATCH_NO_MATERIAL, "batch/draw-material-sentinel",
         "and the sentinel, because no material slot exists yet - the row names an INDEX into the variants rather than a VkPipeline, which "
         "is what keeps a recreated pipeline from making a stale row");
@@ -336,7 +345,7 @@ static void xud_test_batch_pure(void) {
         "buffer");
 
     for (row = 0u; row < XUD_BATCH_DRAW_MIN; row++) {
-        if (xud_batch_record_draw(&b, XUD_BATCH_VARIANT_OPAQUE, row) != XUD_OK) {
+        if (xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_OPAQUE, row) != XUD_OK) {
             xud_check(0, "batch/draw-array-grow-failed", "the doubling step failed on the host");
             break;
         }
@@ -346,6 +355,44 @@ static void xud_test_batch_pure(void) {
         "bound");
     xud_check(
         b.drawCapacity >= b.drawCount, "batch/draw-capacity-covers-count", "and the capacity it allocated covers the count it recorded");
+
+    /*--- the topology axis, and the row split it owes ----------------------------------------*/
+
+    /* The batch is at the state the section above left it in: no pending run (recording a row moved
+       the pending pair past it) and no vertices appended yet, which is what makes every move below
+       a state change rather than a row. The appends section below then runs at TRIANGLES again, so
+       the axis is checked without moving anything the appends' counts depend on.
+    */
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_TRIANGLES, "batch/topology-default",
+        "a batch opened by xud_batch_open starts at TRIANGLES, which is the row every append has drawn "
+        "through since S16 and the row the pipeline list's first row is");
+    xud_check(xud_batch_set_topology(NULL, XUD_BATCH_TOPOLOGY_LINES) == XUD_INVALID_ARG, "batch/topology-null-batch",
+        "a batch with no state to move is a bad argument");
+    xud_check(xud_batch_set_topology(&b, XUD_BATCH_TOPOLOGY_COUNT) == XUD_INVALID_ARG, "batch/topology-past-list",
+        "a topology at or past the count is refused rather than a row that would bind no pipeline - the "
+        "same rule the invariant check applies to a recorded row's topology, one rung down");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_TRIANGLES, "batch/topology-refusal-left-state",
+        "and the refusal left the state where it was, so a refused move cannot split a run");
+    xud_check(xud_batch_set_topology(&b, XUD_BATCH_TOPOLOGY_TRIANGLES) == XUD_OK, "batch/topology-same-ok",
+        "asking for the topology already in hand is not an error");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 1u), "batch/topology-same-no-row",
+        "and it records no row, which is what makes a shape that restates the batch's topology a no-op "
+        "rather than a row of empty indices per draw call");
+    xud_check(xud_batch_set_topology(&b, XUD_BATCH_TOPOLOGY_LINES) == XUD_OK, "batch/topology-move-ok", "the move to LINES completes");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_LINES, "batch/topology-moved",
+        "the state moved, which is the whole of what the move is when the run that was pending is empty");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 1u), "batch/topology-empty-run-no-row",
+        "and still no row: an empty run is not a draw, so closing it records nothing and a frame that "
+        "draws one line records one row rather than two");
+    xud_check(xud_batch_set_topology(&b, XUD_BATCH_TOPOLOGY_TRIANGLES) == XUD_OK, "batch/topology-move-back",
+        "and the move back is the same call in the other direction - the axis is a state, not a one-way "
+        "switch");
+    xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_TRIANGLES, "batch/topology-back-at-triangles",
+        "back at TRIANGLES, which is what lets the appends section below run at the default it was wri"
+        "tten against");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 1u), "batch/topology-still-one-run",
+        "and the row count has not moved across the two moves, so the axis changed nothing but the state "
+        "while no run was pending");
 
     /*--- the appends, the reset and the counters ---------------------------------------------*/
 

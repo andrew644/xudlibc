@@ -502,6 +502,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     uint32_t hasContent = 0u;
     VkDeviceSize stagingBytes = 0u;
     uint32_t draw = 0u;
+    uint32_t pipelineRow = 0u;
     XudPushRow pushRow;
 
     if ((frame == NULL) || (loader == NULL) || (device == NULL) || (swapchain == NULL) || (pipeline == NULL) || (pass == NULL)
@@ -511,12 +512,20 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     if (!loader->open) {
         return XUD_UNSUPPORTED;
     }
-    if ((device->device == VK_NULL_HANDLE) || (swapchain->swapchain == VK_NULL_HANDLE)
-        || (pipeline->pipeline[XUD_BATCH_VARIANT_OPAQUE] == VK_NULL_HANDLE)
-        || (pipeline->pipeline[XUD_BATCH_VARIANT_TRANSPARENT] == VK_NULL_HANDLE) || (pipeline->layout == VK_NULL_HANDLE)
+    if ((device->device == VK_NULL_HANDLE) || (swapchain->swapchain == VK_NULL_HANDLE) || (pipeline->layout == VK_NULL_HANDLE)
         || (pass->renderPass == VK_NULL_HANDLE) || (frame->commandPool == VK_NULL_HANDLE) || (frame->commandBuffer == VK_NULL_HANDLE)
         || (frame->imageAcquired == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
+    }
+    /* Every row of the pipeline list has to be live, not just the two the variant axis names: a draw
+       row can name either axis, so a list with a row of VK_NULL_HANDLE in it is a list this frame
+       could bind a null pipeline from. The loop is the whole list rather than two named rows, which
+       is what makes growing either axis a guard that needs no edit.
+    */
+    for (pipelineRow = 0u; pipelineRow < XUD_PIPELINE_ROW_COUNT; pipelineRow++) {
+        if (pipeline->pipeline[pipelineRow] == VK_NULL_HANDLE) {
+            return XUD_INVALID_ARG;
+        }
     }
     if ((descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) || (descriptor->uniformBuffer == VK_NULL_HANDLE)
         || (descriptor->uniformStagingBuffer == VK_NULL_HANDLE) || (descriptor->uniformStagingMappedLive == 0u)) {
@@ -653,12 +662,14 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     if (hasContent != 0u) {
         /* The pending batch is closed into a draw row here, which is what makes "the frame loop is the
            flush" a fact rather than a promise: the rows read below are the whole list the frame replays,
-           and the variant/material the row names is the one the appends were made under. Nothing in this
-           tree flushes mid-frame yet - xud_batch_should_flush is the decision and no caller above has
-           acted on it - so the pending run is one row today, and the day it is more than one is the day
-           the multi-draw shape below already handles.
+           and the topology/variant/material the row names is the one the appends were made under. A
+           frame CAN be more than one row already: xud_batch_set_topology() closes a run mid-frame when
+           a shape changes the topology, so a frame that draws a box and a line records two rows and
+           this loop replays both. What this loop does NOT do is act on xud_batch_should_flush() - a
+           variant or material change is still a flush, and no caller above has acted on that decision
+           yet, so one frame still cannot mix blend modes.
         */
-        if (xud_batch_record_draw(batch, batch->currentVariant, batch->currentMaterial) != XUD_OK) {
+        if (xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial) != XUD_OK) {
             return XUD_OUT_OF_MEMORY;
         }
         result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
@@ -955,20 +966,22 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         if (xud_batch_draw_get(batch, draw, &drawRow) != XUD_OK) {
             break;
         }
-        /* The variant is the row of the pipeline list this draw binds, and a variant at or past the
-           count ends the list rather than reading a row off the end of the array - the same rule the
-           batch's own invariant check applies to the variant a draw row names, read here at the use
-           side because this loop is what indexes the array. */
-        if (drawRow.variant >= XUD_BATCH_VARIANT_COUNT) {
+        /* The pair the row names is the row of the pipeline list this draw binds, and either axis at
+           or past its count ends the list rather than reading a row off the end of the array - the
+           same rule the batch's own invariant check applies to the topology and variant a draw row
+           names, read here at the use side because this loop is what indexes the array. */
+        if ((drawRow.topology >= XUD_BATCH_TOPOLOGY_COUNT) || (drawRow.variant >= XUD_BATCH_VARIANT_COUNT)) {
             break;
         }
-        /* The pipeline is bound per draw row, not once per frame: the variant is what picks the row,
-           and a bind is command-buffer state, so the last bind before a draw is the one that draw uses.
+        /* The pipeline is bound per draw row, not once per frame: the pair is what picks the row, and
+           a bind is command-buffer state, so the last bind before a draw is the one that draw uses.
            This is the Vulkan form of rlgl re-selecting its shader/blend state per batch (rlSetBlendMode
-           flushes the batch on a mode change, rlgl.h 2121, then sets the state) - the batch's flush
-           decision already closed a run before the variant changed, so a bind here cannot change what
-           a draw already recorded. */
-        loader->deviceTable.vkCmdBindPipeline(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline[drawRow.variant]);
+           flushes the batch on a mode change, rlgl.h 2121, then sets the state) and of its replay
+           handing batch->draws[i].mode to glDrawArrays (rlgl.h 3116) - here the mode is a row of a
+           list of PIPELINES, because topology is pipeline state rather than a draw-call argument.
+        */
+        loader->deviceTable.vkCmdBindPipeline(
+            frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline[XUD_PIPELINE_ROW(drawRow.topology, drawRow.variant)]);
         /* The push row is filled and pushed HERE, beside the draw it belongs to, rather than once per
            frame: a push-constant range is command-buffer STATE that the last push before a draw bound,
            which is exactly what makes it the per-draw channel and set 0 the per-frame one. The row is a

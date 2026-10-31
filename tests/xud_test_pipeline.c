@@ -41,6 +41,7 @@ static void xud_test_pipeline_pure(void) {
     VkPipelineLayoutCreateInfo layout = (VkPipelineLayoutCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkGraphicsPipelineCreateInfo out = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkGraphicsPipelineCreateInfo transparentInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkGraphicsPipelineCreateInfo lineInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     XudDescriptor desc = (XudDescriptor) { 0 };
 
     xud_check(
@@ -111,10 +112,16 @@ static void xud_test_pipeline_pure(void) {
             "a refused overwrite leaves the row at the state fill_state wrote it in, rather than half-writing it");
     }
 
-    xud_check(pipeline.inputAssembly.topology == XUD_PIPELINE_TOPOLOGY, "pipeline/topology",
+    xud_check(pipeline.inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES].topology == XUD_PIPELINE_TOPOLOGY_TRIANGLE, "pipeline/topology",
         "a triangle list, which is what vkCmdDrawIndexed's indexCount means over the batch's index buffer");
-    xud_check(pipeline.inputAssembly.primitiveRestartEnable == VK_FALSE, "pipeline/no-primitive-restart",
-        "no restart index, so every vertex of the count is a vertex of the triangle");
+    xud_check(pipeline.inputAssembly[XUD_BATCH_TOPOLOGY_LINES].topology == XUD_PIPELINE_TOPOLOGY_LINE, "pipeline/topology-line-row",
+        "the second row of the list is a line list, which is what makes the line shapes' two indices per "
+        "line mean two vertices rather than a triangle's three");
+    xud_check(pipeline.inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES].primitiveRestartEnable == VK_FALSE, "pipeline/no-primitive-restart",
+        "no restart index on the triangles' row, so every vertex of the count is a vertex of the triangle");
+    xud_check(pipeline.inputAssembly[XUD_BATCH_TOPOLOGY_LINES].primitiveRestartEnable == VK_FALSE, "pipeline/no-primitive-restart-line-row",
+        "and none on the line's row either: a restart index would be a gap inside one draw row, and the "
+        "batch's row split is a row of the list rather than a gap in a buffer");
     xud_check((pipeline.viewportState.viewportCount == 1u) && (pipeline.viewportState.scissorCount == 1u),
         "pipeline/one-viewport-one-scissor", "one viewport and one scissor, both dynamic");
     xud_check((pipeline.viewportState.pViewports == NULL) && (pipeline.viewportState.pScissors == NULL), "pipeline/viewport-arrays-null",
@@ -285,30 +292,38 @@ static void xud_test_pipeline_pure(void) {
         "one push-constant range, the descriptor rung's own row: the spec allows at most one in a"
         "layout, so the one range is a bound on this rung's row rather than a list it could grow");
 
-    xud_check(xud_pipeline_fill_create_info(NULL, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG, "pipeline/create-no-record",
-        "a create-info with no record to assemble from is refused");
-    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_VARIANT_OPAQUE, NULL) == XUD_INVALID_ARG, "pipeline/create-null-out",
-        "and so is one with nowhere to be written");
-    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_VARIANT_COUNT, &out) == XUD_INVALID_ARG,
+    xud_check(xud_pipeline_fill_create_info(NULL, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG,
+        "pipeline/create-no-record", "a create-info with no record to assemble from is refused");
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, NULL) == XUD_INVALID_ARG,
+        "pipeline/create-null-out", "and so is one with nowhere to be written");
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_TOPOLOGY_COUNT, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG,
+        "pipeline/create-topology-past-list",
+        "a topology at or past the batch's topology count is refused rather than a row read off the end "
+        "of the arrays - the same rule the batch's own invariant check applies to a draw row's topology, "
+        "and the reason the row is a (topology, variant) pair rather than one index");
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_COUNT, &out) == XUD_INVALID_ARG,
         "pipeline/create-variant-past-list",
         "a variant at or past the batch's variant count is refused rather than a row read off the end "
         "of the arrays - the same rule the batch's own invariant check applies to a draw row's variant");
-    xud_check(xud_pipeline_fill_create_info(&bare, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG, "pipeline/create-no-layout-handle",
+    xud_check(xud_pipeline_fill_create_info(&bare, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG,
+        "pipeline/create-no-layout-handle",
         "a record with no layout handle is a bad argument, because the layout is an argument of the "
         "create call");
     bare.layout = (VkPipelineLayout)0x9000u;
-    xud_check(xud_pipeline_fill_create_info(&bare, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG, "pipeline/create-no-pass-handle",
+    xud_check(xud_pipeline_fill_create_info(&bare, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_INVALID_ARG,
+        "pipeline/create-no-pass-handle",
         "and so is a record that names no render pass: the core-1.4 binding makes the pass an argu"
         "ment of the create as well, so a record that cannot name one is a bad argument of this f"
         "unction, not a create-info that happens to carry VK_NULL_HANDLE");
     bare.renderPass = (VkRenderPass)0x3000u;
-    xud_check(xud_pipeline_fill_create_info(&bare, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_UNSUPPORTED, "pipeline/create-unstamped-rows",
+    xud_check(xud_pipeline_fill_create_info(&bare, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_UNSUPPORTED,
+        "pipeline/create-unstamped-rows",
         "a record whose rows were never stamped is a bad state of THIS layer, reported as such rat"
         "her than assembled from calloc's zeros");
     pipeline.layout = (VkPipelineLayout)0x9000u;
     pipeline.renderPass = (VkRenderPass)0x3000u;
-    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_OK, "pipeline/create-opaque-ok",
-        "the opaque row's create-info is assembled from the record");
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, &out) == XUD_OK,
+        "pipeline/create-opaque-ok", "the opaque row's create-info is assembled from the record");
     xud_check(out.pColorBlendState == &pipeline.blending[XUD_BATCH_VARIANT_OPAQUE], "pipeline/create-blend-row-opaque",
         "the create-info's blend pointer is the OPAQUE row's, which is what makes the variant argume"
         "nt and the blend state the same number");
@@ -318,7 +333,8 @@ static void xud_test_pipeline_pure(void) {
         "two stages, and the row is the record's own");
     xud_check(out.pTessellationState == NULL, "pipeline/create-no-tessellation",
         "no tessellation row at all, which is the stage array's own shape read from the other side");
-    xud_check((out.pVertexInputState == &pipeline.vertexInput) && (out.pInputAssemblyState == &pipeline.inputAssembly)
+    xud_check((out.pVertexInputState == &pipeline.vertexInput)
+            && (out.pInputAssemblyState == &pipeline.inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES])
             && (out.pViewportState == &pipeline.viewportState) && (out.pRasterizationState == &pipeline.rasterizer)
             && (out.pMultisampleState == &pipeline.multisample) && (out.pDepthStencilState == &pipeline.depthStencil)
             && (out.pColorBlendState == &pipeline.blending[XUD_BATCH_VARIANT_OPAQUE]) && (out.pDynamicState == &pipeline.dynamicState),
@@ -340,7 +356,8 @@ static void xud_test_pipeline_pure(void) {
     /* The same assembly at the OTHER row of the list, which is what makes the variant argument of
        fill_create_info a choice rather than a decoration: the two create-infos are the same record
        read at two rows, and the one row they differ in is the blend half. */
-    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_VARIANT_TRANSPARENT, &transparentInfo) == XUD_OK,
+    xud_check(
+        xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_TRANSPARENT, &transparentInfo) == XUD_OK,
         "pipeline/create-transparent-ok", "the transparent row's create-info assembles too");
     xud_check(transparentInfo.pColorBlendState == &pipeline.blending[XUD_BATCH_VARIANT_TRANSPARENT],
         "pipeline/create-blend-row-transparent",
@@ -355,6 +372,27 @@ static void xud_test_pipeline_pure(void) {
     xud_check(transparentInfo.pStages == out.pStages, "pipeline/create-one-shader-pair",
         "and the same two shader stages, so the variant is a blend-state choice and not a shader c"
         "hoice");
+
+    /* The same assembly at the OTHER axis of the list, which is what makes the topology argument a
+       choice rather than a decoration: the line row is the same record read at a different row, and
+       the ONE row it differs in is the input-assembly half - the topology is pipeline state, so it
+       lives in this record rather than in a draw call, and a line drawn through the triangle row
+       would be a line made of triangles. */
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_OPAQUE, &lineInfo) == XUD_OK,
+        "pipeline/create-line-row-ok", "the line row's create-info assembles too");
+    xud_check(lineInfo.pInputAssemblyState == &pipeline.inputAssembly[XUD_BATCH_TOPOLOGY_LINES], "pipeline/create-input-assembly-row-line",
+        "and its input-assembly pointer is the LINE row's rather than the triangles' - the topology "
+        "argument picks the row the create call is handed, exactly as the variant argument picks the "
+        "blend row");
+    xud_check(lineInfo.pColorBlendState == out.pColorBlendState, "pipeline/create-line-row-same-blend",
+        "and its blend row is the OPAQUE one the triangle row above names, so the topology axis does "
+        "not reach the blend half: the two axes are orthogonal rows of one list");
+    xud_check((lineInfo.pStages == out.pStages) && (lineInfo.layout == out.layout), "pipeline/create-line-row-one-interface",
+        "and the same two shader stages and the same layout, so the whole list is one interface and "
+        "the rows differ only in the two state records that are not interface state");
+    xud_check(lineInfo.pInputAssemblyState != out.pInputAssemblyState, "pipeline/create-input-assembly-rows-differ",
+        "the two create-infos differ in the input-assembly row, which is the whole of what a topology "
+        "is at this rung");
 }
 
 void xud_test_pipeline(void) { xud_test_pipeline_pure(); }

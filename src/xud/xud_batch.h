@@ -1,13 +1,16 @@
 /***********************************************************************************************
  *   xud_batch.h - the batch rung: the dynamic SoA attribute streams, the one index buffer,
- *                 the mapped staging arena the CPU-side bytes are written into, and the
- *                 flush-on-pipeline/material-change decision
+ *                 the mapped staging arena the CPU-side bytes are written into, the recorded
+ *                 draw rows (each naming a topology and a variant of the pipeline list), the
+ *                 flush-on-pipeline/material-change decision and the topology state a shape
+ *                 moves without flushing
  *
  *   Owns : XudBatch - four stream VkBuffers (pos / uv / color / normal), one index VkBuffer,
  *          one host-visible staging VkBuffer that OWNS one of the allocator's blocks (not a suba
  *          llocation of one: vkMapMemory maps a VkDeviceMemory rather than a range, so the one c
  *          arve this rung maps cannot share a block with any other mapped carve) and mapped for t
- *          he whole life of the batch, the recorded draw rows, and the two rows
+ *          he whole life of the batch, the recorded draw rows, the topology/variant/material state
+ *          the pending rows are accumulated under, and the two rows
  *          of vertex-input state the pipeline rung below is handed.
  *   Layer: above the descriptor and the allocator, below the frame loop. This is the rung of
  *          the plan's layer ladder ("xudrl renderer (passes, pipelines, BATCHES, buffers)") and
@@ -180,7 +183,7 @@ static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_
     "allocator's own rather than an invented one");
 
 /*-----------------------------------------------------------------------------------------------
- * The pipeline variant and the material slot a draw row names
+ * The topology, the pipeline variant and the material slot a draw row names
  *-----------------------------------------------------------------------------------------------*/
 
 /* The two variants of the plan's opaque/transparent pair, as the DRAW ROW's index into them
@@ -197,9 +200,35 @@ static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_
 #define XUD_BATCH_VARIANT_TRANSPARENT 1u
 #define XUD_BATCH_VARIANT_COUNT 2u
 
+/* The two topologies a draw row can name, as the row's index into the pipeline list's topology
+   axis rather than as a VkPrimitiveTopology: a row that carried a pipeline handle would be a row
+   whose pipeline had gone stale the moment the pipeline rung recreated one, and the row's whole
+   point is that it is a record. This is raylib's own axis: its draw row carries `mode` (reference
+   /raylib/rlgl.h 407-413, "Drawing mode: LINES, TRIANGLES, QUADS") and the replay is
+   `glDrawArrays(batch->draws[i].mode, vertexOffset, vertexCount)` (rlgl.h 3116), so the mode IS a
+   per-row index into a list of topologies and the Vulkan form of that list is a pipeline per row
+   (topology is `VkPipelineInputAssemblyStateCreateInfo::topology`, which is pipeline state).
+   TRIANGLES is the DEFAULT because it is the row the batch's own appends have drawn through since
+   S16 and the row the pipeline's XUD_PIPELINE_TOPOLOGY_TRIANGLE names.
+
+   POINT_LIST is NOT in this list, and that is a raylib reading rather than an omission: raylib's
+   DrawPoint3D is documented "actually a small line" (reference/raylib/raylib.h 1586) and is built
+   with rlBegin(RL_LINES), so a point in the shape this library is modelled on is a line and needs
+   no third row. A POINT_LIST row is a row a later step adds when a caller wants a point sprite, in
+   the same shape as XUD_BATCH_VARIANT_COUNT grew (todo.md's D1: growing the list is a row, never a
+   rename).
+
+   The two axes are ONE list, indexed by the pipeline rung's XUD_PIPELINE_ROW(topology, variant):
+   the batch's row names both and the frame loop binds one pipeline per row, so the pair has to be
+   one number for the batch's row and the pipeline's object to stay the same thing. */
+#define XUD_BATCH_TOPOLOGY_TRIANGLES 0u
+#define XUD_BATCH_TOPOLOGY_LINES 1u
+#define XUD_BATCH_TOPOLOGY_COUNT 2u
+
 #define XUD_BATCH_NO_MATERIAL 0xFFFFFFFFu /* "no material slot yet", the same sentinel shape xud_handle.h uses for an unfilled slot */
 
 static_assert(XUD_BATCH_VARIANT_COUNT == (XUD_BATCH_VARIANT_TRANSPARENT + 1u), "the two variants are contiguous from opaque up");
+static_assert(XUD_BATCH_TOPOLOGY_COUNT == (XUD_BATCH_TOPOLOGY_LINES + 1u), "the two topologies are contiguous from triangles up");
 static_assert(XUD_BATCH_NO_MATERIAL > 0u, "the sentinel is not a material slot any live row can name");
 
 /*-----------------------------------------------------------------------------------------------
@@ -222,6 +251,10 @@ typedef struct XudBatchDraw XudBatchDraw;
 struct XudBatchDraw {
     uint32_t firstIndex; /* where in the index buffer this draw starts */
     uint32_t indexCount; /* how many indices it takes - vkCmdDrawIndexed's whole argument pair */
+    uint32_t topology; /* which topology this run's indices are assembled as - the row of the
+                            pipeline list the frame loop binds beside this draw, and raylib's own
+                            field: rlDrawCall's `mode` (rlgl.h 407), replayed by glDrawArrays at
+                            rlgl.h 3116 */
     uint32_t variant; /* which of the plan's two pipeline variants this draw uses */
     uint32_t materialIndex; /* which material slot, XUD_BATCH_NO_MATERIAL while no material exists */
 };
@@ -263,6 +296,10 @@ struct XudBatch {
     VkBufferCopy copyRegions[XUD_BATCH_COPY_REGION_COUNT];
 
     /* --- the flush state: what the pending batch of draws was accumulated under --- */
+    uint32_t currentTopology; /* the topology the pending draws are assembled as - raylib's
+                                    RLGL.currentBatch->draws[].mode, moved by a shape's
+                                    xud_batch_set_topology rather than by the caller, because in
+                                    raylib it is the SHAPE that calls rlBegin(mode) */
     uint32_t currentVariant; /* the variant the pending draws use */
     uint32_t currentMaterial; /* the material slot they use, XUD_BATCH_NO_MATERIAL while none exists */
     uint32_t pendingFirstIndex; /* where the pending draws' indices start */
@@ -355,18 +392,40 @@ XudResult xud_batch_check_invariant(const XudBatch* batch);
 /// pipeline variant or the material slot it was accumulated under, or when appending its
 /// vertices/indices would pass the capacity. That is the whole rule of "flush on pipeline/
 /// material change", and it is pure because the decision is arithmetic on the batch's own rows
-/// - the driver work a flush does is the frame loop's, one rung up. XUD_INVALID_ARG on a NULL
-/// batch/out-flush; XUD_OK with *outFlush 1 or 0.
+/// - the driver work a flush does is the frame loop's, one rung up. The topology is NOT part of
+/// this decision and takes no argument here: a topology change is a row split inside the SAME batch
+/// (raylib's rlBegin(mode) at reference/raylib/rlgl.h 1454-1478 ends in `drawCounter++`, not in a
+/// render batch) and xud_batch_set_topology below is the call that does it; this rung keeps the two
+/// apart because they cost different things - a row split costs one more recorded row and one more
+/// pipeline bind in the same command buffer, a flush costs a submission. XUD_INVALID_ARG on a NULL
+/// batch/out-flush or a variant at or past the variant list; XUD_OK with *outFlush 1 or 0.
 XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint32_t requestedVariant, uint32_t requestedMaterial,
     uint32_t appendVertices, uint32_t appendIndices);
 
-/// Pure: record one draw row - the index range of the pending batch plus the variant/material it
-/// was accumulated under - and reset the pending pair for the next batch. This is the batch's
-/// own half of "the draw's whole argument pair": firstIndex/indexCount, the two arguments of
-/// vkCmdDrawIndexed that the frame loop will hand. The row array doubles on the sequence the
-/// rest of this tree uses, so a record is never refused for being at a bound; XUD_INVALID_ARG on
-/// a NULL batch, XUD_OUT_OF_MEMORY only when that doubling step fails on the host.
-XudResult xud_batch_record_draw(XudBatch* batch, uint32_t variant, uint32_t materialIndex);
+/// Pure: record one draw row - the index range of the pending batch plus the topology/variant/
+/// material it was accumulated under - and reset the pending pair for the next batch. This is the
+/// batch's own half of "the draw's whole argument pair": firstIndex/indexCount, the two arguments
+/// of vkCmdDrawIndexed that the frame loop will hand, plus the two numbers the frame loop binds a
+/// pipeline with beside that draw - which is the Vulkan form of raylib's replay reading `mode` off
+/// the row itself (rlgl.h 3116's glDrawArrays(batch->draws[i].mode, ...)). The row array doubles
+/// on the sequence the rest of this tree uses, so a record is never refused for being at a bound;
+/// XUD_INVALID_ARG on a NULL batch, a topology at or past the topology list or a variant at or
+/// past the variant list; XUD_OUT_OF_MEMORY only when that doubling step fails on the host.
+XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex);
+
+/// Pure: move the batch's topology state, and close the pending run into a draw row of the SAME
+/// batch first if the state actually changes and the run has content in it. This is raylib's
+/// `rlBegin(mode)` read at its other half (reference/raylib/rlgl.h 1454-1478): on a mode change it
+/// closes the current run (`drawCounter++`, a new row) and then writes the new mode into the new
+/// row - it draws nothing and it does not end the batch. The SHAPE calls this rather than the
+/// caller, because in raylib it is the shape function that calls rlBegin (rshapes.c's DrawLine3D
+/// opens with `rlBegin(RL_LINES)`, and raylib.h 1585's own comment says so), and a caller has no
+/// topology to ask for: a line is a line because of its geometry. This is the one place a batch
+/// records a row mid-frame, and it is what makes a frame that mixes topologies more than one row -
+/// the fact the frame loop's multi-draw replay was already built for. It is NOT a flush: the batch
+/// stays open, its earlier bytes stay where they are, and the frame's upload still happens once at
+/// the boundary. XUD_INVALID_ARG on a NULL batch or a topology at or past the topology list.
+XudResult xud_batch_set_topology(XudBatch* batch, uint32_t topology);
 
 /// Pure: ONE recorded draw row by index, so the frame loop above can replay the flush list without
 /// reaching into the batch's own heap array (the repo's accessor rule, one rung below). XUD_INVALID_ARG
@@ -389,8 +448,9 @@ XudResult xud_batch_append_index(XudBatch* batch, uint32_t index);
 /// Pure: reset the live counts to 0, which is what a fresh frame's batch starts from. The
 /// capacities and the buffers stay - the arena's content is simply overwritten next frame, which i
 /// s the same property the allocator's ring note states for the ring, except that this arena is s
-/// tatic, so it is overwritten in place rather than handed out again. XUD_INVALID_ARG on a NULL b
-/// atch.
+/// tatic, so it is overwritten in place rather than handed out again. The flush state resets with
+/// the counts: the next frame's first shape starts at the default topology and the opaque variant,
+/// not at whatever the last frame's last shape left behind. XUD_INVALID_ARG on a NULL batch.
 XudResult xud_batch_reset(XudBatch* batch);
 
 /// Pure: the counters a caller above reads - the live vertices, the live indices, the capacity,

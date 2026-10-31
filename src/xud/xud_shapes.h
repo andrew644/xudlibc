@@ -27,16 +27,16 @@
  *   space a shape's coordinates are in is, right now, the clip space the vertex shader lands in.
  *   Choosing a space for a shape is a camera + transform decision, and that is the todo.md item
  *   below this one; a shape that invented its own projection would be a second camera the
- *   library does not have. What is also not here, and why: the rest of raylib's 3D shape family.
- *   The line and point forms and the wire forms (DrawLine3D, DrawPoint3D, DrawCubeWires,
- *   DrawSphereWires) are not this rung's to write at all: they are LINE_LIST and POINT_LIST
- *   topologies and the pipeline rung's one topology is TRIANGLE_LIST (xud_pipeline.h's
- *   XUD_PIPELINE_TOPOLOGY), so a line drawn as two thin triangles would be a shape the
- *   caller did not ask for and a new pipeline row would be a pipeline-rung decision, not a shape's.
- *   DrawMesh is the mesh / vertex-buffer abstraction, a rung below this item in todo.md's Later
- *   list. One shape per step that wants one, never a family written ahead of the caller that needs
- *   it - the box is here because a caller who has a triangle has a box, and the sphere is here
- *   because a caller who has a box has something round to ask for.
+ *   library does not have. What is also not here, and why: the wire forms (DrawCubeWires,
+ *   DrawSphereWires) and DrawMesh. The wires are the same LINE_LIST topology the line and point
+ *   forms below now use, so they are no longer a topology question - they are a shape question,
+ *   and one this step has not answered: a cube's twelve edges and a sphere's ring/slice grid are
+ *   tables this rung would have to write, and the todo item asks for them beside the filled forms
+ *   rather than below it. DrawMesh is the mesh / vertex-buffer abstraction, a rung below this item
+ *   in todo.md's Later list. One shape per step that wants one, never a family written ahead of
+ *   the caller that needs it - the box is here because a caller who has a triangle has a box, the
+ *   sphere because a caller who has a box has something round to ask for, and the line because a
+ *   caller who has a sphere has an axis to look at.
  ***********************************************************************************************/
 
 #ifndef XUD_SHAPES_H_
@@ -121,6 +121,45 @@ static_assert((XUD_SHAPES_CUBE_VERTEX_COUNT <= XUD_BATCH_INITIAL_VERTICES)
     "today rather than one that needs a rung above this");
 static_assert(XUD_SHAPES_CUBE_FACE_VERTEX_COUNT == 4u,
     "xud_shapes.h: the face's corner count is the four the face tables and the two-triangle order are written against");
+
+/*-----------------------------------------------------------------------------------------------
+ * The line: two vertices and the two indices that name them
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The line of raylib's DrawLine3D (reference/raylib/raylib.h 1585, "Draw a 3D line", whose
+   arguments are (startPos, endPos, color) and whose own comment says it is "drawn as a line using
+   immediate mode (rlBegin(RL_LINES))"). Two vertices and the two indices that name them: the
+   indices are not decoration here, because the batch's one index buffer is what every draw is
+   replayed through (vkCmdDrawIndexed names no buffer and no topology, both of which are pipeline
+   state) - a line with no indices would be a line the frame loop could not draw.
+
+   The topology this shape moves the batch to is stated by the APPEND rather than by a caller, and
+   that is raylib's shape read literally: rlBegin(mode) is called by the shape function, not by the
+   caller (raylib.h 1585's own comment says the shape calls it), and a caller has no topology to
+   ask for - a line is a line because of its geometry. xud_batch_set_topology() is the call that
+   moves the state and closes the run that was pending under the OLD topology into a row of the
+   same batch, which is what makes a frame that draws a box and a line two rows rather than one
+   row drawn at whichever topology happened to come last.
+*/
+#define XUD_SHAPES_LINE_VERTEX_COUNT 2u
+#define XUD_SHAPES_LINE_INDEX_COUNT 2u
+
+/* The point of raylib's DrawPoint3D (reference/raylib/raylib.h 1586, "Draw a point in 3D space",
+   "actually a small line", whose arguments are (position, color)): a point in the shape this
+   library is modelled on is a short line, so it needs no POINT_LIST row of the pipeline list and
+   no third topology - it is this very append with its endpoints placed either side of the caller's
+   position. raylib's rshapes.c draws it as two rlVertex3f calls offset +/- 0.05 along z; that file
+   is NOT in the reference set here (only the headers are), so the half-length is written as this
+   shape's own named constant rather than as a value read off a file, and the axis is z because that
+   is the axis the flat +Z normal above already faces along. The length is in the same space every
+   other shape here is in - the clip space the camera step has not replaced - so 0.1 of it is what
+   a point spans on screen today, and a point that wanted a screen-relative size would want the
+   camera + transform step above this one. */
+#define XUD_SHAPES_POINT_HALF_LENGTH 0.05f
+
+static_assert((XUD_SHAPES_LINE_INDEX_COUNT == XUD_SHAPES_LINE_VERTEX_COUNT) && (XUD_SHAPES_LINE_VERTEX_COUNT == 2u),
+    "xud_shapes.h: a line names two vertices and takes the two indices that name them, which is what "
+    "makes the LINE_LIST topology below read two at a time rather than three");
 
 /*-----------------------------------------------------------------------------------------------
  * The sphere: rings latitude divisions, slices longitudes, and two single-vertex poles
@@ -273,5 +312,23 @@ XudResult xud_shapes_append_cube(XudBatch* batch, XudVector3 center, float width
 /// arena mapped to write into (the same answer xud_batch_append_vertex gives for the same reason,
 /// one rung up); XUD_OK only when all 17 vertex appends and all 90 index appends completed.
 XudResult xud_shapes_append_sphere(XudBatch* batch, XudVector3 center, float radius, uint32_t rings, uint32_t slices, XudColor color);
+
+/// Pure: append one line - the caller's two endpoints and the two indices that name them - under
+/// the batch's LINE_LIST topology, which the append moves the batch to before a byte is written
+/// (see the note beside the counts above for why the shape rather than the caller owns that). The
+/// normal is the flat +Z constant above: a line has no surface, so it answers the same way the
+/// triangle does, and the lighting that would read it is not in the tree.
+///
+/// The append is ATOMIC in the same shape as the triangle's, the box's and the sphere's: both of
+/// the batch's bounds are read first and a line that does not fit is refused before a byte is
+/// written AND before the topology state moves, so a refused line leaves the batch exactly as it
+/// was - including its topology state, which is why a refused line cannot split a run.
+///
+/// XUD_INVALID_ARG on a NULL batch; XUD_OUT_OF_MEMORY when the two vertices or the two indices do
+/// not fit the batch's capacities; XUD_UNSUPPORTED when the batch has no arena mapped to write
+/// into (the same answer xud_batch_append_vertex gives for the same reason, one rung up) or when
+/// xud_batch_set_topology refuses to move the state; XUD_OK only when the state moved, both vertex
+/// appends and both index appends completed.
+XudResult xud_shapes_append_line(XudBatch* batch, XudVector3 start, XudVector3 end, XudColor color);
 
 #endif /* XUD_SHAPES_H_ */

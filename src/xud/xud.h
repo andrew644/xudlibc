@@ -8,8 +8,8 @@
  *          down (XudVector3 / XudColor), the one XudHandle currency and its kind tags, the
  *          opaque XudContext owner type, the xud_init_context()/xud_close_context() life-
  *          cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d
- *          () / xud_draw_cube() / xud_end_drawing()), and the runtime Vulkan query xud_vulkan
- *          _supported().
+ *          () / xud_draw_cube() / xud_draw_sphere() / xud_draw_line_3d() / xud_draw_point_3d()
+ *          / xud_end_drawing()), and the runtime Vulkan query xud_vulkan_supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
  *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
  *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
@@ -363,6 +363,35 @@ XudResult xud_draw_cube(XudContext* context, XudVector3 position, float width, f
 /// text that never completed bring-up; XUD_OUT_OF_MEMORY when the 17 vertices or the 90 indices do
 /// not fit the batch.
 XudResult xud_draw_sphere(XudContext* context, XudVector3 centerPos, float radius, XudColor color);
+
+/// Draw one line in 3D space, raylib's DrawLine3D (raylib.h 1585, "Draw a 3D line", whose
+/// arguments are (startPos, endPos, color) and whose own comment says it is "drawn as a line using
+/// immediate mode (rlBegin(RL_LINES))"): it appends two vertices and the two indices that name
+/// them, and it is drawn through the pipeline list's LINE_LIST row rather than through the tria
+/// ngles' one. That row exists because topology is PIPELINE state (it lives in
+/// VkPipelineInputAssemblyStateCreateInfo, not in a draw call), which is also why a line cannot be
+/// drawn by the shapes rung alone on a list of one topology - a line through a TRIANGLE_LIST pipel
+/// ine is a line made of triangles, and that is a shape the caller did not ask for. The append mov
+/// es the batch's topology state and closes the run that was pending under the old one into a row
+/// of the same batch, so a frame that draws a sphere and a line records TWO rows and replays both;
+/// the shape owns that state change rather than the caller, because in raylib it is the shape func
+/// tion that calls rlBegin and a caller has no topology to ask for. The normal is the flat +Z the
+/// other no-surface shapes carry. The append is atomic in the same shape as the other shapes'. XUD
+/// _INVALID_ARG on a NULL context or a renderer with no batch; XUD_UNSUPPORTED on a context that
+/// never completed bring-up; XUD_OUT_OF_MEMORY when the two vertices or the two indices do not fit
+/// the batch.
+XudResult xud_draw_line_3d(XudContext* context, XudVector3 startPos, XudVector3 endPos, XudColor color);
+
+/// Draw a point in 3D space, raylib's DrawPoint3D (raylib.h 1586, "Draw a point in 3D space",
+/// "actually a small line", whose arguments are (position, color)): a point here is a short line
+/// either side of the caller's position along z, which is what makes it need no third topology row
+/// of the pipeline list and no POINT_LIST row at all - it is the call above with its endpoints pla
+/// ced either side rather than a shape of its own. The half-length is xud_shapes.h's named consta
+/// nt, in the same space every other shape here is in (the clip space the camera step has not repl
+/// aced), so a point spans 0.1 of that space today. XUD_INVALID_ARG on a NULL context or a rendere
+/// r with no batch; XUD_UNSUPPORTED on a context that never completed bring-up; XUD_OUT_OF_MEMORY
+/// when the two vertices or the two indices do not fit the batch.
+XudResult xud_draw_point_3d(XudContext* context, XudVector3 position, XudColor color);
 
 /// End canvas drawing and swap buffers: the public frame boundary, closed. It runs one frame -
 /// acquire, record, upload, bind, draw the batch's recorded rows, submit, present - through the

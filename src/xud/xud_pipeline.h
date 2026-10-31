@@ -1,5 +1,6 @@
 /***********************************************************************************************
- *   xud_pipeline.h - the pipeline rung: the built-in SPIR-V to one graphics pipeline
+ *   xud_pipeline.h - the pipeline rung: the built-in SPIR-V to one graphics pipeline per row
+ *                 of the batch's (topology x variant) list
  *
  *   Layer: above the shader rung, below the render pass. This rung owns the whole set of
  *   objects a pipeline is made of - the two VkShaderModules, the VkPipelineLayout and the
@@ -7,16 +8,17 @@
  *   thing that keeps them alive, so all four die together and in one order: pipeline,
  *   layout, modules. "Explicit pipelines, created once at init, a small fixed set of
  *   variants, never created per draw" (the repo's rule) is what this rung is: today the set is
- *   the batch's **two-row** variant list, the plan's opaque/transparent pair, and the variants
- *   the rest of the plan asks for (textured, line, glyph) land beside them in this same file
- *   as rows of that list - never as a pipeline-per-draw path anywhere above it.
+ *   the batch's **four-row** list - the plan's opaque/transparent pair at each of the two
+ *   topologies the batch's draw rows name - and the variants the rest of the plan asks for
+ *   (textured, glyph) land beside them in this same file as rows of that list, never as a
+ *   pipeline-per-draw path anywhere above it.
  *
- *   What this rung does NOT have, and why: no third blend variant (the variant list below is the
- *   batch's, `XUD_BATCH_VARIANT_COUNT` rows, and the two rows of that list are the plan's opaque/
+ *   What this rung does NOT have, and why: no third blend variant (the variant axis of the list
+ *   below is the batch's, `XUD_BATCH_VARIANT_COUNT` wide, and its two columns are the plan's opaque/
  *   transparent pair - raylib's `BlendMode` has nine modes and we want none of the other seven yet,
- *   so growing the list is a row in an array, not a member in a struct, when a step wants one) and
- *   no set-1-reading shader (the layout below is the declaration this rung makes and the frame loop
- *   binds both channels of - set 1 is the other half, and it has no allocation to name yet).
+ *   so growing that axis is a column in the list, not a member in a struct, when a step wants one)
+ *   and no set-1-reading shader (the layout below is the declaration this rung makes and the frame
+ *   loop binds both channels of - set 1 is the other half, and it has no allocation to name yet).
  *
  *   What it DOES have now is the vertex input. The batch rung below it owns the four SoA streams
  *   and the one index buffer, and xud_pipeline_fill_vertex_input overwrites the zero row that
@@ -76,16 +78,29 @@
                       names */
 
 typedef struct XudPipeline XudPipeline;
+
+/* The row of the pipeline list a (topology, variant) pair names, and how many rows the list has.
+   ONE flat list because the batch's draw row names BOTH axes and the frame loop binds ONE pipeline
+   per recorded draw row: a row that carried two indices would be a row whose pipeline had to be
+   looked up twice in the frame loop, and a row that carried a pipeline handle would be a row whose
+   pipeline went stale the moment this rung recreated one. Topology-major, so the two variants of
+   one topology are adjacent rows and growing either axis is a row/col in the list (todo.md's D1).
+*/
+#define XUD_PIPELINE_ROW(topology, variant) (((topology) * XUD_BATCH_VARIANT_COUNT) + (variant))
+#define XUD_PIPELINE_ROW_COUNT (XUD_BATCH_TOPOLOGY_COUNT * XUD_BATCH_VARIANT_COUNT)
+
 struct XudPipeline {
-    VkPipeline pipeline[XUD_BATCH_VARIANT_COUNT]; /* the Vulkan objects this layer owns: one per
-                            variant row of the batch's list, VK_NULL_HANDLE until xud_pipeline_open()
-                            creates it, cleared and destroyed by xud_pipeline_close(). The array is
-                            indexed by the batch's `variant` field - the one index space that makes
-                            the batch's row and this object the same number (todo.md's D1, 2026-10-26:
-                            raylib's blending is an enum-indexed list of modes, `BlendMode` raylib.h
-                            918-926 with `BLEND_ALPHA = 0` the default, and rlgl.h's `GlState.currentBlendMode`
-                            an int a switch maps to state, so a named opaque/transparent PAIR would be
-                            the wrong shape for a library whose public feel is that list) */
+    VkPipeline pipeline[XUD_PIPELINE_ROW_COUNT]; /* the Vulkan objects this layer owns: one per
+                            row of the batch's (topology x variant) list, VK_NULL_HANDLE until xud_
+                            pipeline_open() creates it, cleared and destroyed by xud_pipeline_close().
+                            The array is indexed by XUD_PIPELINE_ROW(topology, variant) - the one
+                            index space that makes the batch's draw row (which names a topology and
+                            a variant) and this object the same number. The list is flat rather than
+                            a struct of two arrays because the frame loop picks ONE pipeline per
+                            recorded draw row, so the pick has to be one number (todo.md's D1, 2026-
+                            10-26: raylib's blending is an enum-indexed list of modes, `BlendMode`
+                            raylib.h 918-926 with `BLEND_ALPHA = 0` the default, and its topology
+                            axis is the row's own `mode` field, rlgl.h 407) */
     VkPipelineLayout layout; /* owned beside it: a pipeline names its layout, and there is no
                                 way to retire the layout while the pipeline that names it is
                                 alive, so the two are one teardown step */
@@ -104,7 +119,11 @@ struct XudPipeline {
          and its record, one rung up --- */
     VkPipelineShaderStageCreateInfo shaderStages[XUD_PIPELINE_STAGE_COUNT];
     VkPipelineVertexInputStateCreateInfo vertexInput;
-    VkPipelineInputAssemblyStateCreateInfo inputAssembly;
+    VkPipelineInputAssemblyStateCreateInfo inputAssembly[XUD_BATCH_TOPOLOGY_COUNT]; /* one row per
+                            topology of the list rather than one row for the whole rung: topology is
+                            pipeline state, so a list that carries two topologies carries two of
+                            these rows, and the row a create-info points at is the one the draw row's
+                            topology indexes */
     VkPipelineViewportStateCreateInfo viewportState;
     VkPipelineRasterizationStateCreateInfo rasterizer;
     VkPipelineMultisampleStateCreateInfo multisample;
@@ -113,19 +132,29 @@ struct XudPipeline {
     VkPipelineColorBlendAttachmentState blendAttachment[XUD_BATCH_VARIANT_COUNT];
     VkPipelineDynamicStateCreateInfo dynamicState;
     VkDynamicState dynamicStates[XUD_PIPELINE_DYNAMIC_STATE_COUNT];
-    VkGraphicsPipelineCreateInfo createInfo[XUD_BATCH_VARIANT_COUNT]; /* what vkCreateGraphicsPipelines
-                                                            was handed, one row per variant */
+    VkGraphicsPipelineCreateInfo createInfo[XUD_PIPELINE_ROW_COUNT]; /* what vkCreateGraphicsPipelines
+                                                            was handed, one row per row of the list -
+                                                            the record and the create call read the
+                                                            same bytes, which is the rule xud_swapchain
+                                                            .c states for its create-info, one rung up */
 };
 
 /*-----------------------------------------------------------------------------------------------
  * The pipeline's shape, as this layer writes it
  *-----------------------------------------------------------------------------------------------*/
 
-#define XUD_PIPELINE_TOPOLOGY                                                                                                              \
+#define XUD_PIPELINE_TOPOLOGY_TRIANGLE                                                                                                     \
     VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST /* the batch step's index                                                                          \
                            buffer feeds the same topology; a strip                                                                         \
                            would make the first triangle's three                                                                           \
                            vertices mean a different thing */
+#define XUD_PIPELINE_TOPOLOGY_LINE                                                                                                         \
+    VK_PRIMITIVE_TOPOLOGY_LINE_LIST /* the topology the line shapes assemble their indices as, and                                         \
+                        the second row of the list: raylib's DrawLine3D opens with rlBegin(RL_LINES)                                       \
+                        (its own header says so at raylib.h 1585) and its replay hands                                                     \
+                        batch->draws[i].mode to glDrawArrays (rlgl.h 3116), which is exactly this                                          \
+                        row - a topology is a row of the list, not a flag on one pipeline */
+
 #define XUD_PIPELINE_CULL_MODE                                                                                                             \
     VK_CULL_MODE_NONE /* no cull: the first triangle is one                                                                                \
                          triangle, its winding is the shader's,                                                                            \
@@ -156,20 +185,30 @@ equation's Vulkan form - the FACTORS are what differ between the rows, not      
 the equation, so the equation is one name and the factors are a table */
 
 static_assert(XUD_PIPELINE_STAGE_COUNT == (XUD_PIPELINE_FRAGMENT_STAGE + 1u), "the stage rows are contiguous from the vertex stage up");
-static_assert(XUD_BATCH_VARIANT_COUNT >= 2u, "the variant list has both the opaque and the transparent row");
-static_assert(sizeof(((XudPipeline*)0)->pipeline) / sizeof(VkPipeline) == XUD_BATCH_VARIANT_COUNT,
-    "one pipeline per variant row, which is what makes the batch's variant index name this object");
+static_assert(XUD_BATCH_VARIANT_COUNT >= 2u, "the variant axis has both the opaque and the transparent column");
+static_assert(sizeof(((XudPipeline*)0)->pipeline) / sizeof(VkPipeline) == XUD_PIPELINE_ROW_COUNT,
+    "one pipeline per row of the (topology x variant) list, which is what makes the batch's draw row"
+    " name this object by one number");
+static_assert(sizeof(((XudPipeline*)0)->inputAssembly) / sizeof(VkPipelineInputAssemblyStateCreateInfo) == XUD_BATCH_TOPOLOGY_COUNT,
+    "one input-assembly row per topology, which is what makes the topology a row of the list rather"
+    " than a decoration on one row");
 static_assert(sizeof(((XudPipeline*)0)->blendAttachment) / sizeof(VkPipelineColorBlendAttachmentState) == XUD_BATCH_VARIANT_COUNT,
-    "one blend attachment per variant row, which is what makes the create-info's pAttachments the variant's own");
-static_assert(sizeof(((XudPipeline*)0)->createInfo) / sizeof(VkGraphicsPipelineCreateInfo) == XUD_BATCH_VARIANT_COUNT,
-    "one create-info per variant row, the record of what each create call was handed");
+    "one blend attachment per variant column, which is what makes the create-info's pAttachments the variant's own");
+static_assert(sizeof(((XudPipeline*)0)->createInfo) / sizeof(VkGraphicsPipelineCreateInfo) == XUD_PIPELINE_ROW_COUNT,
+    "one create-info per row of the list, the record of what each create call was handed");
+static_assert(XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE) == 0u,
+    "the triangles/opaque pair is the list's first row, the one every draw used before this step");
+static_assert(XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_TRANSPARENT) == (XUD_PIPELINE_ROW_COUNT - 1u),
+    "the pair the list's two axes span at their far ends is its last row, which is what makes the"
+    " pair a bijection onto the list rather than a partial map");
 static_assert(VK_SHADER_STAGE_VERTEX_BIT != VK_SHADER_STAGE_FRAGMENT_BIT,
     "the two stage bits are distinct, which is what makes a swapped row a caught "
     "error rather than a pipeline that compiles twice");
 static_assert(
     VK_DYNAMIC_STATE_VIEWPORT != VK_DYNAMIC_STATE_SCISSOR, "the two dynamic states are distinct values, not positions in an enum");
-static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_POINT_LIST,
-    "the topology is a value, and the first triangle is not a point list");
+static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_LINE_LIST,
+    "the two topologies of the list are distinct values, which is what makes a row bound at the wrong"
+    " one a caught error rather than two identical pipelines");
 
 /*-----------------------------------------------------------------------------------------------
  * The layer's contract
@@ -187,8 +226,10 @@ static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_POINT
 /// row is the starting state of the field and xud_pipeline_fill_vertex_input below is what overwrites
 /// it with the batch's four and four - a pipeline that has no batch to name has no vertex input to
 /// write, and that is a refusal rather than a zero row);
-/// TRIANGLE_LIST with no primitive restart (restart is a degenerate-index convention the
-/// batch step owns); viewportCount 1 and scissorCount 1 with NULL pViewports/pScissors
+/// TRIANGLE_LIST with no primitive restart for the list's first topology row, and LINE_LIST for
+/// the second (restart is a degenerate-index convention the batch step owns, and neither of our
+/// topologies uses it); the two rows differ in ONE field, which is why they are a table written in
+/// a loop rather than two hand-written blocks; viewportCount 1 and scissorCount 1 with NULL pViewports/pScissors
 /// (both are dynamic - and pViewportState may not be NULL at all, because a fragment
 /// stage that writes gl_FragColor reads gl_FragCoord, which is the spec's own rule for
 /// that pointer); no tessellation and no geometry stage (the stage array is two rows);
@@ -276,13 +317,17 @@ XudResult xud_pipeline_fill_layout_info(const XudDescriptor* descriptor, VkPipel
 /// pelineHandle VK_NULL_HANDLE and basePipelineIndex -1 (the spec's "no base pipeline"
 /// pair - 0 would name pipeline row 0 of a pipeline-derivation this rung does not take).
 /// XUD_INVALID_ARG on a NULL out-create-info or a pipeline that owns no layout, or on a
-/// variant at or past XUD_BATCH_VARIANT_COUNT. The variant selects which `blending[variant]` /
-/// `blendAttachment[variant]` row the create-info points at, which is what makes the batch's
-/// variant index and this create-info the same number (todo.md's D1, 2026-10-26).
-XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, uint32_t variant, VkGraphicsPipelineCreateInfo* outCreateInfo);
+/// topology at or past XUD_BATCH_TOPOLOGY_COUNT or a variant at or past XUD_BATCH_VARIANT_COUNT.
+/// The pair selects which `inputAssembly[topology]` / `blending[variant]` / `blendAttachment[variant]
+/// ` row the create-info points at, which is what makes the batch's draw row (which names the same
+/// pair) and this create-info the same row of the list (todo.md's D1, 2026-10-26, plus the topology
+/// axis this step adds to it).
+XudResult xud_pipeline_fill_create_info(
+    const XudPipeline* pipeline, uint32_t topology, uint32_t variant, VkGraphicsPipelineCreateInfo* outCreateInfo);
 
 /// Driver: the whole rung up in one call - the two built-in SPIR-V modules, the layout, the
-/// pipeline, in that order, and each one's teardown rung checked before the create that
+/// pipeline list (one pipeline per row of the batch's (topology x variant) list, created in row
+/// order), in that order, and each one's teardown rung checked before the create that
 /// needs it. The render pass handle is an argument because the core-1.4 binding makes it one
 /// (see the note in xud_pipeline_fill_create_info()); a handle-less pass is XUD_INVALID_ARG (a module this layer cannot destroy is a module
 /// it must not create, and the same for the layout and the pipeline). The SPIR-V words come from the header CMakeLists txt generates from
@@ -295,13 +340,14 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, uint32_t va
 XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
     const XudBatch* batch, VkRenderPass renderPass);
 
-/// Driver: the teardown - vkDestroyPipeline, then vkDestroyPipelineLayout, then the two
-/// modules through xud_shader_close(), then free. That order is load-bearing: the pipeline
-/// names its layout and the layout's modules are the only thing keeping them alive, so
+/// Driver: the teardown - vkDestroyPipeline for every row of the list, then vkDestroyPipelineLayout,
+/// then the two
+/// modules through xud_shader_close(), then free. That order is load-bearing: the pipelines name
+/// their layout and the layout's modules are the only thing keeping them alive, so
 /// anything else leaves a handle whose owner is already gone. XUD_ALREADY when the pointer
 /// owns no pipeline; XUD_INVALID_ARG on a NULL pointer-to-pointer, a NULL loader/device or
 /// a handle-less device; XUD_UNSUPPORTED when the device rows are not this device's or a
-/// destroy row is nil while the object it would destroy is live (the struct is not freed,
+/// destroy row is nil while a row of the list is live (the struct is not freed,
 /// because freeing it would leak the handles silently).
 XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, XudLoader* loader);
 

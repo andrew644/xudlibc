@@ -162,6 +162,15 @@ XudResult xud_shapes_append_triangle(XudBatch* batch, XudVector3 v0, XudVector3 
         return XUD_OUT_OF_MEMORY;
     }
 
+    /* The topology this shape's indices are assembled as, moved before a byte is written. The
+       batch's default is already TRIANGLES, so this is a no-op for the first shape of a frame; it
+       is a call at all because a frame that drew a line before this triangle has to be two rows
+       rather than one row drawn at the line's topology. */
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_TRIANGLES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
     /* The two constant attribute rows, once. The batch's appends refuse a NULL array rather than
        zero-filling one, so a stream this shape has nothing to say about still has to be handed
        something - see the reasons stated beside each constant in xud_shapes.h. */
@@ -264,6 +273,14 @@ XudResult xud_shapes_append_cube(XudBatch* batch, XudVector3 center, float width
     }
     if ((indexCount + XUD_SHAPES_CUBE_INDEX_COUNT) > batch->indexCapacity) {
         return XUD_OUT_OF_MEMORY;
+    }
+
+    /* The topology moves before a byte is written, in the same shape as the triangle's append: a
+       box's six faces are twelve triangles, so this is the shape that says the batch's default is
+       still the default for a filled shape. */
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_TRIANGLES);
+    if (result != XUD_OK) {
+        return result;
     }
 
     /* The extents are the caller's FULL sizes, halved here because the caller's position is the
@@ -395,6 +412,13 @@ XudResult xud_shapes_append_sphere(XudBatch* batch, XudVector3 center, float rad
     }
     if (((uint64_t)indexCount + indexNeed) > (uint64_t)batch->indexCapacity) {
         return XUD_OUT_OF_MEMORY;
+    }
+
+    /* The topology moves before a byte is written, in the same shape as the triangle's and the
+       box's appends. */
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_TRIANGLES);
+    if (result != XUD_OK) {
+        return result;
     }
 
     /* The vertices, in the order the indices below number them: the top pole first, then the rows
@@ -531,6 +555,93 @@ XudResult xud_shapes_append_sphere(XudBatch* batch, XudVector3 center, float rad
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The line: two vertices, then the two indices that name them
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_shapes_append_line(XudBatch* batch, XudVector3 start, XudVector3 end, XudColor color) {
+    float pos[3];
+    float uv[2];
+    float normal[3];
+    uint8_t rgba[4];
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t first = 0u;
+    uint32_t row = 0u;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* Both bounds, read before anything at all changes - including the topology state below, which
+       is why a line that does not fit cannot split a run. */
+    if ((vertexCount + XUD_SHAPES_LINE_VERTEX_COUNT) > vertexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+    if ((indexCount + XUD_SHAPES_LINE_INDEX_COUNT) > batch->indexCapacity) {
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    /* The topology moves FIRST, and before a byte is written: the run that was pending under the
+       old topology closes into a row of the same batch, and this shape's two indices start the next
+       one. raylib's rlBegin(mode) does the same two things in the same order - close the current
+       run, then set the mode - and this is why a frame that draws a sphere and a line is two rows
+       through two pipelines rather than one row at whichever topology came last. */
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_LINES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    uv[0] = XUD_SHAPES_UV_S;
+    uv[1] = XUD_SHAPES_UV_T;
+    normal[0] = XUD_SHAPES_FLAT_NORMAL_X;
+    normal[1] = XUD_SHAPES_FLAT_NORMAL_Y;
+    normal[2] = XUD_SHAPES_FLAT_NORMAL_Z;
+    rgba[0] = color.r;
+    rgba[1] = color.g;
+    rgba[2] = color.b;
+    rgba[3] = color.a;
+
+    first = vertexCount;
+
+    pos[0] = start.x;
+    pos[1] = start.y;
+    pos[2] = start.z;
+    result = xud_batch_append_vertex(batch, pos, uv, rgba, normal);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    pos[0] = end.x;
+    pos[1] = end.y;
+    pos[2] = end.z;
+    result = xud_batch_append_vertex(batch, pos, uv, rgba, normal);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The two indices name the two vertices this call just appended, in the caller's order - and
+       LINE_LIST reads them two at a time, so the order is the line's direction rather than a
+       winding (a line has no front face and the pipeline's cull mode is NONE anyway). */
+    for (row = 0u; row < XUD_SHAPES_LINE_INDEX_COUNT; row++) {
+        result = xud_batch_append_index(batch, first + row);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The one guard every public draw call above this rung needs
  *-----------------------------------------------------------------------------------------------*/
 
@@ -595,4 +706,37 @@ XudResult xud_draw_sphere(XudContext* context, XudVector3 centerPos, float radiu
     }
 
     return xud_shapes_append_sphere(batch, centerPos, radius, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color);
+}
+
+XudResult xud_draw_line_3d(XudContext* context, XudVector3 startPos, XudVector3 endPos, XudColor color) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_line(batch, startPos, endPos, color);
+}
+
+XudResult xud_draw_point_3d(XudContext* context, XudVector3 position, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 start;
+    XudVector3 end;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The point IS a line, either side of the caller's position along z - see the note beside
+       XUD_SHAPES_POINT_HALF_LENGTH for why the point is a line at all and why the axis is z. */
+    start = position;
+    start.z -= XUD_SHAPES_POINT_HALF_LENGTH;
+    end = position;
+    end.z += XUD_SHAPES_POINT_HALF_LENGTH;
+
+    return xud_shapes_append_line(batch, start, end, color);
 }

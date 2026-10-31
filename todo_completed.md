@@ -1,6 +1,9 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S25, the sphere** — the third shape of the shapes rung, the first shape whose vertices are
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S26, the topology axis and the line/point shapes** — the fourth and
+fifth shapes of the shapes rung, the first two that are not filled, and the reason topology had to stop
+being one row of the pipeline list wearing a name (2026-10-31). The step before it is **S25, the sphere**
+— the third shape of the shapes rung, the first shape whose vertices are
 SHARED and the first whose index spend is above the batch's own headroom, so the shape that made the batch's 3n/2 index
 note a counterexample rather than a case (2026-10-31). The step before it is **S24, the box** — the second shape of the
 shapes rung, its six faces as data rather than as twelve triangles of code and its geometry checked against the arena
@@ -11,6 +14,66 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S26 The topology axis and the line/point shapes — the first two shapes that are not filled, one step, landed as one commit, 2026-10-31)
+
+- [x] ~~**The line and point forms of the shapes item**: `xud_draw_line_3d()`/`xud_draw_point_3d()` not in the tree, and
+    the only shapes a caller could draw were filled ones, so nothing that is not a triangle existed anywhere in the API, and
+    the pipeline rung had exactly one topology~~ — **done 2026-10-31** for the line, the point and the topology axis they
+    needed. What is still open of the shapes item is the **wire forms** (`xud_draw_cube_wires()`/`xud_draw_sphere_wires()`,
+    which are the line topology over the box's and the sphere's edge sets rather than a third topology) and `DrawMesh`,
+    which is the mesh / vertex-buffer rung rather than a shape of this rung's.
+
+  **What landed, rung by rung:**
+
+  - **Topology is a row of the pipeline list, not an argument of a draw** — `VkPipelineInputAssemblyStateCreateInfo::topology`
+    is **pipeline** state, so a second topology is a second pipeline, and the pipeline rung's variant list grows into a
+    **(topology × variant)** list: `XUD_PIPELINE_ROW(topology, variant)` = `topology*XUD_BATCH_VARIANT_COUNT + variant`,
+    `XUD_PIPELINE_ROW_COUNT` = 4 rows today (triangle×opaque, triangle×transparent, line×opaque, line×transparent), one
+    `VkPipelineLayout` for the whole list (the S20 decision's one-layout rule read over the wider list: the rows differ in
+    `VkPipelineColorBlendAttachmentState` and in `topology`, and both are pipeline state, not interface state, so the sets,
+    the bindings and the push range stay identical). The `inputAssembly` array is indexed by **topology** rather than by row,
+    because the topology is the only thing that differs between two rows that share a variant — and the static_asserts pin
+    the row count, the input-assembly count and the row bijection.
+  - **The batch's draw row names both axes** — `XudBatchDraw` gains `topology` beside `variant`, and `xud_batch_record_draw()`
+    takes it as an argument rather than assuming triangles. The frame loop's bind is `pipeline[XUD_PIPELINE_ROW(drawRow.topology,
+    drawRow.variant)]`, so the pair a row names is the row of the list that draw binds, and either axis at or past its count
+    ends the loop rather than reading a row off the end of the array. The frame's pipeline-liveness guard now walks all four
+    rows rather than naming two members, because a draw row can name any of them.
+  - **A topology change is a row split inside the batch, not a flush** — `xud_batch_set_topology()` closes the pending run
+    into a draw row of the *same* batch and moves the state, which is raylib's `rlBegin(mode)` (rlgl.h 1454-1478) closing
+    the current run with `drawCounter++` rather than submitting a batch. A flush stays reserved for what actually changes
+    the interface or the capacity — variant, material, capacity — and `xud_batch_should_flush()`'s signature is unchanged,
+    with the reason written beside it: topology is not part of that decision because a topology change never retires bytes,
+    it only splits the run that the same bytes are replayed from.
+  - **The line is 2 vertices and 2 indices, and it is the first shape whose vertex and index counts are equal** — the
+    triangle's, box's and sphere's index spend is above or below their vertex spend, and the line's is exactly equal, so
+    the line is the shape that shows the batch's `3n/2` index headroom is a *choice* rather than a bound from both sides
+    (the sphere showed it from the other side in S25). A line append reads BOTH bounds before it changes anything, and
+    moving the topology before writing bytes is legal only because the capacity check came first: a refused line cannot
+    split a run, and the tests check that the topology state and the counters are unchanged after a refusal.
+  - **A point is a short line, not a `POINT_LIST` row** — raylib's own `DrawPoint3D` is documented as "actually a small
+    line" (raylib.h 1586) and is built with `rlBegin(RL_LINES)`, so the point is `xud_draw_point_3d()` over the line append
+    with the endpoints offset by `XUD_SHAPES_POINT_HALF_LENGTH` along z. A `POINT_LIST` row is a row of the list this rung
+    grew, not a row this rung needed, and adding it is a row rather than a rename — the S20 array rule read over topology.
+  - **The filled shapes set their topology explicitly** — the triangle, box and sphere appends call `xud_batch_set_topology(
+    batch, XUD_BATCH_TOPOLOGY_TRIANGLES)` rather than relying on the batch having opened at triangles. A mixed frame must
+    produce one row per topology rather than one row at whichever topology came last, and "came last" is what a frame that
+    draws a line then a cube would otherwise replay: a cube's indices read as a line list.
+  - **The tests check the split rather than the drawing** — the shapes area's mixed frame (sphere, line, triangle, cube) is
+    checked to produce **two** rows: the first over the sphere's 90 indices at the triangle topology, the second over the
+    line's 2 at the line topology, with the counters answering 22 vertices and 95 indices after all four shapes. The batch
+    area pins the axis itself: default triangles, a past-count topology refused, a refusal leaving the state alone, a same-
+    topology move recording no row, an empty pending run recording no row and a move back leaving the row count unchanged.
+    The pipeline area pins the line row against the triangle row — same layout, same stages, same blend attachment, and the
+    input-assembly row is the topology's own — and the frame area pins the row index the pair selects. The GPU half draws a
+    line beside a cube in a real frame and checks the mid-frame split recorded one row.
+
+  **What this step did NOT land, and stays open:** the wire forms (the line topology exists, the box's and sphere's edge
+  sets do not); `POINT_LIST` (declared out for now, see above); a public blend-mode call (`xud_set_blend_mode()`/`xud_end
+  _blend_mode()`, still the S20 decision's to land with a shapes step that needs it — this step's shapes do not); the
+  handle layer's material record; and the camera + transform math that would make a shape's coordinates world-space rather
+  than clip-space.
 
 ## Steps complete (S25 The sphere — the third shape of the shapes rung, the first shape whose vertices are SHARED and whose index spend is above the batch's headroom, one step, landed as one commit, 2026-10-31)
 

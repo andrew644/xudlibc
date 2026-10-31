@@ -200,6 +200,18 @@ nged
 
 - [ ] Shapes module, the rest of it (`DrawLine3D`, `DrawPoint3D` and the wire forms, `DrawMesh` — 3D only,
     there is no 2D shape family in the API)
+    - 2026-10-31 note: **the line and point forms of this item landed as S26** — `xud_draw_line_3d()`/`xud_draw_point_3d()`
+      and the `xud_shapes_append_line()` half they share with the triangle, the box and the sphere, in the same
+      `xud_shapes.h/.c` rung, plus the **topology axis** they needed: the pipeline rung's variant list became a
+      **(topology × variant)** list (`XUD_PIPELINE_ROW(topology, variant)`, 4 rows today, one layout for the whole list),
+      the batch's draw row gained `topology` beside `variant`, the frame loop binds the row the pair names, and
+      `xud_batch_set_topology()` closes a run into another row of the SAME batch rather than flushing — raylib's
+      `rlBegin(mode)` shape (rlgl.h 1454-1478), because topology is `VkPipelineInputAssemblyStateCreateInfo::topology`, i.e.
+      pipeline state, not a draw-call argument. A point is a short line, not a `POINT_LIST` row: raylib's own `DrawPoint3D`
+      is "actually a small line" (raylib.h 1586) and is built with `rlBegin(RL_LINES)`. What is still open of this item,
+      itemised: the **wire forms** (`xud_draw_cube_wires()`/`xud_draw_sphere_wires()`, the line topology over the box's and
+      the sphere's edge sets — the topology exists now, the edge tables do not), `POINT_LIST` (a row of the list S26 grew,
+      not a row it needed), and `DrawMesh`, which is the mesh / vertex-buffer rung rather than a shape of this rung's.
     - 2026-10-31 note: **a third shape of this item landed as S25** — `xud_draw_sphere()` and the `xud_shapes_append_sph
       ere()` half it shares with the triangle and the box, in the same `xud_shapes.h/.c` rung; see the *Steps complete
       (S25 …)* section at the top of `todo_completed.md`. What the rest of this item owes: the line/point and wire form

@@ -112,7 +112,14 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     static const VkBool32 blendEnable[XUD_BATCH_VARIANT_COUNT] = { VK_FALSE, VK_TRUE };
     static const VkBlendFactor blendSrc[XUD_BATCH_VARIANT_COUNT] = { VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_ALPHA };
     static const VkBlendFactor blendDst[XUD_BATCH_VARIANT_COUNT] = { VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA };
+    /* The list's OTHER axis: one input-assembly row per topology the batch's draw rows name, in the
+       batch's topology order. Same table shape as the blend tables above for the same reason - the
+       row of the list is a pair of batch indices, so growing either axis is a row in a table here
+       and not a member in this struct. The two rows differ in ONE field. */
+    static const VkPrimitiveTopology topologyTable[XUD_BATCH_TOPOLOGY_COUNT]
+        = { XUD_PIPELINE_TOPOLOGY_TRIANGLE, XUD_PIPELINE_TOPOLOGY_LINE };
     uint32_t variant = 0u;
+    uint32_t topology = 0u;
 
     if (pipeline == NULL) {
         return XUD_INVALID_ARG;
@@ -134,12 +141,19 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     pipeline->vertexInput.vertexAttributeDescriptionCount = 0u;
     pipeline->vertexInput.pVertexAttributeDescriptions = NULL;
 
-    /* --- input assembly: TRIANGLE_LIST, no primitive restart. The restart index is a degenerate
-       -index convention the batch step owns, not a decision of this row. --- */
-    pipeline->inputAssembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
-    pipeline->inputAssembly.pNext = NULL;
-    pipeline->inputAssembly.topology = XUD_PIPELINE_TOPOLOGY;
-    pipeline->inputAssembly.primitiveRestartEnable = VK_FALSE;
+    /* --- input assembly: one row per topology of the list, TRIANGLE_LIST for the first and LINE_LIST
+       for the second, neither with primitive restart. The restart index is a degenerate-index
+       convention the batch step owns, not a decision of these rows, and neither of our two
+       topologies uses one. Topology is PIPELINE state (it lives in this row, not in a draw call),
+       which is what makes the list carry one row per topology rather than one row for all of it -
+       and it is why a line drawn through the triangles' pipeline is a line made of triangles, not
+       a line. --- */
+    for (topology = 0u; topology < XUD_BATCH_TOPOLOGY_COUNT; topology++) {
+        pipeline->inputAssembly[topology].sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        pipeline->inputAssembly[topology].pNext = NULL;
+        pipeline->inputAssembly[topology].topology = topologyTable[topology];
+        pipeline->inputAssembly[topology].primitiveRestartEnable = VK_FALSE;
+    }
 
     /* --- viewport state: one viewport and one scissor, both DYNAMIC, so both pointers stay NULL
        and the frame loop sets them. pViewportState may not be NULL at all for the same reason
@@ -339,14 +353,15 @@ XudResult xud_pipeline_fill_layout_info(const XudDescriptor* descriptor, VkPipel
  * The pipeline create-info - pure, assembled from the rows above
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, uint32_t variant, VkGraphicsPipelineCreateInfo* outCreateInfo) {
+XudResult xud_pipeline_fill_create_info(
+    const XudPipeline* pipeline, uint32_t topology, uint32_t variant, VkGraphicsPipelineCreateInfo* outCreateInfo) {
     if (outCreateInfo == NULL) {
         return XUD_INVALID_ARG;
     }
-    /* The variant is the row of the batch's list this create-info is for, and a variant at or past
-       the count is refused rather than read off the end of the arrays - the same rule the batch's
-       own invariant check applies to the variant a draw row names. */
-    if (variant >= XUD_BATCH_VARIANT_COUNT) {
+    /* The pair is the row of the batch's list this create-info is for, and either axis at or past
+       its count is refused rather than read off the end of the arrays - the same rule the batch's
+       own invariant check applies to the topology and variant a draw row names. */
+    if ((topology >= XUD_BATCH_TOPOLOGY_COUNT) || (variant >= XUD_BATCH_VARIANT_COUNT)) {
         return XUD_INVALID_ARG;
     }
     if ((pipeline == NULL) || (pipeline->layout == VK_NULL_HANDLE)) {
@@ -363,7 +378,7 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, uint32_t va
        state(), so a struct whose rows were never filled is a bad state of this layer's own
        record, not a bad argument from a caller. */
     if ((pipeline->vertexInput.sType != VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO)
-        || (pipeline->inputAssembly.sType != VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO)
+        || (pipeline->inputAssembly[topology].sType != VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO)
         || (pipeline->viewportState.sType != VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO)
         || (pipeline->rasterizer.sType != VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO)
         || (pipeline->multisample.sType != VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO)
@@ -380,7 +395,7 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, uint32_t va
     outCreateInfo->pStages = pipeline->shaderStages;
     outCreateInfo->pTessellationState = NULL; /* no tessellation stage */
     outCreateInfo->pVertexInputState = &pipeline->vertexInput;
-    outCreateInfo->pInputAssemblyState = &pipeline->inputAssembly;
+    outCreateInfo->pInputAssemblyState = &pipeline->inputAssembly[topology];
     outCreateInfo->pViewportState = &pipeline->viewportState;
     outCreateInfo->pRasterizationState = &pipeline->rasterizer;
     outCreateInfo->pMultisampleState = &pipeline->multisample;
@@ -417,7 +432,7 @@ XudResult xud_pipeline_fill_create_info(const XudPipeline* pipeline, uint32_t va
 static void xud_pipeline_destroy_rows(XudLoader* loader, const XudDevice* device, VkPipeline* ioCreated) {
     uint32_t row = 0u;
 
-    for (row = 0u; row < XUD_BATCH_VARIANT_COUNT; row++) {
+    for (row = 0u; row < XUD_PIPELINE_ROW_COUNT; row++) {
         if (ioCreated[row] != VK_NULL_HANDLE) {
             (void)loader->deviceTable.vkDestroyPipeline(device->device, ioCreated[row], NULL);
             ioCreated[row] = VK_NULL_HANDLE;
@@ -435,14 +450,15 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     XudShader* vertexShader = NULL;
     XudShader* fragmentShader = NULL;
     VkPipelineLayoutCreateInfo layoutInfo;
-    VkGraphicsPipelineCreateInfo pipelineInfo[XUD_BATCH_VARIANT_COUNT];
-    VkPipeline created[XUD_BATCH_VARIANT_COUNT] = { VK_NULL_HANDLE }; /* zeroed in full: only the
+    VkPipeline created[XUD_PIPELINE_ROW_COUNT] = { VK_NULL_HANDLE }; /* zeroed in full: only the
                             rows a create call reached have a handle in them, and the ladder below
                             retires the rows that did get made by skipping the ones that did not */
     VkPipelineLayout layout = VK_NULL_HANDLE;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
     uint32_t variant = 0u;
+    uint32_t topology = 0u;
+    uint32_t row = 0u;
 
     if ((outPipeline == NULL) || (*outPipeline != NULL)) {
         return XUD_INVALID_ARG;
@@ -560,37 +576,41 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
        two it names. The handles are created into a local array and recorded into the struct only
        once the whole list exists, which is what lets the ladder below retire the rows that did get
        made without reaching into the struct mid-create. */
-    for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
-        result = xud_pipeline_fill_create_info(pipeline, variant, &pipelineInfo[variant]);
-        if (result != XUD_OK) {
-            xud_pipeline_destroy_rows(loader, device, created);
-            (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
-            (void)xud_shader_close(&fragmentShader, device, loader);
-            (void)xud_shader_close(&vertexShader, device, loader);
-            free(pipeline);
-            return result;
-        }
+    for (topology = 0u; topology < XUD_BATCH_TOPOLOGY_COUNT; topology++) {
+        for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
+            row = XUD_PIPELINE_ROW(topology, variant);
+            result = xud_pipeline_fill_create_info(pipeline, topology, variant, &pipeline->createInfo[row]);
+            if (result != XUD_OK) {
+                xud_pipeline_destroy_rows(loader, device, created);
+                (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
+                (void)xud_shader_close(&fragmentShader, device, loader);
+                (void)xud_shader_close(&vertexShader, device, loader);
+                free(pipeline);
+                return result;
+            }
 
-        /* vkCreateGraphicsPipelines takes an ARRAY of create-infos and an array of pipelines, with a
-           count: one pipeline here, so one row of each, and the row is the struct's own, which is
-           what makes the create-info the driver reads and the create-info recorded above it the same
-           bytes. pipelineCache VK_NULL_HANDLE is the spec's "no cache" form - a pipeline cache is a
-           disk cache decision this library does not take today. */
-        vk = loader->deviceTable.vkCreateGraphicsPipelines(
-            device->device, VK_NULL_HANDLE, 1u, &pipelineInfo[variant], NULL, &created[variant]);
-        result = xud_result_from_vk(vk);
-        if (result != XUD_OK) {
-            xud_pipeline_destroy_rows(loader, device, created);
-            (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
-            (void)xud_shader_close(&fragmentShader, device, loader);
-            (void)xud_shader_close(&vertexShader, device, loader);
-            free(pipeline);
-            return result;
+            /* vkCreateGraphicsPipelines takes an ARRAY of create-infos and an array of pipelines, with a
+               count: one pipeline here, so one row of each, and the row is the struct's own createInfo
+               row - so the create-info the driver reads and the create-info this record keeps ARE the
+               same bytes, the rule xud_swapchain.c states for its create-info and its record, one rung
+               up. pipelineCache VK_NULL_HANDLE is the spec's "no cache" form - a pipeline cache is a
+               disk cache decision this library does not take today. */
+            vk = loader->deviceTable.vkCreateGraphicsPipelines(
+                device->device, VK_NULL_HANDLE, 1u, &pipeline->createInfo[row], NULL, &created[row]);
+            result = xud_result_from_vk(vk);
+            if (result != XUD_OK) {
+                xud_pipeline_destroy_rows(loader, device, created);
+                (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
+                (void)xud_shader_close(&fragmentShader, device, loader);
+                (void)xud_shader_close(&vertexShader, device, loader);
+                free(pipeline);
+                return result;
+            }
         }
     }
 
-    for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
-        pipeline->pipeline[variant] = created[variant];
+    for (row = 0u; row < XUD_PIPELINE_ROW_COUNT; row++) {
+        pipeline->pipeline[row] = created[row];
     }
 
     *outPipeline = pipeline;
@@ -606,7 +626,7 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
     XudResult closedVertex = XUD_INVALID_ARG;
     XudResult closedFragment = XUD_INVALID_ARG;
     XudResult first = XUD_OK;
-    uint32_t variant = 0u;
+    uint32_t row = 0u;
 
     if ((ioPipeline == NULL) || (*ioPipeline == NULL)) {
         return XUD_INVALID_ARG;
@@ -628,8 +648,8 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
        so anything else leaves a handle whose owner is already gone. A nil destroy row while a row
        of the list is live is a refusal, and the struct is not freed, because freeing it would leak
        the handles silently - the rule xud_shader_close() and xud_swapchain_close() both state. */
-    for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
-        if (victim->pipeline[variant] != VK_NULL_HANDLE) {
+    for (row = 0u; row < XUD_PIPELINE_ROW_COUNT; row++) {
+        if (victim->pipeline[row] != VK_NULL_HANDLE) {
             if (loader->deviceTable.vkDestroyPipeline == NULL) {
                 return XUD_UNSUPPORTED;
             }

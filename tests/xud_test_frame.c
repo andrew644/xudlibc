@@ -21,6 +21,7 @@
 #include "xud_batch.h" /* Required for: XudBatch, the batch the frame loop uploads / binds and draws */
 #include "xud_core.h" /* Required for: XudContext, the owner the GPU half runs against */
 #include "xud_frame.h" /* Required for: XudFrame, the fill rungs, the allocation and the recording rows */
+#include "xud_pipeline.h" /* Required for: XUD_PIPELINE_ROW, the row of the pipeline list a (topology, variant) pair names */
 #include "xud_renderer.h" /* Required for: xud_renderer_draw, the one call the GPU half draws through */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
 #include <stdio.h>
@@ -139,13 +140,16 @@ static void xud_test_frame_pure(void) {
         "return code is the report, and a pResults array would be a second channel for the same ans"
         "wer that a caller above would have to read");
 
-    /* The push row of one draw, in both material shapes: the batch's sentinel and a real slot, bec"
-       ause the sentinel mapping is the branch this rung owns and the only one a synthetic row can ex"
-       ercise. The two rows are also the two variants, which is the flags member's whole point. */
+    /* The push row of one draw, in both material shapes: the batch's sentinel and a real slot,
+       because the sentinel mapping is the branch this rung owns and the only one a synthetic row
+       can exercise. The two rows are also the two variants AND the two topologies, which is the
+       flags member's whole point - the push carries the variant rather than the topology, because
+       the topology is bound with the pipeline rather than pushed.
+    */
     {
         XudPushRow pushRow;
-        const XudBatchDraw sentinelRow = { 0u, 3u, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL };
-        const XudBatchDraw realRow = { 12u, 6u, XUD_BATCH_VARIANT_TRANSPARENT, 3u };
+        const XudBatchDraw sentinelRow = { 0u, 3u, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL };
+        const XudBatchDraw realRow = { 12u, 6u, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_TRANSPARENT, 3u };
         uint32_t axis = 0u;
         uint32_t offDiagonal = 0u;
 
@@ -234,8 +238,10 @@ static void xud_test_gpu_draw(void) {
     xud_check((context->renderer->pipeline != NULL) && (context->renderer->renderPass != NULL) && (context->renderer->framebuffers != NULL)
             && (context->renderer->frame != NULL),
         "gpu-draw/four-rungs-live", "the renderer owns all four rungs, none of them a sentinel");
-    xud_check((context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_OPAQUE] != VK_NULL_HANDLE)
-            && (context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_TRANSPARENT] != VK_NULL_HANDLE)
+    xud_check(
+        (context->renderer->pipeline->pipeline[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE)] != VK_NULL_HANDLE)
+            && (context->renderer->pipeline->pipeline[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_TRANSPARENT)]
+                != VK_NULL_HANDLE)
             && (context->renderer->renderPass->renderPass != VK_NULL_HANDLE),
         "gpu-draw/handles-live", "the VkPipeline and the VkRenderPass inside the two rungs are live handles");
     xud_check(context->renderer->framebufferCount == context->swapchain->imageCount, "gpu-draw/count-is-image-count",
@@ -455,20 +461,32 @@ static void xud_test_gpu_draw(void) {
         "made before the frame loop was reached at all");
     context->renderer->framebufferCount = context->swapchain->imageCount;
 
-    /* The two rows of the pipeline list, read on the live renderer: the variant the batch names has a
-       pipeline behind it rather than an index into an array of one, and the two rows are two handles,
-       which is what makes the variant a pipeline choice rather than a flag on one pipeline. The frame
-       loop bound the row the variant names, and the run is validation-clean below - so the blend-
-       enabled row is a pipeline a frame actually drew through, not a row of the list nothing reaches.
+    /* The rows of the pipeline list, read on the live renderer: the (topology, variant) pair the
+       batch names has a pipeline behind it rather than an index into an array of one, and the rows
+       are handles, which is what makes the pair a pipeline choice rather than a flag on one pipel
+       ine. The frame loop bound the row the pair names, and the run is validation-clean below - so
+       the blend-enabled row and the LINE_LIST row are pipelines a frame actually drew through (the
+       shapes area's GPU half draws a line beside a box), not rows of the list nothing reaches.
     */
-    xud_check(context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_TRANSPARENT] != VK_NULL_HANDLE, "gpu-draw/transparent-pipeline-live",
+    xud_check(context->renderer->pipeline->pipeline[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_TRANSPARENT)]
+            != VK_NULL_HANDLE,
+        "gpu-draw/transparent-pipeline-live",
         "the transparent row of the pipeline list is a live handle, so the variant the batch named has "
         "a pipeline behind it rather than an index into an array of one");
-    xud_check(context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_TRANSPARENT]
-            != context->renderer->pipeline->pipeline[XUD_BATCH_VARIANT_OPAQUE],
+    xud_check(context->renderer->pipeline->pipeline[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_TRANSPARENT)]
+            != context->renderer->pipeline->pipeline[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE)],
         "gpu-draw/two-pipeline-handles",
-        "the two rows of the list are two handles, which is what makes the variant a pipeline choice "
-        "rather than a flag on one pipeline");
+        "the two variants of one topology are two handles, which is what makes the variant a pipeline "
+        "choice rather than a flag on one pipeline");
+    xud_check(context->renderer->pipeline->pipeline[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_OPAQUE)] != VK_NULL_HANDLE,
+        "gpu-draw/line-pipeline-live",
+        "and the LINE_LIST row is a live handle too, so the topology axis of the list is as reachable "
+        "as the variant axis - the shapes area's GPU half draws a line through it");
+    xud_check(context->renderer->pipeline->pipeline[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_OPAQUE)]
+            != context->renderer->pipeline->pipeline[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE)],
+        "gpu-draw/topology-rows-are-two-handles",
+        "and the two topologies at the same variant are two handles, which is what makes a topology a "
+        "row of the list rather than a flag on one pipeline");
 
     if (context->validate != 0u) {
         xud_check(context->diagnostics->errorMessages == 0u, "gpu-draw/validation-clean",
