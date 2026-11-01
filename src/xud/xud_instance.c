@@ -14,9 +14,10 @@
  *          o a local: the rule xud_loader.h used to state - a resolve cached across an instance r
  *          ecreation would be stale - is now enforced by the bind being a rung, because re-bindin
  *          g the instance overwrites every row of the table it filled for the old one.
- *   Layer: above the loader, below the physical device. Verified against lavvk here (2026-10-16):
- *          26 instance-level extensions advertised, all three wanted ones present, and vkCreate
- *          Instance at apiVersion 1.0 with those three enabled returns VK_SUCCESS.
+ *   Layer: above the loader, below the physical device. Verified against lavvk here (2026-10-16,
+ *          re-probed 2026-11-01 at the raised 1.3 floor): 26 instance-level extensions advertised
+ *          both times, all three wanted ones present (rows 6/8/23), and vkCreateInstance at the
+ *          floor this layer now asks for returns VK_SUCCESS with those three enabled.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
@@ -45,16 +46,19 @@ static_assert(sizeof(PFN_vkDestroyDebugUtilsMessengerEXT) == sizeof(void*), "res
    XUD_UNSUPPORTED.
    - VK_KHR_get_physical_device_properties2: the *2 queries (vkGetPhysicalDeviceFeatures2,
      vkGetPhysicalDeviceProperties2, vkGetPhysicalDeviceMemoryProperties2) are core in Vulkan 1.1
-     and only reachable as an extension at the 1.0 floor this library asks for; the device layer
-     records all three of them, and the *2 forms are the only ones that chain pNext cleanly.
+     and up, so at this library's 1.3 floor they are core and this name is a courtesy to a legacy
+     driver rather than the thing that makes them reachable; the device layer records all three
+     of them, and the *2 forms are the only ones that chain pNext cleanly.
    - VK_KHR_surface: vkCreateSurfaceKHR and the surface queries GLFW's Vulkan path uses (it hands
-     us a VkSurfaceKHR, and vkDestroySurfaceKHR is ours). Core in 1.1, an extension at the floor.
+     us a VkSurfaceKHR, and vkDestroySurfaceKHR is ours). Core in 1.1 and up, so core here too, and
+     GLFW's own required list still names it: it is still advertised at a 1.3 instance (row 8).
    - VK_KHR_portability_enumeration: without it a driver may hide the portability-gated *device*
      extensions, so the caps recorded at the device layer would be a lie. Requesting it is the
      honest thing to do; VK_INSTANCE_CREATE_FLAG_PORTABILITY_BIT is deliberately not set, because
      that flag only tells the driver "you may hide these", which is the opposite of what this
      library wants.
-   Verified advertised here (lavvk, 2026-10-16): all three, out of 26 instance-level extensions. */
+   Verified advertised here (lavvk, 2026-10-16 at the 1.0 floor, re-probed 2026-11-01 at the 1.3
+   floor): all three both times, out of 26 instance-level extensions both times, at rows 6/8/23. */
 static const char* const XUD_INSTANCE_WANTED_EXTENSIONS[] = {
     VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
     VK_KHR_SURFACE_EXTENSION_NAME,

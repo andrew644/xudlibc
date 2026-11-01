@@ -72,7 +72,7 @@
  *   sr/include/vulkan/: zero hits), so the gates this rung can state are the ones the core prope
  *   rties have - maxBoundDescriptorSets, maxPerStageDescriptor*, maxDescriptorSet*, maxUniformBu
  *   fferRange and maxPushConstantsSize. That is the repo's minimum-core-version rule (the instan
- *   ce sits at the VK_API_VERSION_1_0 floor, see AGENTS.md) applied to the descriptor rung rathe
+ *   ce sits at the VK_API_VERSION_1_3 floor, see AGENTS.md) applied to the descriptor rung rathe
  *   r than a choice about it.
  *-----------------------------------------------------------------------------------------------*/
 

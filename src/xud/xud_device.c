@@ -71,9 +71,12 @@ static_assert(sizeof(((XudDevice*)0)->queuePriorities) / sizeof(float) >= XUD_DE
    Deliberately not wanted today: VK_KHR_debug (its device-level form is a per-device request, and
    the diagnostics layer's messenger is instance-level and already gives the log side - a per-devic
    e debug request is a diagnostics decision, not this layer's), VK_KHR_surface (instance-level alre
-   ady, enabled by xud_instance.c), and every 1.1+ device-level name (AGENTS.md's minimum-core deci
-   sion is the 1.0 floor plus VK_KHR_SWAPCHAIN; the layers above this one ask for higher paths gate
-   d on recorded caps, and asking here would be asking for a path nothing above needs yet). */
+   ady, enabled by xud_instance.c), and every other 1.1+ device-level name: AGENTS.md's minimum-core
+   decision is now the 1.3 floor, and VK_KHR_swapchain is core from 1.1 up, so the one name this
+   layer asks for is a courtesy rather than a requirement - it is still advertised at a 1.3 instance
+   (probed 2026-11-01: 196 device-level extensions, VK_KHR_swapchain at row 84, the same numbers the
+   1.0 floor answered on 2026-10-18), and asking for a second name would be asking for a path that
+   nothing above this layer needs yet. */
 static const char* const XUD_DEVICE_WANTED_DEVICE_EXTENSIONS[] = {
     VK_KHR_SWAPCHAIN_EXTENSION_NAME,
 };

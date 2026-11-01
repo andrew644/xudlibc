@@ -312,11 +312,11 @@ XudResult xud_frame_fill_recording(
 /// row of this struct); the present names the swapchain and leaves its wait-semaphore pair empty, b
 /// ecause the fence at the end of the frame is what bounds the presentation and a wait semaphore the
 /// re would be a second boundary for the same thing. There is NO host-side semaphore-wait row in th
-/// is contract: vkWaitSemaphores is a core-1.2 entry point and this library's instance sits at the
-/// core-1.0 floor (XUD_INSTANCE_API_FLOOR), so the acquire gate is the submit's pWaitSemaphores + pW
-/// aitDstStageMask pair, which is the core-1.0 form of the same boundary and lives on the queue rat
-/// her than on the host. XUD_INVALID_ARG on a NULL out-param or a handle-less command buffer / swa
-/// tchain.
+/// is contract: vkWaitSemaphores is a core-1.2 entry point, live at this library's 1.3 floor
+/// (XUD_INSTANCE_API_FLOOR) and still not called - the gate is this layer's own choice, not a
+/// fallback for a missing name. The core-1.0 form of the same boundary is the submit's pWaitSem
+/// aphores + pWaitDstStageMask pair, which lives on the queue rather than on the host. XUD_INVA
+/// LID_ARG on a NULL out-param or a handle-less command buffer / swapchain.
 XudResult xud_frame_fill_submit(
     VkSubmitInfo* outSubmit, VkPresentInfoKHR* outPresent, VkCommandBuffer commandBuffer, VkSwapchainKHR swapchain);
 

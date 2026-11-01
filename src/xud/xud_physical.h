@@ -253,12 +253,12 @@ XudResult xud_physical_select_queue_family(
 /// Pure: read caps.properties.properties.apiVersion back into caps.apiVersion and compare it
 /// with the floor the instance layer asked for (XUD_INSTANCE_API_FLOOR, xud_instance.h - one
 /// macro owns that number, seen through the include above). XUD_OK when the driver is at or
-/// above the floor: at Vulkan 1.1 and up the *2 forms this layer used are core, at the 1.0
-/// floor they exist only through VK_KHR_get_physical_device_properties2, which is what xud
-/// _instance.c enables - and the loader slot is filled either way (see xud_loader.h), which is
-/// why the slot being present is not the test here. XUD_UNSUPPORTED below the floor: the driver
-/// cannot answer the queries this layer took, and xud_physical_open() fails rather than record
-/// a device it cannot drive. XUD_INVALID_ARG on a NULL caps.
+/// above the floor: at this library's 1.3 floor the *2 forms this layer used are core (they
+/// were promoted at 1.1), so a driver at the floor answers the queries this layer took without
+/// any extension request - and the loader slot is filled either way (see xud_loader.h), which
+/// is why the slot being present is not the test here. XUD_UNSUPPORTED below the floor: the
+/// driver cannot answer the queries this layer took, and xud_physical_open() fails rather than
+/// record a device it cannot drive. XUD_INVALID_ARG on a NULL caps.
 XudResult xud_physical_record_api_version(XudDeviceCaps* caps);
 
 /// Driver: bring the physical layer up - allocate the struct, bind the **six** slots this layer

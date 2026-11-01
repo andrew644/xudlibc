@@ -110,12 +110,13 @@
    the count this is sized for rather than a bound a caller has to know about. */
 #define XUD_BATCH_DRAW_MIN 16u
 
-/* The index width. uint32 rather than uint16 because VK_INDEX_FORMAT_UINT16 is a core-1.1 name
-   and this library's instance sits at the core-1.0 floor (xud_instance.h's XUD_INSTANCE_API_FLOOR
-   - the same reason vkCmdDrawIndexed's index format is not a queried thing here at all: vkCmd
-   DrawIndexed takes no format, the buffer's contents are whatever the pipeline's attribute
-   reads, and a 32-bit index is the one width that never needs a second index buffer for a
-   batch over 65535 vertices). */
+/* The index width. uint32 rather than uint16, and the reason is the batch's own, not a floor
+   question: vkCmdBindIndexBuffer's indexType is VK_INDEX_TYPE_UINT16 / VK_INDEX_TYPE_UINT32,
+   both core 1.0 and therefore core at this library's 1.3 floor too (xud_instance.h's XUD_INSTAN
+   CE_API_FLOOR), and xud_frame.h pins XUD_FRAME_INDEX_TYPE == VK_INDEX_TYPE_UINT32 against this
+   choice. uint32 is the one width that never needs a second index buffer for a batch over 65535
+   vertices, and vkCmdDrawIndexed itself names no format at all: the buffer's contents are read
+   as whatever the index row says they are. */
 #define XUD_BATCH_INDEX_SIZE 4u
 
 /* The batch's capacity bounds. The initial capacity is small on the honest side (a batch that

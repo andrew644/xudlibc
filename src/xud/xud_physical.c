@@ -112,8 +112,9 @@ static_assert(VK_API_VERSION_1_0 <= VK_API_VERSION_1_4, "the apiVersion encoding
    Wanted, with the reason each one is wanted:
    - robustBufferAccess: the renderer suballocates one big vertex/index buffer pair, so an
      out-of-range index or attribute read must return zeroes rather than be undefined behaviour.
-     It is core-guaranteed from Vulkan 1.1 up, so this costs nothing there; at the 1.0 floor it
-     is a request, and a driver that lacks it still works - the library just loses that promise.
+     It is core-guaranteed from Vulkan 1.1 up, so at this library's 1.3 floor a compliant driver
+     reports it and the request costs nothing; the request stays because the check-before-you-use
+     rule asks rather than assumes, and a driver that reports it absent still stays off.
    - samplerAnisotropy: the textured pipeline filters textures, and anisotropic filtering is the
      only quality knob that is a feature rather than a sampler parameter. Absent, the sampler
      creation above falls back to linear, it does not fail.

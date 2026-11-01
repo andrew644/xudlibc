@@ -20,8 +20,8 @@
  *          ulkan anywhere (AGENTS.md).
  *          The synchronization is the classic kind the repo settles, spelled with core-1.0 names only:
  *          an acquire semaphore waited BY THE SUBMIT at the vertex stage - vkWaitSemaphores is a core-1.2
- *          entry point and this library's instance sits at the core-1.0 floor, so a host-side wait would
- *          be a nil row rather than a refusal with a fallback, and the repo's rule is that a name that is
+ *          entry point, live at this library's 1.3 floor and still not called: the submit-side gate is
+ *          this layer's own choice, not a fallback for a missing name, and the repo's rule that a name
  *          not there is reported, not worked around. ONE fence per swapchain image, handed to vkQueueSub
  *          mit as its fence argument and waited and reset at the end of the frame that wrote it, and no
  *          VK_KHR_vulkan_memory_model anywhere.
@@ -628,13 +628,14 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     }
 
     /* --- 2. the acquire semaphore is NOT waited here on the host. vkWaitSemaphores is a core-1.2 entry
-       point and this library's instance sits at the core-1.0 floor (xud_instance.h's XUD_INSTANCE_API_
-       FLOOR), so the row is nil rather than a refusal-with-a-fallback, and the repo's rule is that a na
-       me that is not there is reported, not worked around. The core-1.0 form of the same boundary is a
-       row of the SUBMIT: pWaitSemaphores names the acquire semaphore and pWaitDstStageMask names the ve
-       rtex stage, which is where the draw's work begins - so the recorded work cannot touch the image u
-       ntil the acquire signal fires, and the gate is on the queue rather than on the host. Step 5 below
-       writes exactly that pair. --- */
+       point, so at this library's 1.3 floor (xud_instance.h's XUD_INSTANCE_API_FLOOR) the row is live
+       rather than nil - at the 1.0 floor it was the other way round, and the repo's rule that a name
+       that is not there is reported, not worked around, is why the host-side wait was never an option
+       there. It is still not called here: the submit-side gate is this layer's own choice, and the
+       core-1.0 form of the same boundary is a row of the SUBMIT - pWaitSemaphores names the acquire
+       semaphore and pWaitDstStageMask names the vertex stage, which is where the draw's work begins,
+       so the recorded work cannot touch the image until the acquire signal fires and the gate is on
+       the queue rather than on the host. Step 5 below writes exactly that pair. --- */
 
     /* --- 3. the framebuffer for THIS image, through the array's own accessor. A stale index into an arra
        y a recreate replaced is a caught error, not an out-of-range read - the same rule xud_swapchain_ima

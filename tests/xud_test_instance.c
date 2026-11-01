@@ -62,7 +62,7 @@ static void xud_test_instance_pure(void) {
         "instance/app-version", "the version must be the library version");
     xud_check(instance.applicationInfo.engineVersion == instance.applicationInfo.applicationVersion, "instance/engine-version",
         "both version slots must agree");
-    xud_check(instance.applicationInfo.apiVersion == XUD_INSTANCE_API_FLOOR, "instance/api-floor", "the floor must be VK_API_VERSION_1_0");
+    xud_check(instance.applicationInfo.apiVersion == XUD_INSTANCE_API_FLOOR, "instance/api-floor", "the floor must be VK_API_VERSION_1_3");
     xud_check(
         xud_instance_fill_application_info(NULL) == XUD_INVALID_ARG, "instance/app-info-null-out", "a null out-param must be rejected");
 

@@ -1,6 +1,6 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S35, the solid pipeline's one fixed light** — the second half of the user's "they appear
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S36, the Vulkan floor raised to 1.3** — one macro, its three readers, and the comments whose reasons were written against the floor that is no longer the floor: a raise is a refusal rather than a capability, and what it settles is which names are core (2026-11-01). The step before it is **S35, the solid pipeline's one fixed light** — the second half of the user's "they appear
   flat" report, the half S32's boxes left open: the normal the batch has been writing since the batch landed finally
   being READ by `shaders/solid.frag`, one Lambert term against one fixed world-space direction with an ambient floor,
   and the interpolated colour modulated by it, so a box's six faces stop being one colour (2026-10-31). The step
@@ -35,7 +35,69 @@ k, and the rebuild that follows (2026-10-26). The step before it is **S21, the s
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
 
-## Steps complete (S35 The solid pipeline's one fixed light — the second half of the "they appear flat" report, closed where S32 closed the first half: the normal the batch has written since the batch landed finally read by the fragment stage, one Lambert term against one fixed world-space direction, the colour modulated by it, and the two claims in xud_shapes.h that were written for an unlit frag restated to match, one step, landed as one commit, 2026-10-31)
+## Steps complete (S36 The Vulkan floor raised to 1.3 — one macro and its three readers, and the ten comments whose reasons were written against the floor that is no longer the floor: the *2 queries, the surface creation and the swapchain name stop being extension paths and `vkWaitSemaphores` stops being a nil loader row, one step, landed as one commit, 2026-11-01)
+
+- 2026-11-01 note: **the Vulkan floor is 1.3 now**. What landed, file for file:
+
+    - **`src/xud/xud_instance.h`, the whole decision** — `XUD_INSTANCE_API_FLOOR` raised from `VK_API_VERSION_1_0`
+      to `VK_API_VERSION_1_3`, and the note above it restated to say what the raise settles. One macro, three
+      readers, and no number spelled at a call site anywhere in the tree: `xud_instance.c:149` writes it into
+      `VkApplicationInfo::apiVersion`, `xud_physical.c:355` reads the driver's `apiVersion` back against the same
+      macro and answers `XUD_UNSUPPORTED` below it, and `xud_physical.h:118` asserts the floor is at least 1.0 so
+      that read-back stays an ordered comparison — the encoding is `VK_MAKE_API_VERSION`'s `variant<<29 | major<<22
+      | minor<<12 | patch` (read off `vulkan_core.h:62`), which is what makes this machine's `4211042` decode to
+      core 1.4.354 rather than to the nonsense a `<<22`-first reading gives.
+    - **The rest of the step is prose, and it is the point of the step** — ten comments carried reasons written
+      against the floor that is no longer the floor, and a raise flips three of them from "the name is not there"
+      to "the name is there and we chose not to use it": `xud_instance.c`'s wanted-list note (the `*2` queries and
+      `VK_KHR_surface` are core from 1.1 up, so both names are now a courtesy to a legacy driver rather than the
+      thing that makes a query reachable), `xud_physical.h`'s `xud_physical_record_api_version()` doc (the same
+      sentence, from "at the 1.0 floor they exist only through the extension" to "core here, so a driver at the
+      floor answers without any request"), `xud_physical.c`'s `robustBufferAccess` bullet (core-guaranteed from
+      1.1 up, so at this floor a compliant driver reports it and the request costs nothing — the request stays
+      because the check-before-you-use rule asks rather than assumes), `xud_device.c`'s wanted-device note (AGENTS.md's
+      minimum-core decision is now the 1.3 floor, and `VK_KHR_swapchain` is core from 1.1 up, so the one name this
+      layer asks for is a courtesy and the swapchain rung would work without it), `xud_core.c`'s bring-up comment,
+      `xud_descriptor.h`'s limits note, and the three `vkWaitSemaphores` sites (`xud_frame.c`'s file-top note and
+      its step-2 comment, `xud_frame.h`'s `xud_frame_fill_submit()` doc): `vkWaitSemaphores` is core in Vulkan 1.2,
+      so at this floor the loader row is LIVE rather than nil, and the submit's `pWaitSemaphores` + `pWaitDstStageMask`
+      pair is now this layer's own choice rather than a fallback for a name the floor lacks.
+    - **Two new checks, and they are the step's evidence** — `tests/xud_test_gpu_bringup.c` pins
+      `loader->deviceTable.vkWaitSemaphores != NULL` (`gpu/floor-1_2-name-live`): it is the only name in this tree
+      whose presence the floor decides, so a live row is the proof that the 1.3 floor reached the driver rather than
+      only the macro; `tests/xud_test_instance.c`'s headless floor check re-pins its message to `VK_API_VERSION_1_3`.
+      The headless suite is UNCHANGED at 2781 because every floor assertion in it reads the macro rather than a number.
+    - **Two doc bugs found while restating, both fixed here rather than papered over** — `xud_batch.h`'s index-width
+      note named `VK_INDEX_FORMAT_UINT16` as "a core-1.1 name", and that macro does not exist in these headers at all
+      (grepped across `/usr/include/vulkan/`: zero hits); the core names are `VK_INDEX_TYPE_UINT16`/`VK_INDEX_TYPE_UINT32`
+      (`vulkan_core.h` 2344/2345), both core 1.0, so the index width was never a floor question and the honest reason
+      is the batch's own — uint32 is the one width that never needs a second index buffer past 65535 vertices, and
+      `xud_frame.h:143` already pins `XUD_FRAME_INDEX_TYPE == VK_INDEX_TYPE_UINT32` against that choice. And `AGENTS.md`'s
+      sync rule claimed `VK_KHR_vulkan_memory_model` was "not in the vendored headers here": it is there
+      (`VK_KHR_VULKAN_MEMORY_MODEL_EXTENSION_NAME`, `vulkan_core.h` 11705), and it is still an extension at 1.3
+      (`VkPhysicalDeviceVulkan13Features` has no memory-model bit), so the decision stands and only the reason was wrong.
+
+    Probed at a 1.3 instance on this machine BEFORE any of that prose was written (scratch probe against the vendored
+    Volk, `build/api_floor_probe.c`, deleted after — the tree's own precedent): `vkCreateInstance` at
+    `apiVersion = VK_API_VERSION_1_3` answers `VK_SUCCESS`; the instance-level count is still 26 with all three names
+    `xud_instance.c` wants still advertised, at rows 6/8/23; the device-level count is still 196 with `VK_KHR_swapchain`
+    still at row 84 — the same numbers the tree recorded at the 1.0 floor on 2026-10-18, which is the spec's core-promoted
+    behaviour and is why neither wanted list had to change. The GPU run's own suite went 3568 → 3569 with 0 failures,
+    and the one added check is the `vkWaitSemaphores` row. The shipped SPIR-V is version 1.0 (`spirv-dis` on
+    `build/gen/solid_vert.spv`), which a 1.3 core consumes, so the shaders and the shader step's version check (which is
+    about SPIR-V versions, not Vulkan floors) are untouched.
+
+    What the raise does **not** settle, and it is the one thing it undercuts: `VK_KHR_dynamic_rendering` is **core** at
+    1.3 — `VkPhysicalDeviceVulkan13Features::dynamicRendering` in these headers, `VkPipelineRenderingCreateInfo`/`VkRenderingAttachmentInfo`
+    as core structs, and Volk's table already carrying `PFN_vkCmdBeginRendering`/`PFN_vkCmdEndRendering` (volk.h 776/783)
+    — so S22's explicit-`VkRenderPass` + `VkFramebuffer` decision no longer has "the only path that runs at the declared
+    floor" as one of its reasons, and the gate between the two paths stops being an extension request and becomes a
+    recorded caps read. Moving to the other path is a refactor of landed rungs (`xud_renderpass`'s framebuffer rows and
+    `xud_renderer_resize()`'s depth-attachment recreate, whose reason is `VUID-VkFramebufferCreateInfo-attachments-02702`,
+    have no counterpart in a dynamic-rendering design) and it is an ask, not a side effect of the floor — recorded as
+    open in `todo.md` rather than started here.
+
+ — the second half of the "they appear flat" report, closed where S32 closed the first half: the normal the batch has written since the batch landed finally read by the fragment stage, one Lambert term against one fixed world-space direction, the colour modulated by it, and the two claims in xud_shapes.h that were written for an unlit frag restated to match, one step, landed as one commit, 2026-10-31)
 
 - 2026-10-31 note: **the game objects are lit now**. What landed, file for file:
 

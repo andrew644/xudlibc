@@ -66,6 +66,13 @@ static void xud_test_device_gpu(XudLoader* loader, const XudPhysicalDevice* phys
     xud_check(loader->deviceTable.vkGetDeviceQueue != NULL, "device-gpu-row-get", "...and so is the queue lookup");
     xud_check(loader->deviceTable.vkDeviceWaitIdle != NULL, "device-gpu-row-wait", "...and the guard");
     xud_check(loader->deviceTable.vkDestroyDevice != NULL, "device-gpu-row-destroy", "...and the teardown call, bound before it is needed");
+    /* The floor's own evidence, and the only name in this tree whose presence the floor decides:
+       vkWaitSemaphores is core in Vulkan 1.2, so it is not a name a 1.0 instance must answer, and
+       at this library's 1.3 floor it is live (probed 2026-11-01). xud_frame.c still gates the
+       acquire on the submit's pWaitSemaphores + pWaitDstStageMask pair rather than calling this
+       row, so the check is about the floor having reached the driver, not about a call here. */
+    xud_check(loader->deviceTable.vkWaitSemaphores != NULL, "gpu/floor-1_2-name-live",
+        "a core-1.2-only name resolves at the 1.3 floor, so the floor reached the driver");
 
     xud_check(device->queueRow.sType == VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, "device-gpu-row-stamp",
         "the row the driver was handed is stamped");

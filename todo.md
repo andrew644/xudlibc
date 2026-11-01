@@ -6,6 +6,16 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-11-01 note: **the Vulkan floor is 1.3 as S36** — `XUD_INSTANCE_API_FLOOR` (`xud_instance.h`) raised from
+  `VK_API_VERSION_1_0` to `VK_API_VERSION_1_3`, one macro and its three readers, and no number spelled at a call site;
+  the rest of the step is the ten comments whose reasons were written against the floor that is no longer the floor —
+  the `*2` queries, the surface creation and `VK_KHR_swapchain` stop being extension paths, and `vkWaitSemaphores` (core
+  1.2) stops being a nil loader row, which flips the frame layer's submit-side acquire gate from a fallback into a choice.
+  A raise is a refusal, not a capability: lavvk answers core 1.4.354 either way, so nothing is unlocked here and what
+  changes is which drivers are refused. Suite 2781 headless / 3569 GPU, 0 failures (GPU was 3568 — the one new check
+  pins the now-live `vkWaitSemaphores` row as the evidence the floor reached the driver); the GPU example run is
+  validation-clean and exits 0. See the *Steps complete (S36 …)* section now at the top of `todo_completed.md`.
+
 - 2026-10-31 note: **the game objects are lit now as S35** — `shaders/solid.frag` only, plus the two claims about
   that frag in `src/xud/xud_shapes.h` that were written while it was unlit, and the light-model rule in
   `AGENTS.md`: the frag now reads the normal the vertex stage has been outputting since the batch landed, takes a
@@ -445,10 +455,35 @@ nged
 - Synchronization → **classic** (semaphores + per-image fences + pipeline barriers + subpass deps), not
     `VK_KHR_vulkan_memory_model`.
 - Shaders → **offline SPIR-V only** (`glslangValidator` 11:16.4.0 / `glslc` 2026.3, `spirv-val` in CI). No runtime GLSL.
-- Core floor → **`VK_API_VERSION_1_0` + `VK_KHR_SWAPCHAIN`**, everything higher gated on recorded caps.
+- Core floor → **`VK_API_VERSION_1_0` + `VK_KHR_SWAPCHAIN`**, everything higher gated on recorded caps. **Raised to
+    `VK_API_VERSION_1_3` on 2026-11-01** — see the *Decided since then* entry below and `XUD_INSTANCE_API_FLOOR` in
+    `xud_instance.h`; the wanted lists did not have to change (probed at a 1.3 instance: the names are still advertised).
 - GPU memory discipline → **allocate once, suballocate always**, staging via transfer ops.
 
 ## Decided since then
+
+- 2026-11-01 — **Core floor → `VK_API_VERSION_1_3`** (raised from the 1.0 + `VK_KHR_SWAPCHAIN` minimum above; the user's
+  word, and the step is the restatement rather than the macro — one line of code, ten comments whose reasons were written
+  against the floor that is no longer the floor). **A raise is a refusal, not a capability**: a driver below 1.3 answers
+  `XUD_UNSUPPORTED` from `xud_vulkan_supported()`/`xud_init_context()` and from `xud_physical_record_api_version()`, and
+  on this machine lavvk answers core 1.4.354 either way, so the GPU run is the same run and nothing is unlocked. What it
+  settles is which names are core, and the wanted lists stay as they are because that is a probed fact rather than a
+  judgement — probed at a 1.3 instance on this machine (scratch probe against the vendored Volk, deleted after): `vkCreateInstance`
+  answers `VK_SUCCESS`, the instance-level count is still 26 with all three names `xud_instance.c` wants still advertised
+  (rows 6/8/23), and the device-level count is still 196 with `VK_KHR_swapchain` still at row 84, the same numbers the
+  tree recorded at the 1.0 floor on 2026-10-18. Core-promoted names are still enumerated, so `VK_KHR_get_physical_device_properties2`,
+  `VK_KHR_surface` and `VK_KHR_swapchain` stay requested as a courtesy to a legacy driver rather than being dropped, and
+  the `*2` queries / the surface creation / the swapchain stop being extension paths at all. `vkWaitSemaphores` (core 1.2)
+  is now a **live** loader row rather than a nil one, which is why `xud_frame.c` gating the acquire on the submit's `pWaitSemaphores`
+  + `pWaitDstStageMask` pair is now this layer's own choice rather than a fallback for a name the floor lacks — and
+  `tests/xud_test_gpu_bringup.c` pins that row live as the evidence the floor reached the driver rather than only the macro.
+  Two doc bugs found while restating and fixed here rather than papered over: `xud_batch.h` named `VK_INDEX_FORMAT_UINT16`,
+  which does not exist in these headers at all (the core names are `VK_INDEX_TYPE_UINT16`/`VK_INDEX_TYPE_UINT32`, both core
+  1.0, so the index width was never a floor question), and `AGENTS.md` claimed `VK_KHR_vulkan_memory_model` was "not in the
+  vendored headers here" — it is there, at `vulkan_core.h` 11705, and it is still an extension at 1.3, so only the reason
+  was wrong. What the raise does **not** settle is the render pass: `VK_KHR_dynamic_rendering` is **core** at 1.3, so S22's
+  explicit-`VkRenderPass` + `VkFramebuffer` decision has lost one of its reasons — see the marker added to that entry below
+  and the open ask in *Blocked*.
 
 - 2026-10-26 — **The transparent variant's three open questions → the raylib-shaped answer for all three** (settled today;
   the *Blocked / needs a decision* entries above are closed by this one, and the tie-breaker the user set is the same every
@@ -686,6 +721,13 @@ nged
   Future gates, not implemented: `VK_KHR_dynamic_rendering` (needs the caps/device `pNext` plumbing above) and
   `VK_KHR_create_renderpass2` as a strict upgrade of this path (+3 command-buffer slots, extension-gated, 1.0 form as
   fallback).
+  - 2026-11-01 marker: the floor raised to 1.3 (see the *Decided since then* entry above), and one of this entry's
+    reasons is no longer true — `VK_KHR_dynamic_rendering` is **core** at 1.3 (`VkPhysicalDeviceVulkan13Features::dynamicRendering`
+    in these headers, and Volk's table already has `PFN_vkCmdBeginRendering`/`PFN_vkCmdEndRendering`), so the explicit
+    path is no longer "the only path that runs at the declared floor", and the gate between the two paths stops being
+    an extension request and becomes a recorded caps read. The decision itself is unchanged and stays explicit; the
+    other path is an open ask in *Blocked*, and moving to it is a refactor of `xud_renderpass`'s framebuffer rows and
+    `xud_renderer_resize()`'s depth-attachment recreate, whose reason is `VUID-VkFramebufferCreateInfo-attachments-02702`.
 
 ## Blocked / needs a decision
 
@@ -715,3 +757,10 @@ nged
   example's `glfwGetTime()` — the example's ONE remaining direct GLFW call, and the only reason it still names GLFW
   at all; the game needs a rate in wall time because GLFW's window runs at ~3250 frames a second (ask)
 - Text/font: own bitmap atlas vs vendored `stb_truetype`/fontstash (ask)
+- **Render pass at a 1.3 floor (ask)**: keep the explicit `VkRenderPass` + `VkFramebuffer` path S22 chose, or move to
+  dynamic rendering, which is **core** at this floor now (`VkPhysicalDeviceVulkan13Features::dynamicRendering`, `VkPipelineRenderingCreateInfo`,
+  `VkRenderingAttachmentInfo`, and Volk's `PFN_vkCmdBeginRendering`/`PFN_vkCmdEndRendering` rows) with no extension request
+  and no `pNext` chain — the reason S22 gave for explicit ("the only path that runs at the declared floor") is gone, so the
+  choice is now a caps read rather than a floor fact. Moving is a refactor of landed rungs: `xud_renderpass`'s framebuffer
+  rows and `xud_renderer_resize()`'s depth-attachment recreate have no counterpart in a dynamic-rendering design, and the
+  resize rule's `VUID-VkFramebufferCreateInfo-attachments-02702` sentence is a framebuffer fact rather than a rendering fact.

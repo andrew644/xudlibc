@@ -200,7 +200,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         goto fail;
 
-    /* The instance layer: vkCreateInstance at the VK_API_VERSION_1_0 floor, with only the
+    /* The instance layer: vkCreateInstance at the XUD_INSTANCE_API_FLOOR (1.3), with only the
        advertised extensions enabled and, when the diagnostics struct is there, its layers,
        its wanted extensions and its validation-feature request handed over - the instance
        layer checks every one of those against what the driver advertised and enables nothing

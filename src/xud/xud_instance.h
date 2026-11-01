@@ -30,12 +30,19 @@
 #include <assert.h>
 #include <vulkan/vulkan.h>
 
-/* The API floor every xudlibc instance asks for. The library minimum is Vulkan 1.0 +
-   VK_KHR_surface (AGENTS.md, settled decisions): lavvk here reports Vulkan 1.4.354, so the
-   higher paths exist, but the library must still work at the floor, and the *2 queries and
-   the surface creation that the rest of the layers need are only reachable at the floor as
-   instance-level extensions - which is exactly what the extension selection below enables. */
-#define XUD_INSTANCE_API_FLOOR VK_API_VERSION_1_0
+/* The API floor every xudlibc instance asks for. The library minimum is Vulkan 1.3 +
+   VK_KHR_surface (AGENTS.md, settled decisions - raised from 1.0 on 2026-11-01): lavvk here
+   reports Vulkan 1.4.354, so the higher paths still exist and the library must still work at
+   the floor. What changed at this floor is what makes a query reachable: the *2 queries and
+   vkCreateSurfaceKHR are CORE here (both names are core-promoted at 1.1 up), so the extension
+   selection below asks for names that are a courtesy to a legacy driver rather than the thing
+   that makes a query exist at all. Probed here at a 1.3 instance (scratch probe against the
+   vendored Volk, deleted after): vkCreateInstance answers VK_SUCCESS, and all three names
+   xud_instance.c wants are still advertised, out of the same 26 instance-level extensions the
+   1.0 floor answered, at rows 6/8/23. What the raise costs is a refusal, not a capability:
+   xud_vulkan_supported() and xud_init_context() answer XUD_UNSUPPORTED on a driver below 1.3,
+   and xud_physical_record_api_version() refuses a driver that answers below it. */
+#define XUD_INSTANCE_API_FLOOR VK_API_VERSION_1_3
 
 /* pApplicationName and pEngineName of every instance this library creates. */
 #define XUD_INSTANCE_NAME "xudlibc"
