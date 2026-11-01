@@ -6,6 +6,21 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-11-01 note: **the leak sweep found nothing ours to fix** — three tools, one answer, and the tree
+  stays as it is. LSan headless is UNCHANGED at 72 bytes in 3 allocations (32+32+8); its GPU run answers
+  1536 B in 78 and every one of those has a `<unknown module>` or `g_malloc` frame directly under `malloc`
+  — the validation layer's bookkeeping around `vkCreateDevice`/`vkDestroyDevice` and libdecor's
+  `gdk_set_allowed_backends` string through GLFW. valgrind `--leak-check=full` headless answers 440 B
+  definitely lost in 6 (that same validation-layer set, plus the dynamic linker's `_dl_close` row and
+  libdecor's string) and 1760 B possibly lost in 5 glib/dconf thread stacks. The validation layer's own
+  **object**-leak report (`vkDestroyDevice(): … has N leaked objects`, VUID-vkDestroyDevice-device-05137)
+  answers NONE on a GPU run of the clean tree, which is what pins the Vulkan side as clean too. Coverage
+  beyond the suite: a scratch probe (written to `/tmp`, deleted after, never in the tree) drew 240 frames
+  of 120 shapes each — two batch grows per frame, a material begun and ended every frame, twelve window
+  resizes of which eleven took the swapchain and depth recreate — and answers 0 validation errors, 0
+  leaked objects, 32 B at exit inside the validation layer alone (0 in the `-DXUD_DEBUG=OFF` sanitizer
+  config, which asks for no layer at all). No xud allocation site sits under any reported leak.
+
 - 2026-11-01 note: **the material rung and the public material API landed as S37** — see the *Steps complete (S37 …)*
   section now at the top of `todo_completed.md`: `src/xud/xud_material.h`/`.c` is the first rung that fills a handle
   slot's `record` field (`XudMaterialRecord { uint32_t variant; VkDescriptorSet setOne; }` — the variant live, the se
