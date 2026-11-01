@@ -6,6 +6,14 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-10-31 note: **the game objects are lit now as S35** — `shaders/solid.frag` only, plus the two claims about
+  that frag in `src/xud/xud_shapes.h` that were written while it was unlit, and the light-model rule in
+  `AGENTS.md`: the frag now reads the normal the vertex stage has been outputting since the batch landed, takes a
+  Lambert term against ONE fixed world-space direction with an ambient floor, and modulates the interpolated colour
+  by it, so a box's six faces come out at six brightnesses rather than one and the "they appear flat" report's
+  second half is closed. Suite UNCHANGED at 2781 headless / 3568 GPU, 0 failures; the GPU example run is
+  validation-clean and exits 0. See the *Steps complete (S35 …)* section now at the top of `todo_completed.md`.
+
 - 2026-10-31 note: **the breakout paddle is the player's only as S34** — `examples/breakout_3d.c` only, no library
   file, no public API change, no new test: `xud_breakout_step_paddle()` lost its `ball` argument and the chase it
   computed, so a frame with no key held is a frame the paddle does not move in and an unattended run is a paddle
@@ -358,16 +366,6 @@ nged
 
 ## Next
 
-- [ ] **The game objects in `examples/breakout_3d.c` still have no shading** — the second half of the user's "they
-    appear flat" report; the thickness half landed as S32 (see the *Steps complete (S32 …)* section at the top of
-    `todo_completed.md`), so the objects are boxes now and their sides are still six faces of one flat colour.
-    `shaders/solid.frag` writes `inColor` at location 1 and nothing else, while `shaders/solid.vert` already outputs
-    `outNormal` at location 2, which nothing reads. Reading it — one fixed light direction, a Lambert term, the
-    colour modulated by it — is what makes a box read as a solid rather than as a hexagonal silhouette whose faces
-    cannot be told apart from each other or from a sphere. It is a `shaders/` step: the SPIR-V is compiled at build
-    time and validated in CI, and the vertex stage's `outNormal` is already the channel for it. Ask before picking
-    the light model (see the open questions below).
-
 - [ ] Shapes module, the rest of it (`DrawLine3D`, `DrawPoint3D` and the wire forms, `DrawMesh` — 3D only,
     there is no 2D shape family in the API)
     - 2026-10-31 note: **the wire forms of this item landed as S27** — `xud_draw_cube_wires()`/`xud_draw_sphere_wires()`
@@ -695,6 +693,15 @@ nged
   "The transparent variant's three open questions → the raylib-shaped answer for all three": the pipelines are an **array
   indexed by the variant** with **one layout** for both (D1), and the sort rule is the **caller's append order**, no
   library sort and no new field on the batch's draw row (D2).
+- **The light model beyond the one constant S35 compiled into `shaders/solid.frag`** (ask): the direction and the
+  ambient floor are GLSL constants, so a caller cannot move a light, change its colour or its intensity, and the
+  block's `ambient`/`lightCount`/`cameraPos`/`time`/`fog` rows are still zeroed and unread. Making the light a
+  set-0 member is a descriptor-rung change — the block's bytes would have to be filled every frame the way
+  `xud_descriptor_set_view_proj()` fills `viewProj`, and the open half is which rung owns that write. Making it a
+  public call is a public-API-surface change, and there is **no raylib shape to fall back on for the tie-breaker**:
+  raylib 6.2 has no lighting API left (grep `Light` in `reference/raylib/raylib.h`: one hit, the `LIGHTGRAY`
+  colour constant — `SetLight`/`SetLightingMode`/`SetLightingCamera` are gone from 6.2), so the "whichever option
+  feels like using raylib" rule cannot decide this one and the user's word is the only input.
 - Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
 - ~~Handle layer's `record`: … whether the batch's `materialIndex` becomes a handle-layer slot index …~~ — **the naming is
   decided 2026-10-26** (D3 above): the batch's `materialIndex` is a **material-kind slot index**, the caller holds an

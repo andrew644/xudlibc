@@ -1,6 +1,10 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S34, the breakout paddle as the player's only** — the same example's paddle losing the
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S35, the solid pipeline's one fixed light** — the second half of the user's "they appear
+  flat" report, the half S32's boxes left open: the normal the batch has been writing since the batch landed finally
+  being READ by `shaders/solid.frag`, one Lambert term against one fixed world-space direction with an ambient floor,
+  and the interpolated colour modulated by it, so a box's six faces stop being one colour (2026-10-31). The step
+  before it is **S34, the breakout paddle as the player's only** — the same example's paddle losing the
   autopilot that had been playing an unattended run for it: it moves only while one of its keys is held, so a frame
   with no key held is a frame the paddle does not move in and an unattended run is a paddle that stays at the
   field's centre with a ball falling out beside it (2026-10-31). The step before it is **S33, the public input API
@@ -30,6 +34,90 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Steps complete (S35 The solid pipeline's one fixed light — the second half of the "they appear flat" report, closed where S32 closed the first half: the normal the batch has written since the batch landed finally read by the fragment stage, one Lambert term against one fixed world-space direction, the colour modulated by it, and the two claims in xud_shapes.h that were written for an unlit frag restated to match, one step, landed as one commit, 2026-10-31)
+
+- 2026-10-31 note: **the game objects are lit now**. What landed, file for file:
+
+    - **`shaders/solid.frag`, the whole step** — the frag reads the normal at location 2 (`inNormal`, the vertex
+      stage's `outNormal`, which `shaders/solid.vert` has output since the batch landed and nothing read until now)
+      and the term is four lines: `normalize(inNormal)`, `max(dot(normal, xudLightDir), 0)` as the Lambert term,
+      `min(xudAmbient + lambert, 1)` as the shade, and `vec4(inColor.rgb * shade, inColor.a)` out — the alpha is
+      untouched, because the shade is a property of a surface's orientation and not of how see-through it is. The
+      two constants are `xudLightDir = vec3(0.267261, 0.534522, 0.801784)` — `normalize(vec3(1, 2, 3))` written out
+      as components, because `normalize()` is not a constant expression in GLSL and this constant is written once —
+      and `xudAmbient = 0.25`. The direction points FROM the surface TOWARD the light, which is why the term is a
+      plain `dot()` rather than a negated one, and it is world-space, which is what makes the sweep S30 turned show
+      off the shading rather than fight it: the light does not turn with the eye, so a face's brightness is a
+      property of the face and of nothing else.
+    - **Why the light is a constant in the stage rather than a member of set 0**: the block declares `ambient` and
+      `lightCount`, but `xud_descriptor_open()` zeroes them and nothing fills them ever, so a shader that read them
+      would be a shader that reads zero — a light that is always off. Promoting the direction and the floor into
+      set 0 is the fog / lighting step's job, the same one that owns `cameraPos`, `time` and `fog`, and it is
+      recorded as an open ask in `todo.md`'s Blocked section rather than half-done here. The ambient floor is not
+      decoration either: `XUD_RENDERPASS_CLEAR_COLOR_*` clears the colour attachment to (0.02, 0.02, 0.05), so a
+      face at 0 would be pure black on near-black, a face that is drawn but not seen — and the whole point of the
+      step is faces being SEEN. A single Lambert term with no floor lights three of a box's six faces and leaves
+      three at nothing.
+    - **Why the normal is renormalized in the frag rather than trusted**: a box's four vertices of one face share
+      that face's normal, so the interpolated vector is already unit for a box, but a sphere's three vertices of one
+      triangle carry three different unit normals and a convex combination of unit vectors is shorter than one,
+      which would darken the middle of every one of a sphere's triangles against its own corners. Every shape the
+      shapes rung appends writes a UNIT normal — the box's are the six axis rows, the sphere's are the unit
+      directions that placed its vertices, the flat triangle's and the line's are `XUD_SHAPES_FLAT_NORMAL` — so the
+      input is never the zero vector and `normalize()` cannot divide by zero. The direction is world-space and the
+      push row's model matrix is identity for every shape the shapes rung appends today, which is what makes the
+      attribute's normal already be in the light's space; a non-identity model would need the vertex stage to carry
+      the normal over, and that is the transform step's, not this one's.
+    - **`src/xud/xud_shapes.h`, the two claims that were written for an unlit frag** — the flat +Z normal's note
+      said "the lighting that would read it is not in the tree - solid.frag writes the interpolated colour and
+      reads nothing else", and the uv's note said "solid.frag reads the colour at location 1 only". Both are false
+      of the tree now, so both are restated rather than left to contradict it: the flat normal IS read now, and
+      what it decides for a flat triangle is the direction's own z component; the uv is the one stream the frag does
+      not read (it reads the colour at 1 and the normal at 2). The reason a triangle still carries a constant rather
+      than a normal computed from its three points is unchanged — the cross product's handedness belongs to the
+      camera + transform step.
+    - **`AGENTS.md`, one new rule** under the Vulkan rules, beside the shaders bullet: the light model as it is in
+      the tree (one fixed world-space direction, a Lambert term, an ambient floor, both constants in the stage and
+      not members of set 0, the normal renormalized in the frag and the reason). The camera rule's claim that the
+      block's other half is unread is still true — this step reads none of it.
+
+    Nothing else: no library source, no public API change, no new test, no `CMakeLists.txt` change (the frag's build
+    rule already compiles it and runs `spirv-val` in the same step).
+
+    Verified here: `glslangValidator -V` + `spirv-val` clean on the new frag by hand BEFORE the build, and `spirv-dis`
+    shows the term in the module rather than folded away — the entry point's interface now names `%inNormal` with
+    `OpDecorate %inNormal Location 2`, the direction survives as one `OpConstantComposite` of the three components,
+    and the body is `OpExtInst … Normalize` → `OpDot` → `OpFNegate`/`OpFMax` (the `max(dot, 0)` pair glslang folds
+    to a max against `-0.0`) → `OpFAdd` → `OpFMin`. `ninja -C build` regenerated
+    `build/gen/solid_frag.spv` and `build/gen/xud_solid_spv.h` and rebuilt the one TU that includes the generated
+    header (`src/xud/xud_pipeline.c`) plus the four links. Suite UNCHANGED at 2781 headless / 3568 GPU, 0 failures —
+    the step adds no call site and no test, and the shader area's SPIR-V is its own synthetic header rather than the
+    build's, so no test reads the words this step changed. The GPU run is validation-clean: the only `ERROR/validation`
+    line is the area's own synthetic probe and there is no VUID line. The clang 22 build (`build-clang`) and the
+    `-fsanitizer` build (`build-san`) both rebuild clean and answer the same 2781 / 0, the sanitizer build unchanged
+    at its 3 pre-existing bring-up-boundary leaks (72 B in 3 allocations, GLFW's and libdecor's, inside the dlopen'd
+    driver). `gcc -fsyntax-only -std=c11 -Wall -Wextra -Wpedantic -Werror` clean over `src/xud/*.c` with `-I src/xud
+    -I src/external -I build/gen`, and `./scripts/format.sh --check` green. The GPU example run at the default 60 s
+    cap: 177794 frames / 3598 steps / 1 round / 2 bricks cleared / 19 misses / 2 short frames, `xud_close_context ->
+    XUD_OK`, exit 0, 36 stderr lines INFO only.
+
+    The validation half is the load-bearing one, and it is a fact rather than a hope: `VUID-RuntimeSpirv-OpEntryPoint-08743`
+    refuses a frag input whose Location/Component slots the previous stage does not output, and this machine has
+    answered that family before — so a location-2 frag input the vertex stage did NOT output would have failed the
+    run. And it fires in the HEADLESS run too, not only in the GPU one: `xud_test_init_bringup_boundary()` is ungated
+    in `tests/xud_test_core.c` and completes a real context on this machine, which means both shader modules and the
+    pipeline are created — and validated — with no `XUD_GPU_TESTS` set at all. The 2781 is therefore the number that
+    proves the new frag module is accepted, not the 3568.
+
+    NOT exercised here: the pixels themselves. The library has no readback path — no staging copy out of a swapchain
+    image anywhere in the tree — so what is proven above is that the term is in the module, that the driver and the
+    validation layer accept the frag's new input against the vertex stage's output at location 2, and that a frame
+    still draws and presents. The six brightnesses a box now comes out at are the user's to see in the window.
+
+    What stays open, and stays an ask: the light beyond this one constant — see `todo.md`'s Blocked entry. The
+    tie-breaker the user set ("whichever option feels like using raylib") cannot decide it, because raylib 6.2 has
+    no lighting API left to mirror.
 
 ## Steps complete (S34 The breakout paddle as the player's only — the example's paddle losing the autopilot that had been standing in for a nobody at the keyboard: one hand, one key-held step, and a frame with no key held moving the paddle nowhere at all, one step, landed as one commit, 2026-10-31)
 

@@ -63,20 +63,22 @@
 
 /* The normal the TRIANGLE carries: +Z, the axis a flat, screen-facing shape faces along.
    The batch's NORMAL stream has no value that means "no normal", so a shape that names no
-   surface has to answer one, and the lighting that would read it is not in the tree - solid.frag
-   writes the interpolated colour and reads nothing else. A real normal is a property of a
-   surface, and a triangle the caller gave three points for has one; computing it from those
-   three points is a cross product the camera + transform step owns the handedness of. The box
-   below does NOT use this: a cube's six faces have six different normals, and those are the
-   shape's own attribute rows, in a table, not a constant here. */
+   surface has to answer one, and solid.frag DOES read it now: it lights the colour by one
+   fixed direction, so this constant is what that direction's z component does to every flat
+   triangle. A real normal is a property of a surface, and a triangle the caller gave three
+   points for has one; computing it from those three points is a cross product the camera +
+   transform step owns the handedness of. The box below does NOT use this: a cube's six faces
+   have six different normals, and those are the shape's own attribute rows, in a table, not
+   a constant here. */
 #define XUD_SHAPES_FLAT_NORMAL_X 0.0f
 #define XUD_SHAPES_FLAT_NORMAL_Y 0.0f
 #define XUD_SHAPES_FLAT_NORMAL_Z 1.0f
 
-/* The uv every shape here carries: (0, 0). The batch's UV stream is read by nothing today
-   (solid.frag reads the colour at location 1 only), and set 1 is declared but never allocated,
-   so there is no sampler whose array a uv could address. The value is a corner of a texture
-   that does not exist, which is what a stream that nothing reads has to be filled with. */
+/* The uv every shape here carries: (0, 0). The batch's UV stream is read by nothing today -
+   solid.frag reads the colour at location 1 and the normal at location 2, and neither is this
+   one - and set 1 is declared but never allocated, so there is no sampler whose array a uv
+   could address. The value is a corner of a texture that does not exist, which is what a
+   stream that nothing reads has to be filled with. */
 #define XUD_SHAPES_UV_S 0.0f
 #define XUD_SHAPES_UV_T 0.0f
 
