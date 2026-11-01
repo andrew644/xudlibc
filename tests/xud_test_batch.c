@@ -398,6 +398,69 @@ static void xud_test_batch_pure(void) {
         "and the row count has not moved across the two moves, so the axis changed nothing but the state "
         "while no run was pending");
 
+    /*--- the material axis, and the row split it owes -------------------------------------*/
+
+    /* The other axis of the same mechanism: the batch is at the state the section above left it in -
+       no pending run, TRIANGLES, no material, opaque - and the pending pair is put back to a non-em
+       pty state directly rather than by appends, exactly as the flush section above does it, becau
+       se the split's whole point is the run that was pending and no append is needed to state one.
+       The appends section below runs at the default again, which is where this section leaves the s
+       tate, and its counts do not depend on the row count.
+    */
+    xud_check(xud_batch_set_material(NULL, 0u, XUD_BATCH_VARIANT_OPAQUE) == XUD_INVALID_ARG, "batch/material-null-batch",
+        "a batch with no state to move is a bad argument");
+    xud_check(xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_COUNT) == XUD_INVALID_ARG, "batch/material-past-variant",
+        "a variant at or past the count is refused rather than a row that would bind no pipeline - the "
+        "same rule the topology move applies to its own axis, one rung up");
+    xud_check((b.currentMaterial == XUD_BATCH_NO_MATERIAL) && (b.currentVariant == XUD_BATCH_VARIANT_OPAQUE),
+        "batch/material-refusal-left-state",
+        "and the refusal left BOTH members where they were, so a refused move cannot split a run and a "
+        "half-moved pair cannot name a row of the list that does not exist");
+    xud_check(xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE) == XUD_OK, "batch/material-same-pair-ok",
+        "asking for the pair already in hand is not an error - the pair is compared as a pair, so a cal"
+        "ler that restates its material every draw is a no-op rather than a row per draw");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 1u), "batch/material-same-pair-no-row", "and it records no row");
+
+    b.pendingFirstIndex = b.indexCount;
+    b.pendingIndexCount = 3u;
+
+    xud_check(xud_batch_set_material(&b, 7u, XUD_BATCH_VARIANT_TRANSPARENT) == XUD_OK, "batch/material-split-ok",
+        "the move to a material and a variant completes");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 2u), "batch/material-split-recorded-row",
+        "and one row was recorded over the pending run, which is the split rather than a flush - the ba"
+        "tch stayed open and the bytes the earlier rows name stayed where they are");
+    xud_check(b.draws[b.drawCount - 1u].indexCount == 3u, "batch/material-split-row-names-the-pending-run",
+        "and the row it recorded is the run that was pending under the previous state, not the one the "
+        "move just opened");
+    xud_check(b.draws[b.drawCount - 1u].variant == XUD_BATCH_VARIANT_OPAQUE, "batch/material-split-row-carries-the-previous-variant",
+        "carrying the variant the run was accumulated UNDER rather than the one the move asked for, whi"
+        "ch is what makes the frame loop bind the row a draw's pair names beside that draw");
+    xud_check(b.draws[b.drawCount - 1u].materialIndex == XUD_BATCH_NO_MATERIAL, "batch/material-split-row-carries-the-previous-material",
+        "and the material of the same run - the row is the (topology, variant, material) triple the run"
+        "was drawn under, and the move's own pair is in the state, not in a row");
+    xud_check(b.draws[b.drawCount - 1u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES, "batch/material-split-row-carries-the-topology",
+        "and the topology is untouched by a material move, which is what keeps a material change from "
+        "turning a triangle run into a line run");
+    xud_check((b.pendingFirstIndex == b.indexCount) && (b.pendingIndexCount == 0u), "batch/material-split-pending-moved",
+        "and the pending pair moved to start after the row, which is the same move the record call appli"
+        "es above and the reason the next run's range is the next window of the index buffer");
+    xud_check((b.currentMaterial == 7u) && (b.currentVariant == XUD_BATCH_VARIANT_TRANSPARENT), "batch/material-moved-both-axes",
+        "and both members moved together, which is why the pair is ONE call rather than two: two state "
+        "calls would be two splits and the second would close a run that has no content in it");
+    xud_check(xud_batch_set_material(&b, 7u, XUD_BATCH_VARIANT_TRANSPARENT) == XUD_OK, "batch/material-same-pair-ok-again",
+        "asking for the moved pair again is not an error");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 2u), "batch/material-same-pair-again-no-row",
+        "and no row, so a caller that re-begins the same material between two draws costs nothing");
+    xud_check(xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE) == XUD_OK, "batch/material-back-ok",
+        "and the move back to the default is the same call in the other direction");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 2u), "batch/material-back-empty-run-no-row",
+        "and no row for it: the run that was pending is empty (the split above closed it), so closing "
+        "it records nothing and a frame that ends its material records one row rather than two");
+    xud_check((b.currentMaterial == XUD_BATCH_NO_MATERIAL) && (b.currentVariant == XUD_BATCH_VARIANT_OPAQUE),
+        "batch/material-back-at-default",
+        "back at the default the batch's reset opens every frame with, which is what lets the appends "
+        "section below run at the state it was written against");
+
     /*--- the appends, the reset and the counters ---------------------------------------------*/
 
     xud_check(xud_batch_reset(NULL) == XUD_INVALID_ARG, "batch/reset-null", "refused");

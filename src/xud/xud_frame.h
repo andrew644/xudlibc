@@ -326,13 +326,14 @@ XudResult xud_frame_fill_submit(
 /// is pushed, the vertex stage reads it, the step above hands its own matrix in without this shape c
 /// hanging). materialIndex is the draw row's own, with the batch's XUD_BATCH_NO_MATERIAL sentinel map
 /// ped to slot 0 because the push row's member is an index a read could use and the sentinel is 0xFF
-/// FFFFF, which indexes nothing; textureIndex is 0 because set 1 is declared and never allocated, so
-/// there is no sampler array with an entry in it; flags is the variant the draw was flushed under, in
-/// the per-draw channel rather than a channel of this rung's - the pipeline variant is chosen by BIND
-/// ING, and this is the same fact from the shader's side, which is what lets a stage branch on the va
-/// riant without a third pipeline. The vertex stage reads only the model matrix today, so the other m
-/// embers are recorded and unread: the row is the channel and a stage need not read every member of a
-/// block its layout declares. XUD_INVALID_ARG on a NULL out-row or a NULL draw row.
+/// FFFFF, which indexes nothing - a real material's slot index passes through unchanged, because th
+/// e batch's material channel IS the handle layer's MATERIAL slot index; textureIndex is 0 because s
+/// et 1 is declared and never allocated, so there is no sampler array with an entry in it; flags is t
+/// he variant the draw was flushed under, in the per-draw channel rather than a channel of this rung
+/// 's - the pipeline variant is chosen by BINDING, and this is the same fact from the shader's side, which is what lets a stage branch on
+/// the va riant without a third pipeline. The vertex stage reads only the model matrix today, so the other m embers are recorded and
+/// unread: the row is the channel and a stage need not read every member of a block its layout declares. XUD_INVALID_ARG on a NULL out-row
+/// or a NULL draw row.
 XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRow);
 
 /// Driver: the whole bring-up of this rung - vkCreateCommandPool, vkAllocateCommandBuffers, vkCre

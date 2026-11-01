@@ -47,6 +47,7 @@
 #include "xud_input.h"
 #include "xud_instance.h"
 #include "xud_loader.h"
+#include "xud_material.h" /* Required for: xud_material_close_all, the teardown rung xud_close_context() runs above the handle table it closes */
 #include "xud_physical.h"
 #include "xud_renderer.h"
 #include "xud_swapchain.h"
@@ -361,11 +362,11 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        will own it does, so this is the last rung opened and xud_close_context() closes it FIRST. It
        is pure - one host allocation, no driver call, no Vulkan or GLFW symbol - so it cannot fail fo
        r a driver reason: the only answer here is XUD_OUT_OF_MEMORY, and XUD_INVALID_ARG cannot happe
-       n because the shell this bring-up allocated is fresh and its field is NULL. Opening it change
-       s nothing about what a caller can do: xud.h declares the handle TYPE and no function that take
-       s or fills one, so no handle exists in a caller's hands yet, and the object steps (textures,
-       fonts, meshes, materials, models) are what will hand one out - the renderer below it owns the
-       pipeline and the batch-shaped rungs, but nothing that a handle can name yet. The table is open
+       n because the shell this bring-up allocated is fresh and its field is NULL. What opening it
+       makes possible is now a caller's: xud.h declares the MATERIAL kind's create/close pair above
+       this table, so a caller can hand a handle out of a context from here on - the other kinds (te
+       xtures, fonts, meshes, models) are still the steps that have not landed, and the object steps
+       are what will hand one out. The table is open
        ed now rather than on the first object because it is per context - two contexts have two tabl
        es, and a handle from one is refused by the other - and a table that only some contexts own wo
        uld make that refusal depend on which objects a context happened to create.
@@ -396,6 +397,7 @@ XudResult xud_close_context(XudContext** context) {
     XudContext* victim = NULL;
     XudResult first = XUD_OK;
     XudResult rung = XUD_OK;
+    uint32_t materialRecordsClosed = 0u;
 
     if (context == NULL)
         return XUD_INVALID_ARG;
@@ -408,11 +410,14 @@ XudResult xud_close_context(XudContext** context) {
        -> device -> surface -> window -> physical -> instance -> diagnostics -> loader. The handle
        table goes FIRST because it is the top of the tree: a handle records an object of every rung below it, so a
        table still holding live slots is a table naming objects the rungs below are about to retire,
-       and it is the last rung opened. It calls nothing - a slot's record is still the sentinel the h
-       andle layer opens it with, because the object steps that would fill it (a texture, a font, a
-       mesh, a material, a model) are not in the tree even though the renderer rung below it is - so
-       freeing the table frees records and retires nothing of the driver's, and the rungs below still
-       have to tear their own objects down after it. The renderer goes next because the frame loop in
+       and it is the last rung opened. Its records, though, belong to the rungs ABOVE it - a record
+       is what a kind's rung above allocates - so xud_material_close_all() runs before this call and
+       frees every MATERIAL record a slot still names (live or released: xud_handle_free() leaves the
+       record field as it was), and xud_handle_table_close() frees the arrays and the table only. Eve
+       ry other kind's slots are still the sentinel this layer opens them with, because no rung above
+       has landed for them, so freeing those arrays retires nothing of the driver's, and the rungs be
+       low still have to tear their own objects down after it. The renderer goes next because the frame
+       loop in
        side it is the one thing in this context that can still have a presentation in flight: its ow
        n close waits the fence of the image that presentation used before it destroys the command bu
        ffer, the semaphore and the fences, and only then can the swapchain whose images were presen
@@ -441,6 +446,11 @@ XudResult xud_close_context(XudContext** context) {
        is XUD_ALREADY on a field that was never filled, which is why a context rejected part-way
        through bring-up is closed by this same code path, and every one of them clears its out
        handle before freeing, so a context torn down twice cannot double-free. */
+    if (victim->handleTable != NULL) {
+        rung = xud_material_close_all(victim->handleTable, &materialRecordsClosed);
+        if ((rung != XUD_OK) && (first == XUD_OK))
+            first = rung;
+    }
     rung = xud_handle_table_close(&victim->handleTable);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
@@ -568,7 +578,29 @@ XudResult xud_begin_drawing(XudContext* context) {
         }
     }
 
-    return xud_batch_reset(context->renderer->batch);
+    result = xud_batch_reset(context->renderer->batch);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The wanted material, re-applied at the frame's opening rather than remembered in the batch: x
+       ud_batch_reset above has moved the batch back to the default (no material, opaque), so the
+       state a frame draws with is a function of THIS frame's wanted state rather than of whatever
+       the last frame's material left in the batch - the same rule the camera's flag in the rendere
+       r gives its matrix, and for the same reason. The apply belongs here rather than in the draw
+       entry one rung below, because the appends happen between this opening and that draw: a materi
+       al applied at the draw would be a material the NEXT frame's rows carry rather than this one
+       's. The move is the batch's own row split, and at this point the pending run is empty (the
+       reset just closed the previous frame's), so the move records nothing and only moves state.
+    */
+    if (context->renderer->materialWanted != 0u) {
+        result = xud_batch_set_material(context->renderer->batch, context->renderer->material.index, context->renderer->materialVariant);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
 }
 
 XudResult xud_end_drawing(XudContext* context) {

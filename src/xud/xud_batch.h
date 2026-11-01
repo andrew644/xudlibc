@@ -314,8 +314,14 @@ struct XudBatch {
                                     RLGL.currentBatch->draws[].mode, moved by a shape's
                                     xud_batch_set_topology rather than by the caller, because in
                                     raylib it is the SHAPE that calls rlBegin(mode) */
-    uint32_t currentVariant; /* the variant the pending draws use */
-    uint32_t currentMaterial; /* the material slot they use, XUD_BATCH_NO_MATERIAL while none exists */
+    uint32_t currentVariant; /* the variant the pending draws use - moved by a material's
+                                   xud_batch_set_material below, which is the only way a caller
+                                   changes it today: the frame loop binds the row's variant, it
+                                   does not choose one */
+    uint32_t currentMaterial; /* the material slot they use, XUD_BATCH_NO_MATERIAL while none is
+                                    live - the slot index of the handle layer's MATERIAL kind, so
+                                    the number in a recorded row is the number xud_frame_fill_push_row
+                                    maps into the push row's material channel */
     uint32_t pendingFirstIndex; /* where the pending draws' indices start */
     uint32_t pendingIndexCount; /* how many indices they take */
 
@@ -434,8 +440,13 @@ XudResult xud_batch_check_invariant(const XudBatch* batch);
 /// (raylib's rlBegin(mode) at reference/raylib/rlgl.h 1454-1478 ends in `drawCounter++`, not in a
 /// render batch) and xud_batch_set_topology below is the call that does it; this rung keeps the two
 /// apart because they cost different things - a row split costs one more recorded row and one more
-/// pipeline bind in the same command buffer, a flush costs a submission. XUD_INVALID_ARG on a NULL
-/// batch/out-flush or a variant at or past the variant list; XUD_OK with *outFlush 1 or 0.
+/// pipeline bind in the same command buffer, a flush costs a submission. What has changed since
+/// the material rung landed is not this rule but who performs the variant/material half of it: a
+/// material change is now a row split performed at the state call by xud_batch_set_material below,
+/// so a caller that goes through the public material pair never reaches this decision for the
+/// variant half at all - what remains for a caller above is the capacity half, which is the only
+/// change that cannot be expressed as a row inside the batch that is still open. XUD_INVALID_ARG on
+/// a NULL batch/out-flush or a variant at or past the variant list; XUD_OK with *outFlush 1 or 0.
 XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint32_t requestedVariant, uint32_t requestedMaterial,
     uint32_t appendVertices, uint32_t appendIndices);
 
@@ -463,6 +474,20 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
 /// stays open, its earlier bytes stay where they are, and the frame's upload still happens once at
 /// the boundary. XUD_INVALID_ARG on a NULL batch or a topology at or past the topology list.
 XudResult xud_batch_set_topology(XudBatch* batch, uint32_t topology);
+
+/// Pure: move the batch's material and variant state, and close the pending run into a draw row
+/// of the SAME batch first if the state actually changes and the run has content in it. This is
+/// the row split seen on its other axis: xud_batch_set_topology above splits on the topology,
+/// this splits on the material, and the two are the same mechanism because in Vulkan both the
+/// topology and the blend attachment state are PIPELINE state - a change of either is a change
+/// of which row of the pipeline list the frame loop binds beside the draw, and never a change of
+/// what is accumulated in the arena. The pair moves together rather than one at a time, because
+/// the variant a material draws through is the material's own record member: two separate state
+/// calls would be two splits, and the second would close a run that has no content in it. The
+/// material index is not validated here against a slot array - the batch cannot name the handle
+/// layer, and the public pair above validates the handle before it moves anything in. XUD_INVAL
+/// D_ARG on a NULL batch or a variant at or past the variant list.
+XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32_t variant);
 
 /// Pure: ONE recorded draw row by index, so the frame loop above can replay the flush list without
 /// reaching into the batch's own heap array (the repo's accessor rule, one rung below). XUD_INVALID_ARG

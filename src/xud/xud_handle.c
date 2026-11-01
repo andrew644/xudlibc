@@ -198,6 +198,42 @@ XudResult xud_handle_free(XudHandleTable* table, XudHandle handle) {
     return XUD_OK;
 }
 
+XudResult xud_handle_record_get(const XudHandleTable* table, uint32_t kind, uint32_t index, void** outRecord) {
+    if ((table == NULL) || (outRecord == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (kind == XUD_HANDLE_KIND_NONE || kind >= XUD_HANDLE_KIND_COUNT) {
+        return XUD_INVALID_ARG;
+    }
+    if ((table->slots[kind] == NULL) || (index >= table->slotCount[kind])) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* No live-bit check, and that is deliberate: the field is meaningful for a slot that is free
+       (xud_handle_free() leaves it as it was), and the teardown walk that needs it runs over
+       exactly those slots. The live-ness rule belongs to the handle-taking rungs - see the note
+       in the header. */
+    *outRecord = table->slots[kind][index].record;
+    return XUD_OK;
+}
+
+XudResult xud_handle_record_set(XudHandleTable* table, uint32_t kind, uint32_t index, void* record) {
+    if ((table == NULL) || (kind == XUD_HANDLE_KIND_NONE) || (kind >= XUD_HANDLE_KIND_COUNT)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((table->slots[kind] == NULL) || (index >= table->slotCount[kind])) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The one write this layer makes to the field, and the reason it is here rather than in the
+       rung above: the array is this layer's, it reallocs the array as a unit, and a rung above
+       that indexed it directly would be writing past a row the array does not have. NULL is a
+       legal value - it is the clear half of the record's ownership rule, and the rung above is
+       the one that frees what it clears. */
+    table->slots[kind][index].record = record;
+    return XUD_OK;
+}
+
 XudResult xud_handle_table_live_count(const XudHandleTable* table, uint32_t kind, uint32_t* outLiveCount) {
     uint32_t index = 0u;
     uint32_t live = 0u;

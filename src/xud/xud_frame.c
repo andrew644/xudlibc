@@ -252,8 +252,12 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
     /* The batch's sentinel is mapped to slot 0 here rather than passed through, and the reason is th
        e argument's type: the push row's material index is an INDEX the shader would use, and XUD_BAT
        CH_NO_MATERIAL is 0xFFFFFFFF, which is not an index into anything. "No material slot yet" is a
-       batch-side fact about a subsystem that does not exist; the per-draw channel has to carry a numb
-       er a read could use, and slot 0 is the only slot there is.
+       batch-side fact about a draw made with no material - which is what xud_end_material() and xud
+       _begin_drawing() move the state to when no material is live - and the per-draw channel has to c
+       arry a number a read could use, so slot 0 is what a no-material draw names. A real material's
+       slot index passes through unchanged, because the batch's material channel IS the handle layer'
+       s MATERIAL slot index: the public pair validated the handle against that table before it mov
+       ed the index in.
     */
     outRow->materialIndex = (drawRow->materialIndex == XUD_BATCH_NO_MATERIAL) ? 0u : drawRow->materialIndex;
 
@@ -668,7 +672,12 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
            a shape changes the topology, so a frame that draws a box and a line records two rows and
            this loop replays both. What this loop does NOT do is act on xud_batch_should_flush() - a
            variant or material change is still a flush, and no caller above has acted on that decision
-           yet, so one frame still cannot mix blend modes.
+           yet, so one frame still cannot mix blend modes. What has changed since the material rung
+           landed is that a caller no longer has to: xud_batch_set_material() splits a run mid-frame
+           on a material change, so a frame that goes through the public material pair records one
+           row per material and this loop replays all of them. The decision above is still unact
+           ed on, and what is left for a caller above to act on is the capacity half of it - the on
+           ly change that cannot be expressed as a row inside a batch that is still open.
         */
         if (xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial) != XUD_OK) {
             return XUD_OUT_OF_MEMORY;

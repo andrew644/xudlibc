@@ -119,6 +119,22 @@ struct XudRenderer {
                               back into the NULL the camera rung reads as "write the identity matrix"
                               - which is what makes the block's matrix a function of THIS frame's
                               camera state rather than of whatever the last frame's camera wrote. */
+    XudHandle material; /* the material the caller last asked for, AS GIVEN: a value this rung owns
+                          rather than a pointer into the handle table, so this rung cannot hold a
+                          record of a table it does not own. The index of that handle is what the
+                          batch's material channel carries, and the whole handle is what xud_close_
+                          material() compares against before it clears the state below. */
+    uint32_t materialVariant; /* the variant that material draws through, copied off its record at
+                                 the begin call rather than re-read from the table: the record the
+                                 frame opening moves is a PAIR, and this rung cannot reach the tabl
+                                 e it would read it from (the table is the last rung xud_init_context
+                                 opens, so it does not exist yet when this one is created). */
+    uint32_t materialWanted; /* 0 = no material live, non-zero = the pair above is what the next
+                                frame is drawn with. The same shape as the flag above, and the same
+                                reason: the state is re-applied at every frame opening, so a material
+                                begun in one frame is drawn with in the next rather than leaked into
+                                it, and xud_batch_reset() has already moved the batch back to the
+                                default when this rung did not ask for a material. */
 };
 
 /*-----------------------------------------------------------------------------------------------

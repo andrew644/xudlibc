@@ -33,9 +33,12 @@
  *          for both sets today). The push row of this layout is DECLARED here and CONSUMED one ru
  *          ng over: the frame loop pushes it beside every draw it records and the vertex stage re
  *          ads the model matrix out of it, so the bytes this rung's range row describes are live e
- *          nd to end. What nothing reads today is the material / texture / flags trio of that same
- *          row - the channel the material, texture and variant steps above will fill, and a stage n
- *          eed not touch every member of a block its layout declares.
+ *          nd to end. What nothing READS today is the material / texture / flags trio of that same
+ *          row: the material channel is FILLED (the material rung above names a live MATERIAL slot o
+ *          f the handle table in it, and the variant half landed with the pipeline pair), the textur
+ *          e channel is the sentinel 0 because set 1 is declared and never allocated, and no stage t
+ *          ouches any of the three yet - making a stage read them is the texture step's, and a stage
+ *          need not touch every member of a block its layout declares.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/

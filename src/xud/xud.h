@@ -231,9 +231,11 @@ static_assert(sizeof(XudCamera3D) == 48u,
 /// The one handle type every caller-addressable object kind is named by - 12 bytes, three uint32_t
 /// and no padding, asserted below. Value type: copyable, storable in a caller's own struct,
 /// comparable field-wise (xud_handle_equal is the all-three-field form). A handle kept across the
-/// close of the object it names is REJECTED, not dangling - the generation bump is what rejects it.
-/// The object steps (textures, fonts, meshes, materials, models) are what hand one out; none of
-/// them is in the tree yet, which is why no public function takes or fills one today.
+/// close of the object it names is REJECTED, not dangling - the generation bump is what rejects it
+/// . The object steps are what hand one out, and one of them is in the tree: the MATERIAL kind's
+/// create/close pair (xud_create_material()/xud_close_material(), below the drawing API) is the on
+/// e public pair that fills and releases one today, which is why the other kinds (textures, fonts
+/// , meshes, models) are still the steps that have not landed.
 typedef struct XudHandle {
     uint32_t index; /* which slot of its kind's array this names                                   */
     uint32_t generation; /* bumped when the slot it named was released and taken again, so a handle kept across that stops naming it */
@@ -259,6 +261,49 @@ static_assert(XUD_HANDLE_KIND_NONE == 0u,
     "xud.h: NONE is the 0th kind value, which is what makes a zero-initialised handle carry the tag no live slot ever has");
 static_assert(XUD_HANDLE_KIND_MAX >= XUD_HANDLE_KIND_NONE,
     "xud.h: the highest kind value must be a kind value, or the table's row count below is a row count of nothing");
+
+/*-----------------------------------------------------------------------------------------------
+ * The material - the one object kind a handle names that has a rung above the handle table
+ *
+ * A material is the object a XUD_HANDLE_KIND_MATERIAL slot records, and the value type below is
+ * what a caller describes when it asks for one. raylib's Material (reference/raylib/raylib.h 388
+ * -392) is { shader, maps[], params[] } and none of those three is a blend mode - raylib's blend
+ * mode is a global its BeginBlendMode()/EndBlendMode() pair scopes (raylib.h 1058-1059). In Vulka
+ * n the blend attachment state is PIPELINE state rather than draw state, so the row of the pipeli
+ * ne list a draw binds is the material's own, and the one member this type carries today is that
+ * row. The shader half is not a member at all: this tree has one shader pair and no second pipeli
+ * ne to choose between, so a per-material shader is an open ask rather than a field. The maps hal
+ * f is the material's set-1 bindings, and the texture step is what will give a material any - set
+ * 1 is declared and never allocated, so a material created today owns no descriptor and no sample
+ * r, and its record's set-1 field is the sentinel with that named owner.
+ *
+ * The tokens are this library's own two variants rather than raylib's BLEND_ALPHA/ADDITIVE/... enum
+ * : raylib's eight names are blend FACTOR pairs and this tree implements exactly one of them (SRC_
+ * ALPHA over ONE_MINUS_SRC_ALPHA plus VK_BLEND_OP_ADD, which is raylib's own default glBlendFunc),
+ * so a token naming an unimplemented factor pair would be a token that refuses at the create call
+ * rather than a token that means something. xud_material.h asserts the tokens equal the batch's va
+ * riant axis, so the mirror is a compile-time fact rather than a table someone trusts.
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_BLEND_OPAQUE 0u /* blend disabled: every draw of this material overwrites what is behind it */
+#define XUD_BLEND_TRANSPARENT                                                                                                              \
+    1u /* blend enabled, SRC_ALPHA over ONE_MINUS_SRC_ALPHA plus VK_BLEND_OP_ADD: caller-ordered, the library never sorts */
+#define XUD_BLEND_COUNT 2u /* the length of this axis, which is the length of the pipeline list's variant axis */
+
+static_assert(XUD_BLEND_COUNT == (XUD_BLEND_TRANSPARENT + 1u),
+    "xud.h: the two blend tokens are contiguous from opaque up, so the count is one past the highest");
+
+/// The one material description a caller hands down: the blend behaviour every draw of this materi
+/// al uses, which is the row of the pipeline list those draws bind. A value type in the handle's
+/// opposite bucket - it names nothing the library owns, has no lifetime and no close of its own,
+/// and the object it describes is the handle's.
+typedef struct XudMaterial {
+    uint32_t blendMode; /* XUD_BLEND_* - which row of the pipeline list this material's draws bind */
+} XudMaterial;
+
+static_assert(sizeof(XudMaterial) == 4u,
+    "xud.h: a material description is the one uint32_t the axis needs, so the record a caller decla"
+    "res is a variant and not a conversion");
 
 /*-----------------------------------------------------------------------------------------------
  * The context - the single owner of everything the library creates
@@ -490,6 +535,32 @@ XudResult xud_begin_camera_3d(XudContext* context, const XudCamera3D camera);
 /// XUD_INVALID_ARG on a NULL context; XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_end_camera_3d(XudContext* context);
 
+/// Put a material in the drawing state, for this frame and the ones that follow: the Begin*/End*
+/// shape of raylib's scoped state calls (BeginBlendMode()/EndBlendMode(), raylib.h 1058-1059), a
+/// bove the material rung. The handle is VALIDATED here - index bounds against the slot array of t
+/// he MATERIAL kind of THIS context's table, then generation equality, then tag equality - so a han
+/// dle from another context, a handle kept across the close of the material it names, and a handle
+/// of another kind are all XUD_INVALID_ARG rather than a read of the wrong array. What is stored in
+/// the renderer is a COPY of the two numbers the batch's state move needs (the handle by value, the
+/// variant off the record) rather than a pointer into the table: the renderer owns the frame loop a
+/// nd re-applies the pair at every frame opening, which is what makes a material begun in one frame
+/// drawn with in the next rather than leaked into it. The state also moves at the call, because a
+/// scoped state is what the draws that follow in the SAME frame read: a material change is the batc
+/// h's row split, so a begin mid-frame closes the run that was pending under the previous state in
+/// to a row of its own and starts a new one, and a frame that mixes two materials records one row
+/// per material. XUD_INVALID_ARG on a NULL context or on a handle that does not name a live MATERI
+/// AL slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_begin_material(XudContext* context, XudHandle handle);
+
+/// Take the material away: raylib's EndBlendMode() read literally ("reset to default: alpha blen
+/// ding", raylib.h 1059). The frames drawn after here are drawn with no material at all, and the b
+/// atch moves back to that default HERE rather than waiting for the next frame's reset, so the draw
+/// s that follow in this frame are drawn with no material too - which is what makes a material tha
+/// t began and ended inside one frame a no-op rather than a leak of state into the next frame. XUD_
+/// ALREADY when no material was live (the state is already the one this call asks for); XUD_INVALI
+/// D_ARG on a NULL context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_end_material(XudContext* context);
+
 /// End canvas drawing and swap buffers: the public frame boundary, closed. It runs one frame -
 /// acquire, record, upload, bind, draw the batch's recorded rows, submit, present - through the
 /// renderer rung this context owns, and then acts on the recreate ask that frame left behind by
@@ -501,6 +572,40 @@ XudResult xud_end_camera_3d(XudContext* context);
 /// ws are not this device's; the frame's own codes otherwise, and a frame that refused leaves th
 /// e batch alone.
 XudResult xud_end_drawing(XudContext* context);
+
+/*-----------------------------------------------------------------------------------------------
+ * The object API - the materials a context owns, and the handles that name them
+ *
+ * This is the first place in the public surface a XudHandle is handed out and released, and it is
+ * the whole of the object half today: one kind (MATERIAL) has a rung above the handle table, and t
+ * he other kinds (textures, fonts, meshes, models) are still open steps. The pair is raylib's Load
+ * /Unload shape read at this library's currency - raylib hands a struct with an embedded GL name in
+ * side (raylib.h's Texture2D/Mesh/Model), which this repo refuses, so what a caller holds is the h
+ * andle and what the library owns is the slot and its record.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Create a material this context owns: the object half of the material rung. The description is v
+/// alidated before anything is spent, so a blend mode outside the axis is a bad argument rather th
+/// an a material that draws through a row that does not exist; the slot and the record are alloca
+/// ted in the one order that leaves nothing reachable and unfilled, so a refusal on either allocati
+/// on leaves no half-material behind. On XUD_OK *outHandle names a live MATERIAL slot of THIS con
+/// text's table and the caller holds it for as long as the material does - a handle kept past the
+/// close that released it is refused, not dangling. XUD_INVALID_ARG on a NULL out-handle or context
+/// , or on a blend mode outside the axis; XUD_OUT_OF_RESOURCES at the handle layer's own slot bound
+/// ; XUD_OUT_OF_MEMORY when the record cannot be allocated; XUD_UNSUPPORTED on a context that neve
+/// r completed bring-up.
+XudResult xud_create_material(XudHandle* outHandle, XudContext* context, const XudMaterial material);
+
+/// Release one material: the object half closed. The handle is validated against the MATERIAL kind
+/// first, so a stale handle, a handle of another kind and a fabricated one refuse without freeing a
+/// nything; the record is cleared from the slot BEFORE it is freed, so a close run twice frees once
+/// and the table's own teardown can never find a record it would have to free twice. A material the
+/// renderer is currently drawing with is taken out of that state as well, so the frames after here
+/// are drawn with no material rather than with rows naming a slot whose record no longer exists - t
+/// he same rule the camera pair states for a camera that began and ended inside one frame. XUD_INVA
+/// LID_ARG on a NULL context or on a handle that does not name a live MATERIAL slot of this context
+/// ; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_close_material(XudContext* context, XudHandle handle);
 
 /*-----------------------------------------------------------------------------------------------
  * The input API - raylib's keyboard and mouse half, above the input rung

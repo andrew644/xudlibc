@@ -13,10 +13,11 @@
  *          in GPU memory the allocator rung owns (S12, landed) and that the renderer rung draws
  *          (S11, landed) - but the rungs ABOVE them that would ask the allocator for a VkImage
  *          or a VkBuffer and hand it to the renderer have not landed, and that is why nothing
- *          here calls a driver function and why every slot's record field is still the sentinel
- *          it opens with: the Vulkan handles the decision says a record holds land inside it when
- *          the object steps land, and until then there is no VkImage, VkBuffer or VkPipeline of
- *          any of these kinds to put one there. The type itself is public (xud.h declares it,
+ *          here calls a driver function: the Vulkan handles the decision says a record holds land
+ *          inside a record when the object steps land, and the only record filled in the tree so
+ *          far is a MATERIAL one, filled by the material rung above this file (xud_material.h) -
+ *          every other kind's slots are still the sentinel this layer opens them with, because no
+ *          rung above has landed for them. The type itself is public (xud.h declares it,
  *          because it is the one thing a caller holds); the table and these functions are internal
  *          like every layer below the public API: tests may include this header, user code must
  *          not.
@@ -95,11 +96,12 @@ static_assert(XUD_HANDLE_SLOT_MAX_CAPACITY % XUD_HANDLE_SLOT_MIN_CAPACITY == 0u,
    match a live model slot by coincidence - see the note in xud.h). `record` is the sentinel of
    the rungs that have not landed yet: the object record - the Vulkan handles and the caps-gated
    variant info the decision says a record holds - cannot exist before the batch and the object
-   rungs ABOVE the allocator (S12) and the renderer (S11) do, so this field is NULL on every live
-   slot for as long as this layer is the top of the tree, and xud_handle_table_close() frees a
-   table without walking it because there is nothing in it to close yet. When the object steps
-   land, this is the field they fill and the field their teardown rung has to close before the
-   slot goes free. */
+   rungs ABOVE the allocator (S12) and the renderer (S11) do. It is NULL on every live slot of
+   every kind that has no rung above it yet, and a MATERIAL-kind slot's field is the exception:
+   xud_material_open() fills it and the material rung's teardown clears it, which is why xud_handle
+   _table_close() frees the arrays only, AFTER the rung above has closed whatever records the
+   slots still name. When the other object steps land, this is the field they fill and the field
+   their teardown rung has to close before the slot goes free. */
 typedef struct XudHandleSlot {
     uint32_t occupied; /* 0 = free (never used, or released), 1 = live                                  */
     uint32_t generation; /* bumped when a released slot is taken again, so a handle kept across a release stops naming it */
@@ -188,13 +190,36 @@ XudResult xud_handle_free(XudHandleTable* table, XudHandle handle);
 /// error).
 XudResult xud_handle_table_live_count(const XudHandleTable* table, uint32_t kind, uint32_t* outLiveCount);
 
+/// Pure: the record field of one slot, addressed by (kind, index) rather than by a handle - the
+/// form the rungs ABOVE this one need in order to fill the field, and the form this layer's own
+/// teardown needs for slots that are already free (xud_handle_free() leaves the field as it was,
+/// so a free slot can still own a record). Live-ness is deliberately NOT checked here: the field
+/// is meaningful for a free slot, and the live-ness check belongs to the handle-taking rungs -
+/// xud_handle_free() and the rungs above that validate first. XUD_INVALID_ARG on a NULL table,
+/// on a kind that is not one (NONE, or above the highest row of the table), on a kind whose array
+/// does not exist (nothing of that kind was ever allocated, so no index names it), or on an index
+/// at or above that array's high mark; XUD_OK with *outRecord the field as it is, NULL being the
+/// sentinel and not an error.
+XudResult xud_handle_record_get(const XudHandleTable* table, uint32_t kind, uint32_t index, void** outRecord);
+
+/// Pure: write the record field of one slot - the same bounds as the accessor above, and the
+/// reason the field has an owner at all: the record is allocated by the rung that knows what it
+/// is and freed by that rung's own teardown, never by this layer, which frees the arrays only.
+/// Passing NULL is the clear half of that rule, and it is what makes a record owned by exactly
+/// one teardown path at every moment - the rung above clears the field before it frees, so the
+/// table's close can never find a record it would have to free twice. XUD_INVALID_ARG as for the
+/// accessor above; XUD_OK after the write.
+XudResult xud_handle_record_set(XudHandleTable* table, uint32_t kind, uint32_t index, void* record);
+
 /// Pure: the teardown rung - free every kind's array that exists and the table itself, clear the
 /// pointers and counts before freeing (the tree's rule: a table torn down twice cannot double-
 /// free), and set the out-pointer to NULL. A slot that was live at this moment is retired with
-/// the table: the objects its record will name belong to the rungs below this one, which are
-/// torn down AFTER it, so freeing the table frees the records and there is nothing of the driver's
-/// still held here. XUD_ALREADY on a pointer-to-pointer that is NULL-in-hand; XUD_INVALID_ARG on
-/// a NULL pointer-to-pointer.
+/// the table, and the records the slots name belong to the rungs ABOVE this one - a record is
+/// what a kind's rung above allocates - so each of those rungs closes its own records BEFORE thi
+/// s call runs (xud_material_close_all() is the MATERIAL kind's half, and it is what xud_close_con
+/// text() runs first for exactly that reason); this call frees the arrays and the table only, and
+/// a record still sitting in a slot when it runs is a leak the rung above failed to close. XUD_ALR
+/// EADY on a pointer-to-pointer that is NULL-in-hand; XUD_INVALID_ARG on a NULL pointer-to-pointer.
 XudResult xud_handle_table_close(XudHandleTable** table);
 
 #endif /* XUD_XUD_HANDLE_H_ */

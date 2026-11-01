@@ -6,6 +6,20 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-11-01 note: **the material rung and the public material API landed as S37** — see the *Steps complete (S37 …)*
+  section now at the top of `todo_completed.md`: `src/xud/xud_material.h`/`.c` is the first rung that fills a handle
+  slot's `record` field (`XudMaterialRecord { uint32_t variant; VkDescriptorSet setOne; }` — the variant live, the se
+  t-1 field the sentinel until the texture step lands), `xud.h` gained the blend tokens, `XudMaterial` as a value typ
+  e and the two public pairs (the object pair `xud_create_material()`/`xud_close_material()` — the first public creat
+  e/close pair that takes an `XudHandle` — and the scoped state pair `xud_begin_material()`/`xud_end_material()` in
+  raylib's `SetBlendMode`/`EndBlendMode` shape), `xud_batch_set_material()` made the material axis a **row split insi
+  de the open batch** beside the topology axis it already had, the renderer owns the wanted-material state beside th
+  e camera's, `xud_begin_drawing()` re-applies it at every frame opening, and `xud_close_context()` now runs `xud_mat
+  erial_close_all()` ABOVE `xud_handle_table_close()`. Suite 2781 → **2877 headless / 3699 GPU**, 0 failures; the ne
+  w area is `tests/xud_test_material.c`, the batch area grew the material axis beside the topology axis and the hand
+  le area grew the record accessors; the clang build is clean, the sanitizer leak state is UNCHANGED at 72 bytes in
+  3 allocations, and the GPU example run is validation-clean and exits 0.
+
 - 2026-11-01 note: **the Vulkan floor is 1.3 as S36** — `XUD_INSTANCE_API_FLOOR` (`xud_instance.h`) raised from
   `VK_API_VERSION_1_0` to `VK_API_VERSION_1_3`, one macro and its three readers, and no number spelled at a call site;
   the rest of the step is the ten comments whose reasons were written against the floor that is no longer the floor —
@@ -287,8 +301,9 @@ nged
     orrect), plus the wait-idle guard `xud_swapchain_recreate()` now owes the `oldSwapchain` retirement. Nothing about the
     public API surface changed — the resize is rung-level, and a public call that names a recreate is still an ask.
 
-- [ ] Batch **consumers** (last part): the handle layer's material **record** — the batch's `materialIndex` names a
-    material slot and `xud.h` still declares no create/close function that takes a handle
+- [ ] Batch **consumers** (last part): the material record's **set-1 half** — the material itself landed as S37 (the
+    handle, the record, the two public pairs and the batch's material axis), and what is left of this item is the
+    record's `setOne` field, which is `VK_NULL_HANDLE` until the texture/sampler step allocates a set 1 to fill it
     - 2026-10-26 note: the **transparent variant landed as S20** — see the *Steps complete (S20 …)* section at the top
       of `todo_completed.md`. What landed there: the pipeline rung owns a **pipeline per row of the batch's variant list**
       (`pipeline[XUD_BATCH_VARIANT_COUNT]`, one layout for the whole list — the D1 below), the blend attachment is a
@@ -306,10 +321,14 @@ nged
       index a read could use, texture 0 because set 1 is never allocated, flags the variant the draw was flushed under),
       and `shaders/solid.vert` placing the vertex by **`viewProj * modelMatrix`** — so both channels of the layout are
       live end to end now. What is still open, itemised against this item's list:
-      - **The handle layer's `XudHandleSlot.record`**: still the NULL sentinel, and `xud.h` still declares no create/clos
-        e function that takes a handle. What the batch's `materialIndex` would name is a material slot's record, and what
-        such a record holds (a pipeline-variant index + the set-1 bindings) is an open design decision — see *Ask before*
-        in `AGENTS.md` and the Blocked section below.
+      - ~~**The handle layer's `XudHandleSlot.record`**: still the NULL sentinel, and `xud.h` still declares no create/clos
+        e function that takes a handle …~~ — **landed as S37, 2026-11-01**: see the *Steps complete (S37 …)* section at
+        the top of `todo_completed.md`. `src/xud/xud_material.h`/`.c` is the rung, `XudMaterialRecord { uint32_t varian
+        t; VkDescriptorSet setOne; }` is the record, `xud_handle_record_get()`/`xud_handle_record_set()` are the handle
+        layer's accessors, and `xud_create_material()`/`xud_close_material()`/`xud_begin_material()`/`xud_end_material()
+        ` are the public pairs above it — so the `record` field is filled and the first public create/close pair that t
+        akes an `XudHandle` exists. What is still open against this item's list is the record's **set-1 half**: the fie
+        ld is named and its value is the sentinel, and the texture step is the rung that fills it.
       - **The transient ring**: `xud_allocator_ring_acquire`/`xud_allocator_ring_reset` still have no caller outside the
         allocator area's own test. Neither the batch's arena (S16) nor the block's arena (S18) wanted it — a ring carve is
         bytes a later lap overwrites mid-frame, and both arenas' bytes have to survive from a host write to a transfer read.
@@ -536,8 +555,7 @@ nged
     holds an `XudHandle` of kind `MATERIAL` (the 2026-10-23 decision's value type, index+generation+kind) and the batch's row stores the
     slot **index** the handle carries, not a bare invented counter. The `XUD_BATCH_NO_MATERIAL` sentinel stays the "no material named"
     state, which is what the handle layer's `XUD_HANDLE_KIND_NONE = 0u` never-stored rule already guarantees a live slot index cannot
-    collide with. What the record's exact members are stays the handle layer's step (it is a subsystem: `xud_create_material`/`xud_close_material`
-    in `xud.h` + the slot array's material kind), and the decision recorded here is the **naming**, which is the part that was open.
+    collide with. What the record's exact members are landed 2026-11-01 as S37 (`XudMaterialRecord { uint32_t variant; VkDescriptorSet setOne; }` and the four public calls in `src/xud/xud_material.h`/`.c`), so the decision recorded here is the **naming** and the record's members are a fact in the tree now — the set-1 half of them is still the sentinel and still the texture step's.
   - **The default stays OPAQUE**, and that is a deliberate divergence from raylib's default, recorded rather than left to be rediscovered:
     raylib's default is `BLEND_ALPHA` (raylib.h 918, `= 0` and commented "(default)"), i.e. blending is ON. Ours is blend-OFF, because
     with a depth buffer and no library sort (D2), blending-by-default is wrong for everything that is not explicitly transparent —
@@ -749,9 +767,7 @@ nged
   decided 2026-10-26** (D3 above): the batch's `materialIndex` is a **material-kind slot index**, the caller holds an
   `XudHandle` of kind `MATERIAL` and names it at the draw (raylib's `DrawMesh(mesh, material, transform)`, raylib.h 1632,
   `SetMaterialTexture(Material *material, …)`, 1657), and the slot's record holds the variant bit plus the set-1 bindings.
-  What is still open is the record's **exact members** — the subsystem (`xud_create_material`/`xud_close_material` in `xud.h`
-  plus the material kind's slot array) is the handle layer's step, and a public create/close pair is a public-API-surface
-  change AGENTS.md's *Ask before* rule puts the ask on.
+  The record's members landed 2026-11-01 as S37 (`src/xud/xud_material.h`/`.c`, `XudMaterialRecord { uint32_t variant; VkDescriptorSet setOne; }`, and the public pairs `xud_create_material()`/`xud_close_material()` + `xud_begin_material()`/`xud_end_material()`), so the ask this entry was waiting on is closed; what is still open is the record's `setOne` field, which is the sentinel until the texture step allocates a set 1.
 - Audio: vendor miniaudio vs no audio (ask)
 - Frame clock: raylib's `GetFrameTime`/`GetFPS` as a public query (a public-API-surface change, so an ask) vs the
   example's `glfwGetTime()` — the example's ONE remaining direct GLFW call, and the only reason it still names GLFW

@@ -446,6 +446,39 @@ XudResult xud_batch_set_topology(XudBatch* batch, uint32_t topology) {
     return XUD_OK;
 }
 
+/* The row split on its other axis: a material change closes the run that was pending under the
+   previous state and starts a new one, exactly as a topology change does above. The two are one
+   mechanism because in Vulkan both the topology (VkPipelineInputAssemblyStateCreateInfo::topolog
+   y) and the blend attachment state (VkPipelineColorBlendAttachmentState) are PIPELINE state - a
+   change of either selects a different row of the pipeline list for the draws that follow, and
+   neither changes what has already been accumulated in the arena. That is why the pair moves toge
+   ther in one call: the variant a material draws through is the material's own record member, so
+   two separate state calls would be two splits, and the second would close a run that has no con
+   tent in it. The index is not validated against a slot array here - the batch cannot name the
+   handle layer - the public pair above validates the handle before it moves anything in. */
+XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32_t variant) {
+    XudResult result = XUD_OK;
+
+    if ((batch == NULL) || (variant >= XUD_BATCH_VARIANT_COUNT)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((materialIndex == batch->currentMaterial) && (variant == batch->currentVariant)) {
+        return XUD_OK;
+    }
+
+    if (batch->pendingIndexCount != 0u) {
+        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    batch->currentMaterial = materialIndex;
+    batch->currentVariant = variant;
+
+    return XUD_OK;
+}
+
 XudResult xud_batch_draw_get(const XudBatch* batch, uint32_t index, XudBatchDraw* outRow) {
     if ((batch == NULL) || (outRow == NULL) || (index >= batch->drawCount)) {
         return XUD_INVALID_ARG;

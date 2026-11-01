@@ -41,6 +41,8 @@ void xud_test_handle(void) {
     uint32_t live = 0u;
     uint32_t index = 0u;
     uint32_t released = 0u;
+    void* gotRecord = NULL;
+    void* syntheticRecord = NULL;
 
     /* A table is one owner: a NULL out-pointer is a bad argument, and a pointer that already names
        a table is a second table for one context, which would be two owners of the same slots. */
@@ -192,6 +194,62 @@ void xud_test_handle(void) {
     xud_check(released == XUD_HANDLE_SLOT_MAX_CAPACITY, "handle/bound/release-all", "accepts every slot of the ceiling");
     xud_check(xud_handle_table_live_count(table, XUD_HANDLE_KIND_MODEL, &live) == XUD_OK, "handle/bound/live-after", "answers");
     xud_check(live == 0u, "handle/bound/live-after/count", "and is zero");
+
+    /*--- the record field: the one field a rung above owns ----------------------------------*/
+
+    /* The record is a pointer the rung above allocates and frees, never this layer, and the two ac
+    cessor rungs are this layer's contract about it: bounds and kind-row checks, then the field. The
+    synthetic record below is this area's own - the MODEL kind has no rung above the handle layer in
+    the tree, which is exactly the state the sentinel documents - and this area frees it itself, whi
+    ch is what makes the leak the teardown comment describes a fact about the rung above rather than
+    a fact about these arrays.
+    */
+    xud_check(
+        xud_handle_record_get(NULL, XUD_HANDLE_KIND_MODEL, 0u, &gotRecord) == XUD_INVALID_ARG, "handle/record-null-table", "is refused");
+    xud_check(xud_handle_record_get(table, XUD_HANDLE_KIND_NONE, 0u, &gotRecord) == XUD_INVALID_ARG, "handle/record-none",
+        "is refused - NONE is not a kind row");
+    xud_check(xud_handle_record_get(table, XUD_HANDLE_KIND_COUNT, 0u, &gotRecord) == XUD_INVALID_ARG, "handle/record-past",
+        "is refused - past the count is not a kind row");
+    xud_check(xud_handle_record_get(table, XUD_HANDLE_KIND_MODEL, XUD_HANDLE_SLOT_MAX_CAPACITY, &gotRecord) == XUD_INVALID_ARG,
+        "handle/record-past-index", "is refused - one past the row count is not a slot");
+    xud_check(xud_handle_record_get(table, XUD_HANDLE_KIND_MODEL, 0u, NULL) == XUD_INVALID_ARG, "handle/record-null-out", "is refused");
+    xud_check(xud_handle_record_set(NULL, XUD_HANDLE_KIND_MODEL, 0u, syntheticRecord) == XUD_INVALID_ARG, "handle/record-set-null-table",
+        "is refused");
+    xud_check(xud_handle_record_set(table, XUD_HANDLE_KIND_MODEL, XUD_HANDLE_SLOT_MAX_CAPACITY, syntheticRecord) == XUD_INVALID_ARG,
+        "handle/record-set-past-index", "is refused, and nothing is written past the array");
+
+    /* A slot that was never filled answers with the sentinel rather than an error: "no record yet"
+       is a fact the rung above reads, not a broken argument - the rung that lands decides whether a
+       NULL record is its own refusal. */
+    xud_check(xud_handle_record_get(table, XUD_HANDLE_KIND_TEXTURE, 0u, &gotRecord) == XUD_OK, "handle/record-sentinel-ok",
+        "answers for a slot that was allocated but never filled");
+    xud_check(gotRecord == NULL, "handle/record-sentinel-null", "and is the sentinel xud_handle_alloc opens a slot with");
+
+    syntheticRecord = calloc(1u, sizeof(uint32_t));
+    xud_check(syntheticRecord != NULL, "handle/record-synthetic-allocated", "the record this area owns exists");
+    xud_check(xud_handle_record_set(table, XUD_HANDLE_KIND_MODEL, 0u, syntheticRecord) == XUD_OK, "handle/record-set-ok",
+        "the write lands in the slot");
+    xud_check(
+        xud_handle_record_get(table, XUD_HANDLE_KIND_MODEL, 0u, &gotRecord) == XUD_OK, "handle/record-read-back", "and the read answers");
+    xud_check(gotRecord == syntheticRecord, "handle/record-read-is-the-write",
+        "and hands back the same pointer, so a rung above reads one owner's bytes rather than a copy");
+
+    /* The live bit is deliberately NOT checked here, and the reason is the release half of record
+       ownership: a released slot still names its record until the rung above clears it, which is wh
+       at makes xud_material_close_all() able to free every record of a kind after every slot of tha
+       t kind has been released. A check on the live bit would make the clear-after-release path a r
+       efusal rather than the free it is.
+    */
+    xud_check(xud_handle_record_get(table, XUD_HANDLE_KIND_MODEL, 0u, &gotRecord) == XUD_OK, "handle/record-released-slot-answers",
+        "a slot the loop above released still answers");
+    xud_check(gotRecord == syntheticRecord, "handle/record-released-slot-still-names",
+        "and still names the record, so a release alone frees no record");
+    xud_check(xud_handle_record_set(table, XUD_HANDLE_KIND_MODEL, 0u, NULL) == XUD_OK, "handle/record-clear-ok",
+        "NULL is the clear half of record ownership");
+    xud_check(xud_handle_record_get(table, XUD_HANDLE_KIND_MODEL, 0u, &gotRecord) == XUD_OK, "handle/record-cleared-read",
+        "and the read answers");
+    xud_check(gotRecord == NULL, "handle/record-cleared-null", "and the field is the sentinel again");
+    free(syntheticRecord);
 
     xud_check(xud_handle_table_close(&table) == XUD_OK, "handle/close", "tears the table down");
     xud_check(table == NULL, "handle/close/null", "and clears the pointer");

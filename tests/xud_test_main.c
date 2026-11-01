@@ -16,7 +16,10 @@
  *          real context inside that area's own GPU half. The camera area runs above the shapes and
  *          below the core, which is the layer order: the matrix is checked by transforming points
  *          with no context in sight, and the public pair is checked against a renderer shell in the
- *          pure half and against a real context in the GPU half.
+ *          pure half and against a real context in the GPU half. The material area runs above the c
+ *          amera and below the core, which is the layer order: it borrows the handle table, the batc
+ *          h and the renderer, so it runs above all three, and its pure half is complete with no dr
+ *          iver present because a handle table and a material record are host allocations.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -54,6 +57,7 @@ int main(void) {
     xud_test_batch();
     xud_test_shapes();
     xud_test_camera();
+    xud_test_material();
     xud_test_core();
 
     printf("checks: %d  failures: %d\n", xudChecks, xudFailures);
