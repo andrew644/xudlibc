@@ -56,6 +56,8 @@ void xud_test_batch(void);
 void xud_test_shapes(void); /* the shapes rung and the public drawing API: the atomic append, the frame pair */
 void xud_test_camera(void); /* the camera rung and the public camera pair: the basis, the frustum, the matrix's geometry */
 void xud_test_material(void); /* the material rung and the public material API: the record, the scoped state, the teardown order */
+void xud_test_mesh(void); /* the mesh rung and the public mesh API: the arena's layout, the write that fills it, the teardown rung above the
+                             table's close */
 void xud_test_core(void);
 
 #endif /* XUD_TEST_HARNESS_H_ */

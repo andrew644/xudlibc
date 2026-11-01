@@ -58,6 +58,7 @@ int main(void) {
     xud_test_shapes();
     xud_test_camera();
     xud_test_material();
+    xud_test_mesh();
     xud_test_core();
 
     printf("checks: %d  failures: %d\n", xudChecks, xudFailures);

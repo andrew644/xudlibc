@@ -10,18 +10,23 @@
  *          life-cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d()
  *          / xud_draw_cube() / xud_draw_sphere() / xud_draw_line_3d() / xud_draw_point_3d() /
  *          xud_draw_cube_wires() / xud_draw_sphere_wires() / xud_begin_camera_3d() / xud_end_
- *          camera_3d() / xud_end_drawing()), the input API above the input rung (raylib's keybo
- *          ard and mouse half - xud_is_key_pressed() / xud_is_key_pressed_repeat() / xud_is_key_
- *          down() / xud_is_key_released() / xud_is_key_up() / xud_get_key_pressed() / xud_get_ch
- *          ar_pressed() / xud_get_key_name() / xud_set_exit_key() / xud_get_exit_key() and the
- *          mouse block below it), the key and mouse-button tokens that API's queries take, and
- *          the runtime Vulkan query xud_vulkan_supported().
+ *          camera_3d() / xud_end_drawing()), the object API above the handle layer (the two crea
+ *          te/close pairs xud_create_material() / xud_close_material() / xud_upload_mesh() / xud_
+ *          close_mesh() and the scoped-state pair xud_begin_material() / xud_end_material()), th
+ *          e value types a caller passes down (XudVector2 / XudVector3 / XudColor / XudMaterial /
+ *          XudMeshData), the input API above the input rung (raylib's keyboard and mouse half - xud_
+ *          is_key_pressed() / xud_is_key_pressed_repeat() / xud_is_key_down() / xud_is_key_relea
+ *          sed() / xud_is_key_up() / xud_get_key_pressed() / xud_get_char_pressed() / xud_get_key
+ *          _name() / xud_set_exit_key() / xud_get_exit_key() and the mouse block below it), the key
+ *          and mouse-button tokens that API's queries take, and the runtime Vulkan query xud_vul
+ *          kan_supported().
  *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
  *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
  *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
  *          xud_pipeline.h/.c, xud_renderpass.h/.c, xud_frame.h/.c, xud_renderer.h/.c, xud_alloca
- *          tor.h/.c, xud_descriptor.h/.c, xud_batch.h/.c, xud_camera.h/.c and xud_shapes.h/.c - and user code inclu
- *          des this header only; tests may include the internal ones.
+ *          tor.h/.c, xud_descriptor.h/.c, xud_batch.h/.c, xud_camera.h/.c, xud_input.h/.c, xud_mat
+ *          erial.h/.c and xud_mesh.h/.c - and user code includes this header only; tests may inclu
+ *          de the internal ones.
  *          Every layer below this one is in the tree now, and every one of them stays internal be
  *          hind the two exceptions this note names: nothing about a VkDevice, its queues, a
  *          GLFW window, a VkSurfaceKHR, a VkSwapchainKHR, a VkPipeline, a VkRenderPass, a
@@ -38,16 +43,19 @@
  *          eKHR a context owns lives inside the XudWindow it owns rather than in a field of its
  *          own. The TWO exceptions to that rule are the handle and the shapes rung's public call
  *          s, and both are public for the reason their own notes state: the handle is the curren
- *          cy a caller holds and the slot arrays behind it are internal (xud.h still declares no
- *          table type and no handle function, so no public call takes or fills one today and no
- *          handle names an object yet); the shapes rung's calls are the geometry a caller draws,
- *          which is what the drawing API above the renderer reaches - xud.h declares the frame pa
- *          ir and three shapes, and what is still missing above the renderer is the rest of rayli
- *          b's 3D shape family (the line/point forms and the wire forms, which need a topology the
- *          pipeline rung does not have, and DrawMesh, which is the mesh rung), the camera + trans
- *          form math, the handle layer's material record and the object kinds a public handle wou
- *          ld name, which is why a caller can draw a triangle, a box and a sphere today
- *          and nothing else, and why no handle names an object yet.
+ *          cy a caller holds and the slot arrays behind it are internal (xud.h declares no table
+ *          type and calls no handle function, so no public call takes or fills a table today and
+ *          the object pairs above it are what hand a handle out and what a handle names); the sha
+ *          pes rung's calls are the geometry a caller draws, which is what the drawing API above t
+ *          he renderer reaches. What is here today above the renderer is the frame pair, the shape
+ *          s family (a triangle, a box, a sphere, a line, a point and the two wire forms), the cam
+ *          era pair, the material pair and the mesh pair; what is still missing there is DrawMesh
+ *          - the mesh rung's bytes exist and are uploaded, but the batch's draw row names one inde
+ *          x range and one index buffer for the whole batch, so a row that replays through a mesh's
+ *          own buffers needs a per-row buffer binding beside it, and that is a change to a commit
+ *          ted rung - plus the camera + transform math above the shapes, and the object kinds a pu
+ *          blic handle would name that still have no rung above the table (textures, fonts, model
+ *          s).
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -304,6 +312,25 @@ typedef struct XudMaterial {
 static_assert(sizeof(XudMaterial) == 4u,
     "xud.h: a material description is the one uint32_t the axis needs, so the record a caller decla"
     "res is a variant and not a conversion");
+
+/// The one mesh description a caller hands down: the geometry of one object, as the batch's four at
+/// tribute streams plus the one index buffer the settled decision names. Every array is the caller's
+/// own and is read once, at the upload, never kept - the library copies it into the mesh's block and
+/// lets go of the caller's arrays after that. A NULL attribute array is not a refusal: the mesh's st
+/// reams all have to exist, so a missing one is filled with that stream's documented default (zero p
+/// osition, zero uv, opaque white, +Z normal) rather than leaving a stream of nothing. The index arr
+/// ay has no default - a mesh without indices is a mesh whose topology is undefined - and every ind
+/// ex must be below vertexCount, because an out-of-range index is not something a driver would refus
+/// e later, it is undefined behaviour at the draw.
+typedef struct XudMeshData {
+    uint32_t vertexCount; /* vertices this mesh holds, the one count every stream is sized from */
+    uint32_t indexCount; /* indices it holds - at least three and a whole number of triangles */
+    const float* pos; /* vertexCount*3, or NULL for a zero stream                        */
+    const float* texcoords; /* vertexCount*2, or NULL for a zero stream                      */
+    const uint8_t* color; /* vertexCount*4, or NULL for opaque white                         */
+    const float* normal; /* vertexCount*3, or NULL for +Z                                   */
+    const uint32_t* index; /* indexCount, every one below vertexCount - the one array with no default */
+} XudMeshData;
 
 /*-----------------------------------------------------------------------------------------------
  * The context - the single owner of everything the library creates
@@ -606,6 +633,36 @@ XudResult xud_create_material(XudHandle* outHandle, XudContext* context, const X
 /// LID_ARG on a NULL context or on a handle that does not name a live MATERIAL slot of this context
 /// ; XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_close_material(XudContext* context, XudHandle handle);
+
+/// Upload a mesh this context owns: the object half of the mesh rung, and the first public create pa
+/// ir whose record owns driver objects. The description is validated and gated on the caps BEFORE an
+/// ything is spent, so a refusal leaves no slot and no half-mesh; the slot, the mesh's five buffers
+/// and the ONE host-visible block their bytes live in are then brought up in the one order that lea
+/// ves nothing reachable and unfilled, and the mesh's bytes are written into that block once, here,
+/// and never again - which is why this call is an upload rather than a draw. On XUD_OK *outHandle n
+/// ames a live MESH slot of THIS context's table and the caller holds it for as long as the mesh do
+/// es; a handle kept past the close that released it is refused, not dangling. XUD_INVALID_ARG on a
+/// NULL out-handle, context or description, or on a mesh the rung's own check refuses (no vertices,
+/// no indices, an index count that is not a whole number of triangles, an index at or past the vert
+/// ex count, or a mesh past this rung's size bound); XUD_UNSUPPORTED on a context that never comple
+/// ted bring-up, on a loader whose rows this rung needs are not there, on a device that is not this
+/// loader's, or on a mesh the caps gate refuses; XUD_OUT_OF_RESOURCES at the handle layer's own slot
+/// bound; XUD_OUT_OF_MEMORY or XUD_OUT_OF_RESOURCES when the block cannot be allocated; XUD_VULKAN_E
+/// RROR on a driver that refuses a create or reports a buffer that asks for no memory.
+XudResult xud_upload_mesh(XudHandle* outHandle, XudContext* context, const XudMeshData* mesh);
+
+/// Release one mesh: the object half closed, and the first public close pair that calls a driver. Th
+/// e handle is validated against the MESH kind first, so a stale handle, a handle of another kind an
+/// d a fabricated one refuse without destroying anything; the wait-idle guard runs before the destro
+/// ys, because a mesh's buffers are read by a submission and VUID-vkDestroyBuffer-buffer-00007 is t
+/// he same rule the swapchain's recreate and the allocator's close state for their own objects. The
+/// arena is unmapped, the five buffers destroyed and the block released, and the slot's record field
+/// is cleared BEFORE the record is freed, so a close run twice frees once and the table's own teard
+/// own can never find a record it would have to free twice. XUD_INVALID_ARG on a NULL context or on
+/// a handle that does not name a live MESH slot of this context; XUD_UNSUPPORTED on a context that n
+/// ever completed bring-up or on a loader whose rows are not this device's; the device's own code wh
+/// en the guard cannot run.
+XudResult xud_close_mesh(XudContext* context, XudHandle handle);
 
 /*-----------------------------------------------------------------------------------------------
  * The input API - raylib's keyboard and mouse half, above the input rung

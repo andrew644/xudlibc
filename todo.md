@@ -6,6 +6,25 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-11-01 note: **the mesh rung and the public mesh API landed as S38** — see the *Steps complete (S38 …)*
+  section now at the top of `todo_completed.md`: `src/xud/xud_mesh.h`/`.c` is the SECOND rung to fill a handle
+  slot's `record` field and the FIRST whose record owns driver objects (`XudMeshRecord` carries five `VkBuffer`s,
+  their five create-infos, the ONE host-visible block they live in, the five bind offsets and the arena's mapping),
+  the five buffers being the batch's four SoA streams plus one index buffer with the widths read off `xud_batch.h`
+  rather than restated; the arena is mapped once at open and unmapped once at close because a mesh's bytes are wri
+  tten ONCE by the CPU at upload rather than rewritten by a transfer, so the batch's staging/submit/fence shape is
+  the wrong shape here; the caps gate reads the **vertex-input** limits rather than a buffer-size limit because
+  `VkPhysicalDeviceLimits` has no `maxBufferSize` at this library's 1.3 floor; the layout takes an alignment per
+  buffer and the driver half calls it twice, once at the floor for the sizes and once with `VkMemoryRequirements::
+  alignment` read back for the offsets; `xud.h` gained `XudMeshData` and the object pair `xud_upload_mesh()`/`xud_
+  close_mesh()`; and `xud_close_context()` now runs `xud_mesh_close_all()` ABOVE `xud_material_close_all()` ABOVE
+  `xud_handle_table_close()`. Suite **2942 headless / 3806 GPU**, 0 failures; the new area is `tests/xud_test_mesh
+  c` (65 pure checks with no driver present, 42 against a real context); the clang build is clean, the sanitizer
+  leak state is UNCHANGED at 72 bytes in 3 allocations with no stack naming `xud_mesh_*`, and the GPU run is valida
+  tion-clean. **`xud_draw_mesh()` is NOT part of this step** — the batch's draw row names one index range and one
+  index buffer for the whole batch, so a row that replays through a mesh's own buffers needs a per-row buffer bind
+  ing beside it, and that is a change to a committed batch rung; it stays open on the *Later* item above.
+
 - 2026-11-01 note: **the leak sweep found nothing ours to fix** — three tools, one answer, and the tree
   stays as it is. LSan headless is UNCHANGED at 72 bytes in 3 allocations (32+32+8); its GPU run answers
   1536 B in 78 and every one of those has a `<unknown module>` or `g_malloc` frame directly under `malloc`
@@ -424,7 +443,8 @@ nged
       the filled sphere places in the same order, joined by 15 latitude edges and 20 meridian edges = 35 edges and 70
       indices, **BELOW** the filled one's 90, because a band's diagonal is an artefact of triangulating a quad rather
       than an edge of a sphere. What is still open of this item: `POINT_LIST` (a row of the list S26 grew, not a row it
-      needed) and `DrawMesh`, which is the mesh / vertex-buffer rung rather than a shape of this rung's.
+      needed) and `DrawMesh`, which is the mesh / vertex-buffer rung rather than a shape of this rung's — and that rung
+      landed as S38 on 2026-11-01 WITHOUT the draw half, for the reason stated on that item in *Later*.
     - 2026-10-31 note: **the line and point forms of this item landed as S26** — `xud_draw_line_3d()`/`xud_draw_point_3d()`
       and the `xud_shapes_append_line()` half they share with the triangle, the box and the sphere, in the same
       `xud_shapes.h/.c` rung, plus the **topology axis** they needed: the pipeline rung's variant list became a
@@ -465,6 +485,14 @@ nged
 - [ ] Textures + samplers (create, upload via staging copies, mipmaps, sampler variants)
 - [ ] Mesh / vertex-buffer abstraction (**one buffer per attribute stream**, SoA, decided 2026-10-23) + handle table
     (index+generation — the public-API currency, **landed 2026-10-24 as S10**, see Completed below)
+    - 2026-11-01 note: **the rung landed as S38** — `src/xud/xud_mesh.h`/`.c` is the rung, `xud_upload_mesh()`/`xud_
+      close_mesh()` are the public pair above it, and the mesh's five SoA buffers (the batch's four streams plus one
+      index buffer, the widths read off `xud_batch.h` rather than restated) sit in the ONE host-visible block its own
+      mapping covers, written once by the CPU at upload. See *Steps complete (S38 …)* at the top of `todo_completed.md`.
+      What is still open of this item, itemised: **`xud_draw_mesh()`** — the batch's draw row names one index range and
+      one index buffer for the whole batch, so a row that replays through a mesh's own buffers needs a per-row buffer
+      binding beside it, and that is a change to a committed batch rung, i.e. an ask rather than a side effect of this
+      rung landing.
 - [ ] 3D model loading (glTF 2.0 — format decision still open, see Blocked)
 - [ ] Text/font rendering
 - [ ] Audio wrapper
