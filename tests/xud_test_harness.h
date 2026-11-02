@@ -63,6 +63,9 @@ void xud_test_texture(void); /* the texture rung and the public texture API: the
 void xud_test_model(void); /* the model rung and the public model API: the document walk, the per-primitive gate, the stage's five arrays,
                              the read that fills them, the bounding box, the slots the record names, the teardown rung above the mesh and
                              the material rungs, and the one glTF document every check below is stated against */
+void xud_test_time(void); /* the clock rung and the public clock API: the saturating tick difference, the seconds division and the frequ
+                             ency that refuses it, the two mark rows and the boundary count, the guards the public calls reach, and the
+                             one real clock the GPU half reads back */
 void xud_test_core(void);
 void xud_test_vendor(void); /* the three vendored single-header rungs: cgltf, stb_truetype, miniaudio */
 

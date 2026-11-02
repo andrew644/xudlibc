@@ -26,7 +26,7 @@
 #include "xud.h" /* Required for: XudResult and the public tokens the queries range-check */
 #include "xud_core.h" /* Required for: struct XudContext, whose input field the public calls reach */
 #include "xud_window.h" /* Required for: XudWindow, the window whose GLFWwindow* the poll reads */
-#include <GLFW/glfw3.h> /* Required for: glfwPollEvents, glfwGetKey, glfwGetMouseButton, glfwGetCursorPos, glfwSetCursorPos, glfwGetKeyName, glfwGet/SetWindowUserPointer, glfwSetChar/ScrollCallback, glfwGetError - the whole of GLFW's input surface, and the only place in src/xud besides the window layer that calls GLFW at all (examples/breakout_3d.c calls GLFW's timer, which is the clock rung and not this one) */
+#include <GLFW/glfw3.h> /* Required for: glfwPollEvents, glfwGetKey, glfwGetMouseButton, glfwGetCursorPos, glfwSetCursorPos, glfwGetKeyName, glfwGet/SetWindowUserPointer, glfwSetChar/ScrollCallback, glfwGetError - the whole of GLFW's input surface, and the only place in src/xud besides the window layer that calls GLFW at all (src/xud/xud_time.c is the other, and it calls GLFW's timer and nothing else) */
 #include <math.h> /* Required for: isfinite, the scale the setter refuses */
 #include <stdlib.h> /* Required for: calloc, free */
 

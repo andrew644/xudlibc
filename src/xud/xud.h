@@ -17,36 +17,28 @@
  *          XudVector3 / XudColor / XudMaterial / XudTextureData / XudMeshData), the input API above the input rung (raylib's keyboard and
  * mouse half - xud_ is_key_pressed() / xud_is_key_pressed_repeat() / xud_is_key_down() / xud_is_key_relea sed() / xud_is_key_up() /
  * xud_get_key_pressed() / xud_get_char_pressed() / xud_get_key _name() / xud_set_exit_key() / xud_get_exit_key() and the mouse block below
- * it), the key and mouse-button tokens that API's queries take, and the runtime Vulkan query xud_vul kan_supported(). Layer: top of the
- * stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c,
- * xud_instance.h/.c, xud_physical.h/.c, xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
- *          xud_pipeline.h/.c, xud_renderpass.h/.c, xud_frame.h/.c, xud_renderer.h/.c, xud_alloca
- *          tor.h/.c, xud_descriptor.h/.c, xud_batch.h/.c, xud_camera.h/.c, xud_input.h/.c, xud_mat
- *          erial.h/.c, xud_mesh.h/.c and xud_texture.h/.c - and user code includes this header only;
- *          tests may include the internal ones.
- *          Every layer below this one is in the tree now, and every one of them stays internal be
- *          hind the two exceptions this note names: nothing about a VkDevice, its queues, a
- *          GLFW window, a VkSurfaceKHR, a VkSwapchainKHR, a VkPipeline, a VkRenderPass, a
- *          VkFramebuffer, a VkCommandBuffer or a VkDeviceMemory is reachable from here; the conte
- *          xt owns all of them (S8's ownership step is landed, S9's swapchain rung sits on top of
- *          it, S10's handle layer and S11's five render rungs on top of that, S12's allocator rung
- *          sits above the swapchain and below the descriptor and the renderer, and S16's batch and
- *          S18's descriptor rungs sit below the renderer above it, so xud_init_context() completes
- *          to the renderer and xud_close_context() tears all of it back and NO field of XudConte
- *          xt is a sentinel any more). The window layer, the swapchain layer, the render rungs,
- *          the allocator, the descriptor and the batch are internal for the same reason every laye
- *          r below the public API is: xud.h declares no window type, no swapchain type, no rende
- *          r type, no allocator type, no batch type and calls no GLFW function, and the VkSurfac
- *          eKHR a context owns lives inside the XudWindow it owns rather than in a field of its
- *          own. The TWO exceptions to that rule are the handle and the shapes rung's public call
- *          s, and both are public for the reason their own notes state: the handle is the curren
- *          cy a caller holds and the slot arrays behind it are internal (xud.h declares no table
- *          type and calls no handle function, so no public call takes or fills a table today and
- *          the object pairs above it are what hand a handle out and what a handle names); the sha
- *          pes rung's calls are the geometry a caller draws, which is what the drawing API above t
- *          he renderer reaches. What is here today above the renderer is the frame pair, the shape
- *          s family (a triangle, a box, a sphere, a line, a point and the two wire forms), the cam
- *          era pair, the material pair and the mesh pair; what is still missing there is DrawMesh
+ * it), the clock API above the clock rung (raylib's GetTime/GetFrameTime half - xud_get_time() / xud_get_frame_time() /
+ * xud_get_timer_value() / xud_get_timer_frequency()), the key and mouse-button tokens that API's queries take, and the runtime Vulkan query
+ * xud_vul kan_supported(). Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa der.h/.c,
+ * xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c, xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c,
+ * xud_handle.h/.c, xud_shader.h/.c, xud_pipeline.h/.c, xud_renderpass.h/.c, xud_frame.h/.c, xud_renderer.h/.c, xud_alloca tor.h/.c,
+ * xud_descriptor.h/.c, xud_batch.h/.c, xud_camera.h/.c, xud_input.h/.c, xud_mat erial.h/.c, xud_mesh.h/.c, xud_texture.h/.c and
+ * xud_time.h/.c - and user code includes this header only; tests may include the internal ones. Every layer below this one is in the tree
+ * now, and every one of them stays internal be hind the two exceptions this note names: nothing about a VkDevice, its queues, a GLFW
+ * window, a VkSurfaceKHR, a VkSwapchainKHR, a VkPipeline, a VkRenderPass, a VkFramebuffer, a VkCommandBuffer or a VkDeviceMemory is
+ * reachable from here; the conte xt owns all of them (S8's ownership step is landed, S9's swapchain rung sits on top of it, S10's handle
+ * layer and S11's five render rungs on top of that, S12's allocator rung sits above the swapchain and below the descriptor and the
+ * renderer, and S16's batch and S18's descriptor rungs sit below the renderer above it, so xud_init_context() completes to the renderer and
+ * xud_close_context() tears all of it back and NO field of XudConte xt is a sentinel any more). The window layer, the swapchain layer, the
+ * render rungs, the allocator, the descriptor and the batch are internal for the same reason every laye r below the public API is: xud.h
+ * declares no window type, no swapchain type, no rende r type, no allocator type, no batch type and calls no GLFW function, and the
+ * VkSurfac eKHR a context owns lives inside the XudWindow it owns rather than in a field of its own. The TWO exceptions to that rule are
+ * the handle and the shapes rung's public call s, and both are public for the reason their own notes state: the handle is the curren cy a
+ * caller holds and the slot arrays behind it are internal (xud.h declares no table type and calls no handle function, so no public call
+ * takes or fills a table today and the object pairs above it are what hand a handle out and what a handle names); the sha pes rung's calls
+ * are the geometry a caller draws, which is what the drawing API above t he renderer reaches. What is here today above the renderer is the
+ * frame pair, the shape s family (a triangle, a box, a sphere, a line, a point and the two wire forms), the cam era pair, the material pair
+ * and the mesh pair; what is still missing there is DrawMesh
  *          - the mesh rung's bytes exist and are uploaded, but the batch's draw row names one inde
  *          x range and one index buffer for the whole batch, so a row that replays through a mesh's
  *          own buffers needs a per-row buffer binding beside it, and that is a change to a commit
@@ -808,6 +800,55 @@ XudResult xud_get_model_mesh_count(uint32_t* outCount, XudContext* context, XudH
 /// INVALID_ARG on a NULL out-corner or context, or on a handle that does not name a live MODEL slot of
 /// this context; XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_get_model_bounding_box(XudVector3* outMin, XudVector3* outMax, XudContext* context, XudHandle handle);
+
+/*-----------------------------------------------------------------------------------------------
+ * The clock API - raylib's time half, above the clock rung
+ *
+ * This is raylib's time surface (reference/raylib/raylib.h 1094-1104: GetFrameTime, GetTime, GetFPS
+ * and WaitTime) above the clock rung: GLFW's own timer (src/external/glfw/src/input.c 1487-1517, on
+ * e process-level offset above one platform tick counter) read through the context, so a caller nam
+ * es a context and never a GLFWwindow*. The two queries above the rung's records are raylib's two g
+ * et-the-clock answers - seconds since THIS context came up, and the span of the frame that complete
+ * d most recently - and the two below them are GLFW's own two remaining timer names passed through u
+ * nchanged, for a caller that wants ticks rather than seconds.
+ *
+ * What is NOT here, and why: raylib's SetTargetFPS and GetFPS (a cap and a statistic over the frame
+ * loop - the cap would make xud_end_drawing() sleep, which is a decision about the frame loop rather
+ *  than a question about the clock, and the statistic is a count over that same loop) and raylib's Wa
+ * itTime (a sleep, a caller's decision to block rather than a question to answer). GLFW's own glfwSe
+ * tTime is absent for the reason the clock rung's own note gives: it moves GLFW's process-level offs
+ * et, which would move every context's origin at once.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Seconds since THIS context came up - raylib's GetTime (raylib.h 1095), "elapsed time in seconds
+/// since InitWindow()", read against the tick the clock rung recorded at its own bring-up rather th
+/// an against GLFW's process-level offset, which is a per-process question and would be one clock fo
+/// r every context in the process rather than one per context (see the clock rung's own note). Live
+/// rather than per-frame: two calls in one frame answer two numbers, and the one that does not move
+/// across a frame is xud_get_frame_time() below. XUD_INVALID_ARG on a NULL out-seconds or context; XU
+/// D_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_time(double* outSeconds, XudContext* context);
+
+/// Seconds the frame that completed most recently took - raylib's GetFrameTime (raylib.h 1094), "time
+///  in seconds for last frame drawn (delta time)", and the number a simulation steps by. The span is
+///  between two xud_end_drawing() boundaries, so it covers the whole boundary: the draw, the input po
+/// ll and any swapchain rebuild that boundary ran. 0.0 before the second boundary, because there is
+/// no completed frame to answer about and zero is what makes a first frame's step zero rather than ga
+/// rbage. XUD_INVALID_ARG on a NULL out-seconds or context; XUD_UNSUPPORTED on a context that never c
+/// ompleted bring-up.
+XudResult xud_get_frame_time(float* outSeconds, XudContext* context);
+
+/// GLFW's raw tick counter, passed through - glfwGetTimerValue (input.c 1508), the same number the t
+/// wo queries above divide. A caller that wants ticks rather than seconds wants these two: a double s
+/// econds answer rounds past 2^53 ticks, a uint64 tick difference does not. XUD_INVALID_ARG on a NULL
+///  out-ticks or context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_timer_value(uint64_t* outTicks, XudContext* context);
+
+/// GLFW's ticks per second, passed through - glfwGetTimerFrequency (input.c 1514), the divisor the t
+/// wo queries above use. On this vendored tree's POSIX timer it is 1e9 (posix_time.c 46-50), and it i
+/// s read rather than assumed for that reason. XUD_INVALID_ARG on a NULL out-ticks-per-second or con
+/// text; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_timer_frequency(uint64_t* outTicksPerSecond, XudContext* context);
 
 /*-----------------------------------------------------------------------------------------------
  * The input API - raylib's keyboard and mouse half, above the input rung

@@ -41,6 +41,7 @@
 #include "xud_physical.h" /* Required for: XudPhysicalDevice, the chosen handle plus the caps the context owns from the physical layer on */
 #include "xud_renderer.h" /* Required for: XudRenderer, the renderer rung - the pipeline, the render pass, the framebuffer per swapchain image and the frame loop the context owns from the first-triangle step on, and the rung that goes SECOND in the teardown order */
 #include "xud_swapchain.h" /* Required for: XudSwapchain, the VkSwapchainKHR plus the images vkGetSwapchainImagesKHR handed it - the context owns one from the swapchain step on, and the teardown order below makes it die before the device whose queue it used */
+#include "xud_time.h" /* Required for: XudTime, the clock rung the context owns above the window it reads - GLFW's own timer read against this context's own epoch, so the elapsed is a per-context question and the frame pair's boundary is what fills the two mark rows */
 #include "xud_window.h" /* Required for: XudWindow, the GLFW window plus the VkSurfaceKHR it was handed - the context will own one, and the teardown order below is what makes the surface die before the window and the window before the instance */
 #include <stdint.h>
 
@@ -111,6 +112,18 @@ struct XudContext {
        g is unregistered while the GLFW window it was registered on is still alive.
     */
     XudInput* input; /* raylib's keyboard and mouse state above this window           */
+
+    /* Owned from the clock rung on, opened right above the window it reads and beside the input run
+       g for the same reason: this rung needs nothing but GLFW's timer, and GLFW's timer only exists
+       once glfwInit has run, which is what the window above it proves. It owns one host allocation a
+       nd four rows inside it - nothing of the driver's, since GLFW's timer is process-level state th
+       is rung reads rather than state it hands back - so its close calls nothing at all and it can d
+       ie anywhere above the window it was opened against. It is a bring-up requirement rather than a
+       n optional rung for the reason the input rung's note gives: the public clock calls answer XUD_
+       UNSUPPORTED on a context that has no rung, and a context that never had one is not a state the
+       library leaves behind.
+    */
+    XudTime* time; /* GLFW's timer above this context: its own epoch and boundaries      */
 
     XudInstance* instance; /* the VkInstance plus the create-info that produced it       */
 

@@ -54,6 +54,7 @@
 #include "xud_renderer.h"
 #include "xud_swapchain.h"
 #include "xud_texture.h" /* Required for: xud_texture_close_all, the TEXTURE kind's half of the same teardown rung - the rung above the MESH kind's, because a texture record owns an image, a view, a sampler and one host-visible block */
+#include "xud_time.h" /* Required for: xud_time_open/xud_time_close/xud_time_tick, the clock rung this bring-up opens above the window it reads and the frame pair runs at every boundary - and the reason xud_core.c stays free of any GLFW symbol of its own */
 #include "xud_window.h"
 #include <stdlib.h>
 
@@ -205,6 +206,21 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        one is not a state the library leaves behind.
     */
     result = xud_input_open(&context->input, context->window);
+    if (result != XUD_OK)
+        goto fail;
+
+    /* The clock rung, beside the input rung and above the same window: its whole input is GLFW's time
+       r, and GLFW's timer is process-level state that only exists once glfwInit has run - which the
+       window above it is the proof of, and which is why this rung opens here rather than at the top o
+       f the ladder where GLFW would not be initialised. It owns one host allocation and four rows, so
+       it cannot fail for a driver reason (the answers are XUD_INVALID_ARG, XUD_OUT_OF_MEMORY and XUD
+       _UNSUPPORTED for a window system that refused GLFW's timer outright), and it is a bring-up req
+       uirement rather than an optional rung for the input rung's own reason: the public clock calls a
+       nswer XUD_UNSUPPORTED on a context that has no rung. Opening it is also the moment this context
+       's own epoch is read, which is what makes xud_get_time() a per-context question rather than GL
+       FW's process-level one.
+    */
+    result = xud_time_open(&context->time, context->window);
     if (result != XUD_OK)
         goto fail;
 
@@ -505,6 +521,9 @@ XudResult xud_close_context(XudContext** context) {
     rung = xud_window_surface_close(victim->window, victim->loader);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
+    rung = xud_time_close(&victim->time);
+    if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
+        first = rung;
     rung = xud_input_close(&victim->input);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
@@ -644,7 +663,8 @@ XudResult xud_end_drawing(XudContext* context) {
         return XUD_INVALID_ARG;
     }
     if ((context->renderer == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->swapchain == NULL)
-        || (context->physicalDevice == NULL) || (context->window == NULL) || (context->allocator == NULL) || (context->input == NULL)) {
+        || (context->physicalDevice == NULL) || (context->window == NULL) || (context->allocator == NULL) || (context->input == NULL)
+        || (context->time == NULL)) {
         /* Every rung the frame, the input poll and the rebuild below need is a context field, and a
            context missing one is a context that cannot run a frame at all - the same answer the hal
            f above gives for the same reason. */
@@ -652,6 +672,22 @@ XudResult xud_end_drawing(XudContext* context) {
     }
 
     result = xud_renderer_draw(context->renderer, context->loader, context->device, context->swapchain, &imageIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The frame boundary, marked in GLFW's own tick before anything else at that boundary is measured:
+       xud_time_tick() is the only call here that reads GLFW, and the span it records is therefore the
+       span between two boundaries of THIS pair - the draw above it, the poll below it and any swapcha
+       in rebuild this rung ran are all inside it, which is what makes raylib's GetFrameTime the numb
+       er a caller steps a simulation by rather than a number that omits the work the boundary did. Th
+       e mark belongs to the boundary rather than to a query for the reason the input poll's note give
+       s beside it: a query that read the clock on demand would make two queries in one frame answer t
+       wo different spans, and a frame whose timing is not a snapshot is a frame a caller cannot pace
+       by. A boundary that refused is reported, not swallowed: the only answers are a rung that is no
+       t there (guarded above) and a bad argument.
+    */
+    result = xud_time_tick(context->time);
     if (result != XUD_OK) {
         return result;
     }

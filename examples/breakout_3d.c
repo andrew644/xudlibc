@@ -8,14 +8,14 @@
  *          loop that draws the scene every frame and steps the simulation at a fixed rate in wall
  *          time. Nothing else: no batch, no buffer, no projection of its own.
  *          no buffer, no projection of its own.
- *   Layer: examples. Public API (xud.h) plus stdio, math.h's fabsf and GLFW's timer - and nothing
- *          else: the input the game reads is the library's own public input API, so the example na
- *          mes no window, no GLFWwindow* and no internal header. Everything the game calls is publi
- *          c - xud_init_context(), xud_begin_camera_3d(), xud_begin_drawing(), xud_draw_triangle_3d
- *          () for the back plane, xud_draw_cube() for the ball, the paddle and every brick, the inp
- *          ut queries below, xud_end_drawing(), xud_end_camera_3d() and xud_close_context() - and th
- *          e one thing that is not public is the clock, which is not an input question at all and i
- *          s the clock note below.
+ *   Layer: examples. Public API (xud.h) plus stdio and math.h's fabsf - and nothing else: the inpu
+ *          t the game reads is the library's own public input API and the clock it paces itself by i
+ *          s the library's own public clock API, so the example names no window, no GLFWwindow*, no
+ *          GLFW symbol and no internal header. Everything the game calls is public - xud_init_conte
+ *          xt(), xud_begin_camera_3d(), xud_begin_drawing(), xud_draw_triangle_3d() for the back pl
+ *          ane, xud_draw_cube() for the ball, the paddle and every brick, the input queries below, x
+ *          ud_get_time(), xud_end_drawing(), xud_end_camera_3d() and xud_close_context() - and not
+ *          hing below it is not.
  *
  *   The game is 3D in the one way this library can make it 3D today: every object has a z, the
  *   ball travels in x, y and z, the bricks sit at three different depths, and the depth buffer
@@ -60,17 +60,16 @@
  *       "Held" is xud_is_key_down rather than xud_is_key_pressed, for both controls, and the reaso
  *       n is in the note beside the function below.
  *
- *     - No clock in xud (todo.md's frame-clock item is an open ASK in Blocked, not a bug this step
- *       should have fixed), so the example borrows GLFW's timer: glfwGetTime() is the ONE GLFW call
- *       this example still makes, and it is not an input question - the input is the library's, the
- *       clock is not. It is what paces the game to a fixed step rate in wall time rather than one st
- *       ep per frame. It has to, because GLFW's window runs as fast as it can - measured here at abo
- *       ut 3200 frames a second - and a game that stepped once per frame would be a game whose ball
- *       crosses the field fifty times a second, which is a blur a hand cannot play and cannot time
- *       an Escape against. The game's own rules stay deterministic: no randomness, no filesystem, on
- *       e fixed
- *       starting layout, so two runs with nobody at the keyboard play the same game - though not
- *       for the same number of steps, which is now wall time's.
+ *     - The clock is the library's own: xud_get_time() is raylib's GetTime, seconds since THIS con
+ *       text came up, public above the clock rung (src/xud/xud_time.h/.c) that xud_init_context() o
+ *       pens above the window it owns - so the example names no GLFW symbol at all, and the clock i
+ *       s as public as the input is. It is what paces the game to a fixed step rate in wall time ra
+ *       ther than one step per frame. It has to, because GLFW's window runs as fast as it can - meas
+ *       ured here at about 3200 frames a second - and a game that stepped once per frame would be a
+ *       game whose ball crosses the field fifty times a second, which is a blur a hand cannot play a
+ *       nd cannot time an Escape against. The game's own rules stay deterministic: no randomness, no
+ *       filesystem, one fixed starting layout, so two runs with nobody at the keyboard play the sam
+ *       e game - though not for the same number of steps, which is now wall time's.
  *
  *   Two public shape calls are used here: xud_draw_triangle_3d() for the back plane's two triangles
  *   and xud_draw_cube() for the ball, the paddle and every brick. The box is the point of this step
@@ -99,18 +98,11 @@
 #include <math.h> /* Required for: fabsf, the interval overlap every collision below reads */
 #include <stdio.h>
 
-#include "xud.h" /* Required for: the whole public API the game is written against, the input quer
-                    ies below included - the input needs no header of its own, and no internal heade
-                    r at all */
-#include <GLFW/glfw3.h> /* Required for: glfwGetTime, the ONE GLFW call this example still makes, an
-                          d the only reason it still names GLFW at all - see the clock note above. Th
-                          e include-order rule AGENTS.md records for glfw3.h (its Vulkan declarations s
-                          it inside #if defined(VK_VERSION_1_0), so <vulkan/vulkan.h> has to be seen f
-                          irst) is not a trap here: this example calls no Vulkan declaration through
-                          GLFW, only the timer, so the declarations it would drop are ones it never n
-                          ames. GLFW's objects are already in the xud archive (CMakeLists.txt, glfw_ve
-                          ndor as an OBJECT target) and its include dir is on the path the xud target
-                          exports PUBLIC, so the only new link fact is glfwGetTime. */
+#include "xud.h" /* Required for: the whole public API the game is written against, the input and th
+                    e clock queries below included - neither needs a header of its own, and the exam
+                    ple names no internal header and no GLFW symbol at all: the clock it paces its st
+                    eps by is xud_get_time(), above the clock rung the context owns, rather than GLF
+                    W's own glfwGetTime() */
 
 /*-----------------------------------------------------------------------------------------------
  * The window, the example's own camera and the playfield box
@@ -367,9 +359,11 @@ static_assert((XUD_BREAKOUT_FRAME_VERTEX_COUNT > 64u) || (XUD_BREAKOUT_FRAME_IND
 
 /* The run's fallback cap, in seconds: the run's real end is the player holding Escape (see the
    input note above), and this is the half that keeps a run with nobody at a keyboard - a CI run,
-   a headless one, a terminal whose window is in front of nobody - from hanging forever. glfwGet
-   Time() measures from the window's creation, which xud_init_context() does, so this is the run's
-   own time rather than the process's. Overridable at build time (-DXUD_BREAKOUT_MAX_SECONDS=N).
+   a headless one, a terminal whose window is in front of nobody - from hanging forever. xud_get
+   Time() measures from THIS context's bring-up, which xud_init_context() does, so this is the run'
+   s own time rather than the process's - which is the half the clock rung's own note says GLFW's o
+   wn glfwGetTime() would have gotten wrong, since its offset is one for the whole process. Overrid
+   able at build time (-DXUD_BREAKOUT_MAX_SECONDS=N).
    Sixty seconds is enough for a hand to reach Escape and enough for the game to clear the field
    several times, which is what the round counter below is for. */
 #ifndef XUD_BREAKOUT_MAX_SECONDS
@@ -786,7 +780,7 @@ static uint32_t xud_breakout_missed(XudBreakoutBall* ball) { return ((ball->posi
    at. The up stays the world's +Y, and the pitch's own assert above is what keeps it off the
    forward - an eye passing over the target's vertical is the one degeneracy the camera rung
    refuses, and it is the one thing an orbiting eye could otherwise walk into.
-   The angles are read from GLFW's wall clock rather than from the frame count, for the same
+   The angles are read from the run's own clock rather than from the frame count, for the same
    reason the step rate is: a frame count would make the sweep's speed a property of the machine's
    frame rate rather than of the run. The camera is decoration rather than a rule, so the clock
    being the run's rather than the step's is what makes it slow on every machine, and the game's
@@ -875,12 +869,23 @@ int main(void) {
         }
     }
 
-    /* The run's clock and its step accumulator. glfwGetTime() is GLFW's own timer (clock_gettime
-       behind it, and the window's creation is where it starts), and it is the same temporary rung
-       as the key state - see the note above for why the game needs a rate at all. */
-    double last = glfwGetTime();
+    /* The run's clock and its step accumulator. xud_get_time() is the library's own clock (raylib's
+       GetTime, seconds since THIS context came up, above the clock rung xud_init_context() opened a
+       bove the window it owns - see the clock note above for why the game needs a rate at all), and
+       it is the same temporary reading as the key state: one read per frame, reused by the camera's
+       swing and the accumulator below. A context that owns no clock rung is a context that never com
+       pleted bring-up, and the game cannot pace its steps without one, so the run says so and does n
+       ot start.
+    */
+    double last = 0.0;
     double accumulator = 0.0;
     uint32_t steps = 0u;
+    uint32_t clockLost = 0u;
+
+    if (xud_get_time(&last, context) != XUD_OK) {
+        printf("breakout_3d: the context owns no clock rung, so the game cannot pace its steps\n");
+        clockLost = 1u;
+    }
 
     /* The camera is NOT put in here: the frame loop below puts its own swing in every frame and
        takes it out after the run, so the camera a frame is drawn with is that frame's own angle
@@ -889,10 +894,9 @@ int main(void) {
        shape, and the record is still the caller's: what changed is only WHICH frame's record it
        is, not who owns it. */
 
-    for (frame = 0u;; frame++) {
+    for (frame = 0u; clockLost == 0u; frame++) {
         const XudBreakoutInput input = xud_breakout_read_input(context);
-        const double now = glfwGetTime();
-        const XudCamera3D camera = xud_breakout_camera_at(now);
+        double now = 0.0;
         uint32_t alive = 0u;
         uint32_t hit = XUD_BREAKOUT_NO_BRICK;
         uint32_t stepped = 0u;
@@ -902,18 +906,35 @@ int main(void) {
             escapeWanted = 1u;
             break;
         }
+
+        /* The frame's own clock, read once below above everything else this frame does: the camera's
+           swing and the accumulator are both stated against THIS reading rather than against two re
+           adings, which is what makes one frame one clock. A frame whose clock refused is the run's
+           end rather than a frame paced by a stale one.
+        */
+        if (xud_get_time(&now, context) != XUD_OK) {
+            printf("frame %u: the clock refused, and the run stops here\n", frame);
+            clockLost = 1u;
+            break;
+        }
+
+        /* The frame's own camera, built from the reading above rather than from a second one: the
+           swing's angle is this frame's own, and the camera's angle and the step's delta are therefo
+           re the same moment of the run.
+        */
+        const XudCamera3D camera = xud_breakout_camera_at(now);
+
         if (now >= XUD_BREAKOUT_MAX_SECONDS) {
             printf("frame %u: the fallback time cap is reached, and the run stops here\n", frame);
             timedOut = 1u;
             break;
         }
 
-        /* The accumulator GLFW's own timer feeds: one interval of wall time is one step of the
-           game, and the frame that arrives before the interval is up simply does not step. */
-        /* The accumulator GLFW's own timer feeds: one interval of wall time is one step of the
-           game, and the frame that arrives before the interval is up simply does not step. The
-           clock is read ONCE per frame, above, and is the same reading the camera's swing above
-           reads - one frame, one clock. */
+        /* The accumulator the library's own clock feeds: one interval of wall time is one step of t
+           he game, and the frame that arrives before the interval is up simply does not step. The c
+           lock is read ONCE per frame, above, and is the same reading the camera's swing above reads
+           - one frame, one clock.
+        */
         accumulator += (now - last);
         last = now;
 
@@ -1010,7 +1031,9 @@ int main(void) {
 
     printf("breakout_3d: %u frames, %u steps, %u rounds, %u bricks cleared, %u misses, %u short frames, ended by %s\n", frame, steps,
         rounds, cleared, misses, settling,
-        (escapeWanted != 0u) ? "escape" : ((timedOut != 0u) ? "the fallback time cap" : "a draw call refusing"));
+        (escapeWanted != 0u)
+            ? "escape"
+            : ((timedOut != 0u) ? "the fallback time cap" : ((clockLost != 0u) ? "the clock refusing" : "a draw call refusing")));
 
     const XudResult closed = xud_close_context(&context);
     printf("xud_close_context -> %s\n", xud_result_name(closed));
