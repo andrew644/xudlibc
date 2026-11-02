@@ -52,6 +52,7 @@
 #include "xud_physical.h"
 #include "xud_renderer.h"
 #include "xud_swapchain.h"
+#include "xud_texture.h" /* Required for: xud_texture_close_all, the TEXTURE kind's half of the same teardown rung - the rung above the MESH kind's, because a texture record owns an image, a view, a sampler and one host-visible block */
 #include "xud_window.h"
 #include <stdlib.h>
 
@@ -400,6 +401,7 @@ XudResult xud_close_context(XudContext** context) {
     XudResult rung = XUD_OK;
     uint32_t materialRecordsClosed = 0u;
     uint32_t meshRecordsClosed = 0u;
+    uint32_t textureRecordsClosed = 0u;
 
     if (context == NULL)
         return XUD_INVALID_ARG;
@@ -416,13 +418,17 @@ XudResult xud_close_context(XudContext** context) {
        is what a kind's rung above allocates - so xud_material_close_all() runs before this call and
        frees every MATERIAL record a slot still names (live or released: xud_handle_free() leaves the
        record field as it was), and xud_handle_table_close() frees the arrays and the table only. The
-       MESH kind's half of the same rung runs beside it - xud_mesh_close_all() is the second name tha
-       t appears here for the reason the material's is not: a mesh record owns five VkBuffers and one
-       host-visible block, so closing it calls a driver and a block left behind in a slot is a block
-       the allocator's own close cannot see. Both rungs run ABOVE this call, and every other kind's s
-       lots are still the sentinel this layer opens them with, because no rung above has landed for t
-       hem, so freeing those arrays retires nothing of the driver's, and the rungs below still have t
-       o tear their own objects down after it. The renderer goes next because the frame
+       MESH kind's half of the same rung runs beside it, and the TEXTURE kind's runs above that one:
+       xud_texture_close_all() and xud_mesh_close_all() are the third and fourth names that appear
+       here for the reason the material's is not - a mesh record owns five VkBuffers and one host-visi
+       ble block and a texture record owns an image, a view, a sampler and one host-visible block, so
+       closing either calls a driver and a block left behind in a slot is a block the allocator's own
+       close cannot see. TEXTURE runs above MESH because the two kinds' records are independent of eac
+       h other and the order only has to be above the table's, so the ladder reads texture, mesh, mate
+       rial, table. All three rungs run ABOVE this call, and every other kind's slots are still the sen
+       tinel this layer opens them with, because no rung above has landed for them, so freeing those a
+       rrays retires nothing of the driver's, and the rungs below still have to tear their own objects
+       down after it. The renderer goes next because the frame
        loop in
        side it is the one thing in this context that can still have a presentation in flight: its ow
        n close waits the fence of the image that presentation used before it destroys the command bu
@@ -453,6 +459,9 @@ XudResult xud_close_context(XudContext** context) {
        through bring-up is closed by this same code path, and every one of them clears its out
        handle before freeing, so a context torn down twice cannot double-free. */
     if (victim->handleTable != NULL) {
+        rung = xud_texture_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &textureRecordsClosed);
+        if ((rung != XUD_OK) && (first == XUD_OK))
+            first = rung;
         rung = xud_mesh_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &meshRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;

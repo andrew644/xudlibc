@@ -483,6 +483,19 @@ nged
 ## Later
 
 - [ ] Textures + samplers (create, upload via staging copies, mipmaps, sampler variants)
+    - 2026-11-01 note: **the rung landed as S39** — `src/xud/xud_texture.h`/`.c` is the rung, `xud_create_texture()`/
+      `xud_close_texture()` are the public pair above it, and a texture is one `VkImage` + `VkImageView` + `VkSampler`
+      behind a `TEXTURE`-kind slot whose bytes reach the image through a staging buffer and `vkCmdCopyBufferToImage`
+      rather than through a mapping of the image's own interior — the tiling is OPTIMAL, and the reason is a probed
+      driver fact: this machine's four-level `LINEAR` image reports level footprints that OVERLAP (mip1 ends at 1424,
+      past mip2's start at 1088), so no host write plan can follow the driver's own layout. A texture spends TWO
+      allocator blocks, one of them transient (the staging half is retired as soon as the upload has run, so a live
+      record's staging fields are EMPTY), and the teardown is TWO helpers because the bring-up retires only that half.
+      The mip chain is generated here rather than handed. See *Steps complete (S39 …)* at the top of `todo_completed.md`.
+      What is still open of this item, itemised: **set 1 is still declared and never allocated**, so the material
+      record's `setOne` is still `VK_NULL_HANDLE` and nothing samples these textures yet — that half belongs to the
+      descriptor/material-binding step, not to this rung; the format axis is ONE format (`R8G8B8A8_UNORM`), no
+      compressed formats and no decoder; anisotropy is off (`maxAnisotropy == 1u`) even though the caps want it.
 - [ ] Mesh / vertex-buffer abstraction (**one buffer per attribute stream**, SoA, decided 2026-10-23) + handle table
     (index+generation — the public-API currency, **landed 2026-10-24 as S10**, see Completed below)
     - 2026-11-01 note: **the rung landed as S38** — `src/xud/xud_mesh.h`/`.c` is the rung, `xud_upload_mesh()`/`xud_

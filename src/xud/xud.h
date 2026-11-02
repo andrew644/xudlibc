@@ -10,23 +10,20 @@
  *          life-cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d()
  *          / xud_draw_cube() / xud_draw_sphere() / xud_draw_line_3d() / xud_draw_point_3d() /
  *          xud_draw_cube_wires() / xud_draw_sphere_wires() / xud_begin_camera_3d() / xud_end_
- *          camera_3d() / xud_end_drawing()), the object API above the handle layer (the two crea
- *          te/close pairs xud_create_material() / xud_close_material() / xud_upload_mesh() / xud_
- *          close_mesh() and the scoped-state pair xud_begin_material() / xud_end_material()), th
- *          e value types a caller passes down (XudVector2 / XudVector3 / XudColor / XudMaterial /
- *          XudMeshData), the input API above the input rung (raylib's keyboard and mouse half - xud_
- *          is_key_pressed() / xud_is_key_pressed_repeat() / xud_is_key_down() / xud_is_key_relea
- *          sed() / xud_is_key_up() / xud_get_key_pressed() / xud_get_char_pressed() / xud_get_key
- *          _name() / xud_set_exit_key() / xud_get_exit_key() and the mouse block below it), the key
- *          and mouse-button tokens that API's queries take, and the runtime Vulkan query xud_vul
- *          kan_supported().
- *   Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa
- *          der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c,
- *          xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
+ *          camera_3d() / xud_end_drawing()), the object API above the handle layer (the three crea
+ *          te/close pairs xud_create_material() / xud_close_material() / xud_create_texture() / xud_
+ *          close_texture() / xud_upload_mesh() / xud_close_mesh() and the scoped-state pair xud_be
+ *          gin_material() / xud_end_material()), the value types a caller passes down (XudVector2 /
+ *          XudVector3 / XudColor / XudMaterial / XudTextureData / XudMeshData), the input API above the input rung (raylib's keyboard and
+ * mouse half - xud_ is_key_pressed() / xud_is_key_pressed_repeat() / xud_is_key_down() / xud_is_key_relea sed() / xud_is_key_up() /
+ * xud_get_key_pressed() / xud_get_char_pressed() / xud_get_key _name() / xud_set_exit_key() / xud_get_exit_key() and the mouse block below
+ * it), the key and mouse-button tokens that API's queries take, and the runtime Vulkan query xud_vul kan_supported(). Layer: top of the
+ * stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa der.h/.c, xud_vulkan.h/.c, xud_diagnostics.h/.c,
+ * xud_instance.h/.c, xud_physical.h/.c, xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c, xud_handle.h/.c, xud_shader.h/.c,
  *          xud_pipeline.h/.c, xud_renderpass.h/.c, xud_frame.h/.c, xud_renderer.h/.c, xud_alloca
  *          tor.h/.c, xud_descriptor.h/.c, xud_batch.h/.c, xud_camera.h/.c, xud_input.h/.c, xud_mat
- *          erial.h/.c and xud_mesh.h/.c - and user code includes this header only; tests may inclu
- *          de the internal ones.
+ *          erial.h/.c, xud_mesh.h/.c and xud_texture.h/.c - and user code includes this header only;
+ *          tests may include the internal ones.
  *          Every layer below this one is in the tree now, and every one of them stays internal be
  *          hind the two exceptions this note names: nothing about a VkDevice, its queues, a
  *          GLFW window, a VkSurfaceKHR, a VkSwapchainKHR, a VkPipeline, a VkRenderPass, a
@@ -269,6 +266,65 @@ static_assert(XUD_HANDLE_KIND_NONE == 0u,
     "xud.h: NONE is the 0th kind value, which is what makes a zero-initialised handle carry the tag no live slot ever has");
 static_assert(XUD_HANDLE_KIND_MAX >= XUD_HANDLE_KIND_NONE,
     "xud.h: the highest kind value must be a kind value, or the table's row count below is a row count of nothing");
+
+/*-----------------------------------------------------------------------------------------------
+ * The texture - the object kind a handle names that has a rung above the handle table
+ *
+ * A texture is the object a XUD_HANDLE_KIND_TEXTURE slot records, and the value type below is what
+ * a caller describes when it asks for one. raylib's Texture2D (reference/raylib/raylib.h 273-279) is
+ * { int id; int mipmaps; int width; int height; } - one GL texture name carrying texels, filtering and
+ * wrap mode inside it, because GL's texture object IS the sampling state. Vulkan splits the three: a
+ * VkImage is bytes with a format and no sampling state, a VkSampler is sampling state with no bytes,
+ * and a VkImageView is the one thing a descriptor may name (an image alone cannot go in a descriptor -
+ * VkDescriptorImageInfo names .imageView, not .image). All three are therefore the library's to own
+ * behind one handle, and the pair below hands out one handle for all three.
+ *
+ * The description is one array of texels plus three tokens, and the texels are written at the create
+ * call rather than at a later one: a texture's bytes are written once, by the CPU, at the upload, and
+ * read by a shader for the texture's whole life - the same reason the mesh's arena is mapped once at
+ * open and unmapped once at close. The array is therefore read once and the caller may free it as soon
+ * as the call returns.
+ *
+ * The mip chain is the library's work rather than the caller's data: raylib generates one too (its
+ * Texture2D has an `int mipmaps` member and GenTextureMipmaps is what fills it), and the chain's length
+ * is the spec's maximum for the extent rather than a quality level chosen behind the caller's back, so
+ * every LOD a fragment stage's derivative can select has a level to select. The format is this rung's
+ * one constant (R8G8B8A8_UNORM, four bytes per texel, the one format that needs no decoder here) rather
+ * than an axis, and the format axis is an open ask in todo.md.
+ *
+ * The tokens are this library's own rather than raylib's names: raylib's SetTextureFilter takes a one-
+ * token filter and its SetTextureWrap takes three wrap tokens, and xud_texture.h asserts the three
+ * public tokens equal Vulkan's own numbers, so a caller's token is a name in this library's vocabulary
+ * and a fact about the driver at the same time, with no translation table in between.
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_TEXTURE_FILTER_NEAREST 0u /* nearest texel, no interpolation */
+#define XUD_TEXTURE_FILTER_LINEAR 1u /* interpolated between texels */
+#define XUD_TEXTURE_FILTER_COUNT 2u /* the length of this axis */
+
+#define XUD_TEXTURE_ADDRESS_REPEAT 0u /* wrap */
+#define XUD_TEXTURE_ADDRESS_MIRRORED_REPEAT 1u /* wrap with a mirrored neighbour */
+#define XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE 2u /* the edge texel, raylib's CLAMP */
+#define XUD_TEXTURE_ADDRESS_COUNT 3u /* the length of this axis */
+
+static_assert(XUD_TEXTURE_FILTER_COUNT == (XUD_TEXTURE_FILTER_LINEAR + 1u),
+    "xud.h: the two filter tokens are contiguous from nearest up, so the count is one past the highest");
+static_assert(XUD_TEXTURE_ADDRESS_COUNT == (XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE + 1u),
+    "xud.h: the three wrap tokens are contiguous from repeat up, so the count is one past the highest");
+
+/// The one texture description a caller hands down: the extent, the texels, and the two tokens that
+/// name the sampling state. Every member is caller-owned and read once at the create call; the texel
+/// array is the one array a texture has, and unlike a mesh's optional attribute streams it has no
+/// neutral value that means "draw this" - a texture with no texels is not a texture with a default.
+/// width*height must be at least one texel and at most the bound the texture rung states beside its
+/// own note, and every texel is four bytes in the order the rung's one format names.
+typedef struct XudTextureData {
+    uint32_t width; /* mip 0's width, in texels */
+    uint32_t height; /* mip 0's height, in texels */
+    const uint8_t* rgba; /* mip 0's texels, width*height*4 bytes, read once at the create call */
+    uint32_t filter; /* XUD_TEXTURE_FILTER_*: what both the minifying and the magnifying filter do */
+    uint32_t addressMode; /* XUD_TEXTURE_ADDRESS_*: the wrap mode of the texture's two live axes */
+} XudTextureData;
 
 /*-----------------------------------------------------------------------------------------------
  * The material - the one object kind a handle names that has a rung above the handle table
@@ -663,6 +719,38 @@ XudResult xud_upload_mesh(XudHandle* outHandle, XudContext* context, const XudMe
 /// ever completed bring-up or on a loader whose rows are not this device's; the device's own code wh
 /// en the guard cannot run.
 XudResult xud_close_mesh(XudContext* context, XudHandle handle);
+
+/// Create a texture this context owns: the object half of the texture rung, and the second public
+/// create pair whose record owns driver objects (after the mesh's). The description is validated and
+/// gated on the caps BEFORE anything is spent, so a refusal leaves no slot and no half-texture; the
+/// slot, the image, the view, the sampler and the ONE host-visible block the texels live in are then
+/// brought up in the one order that leaves nothing reachable and unfilled, and the texels and the wh
+/// ole mip chain are written into that block once, here, and never again - which is why this call nam
+/// es a create rather than a draw. On XUD_OK *outHandle names a live TEXTURE slot of THIS context's
+/// table and the caller holds it for as long as anything samples it; a handle kept past the close tha
+/// t released it is refused, not dangling. XUD_INVALID_ARG on a NULL out-handle, context or descripti
+/// on, or on a texture the rung's own check refuses (no texels, an extent past this rung's bound, a t
+/// exel count past it, a filter or wrap mode outside its axis, or a NULL texel array); XUD_UNSUPPORTED
+/// on a context that never completed bring-up, on a loader whose rows this rung needs are not there,
+/// on a device that is not this loader's, on a device whose maxImageDimension2D is below either axis,
+/// or on a driver whose reported subresource layout does not match this rung's; XUD_OUT_OF_RESOURCES a
+/// t the handle layer's own slot bound or when the block cannot be carved; XUD_OUT_OF_MEMORY when the
+/// record cannot be allocated; XUD_VULKAN_ERROR or XUD_LOST when the driver refuses for its own reas
+/// on.
+XudResult xud_create_texture(XudHandle* outHandle, XudContext* context, const XudTextureData* texture);
+
+/// Release one texture: the object half closed, and the second public close pair that calls a driver.
+/// The handle is validated against the TEXTURE kind first, so a stale handle, a handle of another kin
+/// d and a fabricated one refuse without freeing anything; the wait-idle guard runs before the destroy
+/// s, because a texture's image is read by a submission and VUID-vkDestroyImage-image-00009 is the sam
+/// e rule the mesh's buffer destroy and the swapchain's recreate state state for their own objects. The
+/// mapping is unmapped, the sampler, the view and the image destroyed and the block released, and the
+/// slot's record field is cleared BEFORE the record is freed, so a close run twice frees once and the
+/// table's own teardown can never find a record it would have to free twice. XUD_INVALID_ARG on a NULL
+/// context or on a handle that does not name a live TEXTURE slot of this context; XUD_UNSUPPORTED on a
+/// context that never completed bring-up or on a loader whose rows are not this device's; the device's
+/// own code when the guard cannot run.
+XudResult xud_close_texture(XudContext* context, XudHandle handle);
 
 /*-----------------------------------------------------------------------------------------------
  * The input API - raylib's keyboard and mouse half, above the input rung
