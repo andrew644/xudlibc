@@ -61,5 +61,6 @@ void xud_test_mesh(void); /* the mesh rung and the public mesh API: the arena's 
 void xud_test_texture(void); /* the texture rung and the public texture API: the chain's arithmetic, the arena's layout, the write that
                                 fills it, the three create-infos, the teardown rung above the table's close */
 void xud_test_core(void);
+void xud_test_vendor(void); /* the three vendored single-header rungs: cgltf, stb_truetype, miniaudio */
 
 #endif /* XUD_TEST_HARNESS_H_ */

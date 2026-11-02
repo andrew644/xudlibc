@@ -30,3 +30,4 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 - When you complete a todo item, delete the line in todo.md
 - You can't modify AGENTS.md
 - When you complete a task suggest items to add to todo.md. Don't add them yourself.
+- When you complete a task commit it.

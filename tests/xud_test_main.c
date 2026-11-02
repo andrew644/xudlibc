@@ -61,6 +61,7 @@ int main(void) {
     xud_test_mesh();
     xud_test_texture();
     xud_test_core();
+    xud_test_vendor();
 
     printf("checks: %d  failures: %d\n", xudChecks, xudFailures);
     if (gpu == 0)
