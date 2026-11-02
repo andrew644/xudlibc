@@ -163,6 +163,7 @@ add_library(xud STATIC
     src/xud/xud_handle.c
     src/xud/xud_material.c
     src/xud/xud_mesh.c
+    src/xud/xud_model.c
     src/xud/xud_texture.c
     src/xud/xud_shader.c
     src/xud/xud_pipeline.c
@@ -210,6 +211,7 @@ add_executable(xud_test
     tests/xud_test_camera.c
     tests/xud_test_material.c
     tests/xud_test_mesh.c
+    tests/xud_test_model.c
     tests/xud_test_texture.c
     tests/xud_test_core.c
     tests/xud_test_vendor.c

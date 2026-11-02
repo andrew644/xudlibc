@@ -60,6 +60,9 @@ void xud_test_mesh(void); /* the mesh rung and the public mesh API: the arena's 
                              table's close */
 void xud_test_texture(void); /* the texture rung and the public texture API: the chain's arithmetic, the arena's layout, the write that
                                 fills it, the three create-infos, the teardown rung above the table's close */
+void xud_test_model(void); /* the model rung and the public model API: the document walk, the per-primitive gate, the stage's five arrays,
+                             the read that fills them, the bounding box, the slots the record names, the teardown rung above the mesh and
+                             the material rungs, and the one glTF document every check below is stated against */
 void xud_test_core(void);
 void xud_test_vendor(void); /* the three vendored single-header rungs: cgltf, stb_truetype, miniaudio */
 

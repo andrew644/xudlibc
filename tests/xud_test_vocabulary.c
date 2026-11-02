@@ -27,7 +27,7 @@ static void xud_test_version(void) {
 
 static void xud_test_result_names(void) {
     const XudResult all[] = { XUD_OK, XUD_UNSUPPORTED, XUD_INVALID_ARG, XUD_OUT_OF_MEMORY, XUD_OUT_OF_RESOURCES, XUD_ALREADY, XUD_LOST,
-        XUD_VULKAN_ERROR, XUD_INTERNAL_ERROR };
+        XUD_VULKAN_ERROR, XUD_INTERNAL_ERROR, XUD_NOT_FOUND, XUD_MALFORMED };
     const size_t count = sizeof(all) / sizeof(all[0]);
 
     xud_check(XUD_OK == 0, "result/ok-is-zero", "XUD_OK is not 0");

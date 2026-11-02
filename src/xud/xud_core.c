@@ -49,6 +49,7 @@
 #include "xud_loader.h"
 #include "xud_material.h" /* Required for: xud_material_close_all, the teardown rung xud_close_context() runs above the handle table it closes */
 #include "xud_mesh.h" /* Required for: xud_mesh_close_all, the MESH kind's half of the same teardown rung - and the reason a second kind's name appears here is that a mesh record, unlike a material's, owns driver objects */
+#include "xud_model.h" /* Required for: xud_model_close_all, the MODEL kind's half of the same teardown rung - and the rung above the MESH and the MATERIAL kinds', because a model record names slots of both rather than owning driver objects of its own */
 #include "xud_physical.h"
 #include "xud_renderer.h"
 #include "xud_swapchain.h"
@@ -101,6 +102,10 @@ const char* xud_result_name(XudResult result) {
         return "XUD_VULKAN_ERROR";
     case XUD_INTERNAL_ERROR:
         return "XUD_INTERNAL_ERROR";
+    case XUD_NOT_FOUND:
+        return "XUD_NOT_FOUND";
+    case XUD_MALFORMED:
+        return "XUD_MALFORMED";
     }
     return "XUD_OUT_OF_RANGE";
 }
@@ -402,6 +407,7 @@ XudResult xud_close_context(XudContext** context) {
     uint32_t materialRecordsClosed = 0u;
     uint32_t meshRecordsClosed = 0u;
     uint32_t textureRecordsClosed = 0u;
+    uint32_t modelRecordsClosed = 0u;
 
     if (context == NULL)
         return XUD_INVALID_ARG;
@@ -423,12 +429,18 @@ XudResult xud_close_context(XudContext** context) {
        here for the reason the material's is not - a mesh record owns five VkBuffers and one host-visi
        ble block and a texture record owns an image, a view, a sampler and one host-visible block, so
        closing either calls a driver and a block left behind in a slot is a block the allocator's own
-       close cannot see. TEXTURE runs above MESH because the two kinds' records are independent of eac
-       h other and the order only has to be above the table's, so the ladder reads texture, mesh, mate
-       rial, table. All three rungs run ABOVE this call, and every other kind's slots are still the sen
-       tinel this layer opens them with, because no rung above has landed for them, so freeing those a
-       rrays retires nothing of the driver's, and the rungs below still have to tear their own objects
-       down after it. The renderer goes next because the frame
+       close cannot see. xud_model_close_all() is the fifth name that appears here, and it runs ABOVE
+       all four rather than beside them for the reason the other four do not run above each other: a
+       model record owns no driver object of its own, it names MESH and MATERIAL slots, so closing it
+       calls the mesh and the material rungs below it and a model left in its slot when either of those
+       walks is a mesh whose record still names a material about to be freed. The ladder therefore rea
+       ds model, texture, mesh, material, table, and MODEL is the only rung of the five whose order is
+       forced rather than chosen. TEXTURE runs above MESH because the two kinds' records are independe
+       nt of each other and the order only has to be above the table's, so the ladder reads texture, me
+       sh, material, table. All four rungs run ABOVE this call, and every other kind's slots are still
+       the sentinel this layer opens them with, because no rung above has landed for them, so freeing t
+       hose arrays retires nothing of the driver's, and the rungs below still have to tear their own ob
+       jects down after it. The renderer goes next because the frame
        loop in
        side it is the one thing in this context that can still have a presentation in flight: its ow
        n close waits the fence of the image that presentation used before it destroys the command bu
@@ -459,6 +471,9 @@ XudResult xud_close_context(XudContext** context) {
        through bring-up is closed by this same code path, and every one of them clears its out
        handle before freeing, so a context torn down twice cannot double-free. */
     if (victim->handleTable != NULL) {
+        rung = xud_model_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &modelRecordsClosed);
+        if ((rung != XUD_OK) && (first == XUD_OK))
+            first = rung;
         rung = xud_texture_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &textureRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;

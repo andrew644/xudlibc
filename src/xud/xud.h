@@ -51,8 +51,7 @@
  *          x range and one index buffer for the whole batch, so a row that replays through a mesh's
  *          own buffers needs a per-row buffer binding beside it, and that is a change to a commit
  *          ted rung - plus the camera + transform math above the shapes, and the object kinds a pu
- *          blic handle would name that still have no rung above the table (textures, fonts, model
- *          s).
+ *          blic handle would name that still have no rung above the table (fonts).
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -131,7 +130,9 @@ typedef enum XudResult {
     XUD_ALREADY = 5, /* the operation is already in effect (idempotent teardown)      */
     XUD_LOST = 6, /* VkResult was VK_ERROR_DEVICE_LOST: the device is unusable     */
     XUD_VULKAN_ERROR = 7, /* some other VkResult came back non-VK_SUCCESS                  */
-    XUD_INTERNAL_ERROR = 8 /* an internal invariant broke: close the context and start over */
+    XUD_INTERNAL_ERROR = 8, /* an internal invariant broke: close the context and start over */
+    XUD_NOT_FOUND = 9, /* a path the caller handed names no file the library can open        */
+    XUD_MALFORMED = 10 /* a file that exists is not a container or document this library can read */
 } XudResult;
 
 /* Human-readable name for an error code - for logging and for test output.
@@ -239,8 +240,8 @@ static_assert(sizeof(XudCamera3D) == 48u,
 /// close of the object it names is REJECTED, not dangling - the generation bump is what rejects it
 /// . The object steps are what hand one out, and one of them is in the tree: the MATERIAL kind's
 /// create/close pair (xud_create_material()/xud_close_material(), below the drawing API) is the on
-/// e public pair that fills and releases one today, which is why the other kinds (textures, fonts
-/// , meshes, models) are still the steps that have not landed.
+/// e public pair that fills and releases one today, and three more since (the MESH, TEXTURE and
+/// MODEL kinds' pairs do too), which is why the one kind left without a step is the FONT kind.
 typedef struct XudHandle {
     uint32_t index; /* which slot of its kind's array this names                                   */
     uint32_t generation; /* bumped when the slot it named was released and taken again, so a handle kept across that stops naming it */
@@ -660,8 +661,8 @@ XudResult xud_end_drawing(XudContext* context);
  * The object API - the materials a context owns, and the handles that name them
  *
  * This is the first place in the public surface a XudHandle is handed out and released, and it is
- * the whole of the object half today: one kind (MATERIAL) has a rung above the handle table, and t
- * he other kinds (textures, fonts, meshes, models) are still open steps. The pair is raylib's Load
+ * the object half today: four kinds (MATERIAL, MESH, TEXTURE and MODEL) have a rung above the
+ * handle table, and the one kind left without a step is the FONT kind. The pairs are raylib's Load
  * /Unload shape read at this library's currency - raylib hands a struct with an embedded GL name in
  * side (raylib.h's Texture2D/Mesh/Model), which this repo refuses, so what a caller holds is the h
  * andle and what the library owns is the slot and its record.
@@ -751,6 +752,62 @@ XudResult xud_create_texture(XudHandle* outHandle, XudContext* context, const Xu
 /// context that never completed bring-up or on a loader whose rows are not this device's; the device's
 /// own code when the guard cannot run.
 XudResult xud_close_texture(XudContext* context, XudHandle handle);
+
+/// Load a model this context owns: the object half of the model rung, and the fourth public create
+/// pair whose record owns driver objects - and the first whose record owns OTHER handles. A model is
+/// not an object of the driver's: it is one MESH slot per glTF primitive and one MATERIAL slot per
+/// glTF material plus the default every untextured primitive draws with, which is why this pair is
+/// named load/close rather than create/close and why raylib's LoadModel - a struct with a mesh list
+/// and an embedded GL name inside it - is the shape this repo refuses to mirror. cgltf is read here,
+/// above the rung, in the order parse, buffer load, validate: cgltf_validate() checks the accessor
+/// ranges against the bytes a document actually has, so a document whose buffers were never loaded
+/// has nothing to check. The document is then freed here rather than kept, because the mesh rung's
+/// own create copied the bytes the accessors pointed at into the mesh's mapped arena - so a model is
+/// a list of the objects the rungs below own and never a live document. On XUD_OK *outHandle names a
+/// live MODEL slot of THIS context's table. There is no draw half here: the batch's draw row names
+/// one index range and one index buffer for the whole batch, so a row that replays through a mesh's
+/// own buffers needs a per-row binding beside it, and that is a change to a committed rung. XUD_INVA
+/// LID_ARG on a NULL out-handle, context or path, on an empty path, on a path whose directory prefix
+/// does not fit this rung's bound, or on a document that is broken (no mesh, no POSITION, accessors
+/// that disagree about the vertex count, an index at or past the vertex count, an accessor that reads
+/// past its buffer view, a buffer whose bytes were never loaded, or counts past this rung's bounds);
+/// XUD_NOT_FOUND when the path names no file; XUD_MALFORMED when the container or the JSON does not
+/// parse; XUD_UNSUPPORTED on a context that never completed bring-up, on a loader whose rows this
+/// rung needs are not there, on a device that is not this loader's, or on a well-formed document this
+/// rung does not read (a glTF 1.0 asset, a non-triangle primitive, a Draco block, a morph target, a
+/// sparse accessor, a tangent, a second UV); XUD_OUT_OF_RESOURCES at the handle layer's own slot bound
+/// ; XUD_OUT_OF_MEMORY when the record or a stage block cannot be allocated; the mesh rung's and the
+/// material rung's own codes on the objects they bring up.
+XudResult xud_load_model(XudHandle* outHandle, XudContext* context, const char* path);
+
+/// Release one model: the object half closed, and the first public close pair that closes OTHER cal
+/// ler handles. The handle is validated against the MODEL kind first, so a stale handle, a handle of
+/// another kind and a fabricated one refuse without freeing anything; every MESH slot this load crea
+/// ted is closed through the mesh rung below and every MATERIAL slot through the material rung, in
+/// that order, because a mesh's record names the material it draws with and a material still named by
+/// a live mesh is a state a caller could draw through. The slot's record field is cleared BEFORE the
+/// record is freed, the rule every close in this tree states, so a close run twice frees once and the
+/// table's own teardown cannot find a record it would have to free twice. XUD_INVALID_ARG on a NULL
+/// context or on a handle that does not name a live MODEL slot of this context; XUD_UNSUPPORTED on a
+/// context that never completed bring-up or on a loader whose rows are not this device's; the mesh
+/// rung's own code when one of its closes refuses.
+XudResult xud_close_model(XudContext* context, XudHandle handle);
+
+/// How many meshes a model owns: raylib's GetModelCount read at this library's currency. A model is a
+/// list of slots rather than a struct with a mesh array inside it, so the count is what a caller needs
+/// in order to ask for the handles one at a time - and the handles themselves are not exposed here, bec
+/// ause a mesh handle a caller copied out of a model could be closed on its own and leave the model's
+/// record naming a released slot. XUD_INVALID_ARG on a NULL out-count or context, or on a handle that
+/// does not name a live MODEL slot of this context; XUD_UNSUPPORTED on a context that never completed
+/// bring-up.
+XudResult xud_get_model_mesh_count(uint32_t* outCount, XudContext* context, XudHandle handle);
+
+/// The model's bounding box: raylib's GetModelBoundingBox, folded at the load rather than walked from
+/// the buffers at the query. The stage a primitive is read through is gone by the time a caller could
+/// ask for it, so the box is the record's own two corners and the query answers in constant time. XUD_
+/// INVALID_ARG on a NULL out-corner or context, or on a handle that does not name a live MODEL slot of
+/// this context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_model_bounding_box(XudVector3* outMin, XudVector3* outMax, XudContext* context, XudHandle handle);
 
 /*-----------------------------------------------------------------------------------------------
  * The input API - raylib's keyboard and mouse half, above the input rung
