@@ -6,6 +6,19 @@ step, just move it, so the active tracker stays short and the log stays complete
 
 ## Now
 
+- 2026-11-01 note: **the dependency vendoring landed** (commit `Add extra libraries`) — `src/external/` gained six
+  single-header libs: **`cgltf.h` 1.15**, **`miniaudio.h` v0.11.25**, **`stb_truetype.h` v1.26** (the three *Blocked*
+  asks — model format, audio backend, text/font — all now decided in raylib's own route) plus, answering no ask,
+  `stb_image.h` v2.30 / `stb_image_write.h` v1.16 / `stb_image_resize2.h` v2.18. **Nothing includes any of them**:
+  they are committed, NOT built, so the archive is UNCHANGED at 46 objects (24 xud + 21 GLFW + Volk) and the suite is
+  UNCHANGED at 3053 headless / 3966 GPU, 0 failures. That same commit **deleted `src/external/PROVENANCE.md`** — the
+  bucket's provenance-and-license record — and it is restored and extended here with the six new rows, their notices
+  (every one of the six carries its license **inside the file**, which is why no separate `LICENSE` was added) and the
+  probed flag fact: all six are clean as declarations under the repo's flags on gcc 16.2.1 AND clang 22.1.8, and every
+  implementation half is clean too **except `stb_image_resize2.h`**, a `-Wpedantic` error under gcc 16.2.1 at that file's
+  1468, so its implementation TU needs the GLFW-style relaxation (its own CMake target, never the repo's default flags).
+  See the *Vendored the six single-header deps* section now at the top of `todo_completed.md`.
+
 - 2026-11-01 note: **the mesh rung and the public mesh API landed as S38** — see the *Steps complete (S38 …)*
   section now at the top of `todo_completed.md`: `src/xud/xud_mesh.h`/`.c` is the SECOND rung to fill a handle
   slot's `record` field and the FIRST whose record owns driver objects (`XudMeshRecord` carries five `VkBuffer`s,
@@ -506,9 +519,14 @@ nged
       one index buffer for the whole batch, so a row that replays through a mesh's own buffers needs a per-row buffer
       binding beside it, and that is a change to a committed batch rung, i.e. an ask rather than a side effect of this
       rung landing.
-- [ ] 3D model loading (glTF 2.0 — format decision still open, see Blocked)
-- [ ] Text/font rendering
-- [ ] Audio wrapper
+- [ ] 3D model loading (**format decided 2026-11-01**: `src/external/cgltf.h` v1.15 is vendored, raylib's own route,
+    and the minimal `.glb` reader is settled out — what is open is the **loader rung itself**, and cgltf's implementation
+    half is compiled nowhere yet)
+- [ ] Text/font rendering (`src/external/stb_truetype.h` v1.26 is vendored — the format question is decided, the
+    rung is not; note the header's own banner, "NO SECURITY GUARANTEE — DO NOT USE THIS ON UNTRUSTED FONT FILES", which
+    is a fact about any future font loader)
+- [ ] Audio wrapper (`src/external/miniaudio.h` v0.11.25 is vendored — the backend question is decided, the wrapper
+    is not; its WAV/FLAC/MP3 decoders are built in by default and its Linux device backends are `dlopen`ed)
 - [ ] Input: gamepad / touch state and `SetMouseCursor` (the keyboard+mouse half of raylib's input surface landed
     as S33, see Completed — what is open here is the half GLFW's Wayland backend cannot serve: no touch events, no
     gamepad, `_glfwSetCursorPosWayland` answering `GLFW_FEATURE_UNAVAILABLE`, and owning/destroying a cursor shape
@@ -818,17 +836,26 @@ nged
   raylib 6.2 has no lighting API left (grep `Light` in `reference/raylib/raylib.h`: one hit, the `LIGHTGRAY`
   colour constant — `SetLight`/`SetLightingMode`/`SetLightingCamera` are gone from 6.2), so the "whichever option
   feels like using raylib" rule cannot decide this one and the user's word is the only input.
-- Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)
+- ~~Model format: vendor cgltf (glTF 2.0, what raylib does) vs minimal `.glb` reader (ask)~~ — **decided 2026-11-01**:
+  **cgltf vendored** (`src/external/cgltf.h`, v1.15, MIT notice at the end of the file), raylib's own route. The
+  loader rung is still open and nothing includes that header yet.
 - ~~Handle layer's `record`: … whether the batch's `materialIndex` becomes a handle-layer slot index …~~ — **the naming is
   decided 2026-10-26** (D3 above): the batch's `materialIndex` is a **material-kind slot index**, the caller holds an
   `XudHandle` of kind `MATERIAL` and names it at the draw (raylib's `DrawMesh(mesh, material, transform)`, raylib.h 1632,
   `SetMaterialTexture(Material *material, …)`, 1657), and the slot's record holds the variant bit plus the set-1 bindings.
   The record's members landed 2026-11-01 as S37 (`src/xud/xud_material.h`/`.c`, `XudMaterialRecord { uint32_t variant; VkDescriptorSet setOne; }`, and the public pairs `xud_create_material()`/`xud_close_material()` + `xud_begin_material()`/`xud_end_material()`), so the ask this entry was waiting on is closed; what is still open is the record's `setOne` field, which is the sentinel until the texture step allocates a set 1.
-- Audio: vendor miniaudio vs no audio (ask)
+- ~~Audio: vendor miniaudio vs no audio (ask)~~ — **decided 2026-11-01**: **miniaudio vendored** (`src/external/miniaudio.h`,
+  v0.11.25, public domain or MIT-0, both notices at the end of the file). The wrapper is still open.
 - Frame clock: raylib's `GetFrameTime`/`GetFPS` as a public query (a public-API-surface change, so an ask) vs the
   example's `glfwGetTime()` — the example's ONE remaining direct GLFW call, and the only reason it still names GLFW
   at all; the game needs a rate in wall time because GLFW's window runs at ~3250 frames a second (ask)
-- Text/font: own bitmap atlas vs vendored `stb_truetype`/fontstash (ask)
+- ~~Text/font: own bitmap atlas vs vendored `stb_truetype`/fontstash (ask)~~ — **decided 2026-11-01**: **`stb_truetype` vendored**
+  (`src/external/stb_truetype.h`, v1.26, public domain). fontstash is not vendored and an atlas of our own is settled
+  out. The text rung is still open.
+- **The three extra stb headers that landed with them** (`stb_image.h` v2.30, `stb_image_write.h` v1.16, `stb_image_resize2.h`
+  v2.18) answer **no** open ask — they are an image-decode / image-write / resize set (the texture rung's byte source
+  and its mip generator), and `stb_image_resize2`'s implementation half is a `-Wpedantic` error under gcc 16.2.1, so
+  consuming it is an ask and a separate CMake target, not a side effect (see `src/external/PROVENANCE.md`).
 - **Render pass at a 1.3 floor (ask)**: keep the explicit `VkRenderPass` + `VkFramebuffer` path S22 chose, or move to
   dynamic rendering, which is **core** at this floor now (`VkPhysicalDeviceVulkan13Features::dynamicRendering`, `VkPipelineRenderingCreateInfo`,
   `VkRenderingAttachmentInfo`, and Volk's `PFN_vkCmdBeginRendering`/`PFN_vkCmdEndRendering` rows) with no extension request

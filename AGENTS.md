@@ -18,7 +18,7 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 | `tests/` | Unit tests — **split 2026-10-25 into one TU per area** (`xud_test_harness.h`/`.c` = the shared counters, the one named check and the GPU gate; `xud_test_main.c` = the runner; `xud_test_<area>.c` × 25) | Headless by default; GPU tests gated by `XUD_GPU_TESTS=1`; the runner's area order is explicit in `CMakeLists.txt`, not globbed |
 | `examples/` | Runnable demos | Small, one concern each |
 | `shaders/` | GLSL sources (`solid.vert`/`solid.frag` present today) | Compiled at build time by CMake into `build/gen/` — never at runtime, never committed as `.spv` |
-| `src/external/` | Vendored third-party deps (raylib's own convention) — **present today**: `volk.h`/`volk.c` (Volk) + a full `glfw/` source tree (GLFW 3.5.1) + `PROVENANCE.md` | Settled 2026-10-23 (see *Settled decisions*): **committed with its license files**, never edited in place; **Volk is built in now** (`volk.c` compiled into the `xud` archive, `src/external` on the include path), and so is the **GLFW tree** (the OBJECT target `glfw_vendor`, **Wayland** backend: 21 GLFW objects in the archive, 46 objects total (24 xud modules now, `xud_texture.c` among them), the four Wayland libs linked PUBLIC into `xud` — see *Verified GLFW Wayland build*) |
+| `src/external/` | Vendored third-party deps (raylib's own convention) — **present today**: `volk.h`/`volk.c` (Volk) + a full `glfw/` source tree (GLFW 3.5.1) + `PROVENANCE.md` + six single-header libs (`cgltf.h`, `miniaudio.h`, `stb_image.h`, `stb_image_resize2.h`, `stb_image_write.h`, `stb_truetype.h`, committed 2026-11-01, **not built — nothing in the tree includes one yet**) | Settled 2026-10-23 (see *Settled decisions*): **committed with its license files**, never edited in place; **Volk is built in now** (`volk.c` compiled into the `xud` archive, `src/external` on the include path), and so is the **GLFW tree** (the OBJECT target `glfw_vendor`, **Wayland** backend: 21 GLFW objects in the archive, 46 objects total (24 xud modules now, `xud_texture.c` among them), the four Wayland libs linked PUBLIC into `xud` — see *Verified GLFW Wayland build*) |
 | `reference/raylib/` | raylib **6.2** headers (present today, 560 KB) | **NEVER EDIT** — gitignored, never `#include`d, never built against |
 | `bin/`, `build/` | Build output | Gitignored, never committed |
 | `todo.md` | Project progress tracker (open work only) | Update every session, dated one-liners |
@@ -39,7 +39,7 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 | Window/input | **GLFW 3.5.1, vendored and built in** (`src/external/glfw`, Wayland backend — see *Verified GLFW Wayland build* and *Verified window + surface facts*): 21 GLFW objects sit in the `xud` archive (22 with Volk), 46 objects total, the four Wayland libs (`wayland-client`/`wayland-cursor`/`wayland-egl`/`xkbcommon`, all present here) are linked PUBLIC into every executable that links `xud`, and there is still **no `-lglfw`** anywhere. The system package (`local/glfw 1:3.5.1-1`, `/usr/include/GLFW/glfw3.h`, `libglfw.so.3.5`) is no longer what the build uses; **`src/xud/xud_window.h` includes `<GLFW/glfw3.h>` now** (after `<vulkan/vulkan.h>` — see the include-order rule in *Verified window + surface facts*), and the GPU test run creates a real window on this machine's Wayland session (`XDG_SESSION_TYPE=wayland`, `WAYLAND_DISPLAY=wayland-1`), so a window and a surface exist there — the headless run still creates neither; the renderer area's GPU half resizes a real window and recreates the swapchain at the framebuffer extent that follows it |
 | Wayland (GLFW's backend) | `wayland-scanner` at `/usr/bin` (`local/wayland 1.26.0-1`); `pkg-config` finds `wayland-client`/`wayland-cursor`/`wayland-egl`/`xkbcommon` — the four GLFW 3.5.1 `pkg_check_modules` requires — and `libdecor-0` (`local/libdecor 0.2.5-1`, **unused** by 3.5.1's CMake); libs `libwayland-client.so.0.26.0`, `libwayland-cursor.so.0`, `libwayland-egl.so.1`, `libxkbcommon.so.0.13.2` |
 | Shader tools | `glslangValidator` (glslang 11:16.4.0, GLSL 4.60 / ESSL 3.20), `glslc` 2026.3, `spirv-val`, `spirv-opt`, `spirv-as` |
-| **Not installed** | No Vulkan SDK, no Volk, no VMA, no miniaudio, no cgltf, no stb, no `cglm` — anything like that must be vendored by hand, and that needs a decision first |
+| **Not installed** | No Vulkan SDK, no VMA, no `cglm`, and **no system package** for Volk, GLFW, miniaudio, cgltf or stb — all five of those are **vendored in-tree** in `src/external/` (see *Repo layout* and that dir's `PROVENANCE.md`); Volk and GLFW are **built**, the other six headers are **committed but not consumed** (nothing includes one, so they add no object to the archive). Anything else must be vendored by hand, and that needs a decision first |
 
 ## Commands
 
@@ -205,13 +205,29 @@ EndDrawing: end cmd → submit (graphics, acquire semaphore waited, per-image fe
   4. `AGENTS.md`, `todo.md`, `todo_completed.md` and the file-top comments describe exactly what is in the tree, nothing more and nothing less.
   Meet the bar, then commit immediately, even mid-subsystem. Never batch several steps into one commit at the end of a session, and never commit a state you are unsure about — if the bar is not met, keep working or write the blocker into `todo.md` instead.
 - Commit messages: short imperative mood, ≤ 50 chars, no trailing period (`Add Vulkan instance`, `Fix swapchain resize`).
-- No new dependencies without asking first — none of them are packaged here, so "add a dep" always means "vendor a header or a whole source tree". Settled so far: **Volk + GLFW vendored in** (`src/external/`, 2026-10-23, committed with their license files), **VMA settled out** (2026-10-23). Still open: miniaudio, cgltf, stb, …
+- No new dependencies without asking first — none of them are packaged here, so "add a dep" always means "vendor a header or a whole source tree". Settled so far: **Volk + GLFW vendored in** (`src/external/`, 2026-10-23, committed with their license files), **VMA settled out** (2026-10-23), and **cgltf + miniaudio + the four stb headers vendored in** (`src/external/`, 2026-11-01, commit `Add extra libraries`) — **committed, not built**: no file in `src/xud/`, `tests/` or `examples/` includes one, so the model loader, the audio wrapper and the text/font rung are still open items in `todo.md`. Still open as deps: nothing else has been asked for.
+- **A vendored header must compile under this repo's flags before it is consumed** (verified 2026-11-01 against the
+  six new headers with a scratch probe in `/tmp`, deleted after): all six are clean as **declarations only** under
+  `-std=c11 -Wall -Wextra -Wpedantic -Werror` on **both** gcc 16.2.1 and clang 22.1.8, and every implementation
+  half is clean too **except `stb_image_resize2.h`**, which gcc 16.2.1 refuses under `-Wpedantic` (`-Werror=pedantic`,
+  "initializer element is not a constant expression" at that file's line 1468 — the `STBIR__CONST_4_32i` macro's cast
+  inside a `static` initializer; clang 22 accepts it and gcc is clean without `-Wpedantic`). So an implementation TU
+  for that header needs its **own** CMake target with the GLFW-style relaxation (`-Wall -Werror`, no `-Wextra`/`-Wpedantic`) —
+  never the repo's default flags. `src/external/PROVENANCE.md` records the same facts per file.
 - Ask before: changing the public API surface, adding a subsystem, or picking a Vulkan extension (the 2D/3D scope question is
   settled — **3D only**, see *Settled decisions*).
-- Never commit `bin/`, `build/`, `reference/`, or third-party **reference** material. Never edit `reference/` (including `reference/raylib/`, which is gitignored — it still must not be edited even though it is untracked). The vendored material in `src/external/` is a **different bucket** — upstream code the library builds against, with its license files (`volk.h` MIT notice at the end of the file, `glfw/LICENSE.md`) — and **is committed with them** (decided 2026-10-23, recorded in `src/external/PROVENANCE.md`); never edit it in place either, re-vendor from upstream instead.
+- Never commit `bin/`, `build/`, `reference/`, or third-party **reference** material. Never edit `reference/` (including `reference/raylib/`, which is gitignored — it still must not be edited even though it is untracked). The vendored material in `src/external/` is a **different bucket** — upstream code the library builds against, with its license files (`volk.h` MIT notice at the end of the file, `glfw/LICENSE.md`, and — for the six single-header libs vendored 2026-11-01 — a notice **inside each file**, top and/or end, which is what "committed with its license files" means for a header-only dep: no separate `LICENSE` file was added for them) — and **is committed with them** (decided 2026-10-23, recorded in `src/external/PROVENANCE.md`); never edit it in place either, re-vendor from upstream instead.
 
 ## Open design decisions (ask, don't assume)
 
-- **Model format**: glTF 2.0 via vendored cgltf (raylib does exactly this) vs a minimal `.glb` reader of our own.
-- **Audio backend**: vendor miniaudio (raylib's `raudio` does) vs no audio yet.
-- **Text/font**: bitmap-font atlas of our own vs vendored `stb_truetype`/fontstash.
+- **Model format**: **decided 2026-11-01 — glTF 2.0 via vendored cgltf** (`src/external/cgltf.h`, v1.15), raylib's own
+  route; the minimal `.glb` reader is settled out. What is still open is the loader rung itself, not the format.
+- **Audio backend**: **decided 2026-11-01 — vendor miniaudio** (`src/external/miniaudio.h`, v0.11.25), raylib's `raudio`
+  route; "no audio yet" is settled out. The wrapper itself is still open.
+- **Text/font**: **decided 2026-11-01 — vendored `stb_truetype`** (`src/external/stb_truetype.h`, v1.26) over an atlas of
+  our own; fontstash is not vendored. The text rung is still open. **Note the upstream banner in that header**: "NO
+  SECURITY GUARANTEE — DO NOT USE THIS ON UNTRUSTED FONT FILES" (it does no range checking of the offsets in a font
+  file), which is a fact about any future font loader, not about the vendoring.
+- **The three extra stb headers that landed with them** (`stb_image.h` v2.30, `stb_image_write.h` v1.16, `stb_image_resize2.h`
+  v2.18) were **not** part of the three decisions above — they are an image-decode / image-write / resize set, i.e. the
+  texture rung's byte source and its mip generator, and nothing has asked for them. Ask before consuming one.

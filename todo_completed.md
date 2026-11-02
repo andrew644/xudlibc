@@ -1,6 +1,6 @@
 # xudlibc — completed work
 
-Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **S39, the texture rung and the public texture API above it** — the
+Finished-step log, split out of `todo.md` on 2026-10-18 so the active tracker stays short. Newest first. Every entry here is a step that met the commit bar in `AGENTS.md` when it was committed; the notes are kept verbatim, including the mid-step ones — a few of them point at sections (e.g. *Uncommitted state*) that existed only in `todo.md` while that step was in flight and were gone when the step committed. The newest step today is **the vendored single-header deps** (2026-11-01, see the *Vendored the six single-header deps* section below) — cgltf, miniaudio and the stb set committed into `src/external/`, and the bucket's `PROVENANCE.md` restored after the commit that added them deleted it. The step before it is **S39, the texture rung and the public texture API above it** — the
   first record a handle slot carries that owns an IMAGE, an image's bytes as a staging buffer this rung
   lays out with its own arithmetic rather than as a mapping of the image's own interior, the mip chain
   this rung generates rather than one a caller hands, and the teardown that is TWO halves rather than one
@@ -51,6 +51,55 @@ te step** — the reader of the recreate ask S21 left behind, the window's **fra
 k, and the rebuild that follows (2026-10-26). The step before it is **S21, the swapchain's two out-of-band answer codes**
 — the second `VkResult` funnel for the acquire/present boundary and the `XudFrame.recreateWanted` flag it leaves behin
 d (2026-10-26).
+
+## Vendored the six single-header deps (cgltf + miniaudio + the stb set, 2026-11-01, landed as the two commits `Add extra libraries` + `Restore the vendored provenance record`, one step)
+
+- 2026-11-01 note: **the three open dependency asks are closed, and the vendored bucket has its record again**. What
+  landed, and what was fixed:
+
+  - **`src/external/` gained six single-header libs** (commit `Add extra libraries`, 128 574 lines): **`cgltf.h` v1.15**
+    (201 KB, 7240 lines, MIT notice at the end, Copyright (c) 2018-2021 Johannes Kuhlmann, guard `CGLTF_H_INCLUDED__`,
+    macro `CGLTF_IMPLEMENTATION`), **`miniaudio.h` v0.11.25 dated 2026-03-04** (3.9 MB, 95864 lines, public domain **or**
+    MIT-0, both notices at the end, guard `miniaudio_h` at line 3738, macro `MINIAUDIO_IMPLEMENTATION` / the `MA_IMPLEMENTATION`
+    alias), **`stb_truetype.h` v1.26** (195 KB, 5079 lines, public domain, guard `__STB_INCLUDE_STB_TRUETYPE_H__`, macro
+    `STB_TRUETYPE_IMPLEMENTATION`) — and, answering **no** open ask, `stb_image.h` v2.30, `stb_image_write.h` v1.16,
+    `stb_image_resize2.h` v2.18 (an image-decode / image-write / resize set, i.e. the texture rung's byte source and its
+    mip generator; the user asked for three, six landed, so the extra three are recorded as unasked-for rather than treated
+    as decided).
+  - **Three of the four *Open design decisions* are now decided**, in raylib's own route: model format = **cgltf** (the
+    minimal `.glb` reader is settled out), audio backend = **miniaudio** ("no audio yet" is settled out), text/font =
+    **`stb_truetype`** (an atlas of our own and fontstash are settled out, and fontstash was not vendored). What is still
+    open is the **rungs** — the model loader, the audio wrapper and the text rung — not the formats or the backends, and
+    `todo.md`'s *Later* items and *Blocked* entries now say exactly that.
+  - **`stb_truetype`'s own upstream banner is a fact about the future, not decoration**: "NO SECURITY GUARANTEE — DO NOT
+    USE THIS ON UNTRUSTED FONT FILES" (the library does no range checking of the offsets it reads out of a font file, so
+    an attacker-chosen font file is arbitrary-memory-read). It is recorded in `AGENTS.md` and in `PROVENANCE.md` so a
+    future text rung cannot land without knowing it.
+  - **Nothing includes any of the six**, so they are **committed, not built**: `ar -t build/libxud.a` is UNCHANGED at
+    **46 objects** (24 xud modules + 21 GLFW + `volk.c.o`), `nm -u build/xud_test` still lists no `vk*`/`glfw*` symbol and
+    `ldd` still lists no `libvulkan`/`libglfw` — the vendoring adds no object to the archive and no line to any binary.
+    The suite is UNCHANGED at **3053 headless / 3966 GPU, 0 failures**, and the clang 22 build is unchanged and clean.
+  - **The bug that step found and fixed, not papered over**: the same commit **deleted `src/external/PROVENANCE.md`**
+    (40 lines) while adding the six headers, so the tree carried a committed vendored bucket with **no provenance and no
+    license record** — against the repo's own rule that this bucket is "committed with its license files … recorded in
+    `src/external/PROVENANCE.md`". It is restored and extended: the six new rows (version, size, line count, include
+    guard, implementation macro, notice location), the license lines, and the note that **every one of the six carries
+    its notice inside its own file** (top and/or end), which is what "committed with its license files" means for a
+    header-only dep — no separate `LICENSE` file was added, and none was needed.
+  - **The flag fact that decides how those headers may be compiled** (probed 2026-11-01 with a scratch probe in `/tmp`,
+    deleted after, never in the tree, under the repo's own `-std=c11 -Wall -Wextra -Wpedantic -Werror`): all six are
+    clean as **declarations only** on **both** gcc 16.2.1 and clang 22.1.8, and every **implementation** half is clean
+    too **except `stb_image_resize2.h`**, which gcc 16.2.1 refuses under `-Wpedantic` (`-Werror=pedantic`, "initializer
+    element is not a constant expression" at that file's line 1468 — the `STBIR__CONST_4_32i` macro's cast inside a
+    `static` initializer). The same TU is clean under gcc **without** `-Wpedantic` and clean under clang 22 **with** it.
+    So an implementation TU for that header needs the same relaxation the vendored GLFW TUs already got — its own CMake
+    target at `-Wall -Werror` without `-Wextra`/`-Wpedantic`, never the repo's default flags. This is the GLFW precedent
+    read a second time, and it is why a vendored header must be probed against the repo's flags **before** it is consumed.
+  - **`AGENTS.md` now says what the tree is**: the *Not installed* toolchain row no longer claims miniaudio/cgltf/stb are
+    missing (they are vendored in-tree, two states named separately — Volk and GLFW **built**, the other six **committed
+    and not consumed**), the *Repo layout* `src/external/` row lists the six, the dependency rule's settled list gained
+    them with the compile-before-consuming rule beside it, and the three *Open design decisions* items are rewritten as
+    decided-with-their-remainder-open.
 
 ## Steps complete (S39 The texture rung and the public texture API above it — the first handle record that owns an IMAGE, an image's bytes as a staging buffer this rung lays out with its own arithmetic rather than as a mapping of the image's own interior, the mip chain this rung generates rather than one a caller hands, and the teardown that is TWO halves because the bring-up retires only the transient half, one step, landed as one commit, 2026-11-01)
 
