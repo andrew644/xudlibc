@@ -235,6 +235,12 @@ add_executable(hello_triangle
 
 target_link_libraries(hello_triangle PRIVATE xud)
 
+add_executable(hello_font
+    examples/hello_font.c
+)
+
+target_link_libraries(hello_font PRIVATE xud)
+
 add_executable(breakout_3d
     examples/breakout_3d.c
 )
