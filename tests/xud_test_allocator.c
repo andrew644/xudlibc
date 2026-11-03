@@ -499,13 +499,13 @@ static void xud_test_gpu_allocator(void) {
      */
     xud_check(xud_allocator_stats(context->allocator, &baseBlocks, &baseLive, &baseBytes, &cursorBefore) == XUD_OK,
         "gpu-alloc/baseline-stats", "answers at the context's own state");
-    xud_check(baseBlocks == 4u, "gpu-alloc/baseline-four-blocks",
-        "four blocks: the descriptor rung's uniform buffer, the render pass's depth image (the first t"
+    xud_check(baseBlocks == 5u, "gpu-alloc/baseline-five-blocks",
+        "five blocks: the descriptor rung's uniform buffer, the render pass's depth image (the first t"
         "hing that ever asked for an IMAGE's requirements rather than a buffer's, and an image's align"
-        "ment is not a buffer's) and the two host-visible arenas - the batch's and the descriptor's st"
-        "aging arena - which are blocks of their own because vkMapMemory maps a VkDeviceMemory rather"
-        "than a range");
-    xud_check(baseLive == 9u, "gpu-alloc/baseline-nine-live", "and nine live ranges, those nine carves");
+        "ment is not a buffer's), the white default every entry of set 1's sampler array names (a sec"
+        "ond image, whose alignment does not fit a hole in the depth image's block either) and the two host-visible arenas - the batch's "
+        "and the descriptor's staging arena - which are blocks of their own because vkMapMemory maps a VkDeviceMemory rather than a range");
+    xud_check(baseLive == 10u, "gpu-alloc/baseline-ten-live", "and ten live ranges, those ten carves");
     xud_check(baseBytes > 0u, "gpu-alloc/baseline-bytes", "and reserved bytes, so the rungs below this one really did ask the allocator");
     xud_check(cursorBefore == 0u, "gpu-alloc/baseline-cursor",
         "and the ring's cursor is still at the start, because nothing has asked for transient memory y"

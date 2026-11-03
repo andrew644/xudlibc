@@ -960,8 +960,19 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        this state. The call is void and cannot fail, and the row is this frame's own, read during the c
        all.
     */
+    /* Set 0 and set 1 are bound HERE, once per frame, against the pipeline's OWN layout - the layout
+       the pipeline was created with is the layout the set was allocated against, so naming pipeline->
+       layout rather than a layout of this rung's is what makes the two agree rather than two records
+       that happen to match. The count is a SET count starting at firstSet, so the array is the two s
+       ets of this layout in set order and every descriptor of the LAST one is bound with it: the sam
+       pler array's 16 entries are live without naming them one by one, and firstDescriptorIndex is
+       0 because the whole array is bound rather than a slice of it. One call rather than two because
+       the two sets are one contiguous run of the layout's set numbering and the bind's own arguments
+       say so.
+     */
     {
-        const VkDescriptorSet setRows[XUD_FRAME_SET_COUNT] = { descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] };
+        const VkDescriptorSet setRows[XUD_FRAME_SET_COUNT]
+            = { descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME], descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] };
         loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
             XUD_FRAME_FIRST_SET, XUD_FRAME_SET_COUNT, setRows, 0u, NULL);
     }

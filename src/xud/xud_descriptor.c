@@ -101,6 +101,39 @@ static void xud_descriptor_retire(XudDescriptor* descriptor, const XudDevice* de
         }
     }
 
+    if (descriptor->whiteImageView != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroyImageView != NULL) {
+            VkImageView view = descriptor->whiteImageView;
+            descriptor->whiteImageView = VK_NULL_HANDLE;
+            (void)loader->deviceTable.vkDestroyImageView(device->device, view, NULL);
+        }
+    }
+
+    if (descriptor->whiteSampler != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroySampler != NULL) {
+            VkSampler sampler = descriptor->whiteSampler;
+            descriptor->whiteSampler = VK_NULL_HANDLE;
+            (void)loader->deviceTable.vkDestroySampler(device->device, sampler, NULL);
+        }
+    }
+
+    if (descriptor->whiteImage != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroyImage != NULL) {
+            VkImage image = descriptor->whiteImage;
+            descriptor->whiteImage = VK_NULL_HANDLE;
+            (void)loader->deviceTable.vkDestroyImage(device->device, image, NULL);
+        }
+    }
+
+    if (descriptor->whiteRange.memory != VK_NULL_HANDLE) {
+        rung = xud_allocator_release(alloc, &descriptor->whiteRange);
+        (void)rung;
+        descriptor->whiteRange.memory = VK_NULL_HANDLE;
+        descriptor->whiteRange.size = 0u;
+        descriptor->whiteRange.offset = 0u;
+        descriptor->whiteBindOffset = 0u;
+    }
+
     if (descriptor->uniformBuffer != VK_NULL_HANDLE) {
         if (loader->deviceTable.vkDestroyBuffer != NULL) {
             VkBuffer buffer = descriptor->uniformBuffer;
@@ -204,6 +237,15 @@ XudResult xud_descriptor_caps_support(const XudDeviceCaps* caps) {
        e driver accepts and the shader reads out of.
      */
     if (limits->maxUniformBufferRange < XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The white default every entry of set 1 names against the implementation's image bound. maxIma
+      geDimension2D is guaranteed 8192 and the default is 1x1, so this check is the repo's "check bef
+      ore you use" rule applied to the one image this rung creates rather than a check that can fire
+      on a conforming driver.
+     */
+    if ((limits->maxImageDimension2D < XUD_DESCRIPTOR_WHITE_MIP_LEVELS) || (limits->maxImageDimension2D < 1u)) {
         return XUD_UNSUPPORTED;
     }
 
@@ -316,8 +358,15 @@ XudResult xud_descriptor_fill_pool_info(XudDescriptor* descriptor) {
  * The allocate-info for set 0 - pure
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_descriptor_fill_set_allocate_info(XudDescriptor* descriptor) {
+XudResult xud_descriptor_fill_set_allocate_info(XudDescriptor* descriptor, uint32_t setIndex) {
     if (descriptor == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The set index is bounded by this layout's own set count rather than by a caller's idea of one
+       : the array of layouts IS the set numbering, so an index past it is an index into nothing.
+     */
+    if (setIndex >= XUD_DESCRIPTOR_SET_COUNT) {
         return XUD_INVALID_ARG;
     }
 
@@ -325,15 +374,15 @@ XudResult xud_descriptor_fill_set_allocate_info(XudDescriptor* descriptor) {
        bad argument from a caller - the rule xud_pipeline_fill_create_info() applies to a pipeline t
        hat owns no layout and no render pass, one rung up.
      */
-    if ((descriptor->pool == VK_NULL_HANDLE) || (descriptor->setLayouts[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE)) {
+    if ((descriptor->pool == VK_NULL_HANDLE) || (descriptor->setLayouts[setIndex] == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
 
-    descriptor->setAllocateInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    descriptor->setAllocateInfo.pNext = NULL;
-    descriptor->setAllocateInfo.descriptorPool = descriptor->pool;
-    descriptor->setAllocateInfo.descriptorSetCount = 1u;
-    descriptor->setAllocateInfo.pSetLayouts = &descriptor->setLayouts[XUD_DESCRIPTOR_SET_PER_FRAME];
+    descriptor->setAllocateInfo[setIndex].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    descriptor->setAllocateInfo[setIndex].pNext = NULL;
+    descriptor->setAllocateInfo[setIndex].descriptorPool = descriptor->pool;
+    descriptor->setAllocateInfo[setIndex].descriptorSetCount = 1u;
+    descriptor->setAllocateInfo[setIndex].pSetLayouts = &descriptor->setLayouts[setIndex];
 
     return XUD_OK;
 }
@@ -396,6 +445,168 @@ XudResult xud_descriptor_fill_write_info(XudDescriptor* descriptor) {
     descriptor->writeInfo.pBufferInfo = &descriptor->bufferRow;
     descriptor->writeInfo.pImageInfo = NULL;
     descriptor->writeInfo.pTexelBufferView = NULL;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The white default every entry of set 1 names, and the write that bound it - pure
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_descriptor_fill_white_infos(XudDescriptor* descriptor) {
+    if (descriptor == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    descriptor->whiteSamplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    descriptor->whiteSamplerInfo.pNext = NULL;
+    descriptor->whiteSamplerInfo.flags = 0u;
+    descriptor->whiteSamplerInfo.magFilter = VK_FILTER_LINEAR;
+    descriptor->whiteSamplerInfo.minFilter = VK_FILTER_LINEAR;
+    descriptor->whiteSamplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    descriptor->whiteSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    descriptor->whiteSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    descriptor->whiteSamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    descriptor->whiteSamplerInfo.mipLodBias = 0.0f;
+    descriptor->whiteSamplerInfo.anisotropyEnable = VK_FALSE;
+    descriptor->whiteSamplerInfo.maxAnisotropy = 1.0f;
+    descriptor->whiteSamplerInfo.compareEnable = VK_FALSE;
+    descriptor->whiteSamplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    descriptor->whiteSamplerInfo.minLod = 0.0f;
+    descriptor->whiteSamplerInfo.maxLod = (float)XUD_DESCRIPTOR_WHITE_MIP_LEVELS;
+    descriptor->whiteSamplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    descriptor->whiteSamplerInfo.unnormalizedCoordinates = VK_FALSE;
+
+    descriptor->whiteImageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    descriptor->whiteImageInfo.pNext = NULL;
+    descriptor->whiteImageInfo.flags = 0u;
+    descriptor->whiteImageInfo.imageType = VK_IMAGE_TYPE_2D;
+    descriptor->whiteImageInfo.format = XUD_DESCRIPTOR_WHITE_FORMAT;
+    descriptor->whiteImageInfo.extent.width = 1u;
+    descriptor->whiteImageInfo.extent.height = 1u;
+    descriptor->whiteImageInfo.extent.depth = 1u;
+    descriptor->whiteImageInfo.mipLevels = XUD_DESCRIPTOR_WHITE_MIP_LEVELS;
+    descriptor->whiteImageInfo.arrayLayers = 1u;
+    descriptor->whiteImageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    descriptor->whiteImageInfo.tiling = XUD_DESCRIPTOR_WHITE_TILING;
+    descriptor->whiteImageInfo.usage = XUD_DESCRIPTOR_WHITE_USAGE;
+    descriptor->whiteImageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    descriptor->whiteImageInfo.queueFamilyIndexCount = 0u;
+    descriptor->whiteImageInfo.pQueueFamilyIndices = NULL;
+    descriptor->whiteImageInfo.initialLayout = XUD_DESCRIPTOR_WHITE_INITIAL_LAYOUT;
+
+    descriptor->whiteViewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    descriptor->whiteViewInfo.pNext = NULL;
+    descriptor->whiteViewInfo.flags = 0u;
+    descriptor->whiteViewInfo.image = VK_NULL_HANDLE;
+    descriptor->whiteViewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    descriptor->whiteViewInfo.format = XUD_DESCRIPTOR_WHITE_FORMAT;
+    descriptor->whiteViewInfo.components = (VkComponentMapping) { .r = VK_COMPONENT_SWIZZLE_IDENTITY,
+        .g = VK_COMPONENT_SWIZZLE_IDENTITY,
+        .b = VK_COMPONENT_SWIZZLE_IDENTITY,
+        .a = VK_COMPONENT_SWIZZLE_IDENTITY };
+    descriptor->whiteViewInfo.subresourceRange.aspectMask = XUD_DESCRIPTOR_WHITE_ASPECT_MASK;
+    descriptor->whiteViewInfo.subresourceRange.baseMipLevel = 0u;
+    descriptor->whiteViewInfo.subresourceRange.levelCount = XUD_DESCRIPTOR_WHITE_MIP_LEVELS;
+    descriptor->whiteViewInfo.subresourceRange.baseArrayLayer = 0u;
+    descriptor->whiteViewInfo.subresourceRange.layerCount = 1u;
+
+    /* The subresource range the clear and the two transitions share. It is one row rather than three
+       because the three commands above are about the same one subresource of the same one image, and
+       the reason xud_texture.h gives for stamping a view's range: a barrier that named a different
+       range from the view's would be a barrier about an image the view does not look at.
+     */
+    descriptor->whiteSubresourceRange.aspectMask = XUD_DESCRIPTOR_WHITE_ASPECT_MASK;
+    descriptor->whiteSubresourceRange.baseMipLevel = 0u;
+    descriptor->whiteSubresourceRange.levelCount = XUD_DESCRIPTOR_WHITE_MIP_LEVELS;
+    descriptor->whiteSubresourceRange.baseArrayLayer = 0u;
+    descriptor->whiteSubresourceRange.layerCount = 1u;
+
+    descriptor->whiteClearColor.float32[0] = 1.0f;
+    descriptor->whiteClearColor.float32[1] = 1.0f;
+    descriptor->whiteClearColor.float32[2] = 1.0f;
+    descriptor->whiteClearColor.float32[3] = 1.0f;
+
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_fill_white_transitions(XudDescriptor* descriptor) {
+    if (descriptor == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The transition INTO the layout the clear declares. oldLayout is UNDEFINED rather than the image
+       's own layout because that is what the UNDEFINED value means to a barrier: "whatever layout th
+       is subresource is in", which is the state the first frame is in (the create asked for UNDEFINE
+       D) and is also the honest answer on every later one, where the layout is the SAMPLED one the b
+       arrier below left behind. Naming the SAMPLED layout instead would be a row that is true from th
+       e second frame on and false on the first, which is a sequence the validation layer refuses on
+       the frame it refuses rather than a sequence that works.
+     */
+    descriptor->whiteToUpload.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    descriptor->whiteToUpload.pNext = NULL;
+    descriptor->whiteToUpload.srcAccessMask = 0u;
+    descriptor->whiteToUpload.dstAccessMask = XUD_DESCRIPTOR_WHITE_TRANSFER_WRITE_ACCESS;
+    descriptor->whiteToUpload.oldLayout = XUD_DESCRIPTOR_WHITE_INITIAL_LAYOUT;
+    descriptor->whiteToUpload.newLayout = XUD_DESCRIPTOR_WHITE_UPLOAD_LAYOUT;
+    descriptor->whiteToUpload.srcQueueFamilyIndex = 0u;
+    descriptor->whiteToUpload.dstQueueFamilyIndex = 0u;
+    descriptor->whiteToUpload.image = VK_NULL_HANDLE;
+    descriptor->whiteToUpload.subresourceRange = descriptor->whiteSubresourceRange;
+
+    /* The transition OUT of the layout the clear left behind and into the one a sampled descriptor
+       may read. The srcAccessMask names the transfer because the access being synchronised is the
+       clear's write, and the rule xud_texture.h states about a barrier's access bits: an access bit
+       belongs to the stage that can perform it, and a transfer has no stage at all.
+     */
+    descriptor->whiteToSampled.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    descriptor->whiteToSampled.pNext = NULL;
+    descriptor->whiteToSampled.srcAccessMask = XUD_DESCRIPTOR_WHITE_TRANSFER_WRITE_ACCESS;
+    descriptor->whiteToSampled.dstAccessMask = XUD_DESCRIPTOR_WHITE_SHADER_READ_ACCESS;
+    descriptor->whiteToSampled.oldLayout = XUD_DESCRIPTOR_WHITE_UPLOAD_LAYOUT;
+    descriptor->whiteToSampled.newLayout = XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT;
+    descriptor->whiteToSampled.srcQueueFamilyIndex = 0u;
+    descriptor->whiteToSampled.dstQueueFamilyIndex = 0u;
+    descriptor->whiteToSampled.image = VK_NULL_HANDLE;
+    descriptor->whiteToSampled.subresourceRange = descriptor->whiteSubresourceRange;
+
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_fill_sampler_write_info(XudDescriptor* descriptor) {
+    uint32_t slot = 0u;
+
+    if (descriptor == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    if ((descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE) || (descriptor->whiteImageView == VK_NULL_HANDLE)
+        || (descriptor->whiteSampler == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* Every slot of the array names the same view and the same sampler, and that is the point of the
+       default: the array is a SLOT axis and the texture step is what puts different views into diffe
+       rent rows of it. Writing all XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE rows is what makes the write le
+       gal at all, because a bound set whose descriptors were never written is a violation rather tha
+       n something the driver forgives.
+     */
+    for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
+        descriptor->samplerRows[slot].imageView = descriptor->whiteImageView;
+        descriptor->samplerRows[slot].sampler = descriptor->whiteSampler;
+        descriptor->samplerRows[slot].imageLayout = XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT;
+    }
+
+    descriptor->samplerWriteInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptor->samplerWriteInfo.pNext = NULL;
+    descriptor->samplerWriteInfo.dstSet = descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL];
+    descriptor->samplerWriteInfo.dstBinding = XUD_DESCRIPTOR_BINDING;
+    descriptor->samplerWriteInfo.dstArrayElement = 0u;
+    descriptor->samplerWriteInfo.descriptorCount = XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE;
+    descriptor->samplerWriteInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptor->samplerWriteInfo.pImageInfo = descriptor->samplerRows;
+    descriptor->samplerWriteInfo.pBufferInfo = NULL;
+    descriptor->samplerWriteInfo.pTexelBufferView = NULL;
 
     return XUD_OK;
 }
@@ -555,13 +766,20 @@ XudResult xud_descriptor_upload(XudDescriptor* descriptor, XudLoader* loader, co
     if ((descriptor->uniformStagingMapped == NULL) || (descriptor->uniformStagingMappedLive == 0u)) {
         return XUD_UNSUPPORTED;
     }
-    if (loader->deviceTable.vkCmdCopyBuffer == NULL) {
+    if (descriptor->whiteImage == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if ((loader->deviceTable.vkCmdCopyBuffer == NULL) || (loader->deviceTable.vkCmdClearColorImage == NULL)
+        || (loader->deviceTable.vkCmdPipelineBarrier == NULL)) {
         return XUD_UNSUPPORTED;
     }
 
     /* The rows are filled here rather than trusted from the bring-up, so the headless run can call
        the assembly on its own and the driver still gets the same rows it asserted. */
     if (xud_descriptor_fill_upload_info(descriptor) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_descriptor_fill_white_transitions(descriptor) != XUD_OK) {
         return XUD_INVALID_ARG;
     }
 
@@ -573,6 +791,23 @@ XudResult xud_descriptor_upload(XudDescriptor* descriptor, XudLoader* loader, co
      */
     loader->deviceTable.vkCmdCopyBuffer(commandBuffer, descriptor->uniformStagingBuffer, descriptor->uniformBuffer,
         XUD_DESCRIPTOR_UPLOAD_REGION_COUNT, &descriptor->uploadRegion);
+
+    /* The white default's fill, and the three commands around it are the same transition pair the te
+       xture rung's upload records, one image over: the image is in the SAMPLED layout the barrier be
+       low left behind, so it has to be moved into the TRANSFER_DST layout before the clear may write
+       it and back into the SAMPLED layout before the sampler may read it. The stage masks are the two
+       stages the two access types belong to rather than one mask for both, because the spec's support
+       ed-access-type rule binds an access bit to the stages that can perform it and VUID-VkImageMemor
+       yBarrier-dstAccessMask-0289 puts TRANSFER_WRITE at the TRANSFER stage.
+     */
+    descriptor->whiteToUpload.image = descriptor->whiteImage;
+    loader->deviceTable.vkCmdPipelineBarrier(commandBuffer, XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE, XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE,
+        VK_SUBPASS_CONTENTS_INLINE, 0u, NULL, 0u, NULL, 1u, &descriptor->whiteToUpload);
+    loader->deviceTable.vkCmdClearColorImage(commandBuffer, descriptor->whiteImage, XUD_DESCRIPTOR_WHITE_UPLOAD_LAYOUT,
+        &descriptor->whiteClearColor, XUD_DESCRIPTOR_WHITE_CLEAR_COUNT, &descriptor->whiteSubresourceRange);
+    descriptor->whiteToSampled.image = descriptor->whiteImage;
+    loader->deviceTable.vkCmdPipelineBarrier(commandBuffer, XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE, XUD_DESCRIPTOR_WHITE_SAMPLED_STAGE,
+        VK_SUBPASS_CONTENTS_INLINE, 0u, NULL, 0u, NULL, 1u, &descriptor->whiteToSampled);
 
     return XUD_OK;
 }
@@ -587,6 +822,7 @@ XudResult xud_descriptor_open(
     XudResult result = XUD_INVALID_ARG;
     VkMemoryRequirements needs;
     VkMemoryRequirements arenaNeeds;
+    VkMemoryRequirements imageNeeds;
     uint32_t row = 0u;
     uint32_t hostVisibleMask = 0u;
     uint32_t arenaTypeIndex = 0u;
@@ -616,7 +852,11 @@ XudResult xud_descriptor_open(
         || (loader->deviceTable.vkCreateBuffer == NULL) || (loader->deviceTable.vkDestroyBuffer == NULL)
         || (loader->deviceTable.vkGetBufferMemoryRequirements == NULL) || (loader->deviceTable.vkBindBufferMemory == NULL)
         || (loader->deviceTable.vkAllocateDescriptorSets == NULL) || (loader->deviceTable.vkUpdateDescriptorSets == NULL)
-        || (loader->deviceTable.vkMapMemory == NULL) || (loader->deviceTable.vkUnmapMemory == NULL)) {
+        || (loader->deviceTable.vkMapMemory == NULL) || (loader->deviceTable.vkUnmapMemory == NULL)
+        || (loader->deviceTable.vkCreateSampler == NULL) || (loader->deviceTable.vkDestroySampler == NULL)
+        || (loader->deviceTable.vkCreateImage == NULL) || (loader->deviceTable.vkDestroyImage == NULL)
+        || (loader->deviceTable.vkCreateImageView == NULL) || (loader->deviceTable.vkDestroyImageView == NULL)
+        || (loader->deviceTable.vkGetImageMemoryRequirements == NULL) || (loader->deviceTable.vkBindImageMemory == NULL)) {
         return XUD_UNSUPPORTED;
     }
 
@@ -734,34 +974,111 @@ XudResult xud_descriptor_open(
         return result;
     }
 
-    /* 4. set 0, allocated from the pool above against the layout above it. Set 1 is NOT allocated h
-       ere and that is the state this rung is in by construction: the layout is declared, the set i
-       s not, and the texture step is what allocates it. The assert below is that state written as
-       a check rather than as a comment.
+    /* 4. the two sets, allocated from the pool above against the layout above them. BOTH are alloca
+       ted here, and that is the point of the default below: a set whose layout this rung declares is
+       a set this rung allocates, and an allocated sampler array is only legal once every entry of it
+       names a real view and a real sampler, which is what the white default and the write below prov
+       ide. The order is set 0 then set 1 because the array of layouts IS the set numbering.
      */
-    result = xud_descriptor_fill_set_allocate_info(descriptor);
+    for (row = 0u; row < XUD_DESCRIPTOR_SET_COUNT; row++) {
+        result = xud_descriptor_fill_set_allocate_info(descriptor, row);
+        if (result != XUD_OK) {
+            xud_descriptor_retire(descriptor, device, loader, alloc);
+            free(descriptor);
+            return result;
+        }
+
+        result = xud_result_from_vk(
+            loader->deviceTable.vkAllocateDescriptorSets(device->device, &descriptor->setAllocateInfo[row], &descriptor->sets[row]));
+        if (result != XUD_OK) {
+            xud_descriptor_retire(descriptor, device, loader, alloc);
+            free(descriptor);
+            return result;
+        }
+    }
+
+    /* 5. the white default every entry of set 1's sampler array names, in the order sampler-then-ima
+       ge-then-view: the sampler and the image's create-infos are filled before either is handed to a
+       driver so a failed image create leaves nothing behind, and the view comes last because it is t
+       he only one of the three that reads a handle created above it. The sampler is created first of
+       the three because a COMBINED_IMAGE_SAMPLER descriptor names BOTH a view and a sampler, so the
+       sampler is the object nothing else here depends on and the view is the object everything else
+       here depends on.
+     */
+    result = xud_descriptor_fill_white_infos(descriptor);
     if (result != XUD_OK) {
         xud_descriptor_retire(descriptor, device, loader, alloc);
         free(descriptor);
         return result;
     }
 
-    result = xud_result_from_vk(loader->deviceTable.vkAllocateDescriptorSets(
-        device->device, &descriptor->setAllocateInfo, &descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME]));
+    result = xud_result_from_vk(
+        loader->deviceTable.vkCreateSampler(device->device, &descriptor->whiteSamplerInfo, NULL, &descriptor->whiteSampler));
     if (result != XUD_OK) {
         xud_descriptor_retire(descriptor, device, loader, alloc);
         free(descriptor);
         return result;
     }
 
-    /* Set 1 is NOT allocated here, and that is the state this rung is in by construction rather th
-       an an oversight: its layout is declared, its set is not, and the texture step is what al
-       locates it from this same pool. The calloc-ed struct is what leaves the row at VK_NULL_HANDL
-       E, and xud_descriptor_close() asserts the same thing one step later.
-     */
+    result
+        = xud_result_from_vk(loader->deviceTable.vkCreateImage(device->device, &descriptor->whiteImageInfo, NULL, &descriptor->whiteImage));
+    if (result != XUD_OK) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
 
-    /* 5. the write that bound the buffer into the set, last of the five because it is the only one
-       of them that reads two objects created by two different steps above it.
+    /* The image's requirements, and the same zero-state-before-the-call rule the buffer's requireme
+       nts above state: vkGetImageMemoryRequirements returns VOID, so the row is cleared first and a
+       size of zero is the only thing that can be checked after the call.
+     */
+    memset(&imageNeeds, 0, sizeof(imageNeeds));
+    loader->deviceTable.vkGetImageMemoryRequirements(device->device, descriptor->whiteImage, &imageNeeds);
+    if (imageNeeds.size == 0u) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return XUD_VULKAN_ERROR;
+    }
+
+    /* The image's carve is the ordinary allocator acquire rather than the host-visible one: nothing
+       host-writes this default, which is the same fact the texture rung states about every texture i
+       n this library, and the fill below is a clear rather than a mapped write for exactly that reas
+       on.
+     */
+    result = xud_allocator_acquire(&descriptor->whiteRange, alloc, loader, device, caps, &imageNeeds);
+    if (result != XUD_OK) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+    descriptor->whiteBindOffset = descriptor->whiteRange.offset;
+
+    result = xud_result_from_vk(loader->deviceTable.vkBindImageMemory(
+        device->device, descriptor->whiteImage, descriptor->whiteRange.memory, descriptor->whiteBindOffset));
+    if (result != XUD_OK) {
+        xud_allocator_release(alloc, &descriptor->whiteRange);
+        descriptor->whiteRange.memory = VK_NULL_HANDLE;
+        descriptor->whiteRange.size = 0u;
+        descriptor->whiteRange.offset = 0u;
+        descriptor->whiteBindOffset = 0u;
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+
+    descriptor->whiteViewInfo.image = descriptor->whiteImage;
+    result = xud_result_from_vk(
+        loader->deviceTable.vkCreateImageView(device->device, &descriptor->whiteViewInfo, NULL, &descriptor->whiteImageView));
+    if (result != XUD_OK) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+
+    /* 6. the writes that bound the two sets, one call carrying both because vkUpdateDescriptorSets
+       takes an ARRAY of writes: set 0's buffer and set 1's sampler array are bound in the same call,
+       which is the point of the array rather than a saving - the two writes are two rows of one cal
+       l and the driver reads both before it returns.
      */
     result = xud_descriptor_fill_write_info(descriptor);
     if (result != XUD_OK) {
@@ -770,12 +1087,17 @@ XudResult xud_descriptor_open(
         return result;
     }
 
-    /* vkUpdateDescriptorSets returns VOID too, so the write is not checked after the call: the thr
-       ee rows it reads (the set, the buffer, the layout the set was allocated against) are all thr
-       ee checked live before this point, which is what makes the write's inputs facts rather than
-       hopes, and a write that the driver refused is a write the validation layer reports.
-     */
-    loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->writeInfo, 0u, NULL);
+    result = xud_descriptor_fill_sampler_write_info(descriptor);
+    if (result != XUD_OK) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+
+    {
+        const VkWriteDescriptorSet bothWrites[XUD_DESCRIPTOR_SET_COUNT] = { descriptor->writeInfo, descriptor->samplerWriteInfo };
+        loader->deviceTable.vkUpdateDescriptorSets(device->device, XUD_DESCRIPTOR_SET_COUNT, bothWrites, 0u, NULL);
+    }
 
     /* 6. the staging arena of set 0's block, LAST of the six because it is the only object of them
        that nothing else in this rung names - and putting it last is what makes the teardown below i

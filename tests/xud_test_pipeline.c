@@ -38,11 +38,15 @@ static void xud_test_pipeline_pure(void) {
     XudPipeline bare = (XudPipeline) { 0 };
     const VkShaderModule vertModule = (VkShaderModule)0x1000u;
     const VkShaderModule fragModule = (VkShaderModule)0x2000u;
+    const VkShaderModule fragTexturedModule = (VkShaderModule)0x2100u;
     VkPipelineLayoutCreateInfo layout = (VkPipelineLayoutCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkGraphicsPipelineCreateInfo out = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkGraphicsPipelineCreateInfo transparentInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkGraphicsPipelineCreateInfo lineInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkGraphicsPipelineCreateInfo texturedInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     XudDescriptor desc = (XudDescriptor) { 0 };
+    uint32_t stageRow = 0u;
+    uint32_t stageVariant = 0u;
 
     xud_check(
         xud_pipeline_fill_state(NULL) == XUD_INVALID_ARG, "pipeline/fill-state-null-out", "an out-param that cannot be filled is refused");
@@ -244,23 +248,40 @@ static void xud_test_pipeline_pure(void) {
 
     xud_check(xud_pipeline_fill_shader_stages(NULL, vertModule, fragModule) == XUD_INVALID_ARG, "pipeline/stages-null-out",
         "an out-param that cannot be filled is refused");
-    xud_check(xud_pipeline_fill_shader_stages(pipeline.shaderStages, vertModule, fragModule) == XUD_OK, "pipeline/stages-ok",
+    xud_check(xud_pipeline_fill_shader_stages(pipeline.shaderStages[0u], vertModule, fragModule) == XUD_OK, "pipeline/stages-ok",
         "the two rows are filled");
-    xud_check(pipeline.shaderStages[XUD_PIPELINE_VERTEX_STAGE].stage == VK_SHADER_STAGE_VERTEX_BIT, "pipeline/vertex-stage-bit",
+    xud_check(pipeline.shaderStages[0u][XUD_PIPELINE_VERTEX_STAGE].stage == VK_SHADER_STAGE_VERTEX_BIT, "pipeline/vertex-stage-bit",
         "the vertex row carries the vertex stage");
-    xud_check(
-        pipeline.shaderStages[XUD_PIPELINE_VERTEX_STAGE].module == vertModule, "pipeline/vertex-module", "and the module handed for it");
-    xud_check(pipeline.shaderStages[XUD_PIPELINE_FRAGMENT_STAGE].stage == VK_SHADER_STAGE_FRAGMENT_BIT, "pipeline/fragment-stage-bit",
+    xud_check(pipeline.shaderStages[0u][XUD_PIPELINE_VERTEX_STAGE].module == vertModule, "pipeline/vertex-module",
+        "and the module handed for it");
+    xud_check(pipeline.shaderStages[0u][XUD_PIPELINE_FRAGMENT_STAGE].stage == VK_SHADER_STAGE_FRAGMENT_BIT, "pipeline/fragment-stage-bit",
         "the fragment row carries the fragment stage");
-    xud_check(pipeline.shaderStages[XUD_PIPELINE_FRAGMENT_STAGE].module == fragModule, "pipeline/fragment-module", "and its module");
-    xud_check((strcmp(pipeline.shaderStages[XUD_PIPELINE_VERTEX_STAGE].pName, XUD_PIPELINE_ENTRY_POINT) == 0)
-            && (strcmp(pipeline.shaderStages[XUD_PIPELINE_FRAGMENT_STAGE].pName, XUD_PIPELINE_ENTRY_POINT) == 0),
+    xud_check(pipeline.shaderStages[0u][XUD_PIPELINE_FRAGMENT_STAGE].module == fragModule, "pipeline/fragment-module", "and its module");
+    xud_check((strcmp(pipeline.shaderStages[0u][XUD_PIPELINE_VERTEX_STAGE].pName, XUD_PIPELINE_ENTRY_POINT) == 0)
+            && (strcmp(pipeline.shaderStages[0u][XUD_PIPELINE_FRAGMENT_STAGE].pName, XUD_PIPELINE_ENTRY_POINT) == 0),
         "pipeline/stages-entry-main",
         "both rows name the entry point by name rather than leaving it NULL: the validation layer o"
         "n this machine reports a NULL pName as a hard error against both pName VUIDs (probed tod"
         "ay), so the honest form is the name glslangValidator writes");
-    xud_check(pipeline.shaderStages[XUD_PIPELINE_VERTEX_STAGE].pSpecializationInfo == NULL, "pipeline/no-specialization",
+    xud_check(pipeline.shaderStages[0u][XUD_PIPELINE_VERTEX_STAGE].pSpecializationInfo == NULL, "pipeline/no-specialization",
         "no specialization info, so the pipeline is built from the shaders exactly as compiled");
+
+    /* Filling EVERY row's stage pair the way xud_pipeline_open fills them, so the row-to-row checks
+       below are about the mapping rather than about rows the test never filled. The mapping is
+       written out here rather than read from the .c's table because that table is file-static: the
+       test states the mapping it expects, and a .c whose table disagrees leaves these checks red. */
+    for (stageRow = 0u; stageRow < XUD_BATCH_TOPOLOGY_COUNT; stageRow++) {
+        for (stageVariant = 0u; stageVariant < XUD_BATCH_VARIANT_COUNT; stageVariant++) {
+            const VkShaderModule rowFragModule = (stageVariant == XUD_BATCH_VARIANT_TEXTURED) ? fragTexturedModule : fragModule;
+
+            xud_check(
+                xud_pipeline_fill_shader_stages(pipeline.shaderStages[XUD_PIPELINE_ROW(stageRow, stageVariant)], vertModule, rowFragModule)
+                    == XUD_OK,
+                "pipeline/stages-every-row-filled",
+                "every row of the list has its own filled stage pair, which is what the create loop in "
+                "xud_pipeline_open hands one create call per row of");
+        }
+    }
 
     xud_check(xud_pipeline_fill_layout_info(NULL, NULL) == XUD_INVALID_ARG, "pipeline/layout-null-both",
         "a layout with no descriptor record to read is refused, and so is one with nowhere to be w"
@@ -329,7 +350,7 @@ static void xud_test_pipeline_pure(void) {
         "nt and the blend state the same number");
     xud_check(out.sType == VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, "pipeline/create-stamped", "stamped");
     xud_check((out.pNext == NULL) && (out.flags == 0u), "pipeline/create-chain-clear", "nothing is chained into it");
-    xud_check((out.stageCount == XUD_PIPELINE_STAGE_COUNT) && (out.pStages == pipeline.shaderStages), "pipeline/create-two-stages",
+    xud_check((out.stageCount == XUD_PIPELINE_STAGE_COUNT) && (out.pStages == pipeline.shaderStages[0u]), "pipeline/create-two-stages",
         "two stages, and the row is the record's own");
     xud_check(out.pTessellationState == NULL, "pipeline/create-no-tessellation",
         "no tessellation row at all, which is the stage array's own shape read from the other side");
@@ -369,9 +390,11 @@ static void xud_test_pipeline_pure(void) {
     xud_check(transparentInfo.layout == out.layout, "pipeline/create-one-layout-both-rows",
         "both rows name the SAME layout, which is what makes the layout one object for the whole "
         "list rather than a per-variant record of the same interface");
-    xud_check(transparentInfo.pStages == out.pStages, "pipeline/create-one-shader-pair",
-        "and the same two shader stages, so the variant is a blend-state choice and not a shader c"
-        "hoice");
+    xud_check(transparentInfo.pStages[XUD_PIPELINE_FRAGMENT_STAGE].module == out.pStages[XUD_PIPELINE_FRAGMENT_STAGE].module,
+        "pipeline/create-one-shader-module",
+        "and the same fragment MODULE, so the variant is a blend-state choice across the two untextured "
+        "columns; the stage ARRAYS are two rows of the record's own array rather than one, because the "
+        "frag module is pipeline state and the third column of the variant axis names a different one");
 
     /* The same assembly at the OTHER axis of the list, which is what makes the topology argument a
        choice rather than a decoration: the line row is the same record read at a different row, and
@@ -387,12 +410,58 @@ static void xud_test_pipeline_pure(void) {
     xud_check(lineInfo.pColorBlendState == out.pColorBlendState, "pipeline/create-line-row-same-blend",
         "and its blend row is the OPAQUE one the triangle row above names, so the topology axis does "
         "not reach the blend half: the two axes are orthogonal rows of one list");
-    xud_check((lineInfo.pStages == out.pStages) && (lineInfo.layout == out.layout), "pipeline/create-line-row-one-interface",
+    xud_check((lineInfo.pStages[XUD_PIPELINE_FRAGMENT_STAGE].module == out.pStages[XUD_PIPELINE_FRAGMENT_STAGE].module)
+            && (lineInfo.layout == out.layout),
+        "pipeline/create-line-row-one-interface",
         "and the same two shader stages and the same layout, so the whole list is one interface and "
         "the rows differ only in the two state records that are not interface state");
     xud_check(lineInfo.pInputAssemblyState != out.pInputAssemblyState, "pipeline/create-input-assembly-rows-differ",
         "the two create-infos differ in the input-assembly row, which is the whole of what a topology "
         "is at this rung");
+
+    /* The THIRD column of the variant axis, which is where the second fragment module exists: the
+       textured row is the same record read at a third row, and the one thing it differs from the two
+       untextured columns in, past the blend half, is the fragment module - the module that reads set
+       1. The blend half is checked here too because the textured column is alpha-blended, which is
+       what a glyph atlas needs against a cleared background. */
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_TEXTURED, &texturedInfo) == XUD_OK,
+        "pipeline/create-textured-ok",
+        "the textured row's create-info assembles too, so the variant axis's third column is a row of "
+        "the same list rather than a second list");
+    xud_check(texturedInfo.pColorBlendState == &pipeline.blending[XUD_BATCH_VARIANT_TEXTURED], "pipeline/create-blend-row-textured",
+        "and its blend pointer is the TEXTURED row's, so the variant argument picks the blend state at "
+        "the third column exactly as it picks it at the second");
+    xud_check(pipeline.blendAttachment[XUD_BATCH_VARIANT_TEXTURED].blendEnable == VK_TRUE, "pipeline/attachment-blend-enabled-textured",
+        "blend ENABLED at the textured row: a glyph is alpha and an unblended glyph over a cleared "
+        "background is a rectangle of the atlas rather than a letter");
+    xud_check((pipeline.blendAttachment[XUD_BATCH_VARIANT_TEXTURED].srcColorBlendFactor == VK_BLEND_FACTOR_SRC_ALPHA)
+            && (pipeline.blendAttachment[XUD_BATCH_VARIANT_TEXTURED].dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA),
+        "pipeline/blend-factors-textured",
+        "the same SRC_ALPHA/ONE_MINUS_SRC_ALPHA pair the transparent row carries, because the textured "
+        "row is blended for the same reason and the factors are a column of the table rather than a "
+        "second equation");
+    /* Filling the textured column's stage pair the way xud_pipeline_open fills every row's pair, so
+       the checks below are about the mapping (which column names which module) rather than about a
+       row the test never filled. */
+    xud_check(
+        xud_pipeline_fill_shader_stages(pipeline.shaderStages[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_TEXTURED)],
+            vertModule, fragTexturedModule)
+            == XUD_OK,
+        "pipeline/stages-textured-row-filled",
+        "the third column's pair is filled from the textured module, which is what the create loop in "
+        "xud_pipeline_open does for every row of the list");
+    xud_check(texturedInfo.pStages[XUD_PIPELINE_FRAGMENT_STAGE].module == fragTexturedModule, "pipeline/create-textured-frag-module",
+        "and the textured row's fragment stage names the textured module, which is the whole reason a "
+        "second fragment module exists at all: it is the module that reads set 1");
+    xud_check(texturedInfo.pStages[XUD_PIPELINE_VERTEX_STAGE].module == vertModule, "pipeline/create-textured-vertex-module-shared",
+        "but the SAME vertex module, so the six rows of the list are two modules of vertex state and "
+        "two of fragment state rather than six pairs of bytes");
+    xud_check(texturedInfo.pStages != out.pStages, "pipeline/create-stage-array-per-row",
+        "and the two rows' stage pairs are two rows of the record's own array, which is what makes the "
+        "frag module a per-row fact rather than one pair shared by the whole list");
+    xud_check(texturedInfo.layout == out.layout, "pipeline/create-textured-one-layout",
+        "and the same layout, which is what lets one layout serve all six rows: the third column adds "
+        "a frag module and a blend column, never a second interface");
 }
 
 void xud_test_pipeline(void) { xud_test_pipeline_pure(); }

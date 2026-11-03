@@ -27,18 +27,22 @@
  *          is destroyed is a submission reading freed VkDeviceMemory, and xud_allocator_clos
  *          e() is exactly that call.
  *
- *   What this rung does NOT have, and why: no VkImage and no VkSampler anywhere, so set 1's
- *          layout is DECLARED and its set is never allocated - the texture step is what creates
- *          the images and allocates that set from this same pool (which is why the pool is sized
- *          for both sets today). The push row of this layout is DECLARED here and CONSUMED one ru
- *          ng over: the frame loop pushes it beside every draw it records and the vertex stage re
- *          ads the model matrix out of it, so the bytes this rung's range row describes are live e
- *          nd to end. What nothing READS today is the material / texture / flags trio of that same
- *          row: the material channel is FILLED (the material rung above names a live MATERIAL slot o
- *          f the handle table in it, and the variant half landed with the pipeline pair), the textur
- *          e channel is the sentinel 0 because set 1 is declared and never allocated, and no stage t
- *          ouches any of the three yet - making a stage read them is the texture step's, and a stage
- *          need not touch every member of a block its layout declares.
+ *   What this rung does NOT have, and why: no PER-TEXTURE VkImage and no per-texture VkSampler an
+ *          ywhere, so every entry of set 1's sampler array names the one white default below rather t
+ *          han a texture's own image - the texture step is what creates the images and puts them in
+ *          the slots of that set (which is why the pool is sized for both sets today and why the set
+ *          is allocated here rather than there: a set whose layout this rung declares is a set this
+ *          rung allocates, and a rung above that could not allocate a set it has no layout for would
+ *          be a rung that bound a pipeline layout it did not build). The push row of this layout is
+ *          DECLARED here and CONSUMED one rung over: the frame loop pushes it beside every draw it
+ *          records and the vertex stage reads the model matrix out of it, so the bytes this rung's
+ *          range row describes are live end to end. What nothing READS today is the material / text
+ *          ure / flags trio of that same row: the material channel is FILLED (the material rung abo
+ *          ve names a live MATERIAL slot of the handle table in it, and the variant half landed wit
+ *          h the pipeline pair), the texture channel is the sentinel 0 because every slot of set 1 n
+ *          ames the same default and a slot number therefore selects nothing, and no stage touches
+ *          the flags half yet - making a stage read them is the texture step's, and a stage need no
+ *          t touch every member of a block its layout declares.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
@@ -124,8 +128,9 @@ static_assert(XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE <= 1024u,
     "request is a different decision, not a bigger constant");
 
 /* The pool's rows: one per descriptor TYPE the sets allocated from it will be updated with. Both
-   are declared today even though only one set is allocated today - the pool is sized for the set
-   the texture step will allocate, so that step needs no second pool of its own.
+   are declared today and BOTH sets are allocated today, which is why the sampler row is the array's
+   size rather than 1: the one binding of set 1 is XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE descriptors and
+   all of them are written by this rung's own sampler write.
 */
 #define XUD_DESCRIPTOR_POOL_SIZE_COUNT 2u
 
@@ -219,6 +224,8 @@ static_assert(XUD_DESCRIPTOR_PUSH_SIZE < XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE,
  */
 #define XUD_DESCRIPTOR_BUFFER_STAGES (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 #define XUD_DESCRIPTOR_SAMPLER_STAGES VK_SHADER_STAGE_FRAGMENT_BIT
+#define XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE VK_PIPELINE_STAGE_TRANSFER_BIT
+#define XUD_DESCRIPTOR_WHITE_SAMPLED_STAGE VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
 #define XUD_DESCRIPTOR_PUSH_STAGES (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
 
 static_assert(XUD_DESCRIPTOR_BUFFER_STAGES != XUD_DESCRIPTOR_SAMPLER_STAGES,
@@ -230,6 +237,14 @@ static_assert((XUD_DESCRIPTOR_BUFFER_STAGES & XUD_DESCRIPTOR_SAMPLER_STAGES) == 
 static_assert(XUD_DESCRIPTOR_PUSH_STAGES == XUD_DESCRIPTOR_BUFFER_STAGES,
     "the push row and the per-frame buffer carry the same stage pair today, which is what makes one pipeline's two stages the whole stage "
     "set of this layout");
+static_assert(XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE != XUD_DESCRIPTOR_WHITE_SAMPLED_STAGE,
+    "the two transitions around the white default's fill move between two layouts and the two stages that use them, so one stage mask for "
+    "both "
+    "would be a barrier about a stage that never touches the image");
+static_assert((XUD_DESCRIPTOR_WHITE_SAMPLED_STAGE & VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) == VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+    "the stage the sampled layout belongs to is the fragment stage, which is the same stage XUD_DESCRIPTOR_SAMPLER_STAGES names in the "
+    "other "
+    "enum family - the two families are two bit patterns and the layout's rows use one and the barriers use the other");
 
 /*-----------------------------------------------------------------------------------------------
  * The buffer usage of set 0's one buffer
@@ -249,6 +264,64 @@ static_assert((XUD_DESCRIPTOR_BUFFER_USAGE & VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT)
 static_assert((XUD_DESCRIPTOR_BUFFER_USAGE & VK_BUFFER_USAGE_TRANSFER_DST_BIT) == VK_BUFFER_USAGE_TRANSFER_DST_BIT,
     "the per-frame update of the design sketch is a vkCmdCopyBuffer INTO this buffer, which the usage bits make legal rather than "
     "implementation-dependent");
+
+/*-----------------------------------------------------------------------------------------------
+ * The one image this rung owns: the white default every entry of set 1's sampler array names
+ *
+ *   Why the default has to exist at all is a rule about the SET rather than about the shader: every
+ *   descriptor of a bound set has to have been written, so an allocated 16-deep sampler array is on
+ *   ly legal with all 16 entries naming a real VkImageView and a real VkSampler. The rung above can
+ *   not defer that - it is a fact about the set this rung allocated, not a decision about what a te
+ *   xture looks like - so this rung owns one image, one view and one sampler and every entry of the
+ *   array names them. What the default's VALUE is follows from what the textured frag does with it:
+ *   that stage multiplies the vertex colour by the texel, so white is the identity of the multiply a
+ *   nd a textured draw before any texture exists draws the vertex colour rather than a black rectan
+ *   gle or garbage. The extent is 1x1 because a default is sampled by every fragment of every draw
+ *   that has no texture and one texel is the smallest image that can hold one; the format is the tex
+ *   ture rung's own RGBA8 rather than a second format, which is what makes one image in this librar
+ *   y have one format and one sampler filter rather than two sets of rules to keep in step.
+ *
+ *   The layout is the texture rung's UNDEFINED initial layout plus the two optimal layouts the
+ *   texture rung already names, and the reason the default needs the same transition pair that an
+ *   uploaded texture does is that it is WRITTEN every frame and READ in the same frame: a transfer
+ *   into an image and a fragment sampling it out of it are two accesses of two layouts, and the one
+ *   thing that orders them is the pair of barriers around the write. Clearing rather than copying is
+ *   the other half: a default has no host bytes to stage, so vkCmdClearColorImage is the one command
+ *   that writes a colour into an image with no source object and no staging buffer of its own.
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_DESCRIPTOR_WHITE_FORMAT VK_FORMAT_R8G8B8A8_UNORM
+#define XUD_DESCRIPTOR_WHITE_TILING VK_IMAGE_TILING_OPTIMAL
+#define XUD_DESCRIPTOR_WHITE_USAGE (VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)
+#define XUD_DESCRIPTOR_WHITE_INITIAL_LAYOUT VK_IMAGE_LAYOUT_UNDEFINED
+#define XUD_DESCRIPTOR_WHITE_UPLOAD_LAYOUT VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+#define XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+#define XUD_DESCRIPTOR_WHITE_MIP_LEVELS 1u
+#define XUD_DESCRIPTOR_WHITE_ASPECT_MASK VK_IMAGE_ASPECT_COLOR_BIT
+#define XUD_DESCRIPTOR_WHITE_CLEAR_COUNT 1u
+#define XUD_DESCRIPTOR_WHITE_TRANSFER_WRITE_ACCESS VK_ACCESS_TRANSFER_WRITE_BIT
+#define XUD_DESCRIPTOR_WHITE_SHADER_READ_ACCESS VK_ACCESS_SHADER_READ_BIT
+
+static_assert(XUD_DESCRIPTOR_WHITE_FORMAT == VK_FORMAT_R8G8B8A8_UNORM,
+    "the default's format is the texture rung's format, so one image in this library has one format and one set of rules about it");
+static_assert((XUD_DESCRIPTOR_WHITE_USAGE & VK_IMAGE_USAGE_SAMPLED_BIT) == VK_IMAGE_USAGE_SAMPLED_BIT,
+    "the default is what a COMBINED_IMAGE_SAMPLER descriptor samples, so its usage must claim the sampled use");
+static_assert((XUD_DESCRIPTOR_WHITE_USAGE & VK_IMAGE_USAGE_TRANSFER_DST_BIT) == VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+    "the default is written by vkCmdClearColorImage, whose image must have been created with the transfer-dst use");
+static_assert((XUD_DESCRIPTOR_WHITE_USAGE
+                  & (VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT))
+        == 0u,
+    "the default is never written by a shader, never an attachment and never a copy source");
+static_assert(XUD_DESCRIPTOR_WHITE_UPLOAD_LAYOUT != XUD_DESCRIPTOR_WHITE_INITIAL_LAYOUT,
+    "the create asks for UNDEFINED and the clear declares TRANSFER_DST, which is the transition the barrier above takes explicitly");
+static_assert(XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT != XUD_DESCRIPTOR_WHITE_UPLOAD_LAYOUT,
+    "the clear ends in one layout and a sampler needs another, which is why the clear is followed by a transition");
+static_assert(XUD_DESCRIPTOR_WHITE_MIP_LEVELS == 1u, "a 1x1 default has one level, so its subresource range is one level deep");
+static_assert(XUD_DESCRIPTOR_WHITE_ASPECT_MASK == VK_IMAGE_ASPECT_COLOR_BIT,
+    "an RGBA8 default is a colour image, so its subresource range names the colour plane and nothing else");
+static_assert(XUD_DESCRIPTOR_WHITE_CLEAR_COUNT == 1u, "a 1x1 image is one layer, so the clear's layer count is one");
+static_assert(XUD_DESCRIPTOR_WHITE_SHADER_READ_ACCESS == VK_ACCESS_SHADER_READ_BIT,
+    "the layout a sampled descriptor's read lives in is the one whose access bit the transition barrier names");
 
 /*-----------------------------------------------------------------------------------------------
  * The host-visible staging arena of set 0's block
@@ -329,10 +402,12 @@ struct XudDescriptor {
     VkDescriptorPoolSize poolSizes[XUD_DESCRIPTOR_POOL_SIZE_COUNT]; /* the rows the create-info above points at */
 
     /* --- the sets allocated from it --- */
-    VkDescriptorSet
-        sets[XUD_DESCRIPTOR_SET_COUNT]; /* set 0 live from xud_descriptor_open() on; set 1 VK_NULL_HANDLE until the texture step allocates
-                                           it - the "declared but not allocated" state, asserted rather than assumed */
-    VkDescriptorSetAllocateInfo setAllocateInfo; /* what vkAllocateDescriptorSets was handed */
+    VkDescriptorSet sets[XUD_DESCRIPTOR_SET_COUNT]; /* BOTH live from xud_descriptor_open() on: set 0 is the per-frame
+                                                       one and set 1 is the sampler array, and the pair is what the one
+                                                       vkCmdBindDescriptorSets the frame loop makes names */
+    VkDescriptorSetAllocateInfo setAllocateInfo[XUD_DESCRIPTOR_SET_COUNT]; /* what vkAllocateDescriptorSets
+                                             was handed, one row per set - the array is the set numbering,
+                                             the same reason pSetLayouts' array is */
 
     /* --- set 0's one uniform buffer --- */
     VkBuffer uniformBuffer; /* owned: created here, destroyed here, its memory is the allocator's */
@@ -343,8 +418,41 @@ struct XudDescriptor {
                                        bind read the same number the driver was given */
 
     /* --- the write that bound it --- */
-    VkWriteDescriptorSet writeInfo; /* what vkUpdateDescriptorSets was handed */
+    VkWriteDescriptorSet writeInfo; /* what vkUpdateDescriptorSets was handed for set 0 */
     VkDescriptorBufferInfo bufferRow; /* the row the write above points at: (buffer, offset, range) */
+
+    /* --- the write that bound set 1's sampler array, and the one image every entry of it names --- */
+    VkWriteDescriptorSet samplerWriteInfo; /* what vkUpdateDescriptorSets was handed for set 1 */
+    VkDescriptorImageInfo samplerRows[XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE]; /* the rows the write above
+                                             points at: one (imageView, sampler) pair per entry of the
+                                             array. Every row names the SAME view and sampler today, wh
+                                             ich is the point of the default below - the array is a
+                                             slot axis and the texture step is what puts different vie
+                                             ws into different rows of it */
+    VkImage whiteImage; /* owned: the 1x1 white default every entry of set 1 samples. It is this rung's
+                                           rather than the texture rung's because it is what makes an
+                                           ALLOCATED set legal at all: a bound set whose descriptors were
+                                           never written is a violation, and the descriptors of this set
+                                           are written by this rung */
+    VkImageView whiteImageView; /* owned: the view the samplerRows above all name */
+    VkSampler whiteSampler; /* owned: the view they all sample with */
+    VkImageCreateInfo whiteImageInfo; /* what vkCreateImage was handed for it */
+    VkImageViewCreateInfo whiteViewInfo; /* what vkCreateImageView was handed for it */
+    VkSamplerCreateInfo whiteSamplerInfo; /* what vkCreateSampler was handed for it */
+    XudMemoryRange whiteRange; /* BORROWED: the allocator owns the block this sits in, the same rule a
+                                   s uniformRange's */
+    VkDeviceSize whiteBindOffset; /* the offset inside that block vkBindImageMemory was handed */
+    VkClearColorValue whiteClearColor; /* what vkCmdClearColorImage was handed each frame: opaque white,
+                                           which is the identity of the textured frag's multiply */
+    VkImageSubresourceRange whiteSubresourceRange; /* the one subresource of a one-level 1x1 image, and
+                                           the range the clear and the two transitions above name */
+    VkImageMemoryBarrier whiteToUpload; /* the transition the clear needs: the image's layout into
+                                           TRANSFER_DST, the one layout a clear may write */
+    VkImageMemoryBarrier whiteToSampled; /* the transition the clear leaves behind: TRANSFER_DST into
+                                           SHADER_READ_ONLY, the one layout a sampled descriptor may
+                                           read. It is also the layout the NEXT frame's transition star
+                                           ts from, which is what makes the sequence the same three co
+                                           mmands every frame after the first */
 
     /* --- the host-side copy of set 0's block --- */
     XudFrameUniformRow uniformBlock; /* the bytes the GPU buffer is meant to hold. xud_descriptor_write_block() copies them into the arena
@@ -426,15 +534,17 @@ XudResult xud_descriptor_fill_push_range(const XudDeviceCaps* caps, VkPushConsta
 /// d beside that constant. XUD_INVALID_ARG on a NULL descriptor.
 XudResult xud_descriptor_fill_pool_info(XudDescriptor* descriptor);
 
-/// Pure: the VkDescriptorSetAllocateInfo that allocates THIS rung's set 0 - descriptorPool the pool
-/// handle in the record, one set, pSetLayouts pointing at the rung's own setLayouts[XUD_DESCRIPTO
-/// R_SET_PER_FRAME]. The array is a member rather than a temporary because the driver reads the po
-/// inter during the call and the record of the call has to outlive it, the same reason xud_pipeline
-/// _fill_create_info() points at the struct's own rows. XUD_INVALID_ARG on a NULL descriptor or one
-/// whose pool handle is not live (an allocate-info that names no pool is a bad state of this layer'
-/// s own record, not a bad argument from a caller - the rule xud_pipeline_fill_create_info() applies
-/// to a pipeline that owns no layout).
-XudResult xud_descriptor_fill_set_allocate_info(XudDescriptor* descriptor);
+/// Pure: the VkDescriptorSetAllocateInfo that allocates one row of THIS rung's sets - descriptorPo
+/// ol the pool handle in the record, one set, pSetLayouts pointing at the rung's own setLayouts[set
+/// Index]. Both sets are allocated this way today: set 0 is the per-frame block and set 1 is the sa
+/// mpler array, and a set whose layout this rung declares is a set this rung allocates. The array is
+///  a member rather than a temporary because the driver reads the pointer during the call and the re
+/// cord of the call has to outlive it, the same reason xud_pipeline_fill_create_info() points at the
+///  struct's own rows. XUD_INVALID_ARG on a NULL descriptor, on a set index past the two sets of thi
+///  s layout, or on one whose pool handle is not live (an allocate-info that names no pool is a bad
+///  state of this layer's own record, not a bad argument from a caller - the rule xud_pipeline_fill_
+///  create_info() applies to a pipeline that owns no layout).
+XudResult xud_descriptor_fill_set_allocate_info(XudDescriptor* descriptor, uint32_t setIndex);
 
 /// Pure: the VkBufferCreateInfo of set 0's one buffer - size XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE (the
 /// block's own size, not a rounded-up guess: the buffer is exactly as big as the block, and the des
@@ -458,6 +568,39 @@ XudResult xud_descriptor_fill_buffer_info(XudDescriptor* descriptor);
 /// r the bring-up below, so the set names the buffer from then on and only the buffer's CONTENTS chan
 /// ge. XUD_INVALID_ARG on a NULL descriptor or one whose set or buffer handle is not live.
 XudResult xud_descriptor_fill_write_info(XudDescriptor* descriptor);
+
+/// Pure: the create-infos of the white default this rung owns - the VkImageCreateInfo of a 1x1 one-
+/// level RGBA8 OPTIMAL image whose usage is SAMPLED|TRANSFER_DST and whose initial layout is UNDEFIN
+/// ED, the VkImageViewCreateInfo of a 2D view of the whole of it, and the VkSamplerCreateInfo of the
+/// one sampler every entry of set 1 samples with: LINEAR on both axes, CLAMP_TO_EDGE on all six,
+/// UNORM_FLOAT normalized coordinates, no LOD bias, no border clamp and no compare op (a compareOp
+///  other than ALWAYS is a shadow-mapping decision this library does not take, and the sampler's bo
+/// rderColor is white so even a border read is the identity of the textured frag's multiply). The vi
+/// ew's and sampler's create-infos are filled BEFORE the image is created so a failed image create l
+/// eaves nothing behind, the same order xud_texture.h's create uses. XUD_INVALID_ARG on a NULL descr
+/// iptor.
+XudResult xud_descriptor_fill_white_infos(XudDescriptor* descriptor);
+
+/// Pure: the two VkImageMemoryBarrier rows around the white default's clear - the transition into
+///  TRANSFER_DST (oldLayout UNDEFINED, which is what UNDEFINED means to a barrier: "whatever layou
+///  t this subresource is in", true on the first frame and honest on every later one) and the transi
+///  tion back into SHADER_READ_ONLY. Both rows carry the image as VK_NULL_HANDLE here because the im
+///  age is the one object the barrier is about and the bring-up below has not created it yet; xud_de
+///  scriptor_upload() stamps the live handle into the same two rows before it records them. XUD_INVA
+///  LID_ARG on a NULL descriptor.
+XudResult xud_descriptor_fill_white_transitions(XudDescriptor* descriptor);
+
+/// Pure: the VkWriteDescriptorSet that binds set 1's sampler array into it - dstSet the set-1 row of
+///  the record, dstBinding XUD_DESCRIPTOR_BINDING, dstArrayElement 0, descriptorCount XUD_DESCRIPTO
+/// R_SAMPLER_ARRAY_SIZE, descriptorType COMBINED_IMAGE_SAMPLER, pImageInfo the rung's own samplerRow
+/// s array and pBufferInfo and pTexelBufferView NULL (the type makes which of the three pointers may
+///  be non-NULL, and a write that named two would be a write whose type and rows disagree). Every ro
+///  w of that array names the same white view and the same white sampler today, which is what makes
+///  the write legal at all: a bound set whose descriptors were never written is a violation, so an
+///  allocated sampler array is only legal once every entry of it names a real view and a real sampl
+///  er. XUD_INVALID_ARG on a NULL descriptor or one whose set-1 handle, white view or white sampler
+///  is not live.
+XudResult xud_descriptor_fill_sampler_write_info(XudDescriptor* descriptor);
 
 /// Pure: the host-side bytes of set 0's block - the identity VP matrix and zeros everywhere else. T
 /// his is the assembly the headless run can assert: the block's layout is a fact about this rung rat
@@ -513,16 +656,23 @@ XudResult xud_descriptor_fill_upload_info(XudDescriptor* descriptor);
 XudResult xud_descriptor_write_block(XudDescriptor* descriptor);
 
 /// Driver: record the per-frame upload into a command buffer that has already been begun - ONE vkCmd
-/// CopyBuffer call carrying the one region, from the mapped arena into set 0's uniform buffer. One
-/// call rather than several because this upload has one source and one destination, which is the oppo
-/// site of the batch's five-call shape where the five destinations are five buffers. The call is legal
-/// only OUTSIDE a render pass instance, so the frame loop records it before vkCmdBeginRenderPass; the
-/// two barriers that make the host write visible to the transfer and the transfer visible to the stag
-/// es that read the block are the frame loop's too, and are named there. XUD_INVALID_ARG on a NULL
-/// descriptor/loader/device/command-buffer-handle or on a descriptor whose arena or buffer handle is
-/// not live; XUD_UNSUPPORTED when the arena is not mapped live, the upload's rows are not filled, or
-/// the copy row is nil; XUD_OK only when the region's extent is non-zero, which xud_descriptor_fill_up
-/// load_info() is the guard of.
+/// CopyBuffer call carrying the one region, from the mapped arena into set 0's uniform buffer, plus
+///  ONE vkCmdClearColorImage writing white into the default every entry of set 1 samples. One call r
+/// ather than several because this upload has one source and one destination, which is the opposite
+///  of the batch's five-call shape where the five destinations are five buffers; the clear is a seco
+/// nd command rather than a second call-shape because a default has no host bytes to stage and vkCmd
+/// ClearImage is the one command that writes a colour with no source object. The clear is per frame r
+/// ather than once because the alternative is a flag in this record that says "already filled", whic
+/// h is state the frame loop would have to keep honest across a resize; a 1x1 clear is one command w
+/// hose cost no frame can see. Both calls are legal only OUTSIDE a render pass instance, so the frame
+///  loop records them before vkCmdBeginRenderPass; the barrier that makes the block's upload visible
+///  to the stages that read it is the frame loop's, and the clear needs none of its own because the
+///  image is used in VK_IMAGE_LAYOUT_OPTIMAL, the one layout the implementation transitions and sy
+/// nchronizes by itself. XUD_INVALID_ARG on a NULL descriptor/loader/device/command-buffer-handle or
+///  on a descriptor whose arena, buffer handle or white image handle is not live; XUD_UNSUPPORTED whe
+/// n the arena is not mapped live, the upload's rows are not filled, the copy row is nil or the white
+///  image's rows are not filled; XUD_OK only when the region's extent is non-zero, which xud_descrip
+/// tor_fill_upload_info() is the guard of.
 XudResult xud_descriptor_upload(XudDescriptor* descriptor, XudLoader* loader, const XudDevice* device, VkCommandBuffer commandBuffer);
 
 /// Driver: the whole rung in one call, in the one order that is correct, and every destroy row of ev
@@ -556,16 +706,20 @@ XudResult xud_descriptor_open(
 /// aging arena FIRST (the repo's rule that a mapped range has a matching unmap, read at the one place a
 /// descriptor dies, and the reason it is FIRST is that a destroy of a buffer whose range is still mapp
 /// ed is a destroy over a mapping the driver still holds), then vkDestroyBuffer for the arena and xud_a
-/// llocator_release() for its range, then vkDestroyDescriptorPool, which retires set 0 with it (there is
-/// no vkDestroyDescriptorSet in these headers - grep it: zero hits - and the set is therefore the pool'
-/// s to retire, which is why the pool is destroyed before the layouts: a set still allocated from a lay
-/// out is an error against that layout's destroy), then vkDestroyBuffer for set 0's block, then xud_all
-/// ocator_release() for its range (the buffer first, so a free range never names memory a live buffer s
-/// its in, and the range after because the block itself is the allocator's to free, in xud_allocator_cl
-/// ose(), which runs after this rung in the context's teardown order), then the two layout destroys in
-/// reverse creation order, then free. XUD_ALREADY when the pointer owns no descriptor; XUD_INVALID_ARG
-/// on a NULL pointer-to-pointer or a NULL loader/device/allocator; XUD_UNSUPPORTED when the device row
-/// s are not this device's or a destroy row is nil while the object it would destroy is live.
+/// llocator_release() for its range, then vkDestroyDescriptorPool, which retires BOTH sets with it (th
+/// e is no vkDestroyDescriptorSet in these headers - grep it: zero hits - and a set is therefore the po
+/// ol's to retire, which is why the pool is destroyed before the layouts: a set still allocated from a
+/// layout is an error against that layout's destroy, and destroying the pool before the white view is t
+/// he same rule read from the other side: set 1's 16 descriptors name that view, so the set has to be g
+/// one before the view is), then the white default in the reverse of how it was created - vkDestroySam
+/// pler, vkDestroyImageView, vkDestroyImage and xud_allocator_release() for its range - then vkDestroyB
+/// uffer for set 0's block, then xud_allocator_release() for its range (the buffer first, so a free rang
+/// e never names memory a live buffer sits in, and the range after because the block itself is the alloc
+/// ator's to free, in xud_allocator_close(), which runs after this rung in the context's teardown order)
+/// , then the two layout destroys in reverse creation order, then free. XUD_ALREADY when the pointer own
+/// s no descriptor; XUD_INVALID_ARG on a NULL pointer-to-pointer or a NULL loader/device/allocator; XUD
+/// _UNSUPPORTED when the device rows are not this device's or a destroy row is nil while the object it
+/// would destroy is live.
 /// ter or a NULL loader/device/allocator; XUD_UNSUPPORTED when the device rows are not this device's or
 /// a destroy row is nil while the object it would destroy is live.
 XudResult xud_descriptor_close(XudDescriptor** ioDescriptor, XudLoader* loader, const XudDevice* device, XudAllocator* alloc);

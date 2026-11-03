@@ -150,8 +150,11 @@
           the unambiguous form of "set 0 only" rather than a bit pattern to reason about */
 
 #define XUD_FRAME_SET_COUNT                                                                                                                \
-    1u /* how many sets one vkCmdBindDescriptorSets call binds: set 0 today, and set 1 is the texture                                      \
-          step's to allocate and bind, which is why the pool above is sized for both */
+    XUD_DESCRIPTOR_SET_COUNT /* vkCmdBindDescriptorSets' descriptorCount, which is a SET count starting                                    \
+          at firstSet: the two sets of this layout, both of which the descriptor rung allocated and                                        \
+          wrote at its bring-up. Every descriptor of the LAST set bound is bound with it, which is what                                    \
+          makes the sampler array's 16 entries live without naming them one by one, and firstDescriptorIndex                               \
+          below is 0 because the whole array is bound rather than a slice of it */
 
 #define XUD_FRAME_UNIFORM_READ_STAGES                                                                                                      \
     (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) /* the dstStageMask                                      \
@@ -176,7 +179,9 @@ static_assert(XUD_FRAME_FIRST_BINDING == 0u, "the batch's four streams are bindi
 static_assert(XUD_FRAME_VERTEX_READ_ACCESS == VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, "the streams are read as vertex attributes");
 static_assert(XUD_FRAME_INDEX_TYPE == VK_INDEX_TYPE_UINT32, "the batch's indices are uint32_t entries");
 static_assert(XUD_FRAME_FIRST_SET == 0u, "set 0 is the per-frame set and it is the first set bound");
-static_assert(XUD_FRAME_SET_COUNT == 1u, "one set bound per frame, which is set 0 and its block");
+static_assert(XUD_FRAME_SET_COUNT == XUD_DESCRIPTOR_SET_COUNT,
+    "both sets of this layout are bound by the one call, which is what makes the textured pipeline row read a set that was allocated and "
+    "written rather than one that was only declared");
 static_assert(XUD_FRAME_UNIFORM_READ_ACCESS == VK_ACCESS_UNIFORM_READ_BIT, "the block is read as a uniform buffer");
 static_assert(XUD_FRAME_WAIT_STAGE == VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, "the first stage that reads the image");
 static_assert(XUD_FRAME_NO_TIMEOUT == (~0ull), "the all-ones value is the no-timeout answer");

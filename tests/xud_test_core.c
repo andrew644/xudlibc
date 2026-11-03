@@ -253,19 +253,22 @@ static void xud_test_gpu_context(void) {
         "al sets and a real push row");
     xud_check(context->descriptor->pool != VK_NULL_HANDLE, "context/descriptor-pool-live",
         "the pool is live, and so are the two set layouts and set 0 allocated from it");
-    xud_check(context->descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE, "context/descriptor-set-1-open-question",
-        "and set 1 is not allocated: the layout is declared and the set is the texture step's");
+    xud_check(context->descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] != VK_NULL_HANDLE, "context/descriptor-set-1-allocated",
+        "and set 1 is allocated too, from the same pool against the same layout: an allocated sampler array whose entries were never "
+        "written is an invalid descriptor, so the set and the white default behind every entry of it are this rung's, and the texture step "
+        "is what puts a different view into a different row of it");
+    xud_check(context->descriptor->whiteImageView != VK_NULL_HANDLE, "context/white-default-live",
+        "and the one view behind all 16 rows of that array is live, which is what makes the array a slot axis and not a texture axis");
     xud_check(context->descriptor->uniformBuffer != VK_NULL_HANDLE, "context/descriptor-buffer-live",
         "the per-frame uniform buffer is live and bound to the allocator's memory");
-    xud_check(context->allocator->blockCount == 4u, "context/allocator-four-blocks-now",
-        "and the allocator owns four VkDeviceMemory now: the descriptor rung's uniform buffer, the "
-        "render pass's depth image - the image is the first thing above the allocator that asked for a"
-        "n IMAGE's requirements, and its alignment (65536 on this driver) does not fit a hole in the "
-        "buffer's block, so it is a second block rather than a suballocation - and the two host-visib"
-        "le arenas, the batch's and the descriptor's staging arena, which are blocks of their own bec"
-        "ause vkMapMemory maps a VkDeviceMemory rather than a range. The batch's five data buffers ar"
-        "e the carves that do share a block, which is the suballocation half of the repo's allocate-on"
-        "ce rule seen from above");
+    xud_check(context->allocator->blockCount == 5u, "context/allocator-five-blocks-now",
+        "and the allocator owns five VkDeviceMemory now: the descriptor rung's uniform buffer, the render pass's depth image - the image "
+        "is the first thing above the allocator that asked for an IMAGE's requirements, and its alignment (65536 on this driver) does not "
+        "fit a hole in the buffer's block, so it is a second block rather than a suballocation - the white default every entry of set 1's "
+        "sampler array names, a second image whose alignment does not fit a hole in the depth image's block either, and the two "
+        "host-visible arenas, the batch's and the descriptor's staging arena, which are blocks of their own because vkMapMemory maps a "
+        "VkDeviceMemory rather than a range. The batch's five data buffers are the carves that do share a block, which is the "
+        "suballocation half of the repo's allocate-once rule seen from above");
     xud_check(context->allocator->ringBlockIndex == XUD_ALLOCATOR_NO_BLOCK, "context/allocator-no-ring-yet",
         "and no ring block either, because nothing has asked for transient memory");
 

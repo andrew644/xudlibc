@@ -6,7 +6,7 @@
  *   Owns : the pipeline layer. Fills the fixed pipeline state (pure), overwrites that state's
  *          zero vertex-input row with the batch's four binding and four attribute rows (pure),
  *          assembles one create-info per row of the batch's variant list (pure), then creates the
- *          two shader modules, the one layout the whole list shares and one pipeline per row of
+ *          three shader modules, the one layout the whole list shares and one pipeline per row of
  *          that list through the device rows, and tears every one of them back down in
  *          the one order that keeps every handle's owner alive.
  *   Layer: above the shader rung, below the render pass. Nothing in this file calls a Vulkan
@@ -30,12 +30,13 @@
 #include "xud_loader.h"
 #include "xud_shader.h"
 #include "xud_solid_spv.h" /* Required for: the built-in SPIR-V set - generated at build time
-                             from shaders/solid.vert + solid.frag by CMakeLists.txt (glslang-
+                             from shaders/solid.vert + solid.frag + solid_textured.frag by CMakeLists.txt (glslang-
                              Validator, then spirv-val in the same build step), never read at
                              runtime and never compiled from GLSL at runtime, the repo's rule */
 #include "xud_vulkan.h"
 
 #include <assert.h> /* Required for: static_assert, the row and array-size checks */
+#include <stddef.h> /* Required for: size_t, the byte count of each entry of the frag axis */
 #include <stdlib.h> /* Required for: calloc, free */
 
 /* The rows this layer calls through must be pointer-sized, the same rule xud_loader.h checks
@@ -51,16 +52,39 @@ static_assert(sizeof(PFN_vkDestroyPipeline) == sizeof(void*), "PFN row must be p
    the rows must exist and be the count the create-info claims. Checked, not trusted: the same
    rule xud_device.c applies to the queue row's pQueuePriorities pointing at the struct's own
    array. The member access inside sizeof is not evaluated. */
-static_assert(sizeof(((XudPipeline*)0)->shaderStages) / sizeof(VkPipelineShaderStageCreateInfo) == XUD_PIPELINE_STAGE_COUNT,
-    "the stage array must be exactly the count the create-info claims");
+static_assert(sizeof(((XudPipeline*)0)->shaderStages[0]) / sizeof(VkPipelineShaderStageCreateInfo) == XUD_PIPELINE_STAGE_COUNT,
+    "one pair of stage rows per row of the list, and each pair exactly the count the create-info claims");
+static_assert(sizeof(((XudPipeline*)0)->shaderStages) / sizeof(VkPipelineShaderStageCreateInfo)
+        == (XUD_PIPELINE_ROW_COUNT * XUD_PIPELINE_STAGE_COUNT),
+    "the stage array is the list's rows by the stage count, which is what makes pStages of one row a"
+    " contiguous pair of that row's own");
 static_assert(sizeof(((XudPipeline*)0)->dynamicStates) / sizeof(VkDynamicState) == XUD_PIPELINE_DYNAMIC_STATE_COUNT,
     "the dynamic-state array must be exactly the count the dynamic row claims");
 
-/* The built-in SPIR-V set is the one pair this rung builds its two modules from. The arrays are
+/* The built-in SPIR-V set is the one set this rung builds its modules from. The arrays are
    static storage in the generated header, so nothing here owns them and xud_shader_close() must
    not free them - the shader layer borrows the words and the module owns only the module. */
 static_assert((XUD_SHADER_SPIRV_HEADER_WORDS * sizeof(uint32_t)) <= sizeof(xudSolidFragSpv),
     "the built-in fragment module is at least a SPIR-V header");
+static_assert((XUD_SHADER_SPIRV_HEADER_WORDS * sizeof(uint32_t)) <= sizeof(xudSolidFragTexturedSpv),
+    "the built-in textured fragment module is at least a SPIR-V header");
+
+/* Which frag module each column of the variant axis is built from, indexed by the BATCH's variant
+   index rather than by a switch: the variant axis is the batch's and the pipeline list's, so the
+   mapping is one more column of the same table shape the blend tables below are - the row of the
+   list is a pair of batch indices and which frag module it names is a fact about the column, not a
+   branch in the create loop. The opaque and transparent columns share the solid module because the
+   two differ only in blend state; the textured column names the one that reads set 1, which is the
+   only reason a second frag module exists at all. Growing the variant axis is a row here. */
+static const uint32_t xudPipelineFragModule[XUD_BATCH_VARIANT_COUNT]
+    = { XUD_PIPELINE_FRAG_SOLID, XUD_PIPELINE_FRAG_SOLID, XUD_PIPELINE_FRAG_TEXTURED };
+
+/* The words of each entry of the frag axis, in the axis's own order, beside the mapping table above
+   so "which column names which module" and "what bytes that module is built from" are two rows of
+   one table rather than a branch at each create call. The arrays are static storage in the generated
+   header, so nothing here owns them and xud_shader_close() must not free them. */
+static const uint32_t* const xudPipelineFragCode[XUD_PIPELINE_FRAG_MODULE_COUNT] = { xudSolidFragSpv, xudSolidFragTexturedSpv };
+static const size_t xudPipelineFragCodeSize[XUD_PIPELINE_FRAG_MODULE_COUNT] = { sizeof(xudSolidFragSpv), sizeof(xudSolidFragTexturedSpv) };
 
 /*-----------------------------------------------------------------------------------------------
  * The fixed pipeline state - pure, no driver call, no handle in hand
@@ -109,9 +133,11 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
        the transparent row is raylib's DEFAULT mode BLEND_ALPHA (raylib.h 918, "= 0" and commented
        "(default)"), whose Vulkan form is the rlgl.h 2127 pair glBlendFunc(GL_SRC_ALPHA,
        GL_ONE_MINUS_SRC_ALPHA) + glBlendEquation(GL_FUNC_ADD). */
-    static const VkBool32 blendEnable[XUD_BATCH_VARIANT_COUNT] = { VK_FALSE, VK_TRUE };
-    static const VkBlendFactor blendSrc[XUD_BATCH_VARIANT_COUNT] = { VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_ALPHA };
-    static const VkBlendFactor blendDst[XUD_BATCH_VARIANT_COUNT] = { VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA };
+    static const VkBool32 blendEnable[XUD_BATCH_VARIANT_COUNT] = { VK_FALSE, VK_TRUE, VK_TRUE };
+    static const VkBlendFactor blendSrc[XUD_BATCH_VARIANT_COUNT]
+        = { VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA };
+    static const VkBlendFactor blendDst[XUD_BATCH_VARIANT_COUNT]
+        = { VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA };
     /* The list's OTHER axis: one input-assembly row per topology the batch's draw rows name, in the
        batch's topology order. Same table shape as the blend tables above for the same reason - the
        row of the list is a pair of batch indices, so growing either axis is a row in a table here
@@ -392,7 +418,7 @@ XudResult xud_pipeline_fill_create_info(
     outCreateInfo->pNext = NULL;
     outCreateInfo->flags = 0u;
     outCreateInfo->stageCount = XUD_PIPELINE_STAGE_COUNT;
-    outCreateInfo->pStages = pipeline->shaderStages;
+    outCreateInfo->pStages = pipeline->shaderStages[XUD_PIPELINE_ROW(topology, variant)];
     outCreateInfo->pTessellationState = NULL; /* no tessellation stage */
     outCreateInfo->pVertexInputState = &pipeline->vertexInput;
     outCreateInfo->pInputAssemblyState = &pipeline->inputAssembly[topology];
@@ -441,6 +467,29 @@ static void xud_pipeline_destroy_rows(XudLoader* loader, const XudDevice* device
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The module teardown, in one helper rather than at every failure rung
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The reverse of the order the create rung below makes them in: the frag axis first, then the vertex
+   module, because the vertex module was created first and is therefore the last thing that may still
+   be named. One helper rather than the ladder repeated at each of the six failure rungs is what
+   keeps "every module that got made gets retired" one fact rather than six copies of it that can
+   disagree about how many modules there are - the reason the frag axis's length never appears in
+   those rungs. */
+static void xud_pipeline_close_modules(XudShader** vertexShader, XudShader** fragModules, const XudDevice* device, XudLoader* loader) {
+    uint32_t module = 0u;
+
+    for (module = 0u; module < XUD_PIPELINE_FRAG_MODULE_COUNT; module++) {
+        if (fragModules != NULL) {
+            (void)xud_shader_close(&fragModules[module], device, loader);
+        }
+    }
+    if (vertexShader != NULL) {
+        (void)xud_shader_close(vertexShader, device, loader);
+    }
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The create rung - the driver half
  *-----------------------------------------------------------------------------------------------*/
 
@@ -448,7 +497,9 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     const XudBatch* batch, VkRenderPass renderPass) {
     XudPipeline* pipeline = NULL;
     XudShader* vertexShader = NULL;
-    XudShader* fragmentShader = NULL;
+    XudShader* fragModule[XUD_PIPELINE_FRAG_MODULE_COUNT] = { NULL }; /* one per entry of the FRAG axis,
+                            not one per row of the list: the two untextured columns are built from one
+                            module */
     VkPipelineLayoutCreateInfo layoutInfo;
     VkPipeline created[XUD_PIPELINE_ROW_COUNT] = { VK_NULL_HANDLE }; /* zeroed in full: only the
                             rows a create call reached have a handle in them, and the ladder below
@@ -459,6 +510,7 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     uint32_t variant = 0u;
     uint32_t topology = 0u;
     uint32_t row = 0u;
+    uint32_t module = 0u;
 
     if ((outPipeline == NULL) || (*outPipeline != NULL)) {
         return XUD_INVALID_ARG;
@@ -523,33 +575,51 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
        order xud_renderer.c states. */
     pipeline->renderPass = renderPass;
 
-    /* The two modules first: the layout and the pipeline are built from what they hand back. */
+    /* The modules first: one vertex module for the whole list and one module per entry of the FRAG
+       axis, so the two untextured columns share one VkShaderModule and only the textured column
+       names the second. The layout and the pipelines are built from what these hand back.
+    */
     result = xud_shader_open(&vertexShader, loader, device, xudSolidVertSpv, sizeof(xudSolidVertSpv));
     if (result != XUD_OK) {
         free(pipeline);
         return result;
     }
-    result = xud_shader_open(&fragmentShader, loader, device, xudSolidFragSpv, sizeof(xudSolidFragSpv));
-    if (result != XUD_OK) {
-        (void)xud_shader_close(&vertexShader, device, loader);
-        free(pipeline);
-        return result;
+
+    for (module = 0u; module < XUD_PIPELINE_FRAG_MODULE_COUNT; module++) {
+        result = xud_shader_open(&fragModule[module], loader, device, xudPipelineFragCode[module], xudPipelineFragCodeSize[module]);
+        if (result != XUD_OK) {
+            xud_pipeline_close_modules(&vertexShader, fragModule, device, loader);
+            free(pipeline);
+            return result;
+        }
+    }
+
+    for (module = 0u; module < XUD_PIPELINE_FRAG_MODULE_COUNT; module++) {
+        pipeline->fragmentShader[module] = fragModule[module];
     }
     pipeline->vertexShader = vertexShader;
-    pipeline->fragmentShader = fragmentShader;
 
-    result = xud_pipeline_fill_shader_stages(pipeline->shaderStages, vertexShader->module, fragmentShader->module);
-    if (result != XUD_OK) {
-        (void)xud_shader_close(&fragmentShader, device, loader);
-        (void)xud_shader_close(&vertexShader, device, loader);
-        free(pipeline);
-        return result;
+    /* The stage rows, one PAIR per row of the list rather than one pair for the whole rung: the frag
+       module is pipeline state and the variant axis names which module each row's fragment stage is
+       built from, so the pair is filled per row from the module that column maps to. Filled before
+       any create call, so the create-info the driver reads and the record keep the same bytes.
+    */
+    for (topology = 0u; topology < XUD_BATCH_TOPOLOGY_COUNT; topology++) {
+        for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
+            row = XUD_PIPELINE_ROW(topology, variant);
+            result = xud_pipeline_fill_shader_stages(
+                pipeline->shaderStages[row], vertexShader->module, fragModule[xudPipelineFragModule[variant]]->module);
+            if (result != XUD_OK) {
+                xud_pipeline_close_modules(&vertexShader, fragModule, device, loader);
+                free(pipeline);
+                return result;
+            }
+        }
     }
 
     result = xud_pipeline_fill_layout_info(descriptor, &layoutInfo);
     if (result != XUD_OK) {
-        (void)xud_shader_close(&fragmentShader, device, loader);
-        (void)xud_shader_close(&vertexShader, device, loader);
+        xud_pipeline_close_modules(&vertexShader, fragModule, device, loader);
         free(pipeline);
         return result;
     }
@@ -560,8 +630,7 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     vk = loader->deviceTable.vkCreatePipelineLayout(device->device, &layoutInfo, NULL, &layout);
     result = xud_result_from_vk(vk);
     if (result != XUD_OK) {
-        (void)xud_shader_close(&fragmentShader, device, loader);
-        (void)xud_shader_close(&vertexShader, device, loader);
+        xud_pipeline_close_modules(&vertexShader, fragModule, device, loader);
         free(pipeline);
         return result;
     }
@@ -583,8 +652,7 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
             if (result != XUD_OK) {
                 xud_pipeline_destroy_rows(loader, device, created);
                 (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
-                (void)xud_shader_close(&fragmentShader, device, loader);
-                (void)xud_shader_close(&vertexShader, device, loader);
+                xud_pipeline_close_modules(&vertexShader, fragModule, device, loader);
                 free(pipeline);
                 return result;
             }
@@ -601,8 +669,7 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
             if (result != XUD_OK) {
                 xud_pipeline_destroy_rows(loader, device, created);
                 (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, layout, NULL);
-                (void)xud_shader_close(&fragmentShader, device, loader);
-                (void)xud_shader_close(&vertexShader, device, loader);
+                xud_pipeline_close_modules(&vertexShader, fragModule, device, loader);
                 free(pipeline);
                 return result;
             }
@@ -623,10 +690,10 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
 
 XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, XudLoader* loader) {
     XudPipeline* victim = NULL;
-    XudResult closedVertex = XUD_INVALID_ARG;
-    XudResult closedFragment = XUD_INVALID_ARG;
+    XudResult closedModule = XUD_INVALID_ARG;
     XudResult first = XUD_OK;
     uint32_t row = 0u;
+    uint32_t module = 0u;
 
     if ((ioPipeline == NULL) || (*ioPipeline == NULL)) {
         return XUD_INVALID_ARG;
@@ -666,16 +733,18 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
         victim->layout = VK_NULL_HANDLE;
     }
 
-    if (victim->fragmentShader != NULL) {
-        closedFragment = xud_shader_close(&victim->fragmentShader, device, loader);
-        if ((closedFragment != XUD_OK) && (closedFragment != XUD_ALREADY)) {
-            first = closedFragment;
+    for (module = 0u; module < XUD_PIPELINE_FRAG_MODULE_COUNT; module++) {
+        if (victim->fragmentShader[module] != NULL) {
+            closedModule = xud_shader_close(&victim->fragmentShader[module], device, loader);
+            if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
+                first = closedModule;
+            }
         }
     }
     if (victim->vertexShader != NULL) {
-        closedVertex = xud_shader_close(&victim->vertexShader, device, loader);
-        if ((closedVertex != XUD_OK) && (closedVertex != XUD_ALREADY)) {
-            first = closedVertex;
+        closedModule = xud_shader_close(&victim->vertexShader, device, loader);
+        if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
+            first = closedModule;
         }
     }
 

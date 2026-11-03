@@ -199,7 +199,14 @@ static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_
    never sorts and no sort key is added to this row). */
 #define XUD_BATCH_VARIANT_OPAQUE 0u
 #define XUD_BATCH_VARIANT_TRANSPARENT 1u
-#define XUD_BATCH_VARIANT_COUNT 2u
+#define XUD_BATCH_VARIANT_TEXTURED                                                                                                         \
+    2u /* the third column of the variant axis: the row a glyph                                                                            \
+atlas and any other mapped surface is drawn on. It is a COLUMN of the same axis rather than a                                              \
+flag on the draw row because the variant axis IS the pipeline list's variant axis and a pipeline                                           \
+is where the frag module that reads set 1 lives - a flag would be a second axis the list would                                             \
+have to be the cross product of, and the textured row is alpha-blended, which is what a glyph                                              \
+atlas needs against a cleared background */
+#define XUD_BATCH_VARIANT_COUNT 3u
 
 /* The two topologies a draw row can name, as the row's index into the pipeline list's topology
    axis rather than as a VkPrimitiveTopology: a row that carried a pipeline handle would be a row
@@ -228,7 +235,7 @@ static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_
 
 #define XUD_BATCH_NO_MATERIAL 0xFFFFFFFFu /* "no material slot yet", the same sentinel shape xud_handle.h uses for an unfilled slot */
 
-static_assert(XUD_BATCH_VARIANT_COUNT == (XUD_BATCH_VARIANT_TRANSPARENT + 1u), "the two variants are contiguous from opaque up");
+static_assert(XUD_BATCH_VARIANT_COUNT == (XUD_BATCH_VARIANT_TEXTURED + 1u), "the variant axis is contiguous from opaque up");
 static_assert(XUD_BATCH_TOPOLOGY_COUNT == (XUD_BATCH_TOPOLOGY_LINES + 1u), "the two topologies are contiguous from triangles up");
 static_assert(XUD_BATCH_NO_MATERIAL > 0u, "the sentinel is not a material slot any live row can name");
 

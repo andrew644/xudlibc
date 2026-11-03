@@ -346,10 +346,13 @@ typedef struct XudTextureData {
 #define XUD_BLEND_OPAQUE 0u /* blend disabled: every draw of this material overwrites what is behind it */
 #define XUD_BLEND_TRANSPARENT                                                                                                              \
     1u /* blend enabled, SRC_ALPHA over ONE_MINUS_SRC_ALPHA plus VK_BLEND_OP_ADD: caller-ordered, the library never sorts */
-#define XUD_BLEND_COUNT 2u /* the length of this axis, which is the length of the pipeline list's variant axis */
+#define XUD_BLEND_TEXTURED                                                                                                                 \
+    2u /* blend enabled against the sampled texel: the textured pipeline row, the one a glyph atlas needs, because a glyph is alpha and an \
+          unblended glyph over a cleared background is a rectangle of the atlas rather than a letter */
+#define XUD_BLEND_COUNT 3u /* the length of this axis, which is the length of the pipeline list's variant axis */
 
-static_assert(XUD_BLEND_COUNT == (XUD_BLEND_TRANSPARENT + 1u),
-    "xud.h: the two blend tokens are contiguous from opaque up, so the count is one past the highest");
+static_assert(XUD_BLEND_COUNT == (XUD_BLEND_TEXTURED + 1u),
+    "xud.h: the three blend tokens are contiguous from opaque up, so the count is one past the highest");
 
 /// The one material description a caller hands down: the blend behaviour every draw of this materi
 /// al uses, which is the row of the pipeline list those draws bind. A value type in the handle's

@@ -39,6 +39,9 @@ static void xud_test_descriptor_pure(void) {
     uint64_t fakeLayoutHandle = 0x4200u;
     uint64_t fakeSetHandle = 0x4400u;
     uint64_t fakeBufferHandle = 0x4500u;
+    uint64_t fakeImageHandle = 0x4600u;
+    uint64_t fakeImageViewHandle = 0x4700u;
+    uint64_t fakeSamplerHandle = 0x4800u;
     uint64_t fakeStagingHandle = 0x4600u;
     uint32_t row = 0u;
 
@@ -59,12 +62,13 @@ static void xud_test_descriptor_pure(void) {
     caps.properties.properties.limits.maxDescriptorSetSamplers = 64u;
     caps.properties.properties.limits.maxPushConstantsSize = XUD_DESCRIPTOR_PUSH_MIN_GUARANTEE;
     caps.properties.properties.limits.maxUniformBufferRange = 65536u;
+    caps.properties.properties.limits.maxImageDimension2D = 8192u;
 
     xud_check(xud_descriptor_caps_support(NULL) == XUD_INVALID_ARG, "descriptor/caps-null",
         "is refused: a rung with no recorded caps has nothing to gate itself on");
     xud_check(xud_descriptor_caps_support(&caps) == XUD_OK, "descriptor/caps-can-have-it", "the layout as designed fits this caps row");
 
-    /* Each refusal in turn, one limit at a time, so the gate's compares are five observable rules
+    /* Each refusal in turn, one limit at a time, so the gate's compares are seven observable rules
        rather than one that happens to pass. Each is the repo's XUD_UNSUPPORTED rather than a smal
        ler layout: a device this material model does not fit is refused, not quietly reshaped.
      */
@@ -105,6 +109,12 @@ static void xud_test_descriptor_pure(void) {
         "a UNIFORM_BUFFER descriptor may not name a range bigger than that limit, so a block bigger "
         "than it is a refusal rather than a buffer the driver accepts and the shader does not");
     caps.properties.properties.limits.maxUniformBufferRange = 65536u;
+
+    caps.properties.properties.limits.maxImageDimension2D = 0u;
+    xud_check(xud_descriptor_caps_support(&caps) == XUD_UNSUPPORTED, "descriptor/caps-no-image-room",
+        "the white default every entry of set 1 names is an image this rung creates, so the one image bound the caps can refuse is refused "
+        "on its own too");
+    caps.properties.properties.limits.maxImageDimension2D = 8192u;
 
     xud_check(xud_descriptor_caps_support(&caps) == XUD_OK, "descriptor/caps-ok-again",
         "the gate is a compare, not a sticky flag: a caps row that fits answers OK every time");
@@ -194,27 +204,52 @@ static void xud_test_descriptor_pure(void) {
         "the array's size rather than 1, because the count is the ceiling of what the pool's sets m"
         "ay hold in total and the texture step's set 1 is this array");
 
-    /* The allocate-info, which names the pool and the layout rather than a set.
+    /* The allocate-infos, which name the pool and the layout rather than a set. BOTH sets of this
+       layout are allocated, so there are two rows of the array below rather than one, and the index
+       that picks the row is the set number the pipeline layout's pSetLayouts array already fixed.
      */
-    xud_check(xud_descriptor_fill_set_allocate_info(NULL) == XUD_INVALID_ARG, "descriptor/fill-alloc-null", "is refused");
-    xud_check(xud_descriptor_fill_set_allocate_info(&d) == XUD_INVALID_ARG, "descriptor/fill-alloc-no-pool",
+    xud_check(xud_descriptor_fill_set_allocate_info(NULL, XUD_DESCRIPTOR_SET_PER_FRAME) == XUD_INVALID_ARG, "descriptor/fill-alloc-null",
+        "is refused");
+    xud_check(xud_descriptor_fill_set_allocate_info(&d, XUD_DESCRIPTOR_SET_COUNT) == XUD_INVALID_ARG, "descriptor/fill-alloc-bad-index",
+        "a set index past this layout's own set count is refused rather than read off the end of the array");
+    xud_check(xud_descriptor_fill_set_allocate_info(&d, XUD_DESCRIPTOR_SET_PER_FRAME) == XUD_INVALID_ARG, "descriptor/fill-alloc-no-pool",
         "a record whose pool was never created is a bad state of this rung, not a bad argument from "
         "a caller");
     d.pool = (VkDescriptorPool)&fakePoolHandle;
-    xud_check(xud_descriptor_fill_set_allocate_info(&d) == XUD_INVALID_ARG, "descriptor/fill-alloc-no-layout-0",
+    xud_check(xud_descriptor_fill_set_allocate_info(&d, XUD_DESCRIPTOR_SET_PER_FRAME) == XUD_INVALID_ARG,
+        "descriptor/fill-alloc-no-layout-0",
         "and the layout the set is allocated against is required too: an allocate-info that names a "
         "pool but no layout names nothing");
     d.setLayouts[XUD_DESCRIPTOR_SET_PER_FRAME] = (VkDescriptorSetLayout)&fakeLayoutHandle;
-    xud_check(xud_descriptor_fill_set_allocate_info(&d) == XUD_OK, "descriptor/fill-alloc-ok", "assembled");
-    xud_check(d.setAllocateInfo.sType == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, "descriptor/alloc-stamped", "stamped");
-    xud_check((d.setAllocateInfo.pNext == NULL) && (d.setAllocateInfo.descriptorPool == d.pool), "descriptor/alloc-names-own-pool",
-        "the pool this rung created");
-    xud_check(d.setAllocateInfo.descriptorSetCount == 1u, "descriptor/alloc-one-set",
-        "one set per allocate call, which is what makes set 1's later allocation a call of the tex"
-        "ture step rather than a second row here");
-    xud_check(d.setAllocateInfo.pSetLayouts == &d.setLayouts[XUD_DESCRIPTOR_SET_PER_FRAME], "descriptor/alloc-names-set-0-layout",
-        "set 0's layout specifically, and by pointer into the record's own array, so the set and th"
-        "e pipeline layout above cannot disagree about which layout set 0 is");
+    xud_check(xud_descriptor_fill_set_allocate_info(&d, XUD_DESCRIPTOR_SET_PER_FRAME) == XUD_OK, "descriptor/fill-alloc-0-ok", "assembled");
+    xud_check(d.setAllocateInfo[XUD_DESCRIPTOR_SET_PER_FRAME].sType == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        "descriptor/alloc-0-stamped", "stamped");
+    xud_check((d.setAllocateInfo[XUD_DESCRIPTOR_SET_PER_FRAME].pNext == NULL)
+            && (d.setAllocateInfo[XUD_DESCRIPTOR_SET_PER_FRAME].descriptorPool == d.pool),
+        "descriptor/alloc-0-names-own-pool", "the pool this rung created");
+    xud_check(d.setAllocateInfo[XUD_DESCRIPTOR_SET_PER_FRAME].descriptorSetCount == 1u, "descriptor/alloc-0-one-set",
+        "one set per allocate call, which is what makes the two sets of this layout two calls rather than one call that names both");
+    xud_check(d.setAllocateInfo[XUD_DESCRIPTOR_SET_PER_FRAME].pSetLayouts == &d.setLayouts[XUD_DESCRIPTOR_SET_PER_FRAME],
+        "descriptor/alloc-0-names-set-0-layout",
+        "set 0's layout specifically, and by pointer into the record's own array, so the set and the pipeline layout above cannot "
+        "disagree about which layout set 0 is");
+
+    /* Set 1's allocate-info, which needs its own layout live before it can be filled at all - the s
+       econd half of the pair the layout declares.
+     */
+    xud_check(xud_descriptor_fill_set_allocate_info(&d, XUD_DESCRIPTOR_SET_MATERIAL) == XUD_INVALID_ARG,
+        "descriptor/fill-alloc-no-layout-1",
+        "set 1's layout is required too, so a half-filled layout is refused rather than half-allocated");
+    d.setLayouts[XUD_DESCRIPTOR_SET_MATERIAL] = (VkDescriptorSetLayout)&fakeLayoutHandle;
+    xud_check(xud_descriptor_fill_set_allocate_info(&d, XUD_DESCRIPTOR_SET_MATERIAL) == XUD_OK, "descriptor/fill-alloc-1-ok", "assembled");
+    xud_check(d.setAllocateInfo[XUD_DESCRIPTOR_SET_MATERIAL].sType == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        "descriptor/alloc-1-stamped", "stamped");
+    xud_check(d.setAllocateInfo[XUD_DESCRIPTOR_SET_MATERIAL].descriptorSetCount == 1u, "descriptor/alloc-1-one-set",
+        "one set per allocate call, the same row as set 0's");
+    xud_check(d.setAllocateInfo[XUD_DESCRIPTOR_SET_MATERIAL].pSetLayouts == &d.setLayouts[XUD_DESCRIPTOR_SET_MATERIAL],
+        "descriptor/alloc-1-names-set-1-layout",
+        "set 1's layout specifically, which is what makes the sampler array's set the one the pipeline layout numbers 1 rather than a "
+        "second layout that happens to match");
 
     /* The buffer of set 0.
      */
@@ -266,6 +301,128 @@ static void xud_test_descriptor_pure(void) {
     xud_check(d.bufferRow.range == XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE, "descriptor/write-range-is-the-buffer",
         "the buffer's own size rather than the allocator's carve, which may be bigger: the descript"
         "or names the buffer's bytes, not the hole around it");
+
+    /* The white default every entry of set 1's sampler array names, and the two transitions around
+       its fill. These are the rows of the ONE image this rung owns, and the reason it owns one at a
+       ll is a rule about the set above rather than a rule about a shader: an allocated sampler arra
+       y is only legal once every entry of it names a real view and a real sampler.
+     */
+    xud_check(xud_descriptor_fill_white_infos(NULL) == XUD_INVALID_ARG, "descriptor/fill-white-null", "is refused");
+    xud_check(xud_descriptor_fill_white_infos(&d) == XUD_OK, "descriptor/fill-white-ok", "assembled");
+    xud_check(d.whiteImageInfo.sType == VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO, "descriptor/white-image-stamped", "stamped");
+    xud_check((d.whiteImageInfo.pNext == NULL) && (d.whiteImageInfo.flags == 0u), "descriptor/white-image-chain-clear", "nothing chained");
+    xud_check((d.whiteImageInfo.extent.width == 1u) && (d.whiteImageInfo.extent.height == 1u) && (d.whiteImageInfo.extent.depth == 1u),
+        "descriptor/white-is-one-texel", "one texel, which is the smallest image that can hold the one colour a default has to hold");
+    xud_check((d.whiteImageInfo.mipLevels == XUD_DESCRIPTOR_WHITE_MIP_LEVELS) && (d.whiteImageInfo.arrayLayers == 1u)
+            && (d.whiteImageInfo.samples == VK_SAMPLE_COUNT_1_BIT),
+        "descriptor/white-one-level", "one level, one layer, one sample: a default is not a chain and not an array and not multisampled");
+    xud_check((d.whiteImageInfo.format == XUD_DESCRIPTOR_WHITE_FORMAT) && (d.whiteImageInfo.tiling == XUD_DESCRIPTOR_WHITE_TILING)
+            && (d.whiteImageInfo.usage == XUD_DESCRIPTOR_WHITE_USAGE),
+        "descriptor/white-format-usage",
+        "the texture rung's format, OPTIMAL tiling and SAMPLED+TRANSFER_DST, which is what makes one image in this library have one format "
+        "and one set of rules about it");
+    xud_check(d.whiteImageInfo.initialLayout == XUD_DESCRIPTOR_WHITE_INITIAL_LAYOUT, "descriptor/white-initial-layout",
+        "UNDEFINED at the create, the same shape the texture rung's images are created in");
+    xud_check(d.whiteSamplerInfo.sType == VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, "descriptor/white-sampler-stamped", "stamped");
+    xud_check((d.whiteSamplerInfo.magFilter == VK_FILTER_LINEAR) && (d.whiteSamplerInfo.minFilter == VK_FILTER_LINEAR)
+            && (d.whiteSamplerInfo.mipmapMode == VK_SAMPLER_MIPMAP_MODE_LINEAR),
+        "descriptor/white-sampler-filters",
+        "linear on both axes and linear LOD selection, the same filter a texture of this library is sampled with");
+    xud_check((d.whiteSamplerInfo.addressModeU == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+            && (d.whiteSamplerInfo.addressModeV == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE)
+            && (d.whiteSamplerInfo.addressModeW == VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE),
+        "descriptor/white-sampler-address",
+        "clamped on all three axes, so a UV outside the unit square reads the edge texel rather than wrapping");
+    xud_check((d.whiteSamplerInfo.compareEnable == VK_FALSE) && (d.whiteSamplerInfo.compareOp == VK_COMPARE_OP_ALWAYS),
+        "descriptor/white-sampler-no-compare",
+        "no compare: a compareOp other than ALWAYS is a shadow-mapping decision this library does not take");
+    xud_check(
+        (d.whiteSamplerInfo.borderColor == VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE) && (d.whiteSamplerInfo.unnormalizedCoordinates == VK_FALSE),
+        "descriptor/white-sampler-border",
+        "an opaque-white border and normalised coordinates, so even a read past the edge of the default is the identity of the textured "
+        "frag's multiply");
+    xud_check(d.whiteViewInfo.sType == VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO, "descriptor/white-view-stamped", "stamped");
+    xud_check((d.whiteViewInfo.image == VK_NULL_HANDLE) && (d.whiteViewInfo.viewType == VK_IMAGE_VIEW_TYPE_2D)
+            && (d.whiteViewInfo.format == XUD_DESCRIPTOR_WHITE_FORMAT),
+        "descriptor/white-view-2d",
+        "a 2D view of the default's own format, and no image yet: the handle is stamped into this row by the bring-up, which is the only "
+        "place that has one");
+    xud_check((d.whiteViewInfo.subresourceRange.aspectMask == XUD_DESCRIPTOR_WHITE_ASPECT_MASK)
+            && (d.whiteViewInfo.subresourceRange.levelCount == XUD_DESCRIPTOR_WHITE_MIP_LEVELS)
+            && (d.whiteViewInfo.subresourceRange.layerCount == 1u),
+        "descriptor/white-view-range", "the colour plane of one level and one layer, which is the whole of a 1x1 image");
+    xud_check((d.whiteClearColor.float32[0u] == 1.0f) && (d.whiteClearColor.float32[1u] == 1.0f) && (d.whiteClearColor.float32[2u] == 1.0f)
+            && (d.whiteClearColor.float32[3u] == 1.0f),
+        "descriptor/white-clear-is-white",
+        "opaque white, which is the identity of the textured frag's multiply: a textured draw before any texture exists draws the vertex "
+        "colour");
+    xud_check((d.whiteSubresourceRange.aspectMask == XUD_DESCRIPTOR_WHITE_ASPECT_MASK)
+            && (d.whiteSubresourceRange.levelCount == XUD_DESCRIPTOR_WHITE_MIP_LEVELS) && (d.whiteSubresourceRange.layerCount == 1u),
+        "descriptor/white-range-is-one-row",
+        "the clear and the two transitions share one subresource row rather than stamping three that could disagree");
+
+    xud_check(xud_descriptor_fill_white_transitions(NULL) == XUD_INVALID_ARG, "descriptor/fill-white-barriers-null", "is refused");
+    xud_check(xud_descriptor_fill_white_transitions(&d) == XUD_OK, "descriptor/fill-white-barriers-ok", "assembled");
+    xud_check((d.whiteToUpload.sType == VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER)
+            && (d.whiteToSampled.sType == VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER),
+        "descriptor/white-barriers-stamped",
+        "both rows are image barriers rather than memory barriers, because a layout transition is about an image");
+    xud_check((d.whiteToUpload.oldLayout == XUD_DESCRIPTOR_WHITE_INITIAL_LAYOUT)
+            && (d.whiteToUpload.newLayout == XUD_DESCRIPTOR_WHITE_UPLOAD_LAYOUT),
+        "descriptor/white-into-upload-layout",
+        "UNDEFINED into TRANSFER_DST: UNDEFINED is what UNDEFINED means to a barrier, namely whatever layout this subresource is in, which "
+        "is true on the first frame and honest on every later one");
+    xud_check((d.whiteToSampled.oldLayout == XUD_DESCRIPTOR_WHITE_UPLOAD_LAYOUT)
+            && (d.whiteToSampled.newLayout == XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT),
+        "descriptor/white-into-sampled-layout", "TRANSFER_DST into SHADER_READ_ONLY, the one layout a sampled descriptor may read");
+    xud_check((d.whiteToUpload.image == VK_NULL_HANDLE) && (d.whiteToSampled.image == VK_NULL_HANDLE),
+        "descriptor/white-barriers-image-stamped-later",
+        "the bring-up has not created the image yet, so the handle is stamped into these two rows by the upload rather than here");
+    xud_check((d.whiteToUpload.subresourceRange.aspectMask == XUD_DESCRIPTOR_WHITE_ASPECT_MASK)
+            && (d.whiteToSampled.subresourceRange.aspectMask == XUD_DESCRIPTOR_WHITE_ASPECT_MASK),
+        "descriptor/white-barriers-share-the-range",
+        "both barriers name the range the view names, so a barrier cannot be about an image the view does not look at");
+
+    /* The write that bound set 1's sampler array.
+     */
+    xud_check(xud_descriptor_fill_sampler_write_info(NULL) == XUD_INVALID_ARG, "descriptor/fill-sampler-write-null", "is refused");
+    xud_check(xud_descriptor_fill_sampler_write_info(&d) == XUD_INVALID_ARG, "descriptor/fill-sampler-write-no-default",
+        "a set allocated against a sampler layout and no white view behind it is a write that names nothing, refused as a bad state of "
+        "this rung");
+    d.whiteImage = (VkImage)&fakeImageHandle;
+    d.whiteImageView = (VkImageView)&fakeImageViewHandle;
+    d.whiteSampler = (VkSampler)&fakeSamplerHandle;
+    d.sets[XUD_DESCRIPTOR_SET_MATERIAL] = (VkDescriptorSet)&fakeSetHandle;
+    xud_check(xud_descriptor_fill_sampler_write_info(&d) == XUD_OK, "descriptor/fill-sampler-write-ok", "assembled");
+    xud_check(d.samplerWriteInfo.sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, "descriptor/sampler-write-stamped", "stamped");
+    xud_check(d.samplerWriteInfo.dstSet == d.sets[XUD_DESCRIPTOR_SET_MATERIAL], "descriptor/sampler-write-targets-set-1",
+        "set 1, the sampler array's set, which is the set the pipeline layout numbers 1 rather than a second layout that happens to match");
+    xud_check((d.samplerWriteInfo.dstBinding == XUD_DESCRIPTOR_BINDING) && (d.samplerWriteInfo.dstArrayElement == 0u),
+        "descriptor/sampler-write-binding",
+        "the one binding of that set, from element 0, which is the same numbering the layout's own binding row declares");
+    xud_check((d.samplerWriteInfo.descriptorCount == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)
+            && (d.samplerWriteInfo.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
+        "descriptor/sampler-write-array",
+        "every entry of the array and the type the layout declared for that binding, which is the rule that makes a write and a layout one "
+        "agreement rather than two rows that happen to match");
+    xud_check(d.samplerWriteInfo.pImageInfo == d.samplerRows, "descriptor/sampler-write-rows-are-the-records",
+        "the image infos live inside the record, so the write read after the call still points at storage that outlived it");
+    xud_check((d.samplerWriteInfo.pBufferInfo == NULL) && (d.samplerWriteInfo.pTexelBufferView == NULL),
+        "descriptor/sampler-write-other-arrays-null",
+        "the other two info arrays are NULL, which is what a COMBINED_IMAGE_SAMPLER write requires: exactly one of the three may be "
+        "non-NULL for a given descriptorType");
+    {
+        uint32_t slot = 0u;
+        for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
+            xud_check((d.samplerRows[slot].imageView == d.whiteImageView) && (d.samplerRows[slot].sampler == d.whiteSampler),
+                "descriptor/sampler-write-every-slot-names-the-default",
+                "every slot of the array names the same view and the same sampler, which is the point of the default: the array is a slot "
+                "axis and the texture step is what puts different views into different rows of it");
+            xud_check(d.samplerRows[slot].imageLayout == XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT, "descriptor/sampler-write-slot-layout",
+                "the layout the transition barrier above leaves the image in, which is what makes the descriptor's idea of the layout and "
+                "the barrier's one one agreement");
+        }
+    }
 
     /* The host-side bytes of set 0's block.
      */
@@ -437,9 +594,18 @@ static void xud_test_gpu_descriptor(void) {
     xud_check(context->descriptor->pool != VK_NULL_HANDLE, "gpu-desc/pool-live", "the pool exists");
     xud_check(context->descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] != VK_NULL_HANDLE, "gpu-desc/set-0-live",
         "set 0 was allocated from that pool against that layout");
-    xud_check(context->descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE, "gpu-desc/set-1-not-allocated",
-        "and set 1 was not: the layout is declared, the set is not, and the texture step is what al"
-        "locates it from this same pool");
+    xud_check(context->descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] != VK_NULL_HANDLE, "gpu-desc/set-1-allocated",
+        "and set 1 is allocated too, from the same pool against the same layout: an allocated sampler array whose entries were never "
+        "written is an invalid descriptor, so the set and the white default behind every entry of it are this rung's, and the texture step "
+        "is what puts a different view into a different row of it");
+    xud_check((context->descriptor->whiteImage != VK_NULL_HANDLE) && (context->descriptor->whiteImageView != VK_NULL_HANDLE)
+            && (context->descriptor->whiteSampler != VK_NULL_HANDLE),
+        "gpu-desc/white-default-live",
+        "and the one image behind all 16 rows of that array is live: one view and one sampler rather than 16 of each, which is what makes "
+        "the array a slot axis and not a texture axis");
+    xud_check(context->descriptor->whiteRange.memory != VK_NULL_HANDLE, "gpu-desc/white-default-has-memory",
+        "and it is bound to memory the allocator owns, the same way the uniform buffer is, because an image this rung creates is storage "
+        "this rung must release");
     xud_check(context->descriptor->uniformBuffer != VK_NULL_HANDLE, "gpu-desc/buffer-live", "the per-frame uniform buffer exists");
     xud_check(context->descriptor->uniformRange.memory != VK_NULL_HANDLE, "gpu-desc/buffer-has-memory",
         "and it is bound to memory the allocator owns, which is the reason this rung sits above the"
@@ -512,23 +678,23 @@ static void xud_test_gpu_descriptor(void) {
     }
 
     /* The allocator below this rung is no longer storage-only: the descriptor's buffer made one blo
-       ck and one live range, the render pass's depth image made a second of each, and the batch run
-       g below the renderer made a third block and six more live ranges - its arena and its five dat
-       a buffers are six requests small enough to share blocks, which is the suballocation half of t
-       he repo's "allocate once, suballocate always" rule seen from the other side of the ladder. Ev
-       ery number below is therefore read as a delta on this baseline rather than as a constant.
+       ck and one live range, its white default made a second block and a second live range, the rend
+       er pass's depth image made a third of each, and the batch rung below the renderer made a fourt
+       h block and six more live ranges - its arena and its five data buffers are six requests small
+       enough to share blocks, which is the suballocation half of the repo's "allocate once, suballoca
+       te always" rule seen from the other side of the ladder. Every number below is therefore read a
+       s a delta on this baseline rather than as a constant.
      */
     xud_check(
         xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytes, &cursor) == XUD_OK, "gpu-desc/stats-answers", "answers");
-    xud_check(blockCount == 4u, "gpu-desc/four-blocks",
-        "four VkDeviceMemory: the descriptor's uniform buffer, the render pass's depth image (the firs"
-        "t thing in this tree that asked for an IMAGE's requirements, whose alignment is not a buffer's"
-        ") and the two host-visible arenas, this rung's staging arena and the batch's, which are block"
-        "s of their own because a mapping is per-VkDeviceMemory rather than per-range");
-    xud_check(liveCount == 9u, "gpu-desc/nine-live-ranges",
-        "nine live ranges over them: the uniform buffer's carve, the depth image's, the two arenas eac"
-        "ch of which is a whole block, and the batch's four streams plus its index buffer, which is wh"
-        "at a completed context owns now");
+    xud_check(blockCount == 5u, "gpu-desc/five-blocks",
+        "five VkDeviceMemory: the descriptor's uniform buffer, the render pass's depth image, the white default's own image (the second "
+        "thing in this tree that asked for an IMAGE's requirements, and its alignment does not fit a hole in the depth image's block "
+        "either) and the two host-visible arenas, this rung's staging arena and the batch's, which are blocks of their own because a "
+        "mapping is per-VkDeviceMemory rather than per-range");
+    xud_check(liveCount == 10u, "gpu-desc/ten-live-ranges",
+        "ten live ranges over them: the uniform buffer's carve, the white default's, the depth image's, the two arenas each of which is a "
+        "whole block, and the batch's four streams plus its index buffer, which is what a completed context owns now");
     {
         uint32_t stream = 0u;
         VkDeviceSize batchCarves = 0u;
@@ -539,7 +705,7 @@ static void xud_test_gpu_descriptor(void) {
         batchCarves += context->renderer->batch->indexRange.size;
         xud_check(bytes
                 == (context->descriptor->uniformRange.size + context->descriptor->uniformStagingRange.size
-                    + context->renderer->renderPass->depthRange.size + batchCarves),
+                    + context->descriptor->whiteRange.size + context->renderer->renderPass->depthRange.size + batchCarves),
             "gpu-desc/bytes-are-every-carve",
             "the reserved bytes are exactly every carve added up, which is what makes the counter a fa"
             "ct rather than an estimate - and the batch's six are in that sum, so the rung below this o"
