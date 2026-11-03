@@ -241,6 +241,12 @@ add_executable(hello_font
 
 target_link_libraries(hello_font PRIVATE xud)
 
+add_executable(hello_model
+    examples/hello_model.c
+)
+
+target_link_libraries(hello_model PRIVATE xud)
+
 add_executable(breakout_3d
     examples/breakout_3d.c
 )
