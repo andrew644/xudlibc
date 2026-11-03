@@ -3,8 +3,9 @@
  *   xud_shapes.c - the shapes rung and the public draw call above it
  *
  *   Owns : xud_shapes_append_triangle(), xud_shapes_append_cube(), xud_shapes_append_sphere(),
- *          xud_shapes_append_line(), xud_shapes_append_cube_wires() and xud_shapes_append_sphere
- *          _wires(), the geometry the public draw calls name, the seven public calls above them (xud
+ *          xud_shapes_append_line(), xud_shapes_append_cube_wires(), xud_shapes_append_sphere
+ *          _wires() and xud_shapes_append_glyph_quad(), the geometry the public draw calls name,
+ *          the seven public calls above them (xud
  *          _draw_triangle_3d(), xud_draw_cube(), xud_draw_sphere(), xud_draw_line_3d(), xud_draw
  *          _point_3d(), xud_draw_cube_wires(), xud_draw_sphere_wires()) and the one guard those
  *          public calls share. Nothing else - no driver call, no loader row, no Vulkan or GLFW
@@ -1010,6 +1011,142 @@ XudResult xud_shapes_append_sphere_wires(
             return result;
         }
         result = xud_batch_append_index(batch, b);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The glyph quad: the first shape here whose uv is the caller's rather than a constant
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_shapes_append_glyph_quad(
+    XudBatch* batch, XudVector3 corner0, XudVector3 corner1, XudVector2 uv0, XudVector2 uv1, XudColor color) {
+    float pos[3];
+    float uv[2];
+    float normal[3];
+    float cornerX[XUD_SHAPES_GLYPH_VERTEX_COUNT];
+    float cornerY[XUD_SHAPES_GLYPH_VERTEX_COUNT];
+    float cornerU[XUD_SHAPES_GLYPH_VERTEX_COUNT];
+    float cornerV[XUD_SHAPES_GLYPH_VERTEX_COUNT];
+    uint8_t rgba[4];
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t first = 0u;
+    uint32_t row = 0u;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The box has to be a box, and the two comparisons are the top-down reading the header's
+       pairing note states: corner0 is the corner with the SMALLER x and the LARGER y, so a proper
+       box is corner1.x above corner0.x AND corner0.y above corner1.y. A quad with no area has no
+       front face and no texels of its own, and both comparisons refuse a NaN coordinate rather
+       than letting one into a float stream - the reason the sphere's note gives for a NaN radius,
+       one rung up. */
+    if (!((corner1.x > corner0.x) && (corner0.y > corner1.y))) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The four vertices carry the flat +Z normal, which is the surface's normal of a FLAT quad
+       and of nothing else; a caller who wants a glyph that does not face the camera wants the
+       transform step above this one, and a warped quad is a shape whose normal is a lie. The
+       equality is exact rather than a tolerance because the caller passes the plane's z twice: a
+       pair that is not the same number twice is not a rounding artefact, it is two different
+       planes, and a NaN z is refused here too (NaN != NaN). */
+    if (corner0.z != corner1.z) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The batch's counters, read through the rung's own accessor for the same reason the other
+       appends read them: this is the half that makes the append atomic. */
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* Both bounds, before anything at all changes - including the topology state below, which is
+       why a quad that does not fit cannot split a run. A glyph quad spends 4 vertices and 6
+       indices, 1.5 per vertex, so it is the box's closed-per-face case rather than the triangle's
+       1:1 one, and either bound can be the one that trips: a batch whose existing content reuses
+       vertices is full on indices with four vertices still to spare. */
+    if ((vertexCount + XUD_SHAPES_GLYPH_VERTEX_COUNT) > vertexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_GLYPH_VERTEX_COUNT, indexCount + XUD_SHAPES_GLYPH_INDEX_COUNT);
+        return XUD_OUT_OF_MEMORY;
+    }
+    if ((indexCount + XUD_SHAPES_GLYPH_INDEX_COUNT) > batch->indexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_GLYPH_VERTEX_COUNT, indexCount + XUD_SHAPES_GLYPH_INDEX_COUNT);
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    /* The topology moves FIRST, and before a byte is written: the run that was pending under the
+       old topology closes into a row of the same batch, and this quad's six indices start the next
+       one. A frame of glyphs after a frame of lines is two rows, and the frame loop binds a
+       pipeline beside each. */
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_TRIANGLES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The four corners, spelled out once rather than in four append calls: the order is the
+       counter-clockwise one the pipeline's front face names, seen from +Z, starting at the corner
+       the caller's corner1 and uv1 pair (the bottom-right of the quad, the diagonally opposite
+       corner to corner0/uv0) and walking right edge up, top edge left, left edge down. The two
+       mixed corners take the uv of the corner on the same EDGE as them rather than the one on the
+       same diagonal, which is what keeps the atlas box upright on the quad - see the pairing note
+       beside the counts in the header for why the two boxes are both top-down. */
+    cornerX[0] = corner1.x;
+    cornerX[1] = corner1.x;
+    cornerX[2] = corner0.x;
+    cornerX[3] = corner0.x;
+    cornerY[0] = corner1.y;
+    cornerY[1] = corner0.y;
+    cornerY[2] = corner0.y;
+    cornerY[3] = corner1.y;
+    cornerU[0] = uv1.x;
+    cornerU[1] = uv1.x;
+    cornerU[2] = uv0.x;
+    cornerU[3] = uv0.x;
+    cornerV[0] = uv1.y;
+    cornerV[1] = uv0.y;
+    cornerV[2] = uv0.y;
+    cornerV[3] = uv1.y;
+
+    normal[0] = XUD_SHAPES_FLAT_NORMAL_X;
+    normal[1] = XUD_SHAPES_FLAT_NORMAL_Y;
+    normal[2] = XUD_SHAPES_FLAT_NORMAL_Z;
+    rgba[0] = color.r;
+    rgba[1] = color.g;
+    rgba[2] = color.b;
+    rgba[3] = color.a;
+
+    first = vertexCount;
+
+    for (row = 0u; row < XUD_SHAPES_GLYPH_VERTEX_COUNT; row++) {
+        pos[0] = cornerX[row];
+        pos[1] = cornerY[row];
+        pos[2] = corner0.z;
+        uv[0] = cornerU[row];
+        uv[1] = cornerV[row];
+        result = xud_batch_append_vertex(batch, pos, uv, rgba, normal);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    /* The same two triangles one face of a box is closed by, naming the four vertices this call
+       just appended: a glyph quad and a box face are the same quad, which is the claim the header
+       asserts about the two index counts. */
+    for (row = 0u; row < XUD_SHAPES_GLYPH_INDEX_COUNT; row++) {
+        result = xud_batch_append_index(batch, first + XUD_SHAPES_CUBE_TRIANGLE_CORNER[row]);
         if (result != XUD_OK) {
             return result;
         }

@@ -3,7 +3,8 @@
  *
  *   Owns : one function per shape the public draw calls name - today the triangle of the hello
  *          triangle step, the box above it, the sphere above that, and the line/point and wire
- *          forms above those - and the constants and the face/edge tables every shape here builds
+ *          forms above those - the glyph quad above all of them, which no public draw call names
+ *          yet, and the constants and the face/edge tables every shape here builds
  *          its vertices from.
  *   Layer: above the batch, below the public API. This is the "feature modules (shapes, text,
  *   textures, models, audio, camera)" rung of the plan's layer ladder, sitting between the two
@@ -42,7 +43,7 @@
 #ifndef XUD_SHAPES_H_
 #define XUD_SHAPES_H_
 
-#include "xud.h" /* Required for: XudResult, XudVector3, XudColor - the public value types a shape's arguments are */
+#include "xud.h" /* Required for: XudResult, XudVector3, XudVector2, XudColor - the public value types a shape's arguments are */
 #include "xud_batch.h" /* Required for: XudBatch, xud_batch_append_vertex/xud_batch_append_index, xud_batch_stats - the batch's own appends and counters */
 
 #include <assert.h> /* Required for: static_assert, the counts below that cannot disagree */
@@ -74,11 +75,14 @@
 #define XUD_SHAPES_FLAT_NORMAL_Y 0.0f
 #define XUD_SHAPES_FLAT_NORMAL_Z 1.0f
 
-/* The uv every shape here carries: (0, 0). The batch's UV stream is read by nothing today -
-   solid.frag reads the colour at location 1 and the normal at location 2, and neither is this
-   one - and set 1 is declared but never allocated, so there is no sampler whose array a uv
-   could address. The value is a corner of a texture that does not exist, which is what a
-   stream that nothing reads has to be filled with. */
+/* The uv every shape HERE THAT HAS NO SURFACE carries: (0, 0). The batch's UV stream is read by
+   nothing today - solid.frag reads the colour at location 1 and the normal at location 2, and
+   neither is this one - and set 1 is declared but never allocated, so there is no sampler whose
+   array a uv could address. The value is a corner of a texture that does not exist, which is what
+   a stream that nothing reads has to be filled with. The glyph quad below is the one shape in
+   this rung this constant does NOT fill, and it is the reason the stream exists at all: a box,
+   a sphere and a line have no texels a caller names, so their uv has no value to be, and a
+   glyph's texels are named, by the atlas box. */
 #define XUD_SHAPES_UV_S 0.0f
 #define XUD_SHAPES_UV_T 0.0f
 
@@ -291,6 +295,54 @@ static_assert((XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT == XUD_SHAPES_SPHERE_VERTEX_C
     "and not two to keep honest");
 
 /*-----------------------------------------------------------------------------------------------
+ * The glyph quad: four corners, six indices, and the first uv in this rung that is not a constant
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The quad one glyph of a font atlas covers: four vertices and the six indices that name them as
+   two triangles - the same two-triangle order a face of a box uses, which is why the append below
+   reads that table rather than writing a second one. A glyph is a quad rather than a triangle
+   because a glyph's coverage is a box of texels with FOUR different texel coordinates at its four
+   corners, and a triangle names three; it is TRIANGLES rather than a strip because the batch's one
+   index buffer and the pipeline's TRIANGLES row are what every other filled shape here is drawn
+   through, and a fourth topology would be a fourth pipeline row bought for one shape.
+
+   The two position corners are the quad's box in the SAME top-down spelling the font rung's atlas
+   box is in (xud_get_glyph_atlas_rec hands a box whose x/y is its TOP-LEFT texel), and each corner
+   carries the uv corner named beside it: corner0/uv0 are one vertex and corner1/uv1 are the
+   diagonally opposite one. That pairing is the whole reason both boxes are spelled top-down: the
+   atlas's row 0 is the top row of the image and a VkImage's t=0 is that same row, so the atlas
+   box's SMALLER v belongs to the corner at the LARGER y, and the flip that would otherwise be
+   needed at every glyph is not needed at all - the two boxes agree rather than disagree. The y-up
+   space this rung's coordinates are in today (the viewProj is identity, see the note at the top of
+   this header) is what makes "larger y" the top corner, and is also why the append's proper-box
+   test reads corner0.y > corner1.y rather than the other way round.
+
+   What is NOT true yet, and why: nothing in this tree can put a texture's view into set 1's
+   sampler array (xud_descriptor.c stamps its own 1x1 white default into all sixteen entries and
+   xud_material.h's setOne is never allocated), so a glyph quad appended today still samples white
+   and draws as a tinted rectangle rather than a letter. The bytes this append writes are the
+   shape's half of that step; the sampler's half is the material step's. What is also not here: the
+   divide. The append takes a uv box in texture coordinates rather than an atlas box in texels and
+   an extent, because the shapes rung has no idea what an atlas is; the divide by the extent
+   happens where the extent is in sight, which is the draw above this rung - and the extent is not
+   public yet, which is the todo item below this one. */
+#define XUD_SHAPES_GLYPH_VERTEX_COUNT 4u
+#define XUD_SHAPES_GLYPH_INDEX_COUNT 6u
+
+static_assert((XUD_SHAPES_GLYPH_VERTEX_COUNT == 4u) && (XUD_SHAPES_GLYPH_INDEX_COUNT == 6u),
+    "xud_shapes.h: a glyph quad is four corners and the six indices of two triangles, which is what the append's fit check counts");
+static_assert(XUD_SHAPES_GLYPH_INDEX_COUNT == XUD_SHAPES_CUBE_FACE_INDEX_COUNT,
+    "xud_shapes.h: a glyph quad and one face of a box are the same quad, which is why the append reads the box's two-triangle order rather "
+    "than writing a second one");
+static_assert((XUD_SHAPES_GLYPH_VERTEX_COUNT <= XUD_BATCH_INITIAL_VERTICES)
+        && (XUD_SHAPES_GLYPH_INDEX_COUNT <= XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+    "xud_shapes.h: one glyph quad fits the capacity a context's batch opens at, so a frame of glyphs asks nothing of the grow path until "
+    "it runs out of vertices");
+static_assert(((XUD_BATCH_INITIAL_VERTICES / XUD_SHAPES_GLYPH_VERTEX_COUNT) == 16u),
+    "xud_shapes.h: sixteen glyph quads fit the capacity a context's batch opens at, which is the length of the run of text a frame can "
+    "draw today before the frame boundary above grows the batch - this rung cannot ask for that growth");
+
+/*-----------------------------------------------------------------------------------------------
  * The layer's contract
  *-----------------------------------------------------------------------------------------------*/
 
@@ -425,5 +477,34 @@ XudResult xud_shapes_append_cube_wires(XudBatch* batch, XudVector3 center, float
 /// no arena mapped to write into or when xud_batch_set_topology refuses to move the state; XUD_OK
 /// only when the state moved, all 17 vertex appends and all 70 index appends completed.
 XudResult xud_shapes_append_sphere_wires(XudBatch* batch, XudVector3 center, float radius, uint32_t rings, uint32_t slices, XudColor color);
+
+/// Pure: append one glyph quad - the caller's box and the caller's box of texture coordinates,
+/// paired corner to corner as the note above states - as 4 vertices and the 6 indices that name
+/// them, under the batch's TRIANGLES topology, which the append moves the batch to before a byte
+/// is written exactly as every other filled shape's append does. The uv is the caller's at all
+/// four corners and is the first uv in this rung that is not the zero constant above, for the
+/// reason stated beside the counts: a glyph's texels are named, by the atlas box, and (0,0) would
+/// be every glyph drawing the same texel of it. The normal is the flat +Z constant above: a glyph
+/// faces the camera it was drawn for, which is the same stand-in the triangle carries.
+///
+/// The append is ATOMIC in the same shape as every other shape's: both of the batch's bounds are
+/// read first and a quad that does not fit is refused before a byte is written and before the
+/// topology moves.
+///
+/// XUD_INVALID_ARG on a NULL batch, on a position box that is not a proper box (corner1.x at or
+/// below corner0.x, or corner0.y at or below corner1.y - a quad with no area has no front face and
+/// no texels of its own, and the same two comparisons refuse a NaN coordinate, which the sphere's
+/// note gives the reason for one float stream already), or on a corner pair whose z's disagree
+/// (the four vertices carry the flat +Z normal, which is only the surface's normal of a FLAT quad,
+/// and a tilted glyph wants the transform step above this one rather than a warped quad); XUD_OUT_
+/// OF_MEMORY when the 4 vertices or the 6 indices do not fit the batch's capacities; XUD_UNSUPPOR
+/// TED when the batch has no arena mapped to write into (the same answer xud_batch_append_vertex
+/// gives for the same reason, one rung up); XUD_OK only when the state moved, all 4 vertex appends
+/// and all 6 index appends completed. The uv box is NOT validated: the shapes rung has no idea what
+/// a uv means, the atlas's addressing mode is the texture rung's, and a texel coordinate outside
+/// the box the atlas occupies is a draw that samples the clamp rather than a read of memory - a
+/// sampler does the bounds work, an address does not.
+XudResult xud_shapes_append_glyph_quad(
+    XudBatch* batch, XudVector3 corner0, XudVector3 corner1, XudVector2 uv0, XudVector2 uv1, XudColor color);
 
 #endif /* XUD_SHAPES_H_ */

@@ -1,7 +1,6 @@
 # TODO
 - Add xud_draw_text()/xud_draw_text_ex() above the font rung, writing real UVs
 - Add xud_get_font_atlas_dim(): the atlas extent is only in the internal record today
-- Make the shapes append a real uv: a glyph quad needs the atlas box divided by the extent
 - Add dear imgui / microui / nuklear support
 - Add LICENSE.md
 - Add `xud_set_audio_volume()`/`xud_get_audio_volume()` above the row's own mixer node — raylib's `SetAudioVolume`, and the first thing that needs a node between the row's sound and the endpoint

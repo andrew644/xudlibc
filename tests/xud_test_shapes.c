@@ -4,7 +4,8 @@
  *
  *   Owns : the tests of one rung - xud_shapes_append_triangle(), xud_shapes_append_cube(),
  *          xud_shapes_append_sphere(), xud_shapes_append_line(), xud_shapes_append_cube_wires()
- *          and xud_shapes_append_sphere_wires(), the geometry xud_draw_triangle_3d(), xud_draw_cub
+ *          and xud_shapes_append_sphere_wires(), plus xud_shapes_append_glyph_quad(), the one
+ *          shape here no public draw call names yet, the geometry xud_draw_triangle_3d(), xud_draw_cub
  *          e(), xud_draw_sphere(), xud_draw_line_3d()/xud_draw_point_3d() and xud_draw_cube_wires()
  *          /xud_draw_sphere_wires() name, and the public frame pair xud_begin_drawing()/xud_end_dra
  *          wing().
@@ -130,6 +131,10 @@ static void xud_test_shapes_pure(void) {
     XudVector3 v1;
     XudVector3 v2;
     XudVector3 center;
+    XudVector3 glyph0;
+    XudVector3 glyph1;
+    XudVector2 glyphUv0;
+    XudVector2 glyphUv1;
     XudColor color;
     float width = 0.0f;
     float height = 0.0f;
@@ -156,6 +161,19 @@ static void xud_test_shapes_pure(void) {
     width = 1.0f;
     height = 0.5f;
     length = 2.0f;
+
+    /* The glyph quad's box and its uv box, both in the top-down spelling the append takes: corner
+       0 is the corner with the SMALLER x and the LARGER y, and uv0 is the texel corner at that
+       same corner of the atlas box. The uv pair below IS the atlas box divided by the atlas's
+       extent - a glyph box of (8,16)-(24,40) texels of a 64-texel atlas - which is the whole
+       point of the divide being the caller's rather than the append's: the shapes rung has no
+       idea what an atlas is, so the number that gets divided is the number that arrives already
+       divided. Every one of the six numbers is dyadic, so the divide is exact and the uv checks
+       below compare exactly rather than against the sphere's tolerance. */
+    glyph0 = (XudVector3) { .x = 0.0f, .y = 0.5f, .z = 0.0f };
+    glyph1 = (XudVector3) { .x = 0.25f, .y = 0.0f, .z = 0.0f };
+    glyphUv0 = (XudVector2) { .x = 0.125f, .y = 0.25f };
+    glyphUv1 = (XudVector2) { .x = 0.375f, .y = 0.625f };
 
     /*--- the refusals that need no batch and no context at all -------------------------------*/
 
@@ -202,6 +220,51 @@ static void xud_test_shapes_pure(void) {
         "a public wire sphere call with no context is refused");
     xud_check(xud_draw_sphere_wires(&shell, center, 0.4f, color) == XUD_UNSUPPORTED, "shapes/wire-sphere-draw-no-renderer",
         "and a context with no renderer has no batch to append into - the wire sphere is refused by the same two codes the filled one is");
+    xud_check(xud_shapes_append_glyph_quad(NULL, glyph0, glyph1, glyphUv0, glyphUv1, color) == XUD_INVALID_ARG,
+        "shapes/glyph-append-no-batch",
+        "and so is a glyph quad - the guard is the same one, and it is the first check of the append, before any box check");
+    xud_check(xud_shapes_append_glyph_quad(NULL, glyph1, glyph1, glyphUv0, glyphUv1, color) == XUD_INVALID_ARG,
+        "shapes/glyph-no-batch-beats-bad-box",
+        "and the NULL batch is refused even when the box is bad too: the append takes a batch rather than a context, so there is no "
+        "renderer question to ask and no capacity ask noted for a batch that was never named");
+
+    /*--- the glyph quad: the first shape here whose uv is the caller's --------------------------*/
+
+    /* The refusals that are arguments about the quad rather than about the batch: they are checked
+       before the batch's counters are read, so they answer on the zeroed batch this area memset
+       above rather than on a laid-out one, and the code they answer is the argument's code rather
+       than the batch's OUT_OF_MEMORY a zero-capacity batch would otherwise answer for every shape. */
+    xud_check(xud_shapes_append_glyph_quad(&b, glyph1, glyph1, glyphUv0, glyphUv1, color) == XUD_INVALID_ARG,
+        "shapes/glyph-zero-width-box-refused", "a quad whose corners meet on x has no area, no front face and no texels of its own");
+    xud_check(xud_shapes_append_glyph_quad(&b, glyph0, (XudVector3) { .x = 0.25f, .y = 0.5f, .z = 0.0f }, glyphUv0, glyphUv1, color)
+            == XUD_INVALID_ARG,
+        "shapes/glyph-zero-height-box-refused", "and so has one whose corners meet on y");
+    xud_check(xud_shapes_append_glyph_quad(&b, glyph0, (XudVector3) { .x = 0.25f, .y = 0.75f, .z = 0.0f }, glyphUv0, glyphUv1, color)
+            == XUD_INVALID_ARG,
+        "shapes/glyph-upside-down-box-refused",
+        "and one whose corners are the other way round, which is the same refusal as a zero-height one: the append's corners are the top-"
+        "down box the atlas box is spelled in, so a quad whose y runs the other way is a caller who has flipped one box and not the other");
+    xud_check(xud_shapes_append_glyph_quad(&b, glyph0, (XudVector3) { .x = 0.25f, .y = 0.0f, .z = 0.25f }, glyphUv0, glyphUv1, color)
+            == XUD_INVALID_ARG,
+        "shapes/glyph-warped-quad-refused",
+        "and one whose two corners are on different z's: the four vertices carry the flat +Z normal, which is the surface's normal of a "
+        "FLAT quad and of nothing else");
+    xud_check(xud_shapes_append_glyph_quad(&b, glyph0, (XudVector3) { .x = -0.25f, .y = 0.0f, .z = 0.0f }, glyphUv0, glyphUv1, color)
+            == XUD_INVALID_ARG,
+        "shapes/glyph-mirrored-box-refused",
+        "and one mirrored on x, which would be a quad wound the way the pipeline's front face does not name");
+    xud_check(
+        xud_shapes_append_glyph_quad(&b, glyph0, glyph1, (XudVector2) { .x = 0.375f, .y = 0.25f }, glyphUv1, color) != XUD_INVALID_ARG,
+        "shapes/glyph-mirrored-uv-not-refused",
+        "but a uv box the other way round is NOT refused as an argument: the shapes rung has no idea what a uv means, and a mirrored glyph "
+        "is a draw that samples the atlas upside down rather than a read of memory - the code it does answer is the zero-capacity batch's "
+        "own, which is the refusal the argument check did not make");
+    xud_check(xud_shapes_append_glyph_quad(
+                  &b, glyph0, glyph1, (XudVector2) { .x = -1.0f, .y = 4.0f }, (XudVector2) { .x = 2.0f, .y = 8.0f }, color)
+            != XUD_INVALID_ARG,
+        "shapes/glyph-uv-outside-not-refused",
+        "and a uv box outside the unit square is not refused either - a texel coordinate is not an address, the sampler does the bounds "
+        "work, and outside the atlas is the clamp the texture rung chose");
     xud_check(xud_begin_drawing(NULL) == XUD_INVALID_ARG, "frames/begin-no-context", "a frame boundary with no context is refused");
     xud_check(xud_begin_drawing(&shell) == XUD_UNSUPPORTED, "frames/begin-no-renderer", "and so is one whose renderer rung is gone");
     xud_check(xud_end_drawing(NULL) == XUD_INVALID_ARG, "frames/end-no-context", "a frame boundary cannot be closed with no context");
@@ -1354,6 +1417,209 @@ static void xud_test_shapes_pure(void) {
         "and the refused wire sphere wrote nothing, so the batch still holds its filled box and its wire box and nothing else");
     xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/invariant-after-wire-refusal",
         "and the invariant still holds over the refusal, so nothing half-written is in the batch");
+
+    /*--- the glyph quad: the first shape here whose uv is the caller's ----------------------*/
+
+    /* The batch this section uses is the one the wire-split check above left behind, and a layout
+       retires the live counts and the capacity ask but not the recorded rows: the wire box's run
+       is still a row in that batch, and its topology state is still LINES. xud_batch_reset above
+       is the call that retires the row list and the state, which is what makes the checks below
+       about a batch holding one quad and nothing else rather than one quad beside a wire box. */
+    xud_check(xud_batch_layout(&b, XUD_SHAPES_GLYPH_VERTEX_COUNT) == XUD_OK, "shapes/glyph-layout",
+        "a batch of one glyph quad's vertex count lays out");
+    xud_check(
+        xud_batch_reset(&b) == XUD_OK, "shapes/glyph-reset", "and the row list and the state the section above left behind are retired");
+    xud_check(b.drawCount == 0u, "shapes/glyph-reset-retired-the-row",
+        "which is the wire box's row gone, and the topology state back at TRIANGLES");
+    xud_check(b.vertexCapacity == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/glyph-capacity-is-a-quad",
+        "the capacity asked for is the capacity recorded");
+    xud_check(b.indexCapacity == XUD_SHAPES_GLYPH_INDEX_COUNT, "shapes/glyph-index-capacity-is-exact",
+        "and the headroom for it is exactly a quad's six indices");
+    xud_check(XUD_SHAPES_GLYPH_INDEX_COUNT == XUD_BATCH_INDEX_CAPACITY(XUD_SHAPES_GLYPH_VERTEX_COUNT), "shapes/glyph-is-the-box-face-case",
+        "a glyph quad spends the same 1.5 indices per vertex one face of a box does, which is the batch's headroom exactly - the same "
+        "closed-quad case the box is, not the triangle's 1:1 one, so either of the two bounds can be the one that refuses a quad first");
+
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+
+    result = xud_shapes_append_glyph_quad(&b, glyph0, glyph1, glyphUv0, glyphUv1, color);
+    xud_check(result == XUD_OK, "shapes/glyph-append-ok", "the quad appends");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/glyph-stats-after-append", "and the counters answer after it");
+    xud_check(vertexCount == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/glyph-costs-four-vertices",
+        "4 vertices, one per corner, and no corner is shared with anything else in the batch");
+    xud_check(
+        indexCount == XUD_SHAPES_GLYPH_INDEX_COUNT, "shapes/glyph-costs-six-indices", "6 indices, the two triangles that close a quad");
+    xud_check(drawCount == 0u, "shapes/glyph-records-no-draw", "and appending records no draw row, as every other shape's append does");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/glyph-invariant", "and the batch's invariant still holds");
+
+    /* The bytes, not only the counts. The claim under test here is the one this shape exists for:
+       the uv is the CALLER's box, paired corner to corner rather than diagonal to diagonal, and
+       paired the way the atlas's own top-down spelling is paired so the divide by the extent needs
+       no flip anywhere. A check that only counted the four rows would pass a quad whose uv is the
+       zero constant four times, which is every glyph drawing the same texel of the atlas. */
+    {
+        const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+        float pos[XUD_SHAPES_GLYPH_VERTEX_COUNT][3];
+        float uvRow[XUD_SHAPES_GLYPH_VERTEX_COUNT][2];
+        float nrm[XUD_SHAPES_GLYPH_VERTEX_COUNT][3];
+        uint32_t idx[XUD_SHAPES_GLYPH_INDEX_COUNT];
+        uint32_t row = 0u;
+        uint32_t cornersPlaced = 0u;
+        uint32_t uFollowsX = 0u;
+        uint32_t vFollowsY = 0u;
+        uint32_t realUv = 0u;
+        uint32_t flatNormals = 0u;
+        uint32_t callerColour = 0u;
+        uint32_t woundOutward = 0u;
+        const float left = glyph0.x;
+        const float right = glyph1.x;
+        const float top = glyph0.y;
+        const float bottom = glyph1.y;
+
+        for (row = 0u; row < XUD_SHAPES_GLYPH_VERTEX_COUNT; row++) {
+            memcpy(
+                &pos[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (row * XUD_BATCH_STREAM_POS_SIZE), XUD_BATCH_STREAM_POS_SIZE);
+            memcpy(
+                &uvRow[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_UV] + (row * XUD_BATCH_STREAM_UV_SIZE), XUD_BATCH_STREAM_UV_SIZE);
+            memcpy(&nrm[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (row * XUD_BATCH_STREAM_NORMAL_SIZE),
+                XUD_BATCH_STREAM_NORMAL_SIZE);
+
+            if (((pos[row][0] == left) || (pos[row][0] == right)) && ((pos[row][1] == top) || (pos[row][1] == bottom))) {
+                cornersPlaced++;
+            }
+            if ((pos[row][0] == left) && (uvRow[row][0] == glyphUv0.x)) {
+                uFollowsX++;
+            }
+            if ((pos[row][0] == right) && (uvRow[row][0] == glyphUv1.x)) {
+                uFollowsX++;
+            }
+            if ((pos[row][1] == top) && (uvRow[row][1] == glyphUv0.y)) {
+                vFollowsY++;
+            }
+            if ((pos[row][1] == bottom) && (uvRow[row][1] == glyphUv1.y)) {
+                vFollowsY++;
+            }
+            if ((uvRow[row][0] != XUD_SHAPES_UV_S) || (uvRow[row][1] != XUD_SHAPES_UV_T)) {
+                realUv++;
+            }
+            if ((nrm[row][0] == XUD_SHAPES_FLAT_NORMAL_X) && (nrm[row][1] == XUD_SHAPES_FLAT_NORMAL_Y)
+                && (nrm[row][2] == XUD_SHAPES_FLAT_NORMAL_Z)) {
+                flatNormals++;
+            }
+            if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + (row * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                    XUD_BATCH_STREAM_COLOR_SIZE)
+                == 0) {
+                callerColour++;
+            }
+        }
+
+        xud_check(cornersPlaced == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/glyph-corners-are-the-callers-box",
+            "all four vertices sit on the caller's box, on one of its four corners each");
+        xud_check((pos[0u][0] == right) && (pos[0u][1] == bottom) && (pos[2u][0] == left) && (pos[2u][1] == top),
+            "shapes/glyph-corners-pair-diagonally",
+            "and the caller's corner0/uv0 pair is the vertex at the top-left while its corner1/uv1 pair is the one at the bottom-right, so "
+            "the two corners the caller named are diagonally opposite rather than neighbours");
+        xud_check(uFollowsX == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/glyph-uv-follows-the-x-edge",
+            "every vertex's u is the u of the uv box's corner on the SAME x edge as it, not the one on the same diagonal");
+        xud_check(vFollowsY == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/glyph-uv-follows-the-y-edge",
+            "and every vertex's v is the v of the uv box's corner on the SAME y edge as it - which is the top-down agreement the atlas's "
+            "row 0 and a VkImage's t=0 make, and the reason the divide by the extent needs no flip at any glyph");
+        xud_check(realUv == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/glyph-uv-is-not-the-constant",
+            "and no vertex carries the header's zero pair, which is the first real uv in this rung read off the arena - a glyph whose uv "
+            "were the constant would be every glyph drawing the same texel of the atlas");
+        xud_check(flatNormals == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/glyph-normals-are-flat",
+            "and the four normals are the flat +Z the glyph faces the camera it was drawn for with");
+        xud_check(callerColour == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/glyph-colour-landed-four-times",
+            "and the caller's colour is at all four corners, because the batch's colour stream is per-vertex and a glyph has one colour");
+
+        memcpy(idx, arena + b.indexOffset, XUD_BATCH_INDEX_SIZE * XUD_SHAPES_GLYPH_INDEX_COUNT);
+        xud_check((idx[0u] == 0u) && (idx[1u] == 1u) && (idx[2u] == 2u) && (idx[3u] == 0u) && (idx[4u] == 2u) && (idx[5u] == 3u),
+            "shapes/glyph-indices-are-the-box-face-order",
+            "the six indices are the two triangles one face of a box is closed by, naming the four vertices this append just made - the "
+            "same quad, the same order, one table read from two sides");
+
+        /* The winding, re-derived rather than remembered: the cross product of each of the two
+           triangles against the +Z the four normals claim, which is positive exactly when the
+           triangle is counter-clockwise seen from +Z - the pipeline's XUD_PIPELINE_FRONT_FACE, and
+           the same claim the box's face check makes from the other side. */
+        {
+            uint32_t triangle = 0u;
+            const uint32_t corner[XUD_SHAPES_GLYPH_INDEX_COUNT] = { 0u, 1u, 2u, 0u, 2u, 3u };
+
+            for (triangle = 0u; triangle < (XUD_SHAPES_GLYPH_INDEX_COUNT / 3u); triangle++) {
+                const float e1x = pos[corner[(triangle * 3u) + 1u]][0] - pos[corner[(triangle * 3u) + 0u]][0];
+                const float e1y = pos[corner[(triangle * 3u) + 1u]][1] - pos[corner[(triangle * 3u) + 0u]][1];
+                const float e2x = pos[corner[(triangle * 3u) + 2u]][0] - pos[corner[(triangle * 3u) + 0u]][0];
+                const float e2y = pos[corner[(triangle * 3u) + 2u]][1] - pos[corner[(triangle * 3u) + 0u]][1];
+
+                if (((e1x * e2y) - (e1y * e2x)) > 0.0f) {
+                    woundOutward++;
+                }
+            }
+        }
+        xud_check(woundOutward == (XUD_SHAPES_GLYPH_INDEX_COUNT / 3u), "shapes/glyph-wound-counter-clockwise",
+            "both triangles are wound counter-clockwise seen from +Z, which is the front face the pipeline names and the reason a mirrored "
+            "position box is refused above rather than drawn CW");
+
+        /* The divide, seen as the fact it is a claim about: the uv box's extent is the glyph's box
+           of texels over the atlas's extent, and the two numbers this area handed the append are
+           exactly that quotient. This is the caller's arithmetic rather than the append's, and it
+           is checked here because it is the reason the append takes texture coordinates rather
+           than texels and an extent - the shapes rung has no extent to divide by. */
+        xud_check(((glyphUv1.x - glyphUv0.x) == (16.0f / 64.0f)) && ((glyphUv1.y - glyphUv0.y) == (24.0f / 64.0f)),
+            "shapes/glyph-uv-is-the-atlas-box-divided",
+            "the uv box's extent is a glyph box of 16 by 24 texels of a 64-texel atlas, divided by that extent - the divide the draw step "
+            "above this rung will do, stated as the quotient the append is handed");
+    }
+
+    /* The refusal half of the atomicity claim, at the index bound rather than the vertex one: a
+       quad spends 1.5 indices per vertex, which is the batch's headroom exactly, so a batch that
+       has room for four more vertices still has room for six more indices and the second quad is
+       refused by BOTH bounds at once - the opposite of the triangle's, where the vertex bound
+       trips first. */
+    result = xud_shapes_append_glyph_quad(&b, glyph0, glyph1, glyphUv0, glyphUv1, color);
+    xud_check(result == XUD_OUT_OF_MEMORY, "shapes/glyph-second-refused",
+        "a second quad does not fit a batch of one quad's capacity, and is refused with the batch's own code");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "shapes/glyph-stats-after-refusal", "and the counters are still readable after the refusal");
+    xud_check((vertexCount == XUD_SHAPES_GLYPH_VERTEX_COUNT) && (indexCount == XUD_SHAPES_GLYPH_INDEX_COUNT),
+        "shapes/glyph-refusal-wrote-nothing", "the refused quad wrote no vertex and no index, so the batch still holds exactly one quad");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/glyph-invariant-after-refusal",
+        "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
+
+    /* The capacity fact a run of text leans on: sixteen glyph quads fill the capacity a context's
+       batch opens at, and the seventeenth is refused - which is the length of the run of text a
+       frame can draw today before the frame boundary above grows the batch, and this rung cannot
+       ask for that growth. Both bounds fill at once, at 64 vertices and 96 indices. */
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "shapes/glyph-run-layout",
+        "a fresh batch lays out at the capacity a context's batch opens at");
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+
+    {
+        uint32_t run = 0u;
+
+        for (run = 0u; run < (XUD_BATCH_INITIAL_VERTICES / XUD_SHAPES_GLYPH_VERTEX_COUNT); run++) {
+            result = xud_shapes_append_glyph_quad(&b, glyph0, glyph1, glyphUv0, glyphUv1, color);
+            xud_check(result == XUD_OK, "shapes/glyph-run-fits",
+                "sixteen glyph quads fit that capacity, which is 64 vertices and the 96 indices the headroom holds");
+        }
+    }
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "shapes/glyph-run-stats",
+        "and the counters answer after the run");
+    xud_check((vertexCount == XUD_BATCH_INITIAL_VERTICES) && (indexCount == XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+        "shapes/glyph-run-fills-both-bounds",
+        "64 vertices and 96 indices, so a run of glyph quads spends BOTH bounds exactly and is the shape that makes the grow path's ask "
+        "visible");
+    result = xud_shapes_append_glyph_quad(&b, glyph0, glyph1, glyphUv0, glyphUv1, color);
+    xud_check(result == XUD_OUT_OF_MEMORY, "shapes/glyph-run-seventeenth-refused", "and the seventeenth is refused");
+    xud_check(xud_batch_wanted(&b, &vertexCount, &indexCount) == XUD_OK, "shapes/glyph-run-noted-the-ask",
+        "and the refusal left the ask behind, which is what the frame boundary above reads before it grows");
+    xud_check((vertexCount == (XUD_BATCH_INITIAL_VERTICES + XUD_SHAPES_GLYPH_VERTEX_COUNT))
+            && (indexCount == (XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) + XUD_SHAPES_GLYPH_INDEX_COUNT)),
+        "shapes/glyph-run-ask-is-the-seventeenth-quad",
+        "and the ask is that seventeenth quad's totals rather than a sum of the sixteen refusals there were none of");
 
     /* The rows the split above allocated are this area's to release: the batch is a stack record
        here rather than one xud_batch_open allocated, and the batch area frees its own rows the
