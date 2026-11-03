@@ -70,6 +70,10 @@ void xud_test_font(void); /* the font rung and the public font API: the descript
                              the atlas's first attempt, stb's three bake steps over one real font file, the coverage-to-texel conversion,
                              the row lookup and its fallback, the two metric reads, the measurement and its scale, and the one TEXTURE slot
                              this rung owns */
+void xud_test_audio(void); /* the audio rung and the public audio API: the description's check and its two bounds, miniaudio's codes,
+                             the stride arithmetic and its ceiling, the two conversions between frames and seconds, the decode over six
+                             real files of four containers through a bare table, the header's own declared numbers beside the record's,
+                             the three containers this vendored copy has no decoder for, and the teardown rung above the table's close */
 void xud_test_core(void);
 void xud_test_vendor(void); /* the three vendored single-header rungs: cgltf, stb_truetype, miniaudio */
 

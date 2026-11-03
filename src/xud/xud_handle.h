@@ -53,8 +53,8 @@
    because the type is public and the assert belongs where the type is. What is asserted HERE is
    the other half of the layout contract: the kind values are contiguous from NONE upward, so a
    kind value is an index into the table's own array of arrays and XUD_HANDLE_KIND_COUNT is one
-   past the highest kind in use. Adding a kind (AUDIOSTREAM when audio lands, or any caller-
-   addressable kind that lands after these five) means adding one value and moving XUD_HANDLE_KIND_
+   past the highest kind in use. Adding a kind (AUDIOSTREAM is the sixth to land, or any caller-
+   addressable kind that lands after these six) means adding one value and moving XUD_HANDLE_KIND_
    MAX with it; forgetting the second half is a compile error here rather than a slot array that
    silently has no row for the new kind. */
 static_assert(XUD_HANDLE_KIND_COUNT == XUD_HANDLE_KIND_MAX + 1u,

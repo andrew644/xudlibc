@@ -38,6 +38,7 @@
 
 #include "xud_core.h"
 #include "xud.h"
+#include "xud_audio.h" /* Required for: xud_audio_close_all, the AUDIOSTREAM kind's half of the same teardown rung - and the reason a seventh kind's name appears here is that an audio record owns one host block and names no other handle, so it runs beside the MATERIAL kind's rather than above it */
 #include "xud_batch.h" /* Required for: xud_batch_reset, the public frame boundary's opening half runs on, and xud_batch_growth_asked/xud_batch_grow, the capacity ask the same half reads and the recreate that answers it */
 #include "xud_camera.h" /* Required for: xud_camera_validate, the public camera pair's refusal */
 #include "xud_descriptor.h"
@@ -426,6 +427,7 @@ XudResult xud_close_context(XudContext** context) {
     uint32_t textureRecordsClosed = 0u;
     uint32_t modelRecordsClosed = 0u;
     uint32_t fontRecordsClosed = 0u;
+    uint32_t audioRecordsClosed = 0u;
 
     if (context == NULL)
         return XUD_INVALID_ARG;
@@ -447,16 +449,17 @@ XudResult xud_close_context(XudContext** context) {
        here for the reason the material's is not - a mesh record owns five VkBuffers and one host-visi
        ble block and a texture record owns an image, a view, a sampler and one host-visible block, so
        closing either calls a driver and a block left behind in a slot is a block the allocator's own
-       close cannot see. xud_model_close_all() is the fifth name that appears here and xud_font_close_all()
-       the sixth, and both run ABOVE the other four rather than beside them for the same reason: a model
+       close cannot see. xud_model_close_all() is the fifth name that appears here, xud_font_close_all()
+       the sixth and xud_audio_close_all() the seventh; the model and the font rungs run ABOVE the other four rather than beside them for the same reason: a model
        record owns no driver object of its own, it names MESH and MATERIAL slots, and a font record owns
        none either - it names one TEXTURE slot, the atlas it baked - so closing either calls a rung below
        it, and a model left in its slot when either of those walks runs is a mesh whose record still names
        a material about to be freed, and a font left in its slot when the TEXTURE walk runs is a record
        naming an image about to be destroyed. The ladder therefore reads model, font, texture, mesh, mate
-       rial, table, and MODEL and FONT are the two rungs of the six whose order is forced rather than cho-
-       sen. TEXTURE runs above MESH because the two kinds' records are independent of each other and the
-       order only has to be above the table's, so the ladder reads texture, mesh, material, table. All six
+       rial, audio, table, and MODEL and FONT are the two rungs of the seven whose order is forced rather than cho-
+       sen. AUDIOSTREAM is the one rung of the seven whose place is a choice rather than a forced order, because an audio record owns one host
+       block and names no other handle, so it runs beside the MATERIAL kind's; TEXTURE runs above MESH because the two kinds' records are independent of each other and the
+       order only has to be above the table's, so the ladder reads texture, mesh, material, audio, table. All seven
        rungs run ABOVE this call, and every other kind's slots are still
        the sentinel this layer opens them with, because no rung above has landed for them, so freeing t
        hose arrays retires nothing of the driver's, and the rungs below still have to tear their own ob
@@ -506,6 +509,10 @@ XudResult xud_close_context(XudContext** context) {
         rung = xud_material_close_all(victim->handleTable, &materialRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;
+        rung = xud_audio_close_all(victim->handleTable, &audioRecordsClosed);
+        if ((rung != XUD_OK) && (first == XUD_OK)) {
+            first = rung;
+        }
     }
     rung = xud_handle_table_close(&victim->handleTable);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))

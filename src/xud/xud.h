@@ -247,9 +247,10 @@ typedef struct XudHandle {
 #define XUD_HANDLE_KIND_MESH 3u /* a mesh: the attribute streams and the index buffer, once the batch lands */
 #define XUD_HANDLE_KIND_MATERIAL 4u /* a material: a pipeline variant and its set-1 bindings, once the pipelines land */
 #define XUD_HANDLE_KIND_MODEL 5u /* a model: the meshes and materials a load produced, once model loading lands */
+#define XUD_HANDLE_KIND_AUDIOSTREAM 6u /* an audio stream: the decoded frames and their format, once the audio rung lands */
 #define XUD_HANDLE_KIND_MAX                                                                                                                \
-    XUD_HANDLE_KIND_MODEL /* the highest kind value in use today - a new caller-addressable kind (AUDIOSTREAM when audio lands) moves this \
-                             as well as its own value */
+    XUD_HANDLE_KIND_AUDIOSTREAM /* the highest kind value in use today - a new caller-addressable kind moves this and its own value,       \
+                                    which is why the table's row count below is derived rather than written */
 #define XUD_HANDLE_KIND_COUNT                                                                                                              \
     (XUD_HANDLE_KIND_MAX + 1u) /* one past the highest kind value, which is the row count of the table's per-kind arrays */
 
@@ -442,6 +443,25 @@ typedef struct XudGlyphAtlasRec {
     float width; /* the box's width in texels - 0 for a codepoint with no outline, a space */
     float height; /* the box's height in texels */
 } XudGlyphAtlasRec;
+
+/// One audio stream's bytes, as a caller hands them to xud_load_audio(): the container's own bytes
+/// rather than a path, so this header calls no file function and a caller decides what read means.
+/// There is no format token here, and that is a decision rather than an omission: miniaudio sniffs
+/// the container, so a caller's token could disagree with the file it names and become a claim this
+/// rung would then be making about a buffer it never read.
+typedef struct XudAudioData {
+    const uint8_t* fileData; /* the container's bytes: wav, flac or mp3, whatever the decoder reads */
+    uint32_t fileBytes; /* their length, which is the one bound this rung can apply before it spends */
+} XudAudioData;
+
+/// What a stream's frames are, as xud_get_audio_info() answers it: raylib's GetAudioLength half needs
+/// the rate to turn a frame count into seconds, so the three numbers are the answer rather than a
+/// length stored at the load that could disagree with the count it came from.
+typedef struct XudAudioInfo {
+    uint32_t channels; /* what the decoder answered, not what this rung asked for */
+    uint32_t sampleRate; /* what the decoder answered, in Hz */
+    uint64_t frameCount; /* one frame is one sample per channel, so the block is frameCount*channels samples */
+} XudAudioInfo;
 
 /*-----------------------------------------------------------------------------------------------
  * The context - the single owner of everything the library creates
@@ -975,6 +995,49 @@ XudResult xud_get_glyph_info(XudGlyphInfo* outInfo, XudContext* context, XudHand
 /// NULL out-rec or context, or on a handle that does not name a live FONT slot of this context; XUD_UNSUPPORTED on a context that never
 /// completed bring-up.
 XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context, XudHandle handle, uint32_t codepoint);
+
+/*-----------------------------------------------------------------------------------------------
+ * The audio API - raylib's LoadAudioStream/GetAudioLength half, above the audio rung
+ *
+ * This is raylib's audio surface (reference/raylib/raylib.h: LoadAudioStream, GetAudioLength)
+ * above the audio rung: miniaudio's decoder over one host PCM block, and the AUDIOSTREAM-kind
+ * handle that names it. What is here is everything a play row needs beside the device itself -
+ * the frames, the frame count, the channel count and the rate, plus the two conversions between
+ * frames and seconds - and no play call, because raylib's PlayAudio/StopAudio/SetAudioFootprint
+ * half is a device with a mixer and a queue above it, which is a second rung rather than a call
+ * above this one. The containers this vendored miniaudio cannot read (ogg, qoa, xm) answer
+ * XUD_UNSUPPORTED rather than a half-decoded stream, and there is no per-format loader name here
+ * for the reason the value type's own note gives.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Decode one container's bytes into the frames behind an AUDIOSTREAM-kind handle: raylib's LoadAudioStream
+/// (raylib.h 505, "load audio stream from file"), except that the bytes are a caller's rather than a path
+/// this rung opens. The whole container is decoded into one block, which is the shape raylib's own note
+/// that a stream is "already decoded" states. XUD_INVALID_ARG on a NULL out-handle, context or audio
+/// description, or on a description this rung's own check refuses (no bytes, a fragment shorter than the
+/// shortest header the decoder sniffs, a claimed length past this rung's container bound); XUD_UNSUPPORTED
+/// on a context that never completed bring-up or on a buffer the decoder cannot read as a container;
+/// XUD_OUT_OF_MEMORY when the record or the block cannot be spent; XUD_INTERNAL_ERROR on the handle
+/// layer's own slot bound. On every failure *outHandle names nothing and nothing was spent.
+XudResult xud_load_audio(XudHandle* outHandle, XudContext* context, const XudAudioData* audio);
+
+/// Release one audio stream: its block and its record go back and its slot is released. XUD_INVALID_ARG on a
+/// NULL context or on a handle that does not name a live AUDIOSTREAM slot of this context - a stale handle,
+/// a handle of another kind and a fabricated one all refuse before anything is freed.
+XudResult xud_close_audio(XudContext* context, XudHandle handle);
+
+/// A stream's channel count, its rate and its frame count: the three numbers behind the handle, copied into
+/// the caller's own XudAudioInfo rather than handed out as a pointer into the slot. XUD_INVALID_ARG on a NULL
+/// out-info or context, or on a handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED
+/// on a context that never completed bring-up.
+XudResult xud_get_audio_info(XudAudioInfo* outInfo, XudContext* context, XudHandle handle);
+
+/// A stream's length in seconds: raylib's GetAudioLength (raylib.h 506, "get audio stream length in seconds"),
+/// computed as the frame count divided by the rate rather than stored beside the load, which is what makes it
+/// impossible for the length and the count to disagree. XUD_INVALID_ARG on a NULL out-seconds or context, or on
+/// a handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never
+/// completed bring-up.
+XudResult xud_get_audio_length(float* outSeconds, XudContext* context, XudHandle handle);
 
 /*-----------------------------------------------------------------------------------------------
  * The clock API - raylib's time half, above the clock rung
