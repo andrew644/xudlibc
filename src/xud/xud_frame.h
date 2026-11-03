@@ -103,7 +103,8 @@
                                      the second one, which is the copy the upload issues: TRANSFER is                                      \
                                      the one stage both VK_ACCESS_TRANSFER_READ_BIT and VK_ACCESS_TRANSFER_WRITE_BIT sit at */
 #define XUD_FRAME_BARRIER_VERTEX_READ_STAGES                                                                                               \
-    (VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) /* the dstStageMask \
+    (VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT                                                              \
+        | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) /* the dstStageMask \
           of the barrier that makes the copies visible to the reads that follow them: the batch's bytes                                    \
           are read as vertex attributes at the input stage and as uniforms at the shader stages, and the                                   \
           validation layer's supported-access-type rule is what refuses a mask that covers neither */
@@ -157,7 +158,8 @@
           below is 0 because the whole array is bound rather than a slice of it */
 
 #define XUD_FRAME_UNIFORM_READ_STAGES                                                                                                      \
-    (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) /* the dstStageMask                                      \
+    (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT                                                                                                   \
+        | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT) /* the dstStageMask                                      \
           of the barrier that makes the block's upload visible to the stages that read it: this is XU_                                     \
           DESCRIPTOR_BUFFER_STAGES, the pair the layout declares for the block, and a stage that does                                      \
           not read it is not a stage the barrier has to cover */

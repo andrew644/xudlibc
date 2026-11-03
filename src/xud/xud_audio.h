@@ -78,7 +78,8 @@
 #define XUD_AUDIO_MAX_FILE_BYTES                                                                                                           \
     (16u * 1024u * 1024u) /* the largest container buffer this rung will read, which is what bounds miniaudio's own growth */
 #define XUD_AUDIO_MAX_FRAME_BYTES                                                                                                          \
-    (64u * 1024u * 1024u) /* the largest PCM block this rung will hold, in bytes rather than in frames so the stride is visible beside it  \
+    (64u * 1024u                                                                                                                           \
+        * 1024u) /* the largest PCM block this rung will hold, in bytes rather than in frames so the stride is visible beside it  \
                            */
 #define XUD_AUDIO_BYTES_PER_SAMPLE 4u /* the one output format this rung asks for: ma_format_f32 is four bytes a sample */
 #define XUD_AUDIO_MAX_CHANNELS                                                                                                             \
@@ -87,7 +88,8 @@
     192000u /* the largest rate this rung will hold: 192 kHz is the highest rate any container it reads carries */
 
 #define XUD_AUDIO_MAX_FRAMES                                                                                                               \
-    (XUD_AUDIO_MAX_FRAME_BYTES / XUD_AUDIO_BYTES_PER_SAMPLE) /* the frame ceiling of a one-channel stream, which is the loosest of the     \
+    (XUD_AUDIO_MAX_FRAME_BYTES                                                                                                             \
+        / XUD_AUDIO_BYTES_PER_SAMPLE) /* the frame ceiling of a one-channel stream, which is the loosest of the     \
                                                                 pair - the real ceiling is this divided by the channel count */
 
 static_assert(XUD_AUDIO_MIN_FILE_BYTES < XUD_AUDIO_MAX_FILE_BYTES,

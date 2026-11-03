@@ -61,7 +61,8 @@
        */
 
 #define XUD_CAMERA_DEGREES_PER_RADIANS                                                                                                     \
-    (180.0f / 3.1415926535897932f) /* The one degree-to-radian conversion this rung needs, because                                         \
+    (180.0f                                                                                                                                \
+        / 3.1415926535897932f) /* The one degree-to-radian conversion this rung needs, because                                         \
                                      raylib's fovy is in degrees (rcamera.h 113: "field-of-view                                            \
                                      aperture in Y (degrees)") and <math.h>'s trigonometry takes                                           \
                                      radians. A double literal narrowed to float, which is what                                            \

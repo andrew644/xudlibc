@@ -153,7 +153,8 @@
 #define XUD_BATCH_INDEX_CAPACITY(v) (((v) * 3u + 1u) / 2u)
 
 #define XUD_BATCH_COPY_REGION_COUNT                                                                                                        \
-    (XUD_BATCH_STREAM_COUNT + 1u) /* four streams plus the index buffer, one region each - five destinations is five vkCmdCopyBuffer       \
+    (XUD_BATCH_STREAM_COUNT                                                                                                                \
+        + 1u) /* four streams plus the index buffer, one region each - five destinations is five vkCmdCopyBuffer       \
                                      calls, see xud_batch_upload's doc */
 
 static_assert(XUD_BATCH_VERTEX_SIZE

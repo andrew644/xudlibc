@@ -4,3 +4,6 @@ BreakBeforeBraces: Attach
 Language: Cpp
 Standard: c++11
 ColumnLimit: 140
+ReflowComments: false
+AlignTrailingComments:
+  Kind: Leave
