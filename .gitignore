@@ -5,3 +5,4 @@ bin/
 
 # Third-party reference material (read-only, never part of the library)
 reference/
+resources/

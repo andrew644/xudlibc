@@ -18,13 +18,16 @@
  * mouse half - xud_ is_key_pressed() / xud_is_key_pressed_repeat() / xud_is_key_down() / xud_is_key_relea sed() / xud_is_key_up() /
  * xud_get_key_pressed() / xud_get_char_pressed() / xud_get_key _name() / xud_set_exit_key() / xud_get_exit_key() and the mouse block below
  * it), the clock API above the clock rung (raylib's GetTime/GetFrameTime half - xud_get_time() / xud_get_frame_time() /
- * xud_get_timer_value() / xud_get_timer_frequency()), the key and mouse-button tokens that API's queries take, and the runtime Vulkan query
- * xud_vul kan_supported(). Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa der.h/.c,
+ * xud_get_timer_value() / xud_get_timer_frequency()), the font API above the font rung (raylib's LoadFontEx/MeasureTextEx/GetGlyphInfo half
+ * - xud_load_font() / xud_close_font() / xud_measure_text() / xud_get_glyph_index() / xud_get_glyph_info() / xud_get_glyph_atlas_rec()),
+ * the value types a caller passes down (XudVector2 / XudVector3 / XudColor / XudMaterial / XudTextureData / XudMeshData / XudFontData /
+ * XudGlyphInfo / XudGlyphAtlasRec), the key and mouse-button tokens that API's queries take, and the runtime Vulkan query xud_vul
+ * kan_supported(). Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa der.h/.c,
  * xud_vulkan.h/.c, xud_diagnostics.h/.c, xud_instance.h/.c, xud_physical.h/.c, xud_device.h/.c, xud_window.h/.c, xud_swapchain.h/.c,
  * xud_handle.h/.c, xud_shader.h/.c, xud_pipeline.h/.c, xud_renderpass.h/.c, xud_frame.h/.c, xud_renderer.h/.c, xud_alloca tor.h/.c,
- * xud_descriptor.h/.c, xud_batch.h/.c, xud_camera.h/.c, xud_input.h/.c, xud_mat erial.h/.c, xud_mesh.h/.c, xud_texture.h/.c and
- * xud_time.h/.c - and user code includes this header only; tests may include the internal ones. Every layer below this one is in the tree
- * now, and every one of them stays internal be hind the two exceptions this note names: nothing about a VkDevice, its queues, a GLFW
+ * xud_descriptor.h/.c, xud_batch.h/.c, xud_camera.h/.c, xud_input.h/.c, xud_mat erial.h/.c, xud_mesh.h/.c, xud_texture.h/.c, xud_time.h/.c
+ * and xud_font.h/.c - and user code includes this header only; tests may include the internal ones. Every layer below this one is in the
+ * tree now, and every one of them stays internal be hind the two exceptions this note names: nothing about a VkDevice, its queues, a GLFW
  * window, a VkSurfaceKHR, a VkSwapchainKHR, a VkPipeline, a VkRenderPass, a VkFramebuffer, a VkCommandBuffer or a VkDeviceMemory is
  * reachable from here; the conte xt owns all of them (S8's ownership step is landed, S9's swapchain rung sits on top of it, S10's handle
  * layer and S11's five render rungs on top of that, S12's allocator rung sits above the swapchain and below the descriptor and the
@@ -380,6 +383,64 @@ typedef struct XudMeshData {
     const float* normal; /* vertexCount*3, or NULL for +Z                                   */
     const uint32_t* index; /* indexCount, every one below vertexCount - the one array with no default */
 } XudMeshData;
+
+/*-----------------------------------------------------------------------------------------------
+ * The font - the one object kind a handle names whose atlas is another rung's texture
+ *
+ * A font is the object a XUD_HANDLE_KIND_FONT slot records, and the value type below is what a
+ *   caller describes when it asks for one: a font FILE rather than a baked atlas, which is raylib's
+ *   own shape (its LoadFontEx takes a fileName and a fontSize and does the baking inside, raylib.h
+ *   410) and the reason this type names bytes rather than a path - a path would make this call a fil
+ *   e-system read, and the loader rung that reads a model's files is a different rung's decision.
+ *
+ * What the description does NOT carry, and why: the atlas's extent and the two sampling tokens. The
+ *   extent is this rung's to find (stb's own packer note says its packing is "very crappy", so no numb
+ *   er a caller could write predicts whether a set fits), and the tokens are a font's rather than a caller
+ *   's: a glyph's coverage is a gradient, so a NEAREST filter turns every edge into a stair, and an atlas i
+ *   s not a tileable surface, so a REPEAT would bleed the glyph at the far edge into the glyph at this edge. A
+ *   caller that wants a different answer wants a different texture, and the texture rung below already owns tha
+ *   t one.
+ *
+ * The codepoint array's ordering is a precondition rather than a convenience: the lookup every draw and
+ *   every measure owes is a binary search over the rows, and raylib's own LoadFontEx sorts the array it was
+ *   handed before it packs the atlas (text.c), which is the same requirement stated here as a precondition ins
+ *   tead of a sort this library performs behind a caller's back - a sort would move a caller's rows relative t
+ *   o the array it kept, and a caller that indexed its own array would then be reading the wrong glyph.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// The one font description a caller hands down: the font file's bytes, the em height to bake them at,
+///  and the set of codepoints to bake. A NULL codepoints array paired with a zero count is the one defau
+/// lt set this rung bakes (the printable ASCII run, raylib's default charset); any other pairing is a descript
+/// ion this rung cannot lay out. The array is the caller's, is read once at the load and is never kept - the rows
+///  this rung bakes from it are its own.
+typedef struct XudFontData {
+    const uint8_t* fileData; /* the font file's bytes, read once at the load and never kept */
+    uint32_t fileBytes; /* their length - at least sfnt's own shortest header */
+    uint32_t pixelSize; /* the bake's em height, in pixels - raylib's Font.baseSize */
+    const uint32_t* codepoints; /* codepointCount, sorted ascending and unique, or NULL for the default set */
+    uint32_t codepointCount; /* codepoints this font bakes - 0 only beside a NULL array */
+} XudFontData;
+
+/// One glyph's pen metrics: raylib's GlyphInfo (raylib.h 404-408), the same four numbers and the same
+///  names. The three floats are in the bake's own pixel space, which is why the bake's height is part of
+///  every query that turns them into a position.
+typedef struct XudGlyphInfo {
+    uint32_t value; /* the codepoint this glyph was baked for */
+    float offsetX; /* the pen's step to the glyph box's left edge at the baseline */
+    float offsetY; /* the pen's step to the glyph box's top edge */
+    float advanceX; /* how far the pen moves after this glyph */
+} XudGlyphInfo;
+
+/// One glyph's box in the atlas, in texels rather than in texture coordinates: raylib's GetGlyphAtlasRe
+/// c answer is a Rectangle in texels, and the divide that turns it into the [0,1] a sampler wants is a divi
+/// de by an extent both the caller and this rung can read, so the rung that states the box states it in texels a
+/// nd the rung that draws converts.
+typedef struct XudGlyphAtlasRec {
+    float x; /* the box's left texel */
+    float y; /* the box's top texel */
+    float width; /* the box's width in texels - 0 for a codepoint with no outline, a space */
+    float height; /* the box's height in texels */
+} XudGlyphAtlasRec;
 
 /*-----------------------------------------------------------------------------------------------
  * The context - the single owner of everything the library creates
@@ -800,6 +861,89 @@ XudResult xud_get_model_mesh_count(uint32_t* outCount, XudContext* context, XudH
 /// INVALID_ARG on a NULL out-corner or context, or on a handle that does not name a live MODEL slot of
 /// this context; XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_get_model_bounding_box(XudVector3* outMin, XudVector3* outMax, XudContext* context, XudHandle handle);
+
+/*-----------------------------------------------------------------------------------------------
+ * The font API - raylib's font half, above the font rung
+ *
+ * This is raylib's font surface (reference/raylib/raylib.h 400-418: Font, GlyphInfo, GetGlyphIndex,
+ *   GetGlyphInfo, GetGlyphAtlasRec, LoadFont, LoadFontEx, LoadFontFromImage, MeasureText, MeasureText
+ *   Ex, DrawText, DrawTextEx, DrawText3D and the two font-format loaders beside them) above the font
+ *   rung: the bake is the font rung's and the atlas it bakes is uploaded by the texture rung below it,
+ *   so a caller names a context and a font FILE and never an atlas, a sampler or a VkImage.
+ *
+ * What is NOT here, and why: the draw half. The batch's draw row names one index range and one index
+ *   buffer for the whole batch, and the solid pipeline's fragment stage reads no texture at all (set 1
+ *   is unbound today, see shaders/solid.frag), so a glyph quad that sampled this rung's atlas would nee
+ *   d a textured variant beside the solid one - a change to the pipeline list rather than a call above i
+ *   t. What is landed is therefore everything a draw row needs beside the variant itself: the atlas, the m
+ *   etrics and the measurement. Also absent for the reason the font rung's own note gives: raylib's FONT_SDF
+ *   (a second pipeline variant reading a second atlas format), its LoadFontFromImage and its bitmap/sprite fo
+ *   nt loaders (file formats stb_truetype does not read at all), and its default bitmap font - which is why thi
+ *   s library has no xud_load_font_default() and no default font a context falls back to.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Load a font this context owns: the object half of the font rung, and the fifth public create pair wh
+/// ose record owns driver objects - and the second whose record owns OTHER handles (after the model's, which owns
+/// MESH and MATERIAL slots). The description is checked before a slot is spent, so a refusal leaves no half-font; the
+/// slot, the record and the rows are then allocated, the atlas is baked at the rung's first attempt and doubled until stb'
+/// s own packer accepts it, and the accepted atlas is handed down as one texture description rather than uploaded here - the
+/// texture rung below owns the staging arena, the copy, the layout transition, the sampler and the view, and a second upload p
+/// ath in this rung would be a second copy of that path. On XUD_OK *outHandle names a live FONT slot of THIS context's table and
+/// the caller holds it for as long as anything measures or will draw with it; the atlas it owns is a TEXTURE slot no caller can reac
+/// h, and closing it behind the font's back is a mistake the handle layer's kind check turns into a refusal. XUD_INVALID_ARG on a NUL
+/// L out-handle, context or description, or on a font the rung's own check refuses (no bytes, bytes shorter than sfnt's own shortest head
+/// er, an em height outside this rung's range, a codepoint array named without its bytes, a codepoint outside the admitted range, an array
+/// that is not sorted ascending and unique, or a set whose boxes this rung's atlas cannot hold); XUD_UNSUPPORTED on a context that never
+/// compl eted bring-up, on a loader whose rows this rung needs are not there, on a device that is not this loader's, on a buffer this rung
+/// cannot read as a font (one answer for a buffer that is not a font at all and for one it is but cannot walk), or on a set that fits no
+/// atlas this rung will try; XUD_OUT_O F_RESOURCES at the handle layer's own slot bound or when the atlas's block cannot be carved;
+/// XUD_OUT_OF_MEMORY when the record, the rows or the atlas cannot be allocated; the texture rung's own code on the atlas it brings up.
+XudResult xud_load_font(XudHandle* outHandle, XudContext* context, const XudFontData* font);
+
+/// Release one font: the object half closed, and the second public close pair that closes OTHER caller handles (after the model'
+/// s). The handle is validated against the FONT kind first, so a stale handle, a handle of another kind and a fabricated one refuse without
+/// freeing anyth ing; the atlas is then closed through the TEXTURE rung below rather than by destroying anything here, because this rung
+/// owns no driver object of its own and the wait-idle guard that belongs to the atlas is the texture rung's
+/// (VUID-vkDestroyImage-image-00009, the rule the mesh's buffer destroy and the swapchain's recreate state state for their own objects).
+/// The slot's record field is cleared BEFORE the record is freed, the rule every close in this tree states, so a close run twice frees once
+/// and the table's own teardown cannot find a record it would have to free twice. XUD_INVALID_ARG on a NULL context or on a handle that
+/// does not name a live FONT slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up or on a loader whose rows are
+/// not this device's; the texture rung's own code when that close refuses.
+XudResult xud_close_font(XudContext* context, XudHandle handle);
+
+/// How wide a string is, in pixels, at a requested em height: raylib's MeasureTextEx (raylib.h 415, "me
+/// asure text width for selected font"), and the number a centring or a wrapping call needs. The scale is a division by the bake's own
+/// height rather than a second bake at the requested size - the same reason raylib's Font carries a baseSize at all, and a second bake
+/// would be a second atlas per size. The spacing AFTER the last glyph is INCLUDED, which is raylib's own answer (its measure returns the
+/// pen position after the last glyph, which is what a centring call wants) and is stated here because it is the one place this answer
+/// differs from a caller's intuition of ink width. A codepoint the set does not cover is measured as the fallback row, so a measure and a
+/// draw of one string cannot disagree about where the pen ends. XUD_INVALID_ARG on a NULL out-width, context or text array, on a textCount
+/// of zero, or on a handle that does not name a live FONT slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_measure_text(
+    float* outWidth, XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, float pixelSize, float spacing);
+
+/// Which of a font's rows a codepoint names: raylib's GetGlyphIndex (raylib.h 405), and the fallback it states rather than a
+/// refusal - a codepoint the set does not cover answers the row that holds '?', so a caller drawing a string the font cannot render gets
+/// boxes it can still measure rather than an error per character. The index is this library's rather than raylib's glyph-array offset,
+/// because a font is a slot of this table rather than a struct with an array inside it, and the index is what the two queries below take.
+/// XUD_INVALID_ARG on a NULL out-index or context, or on a handle that does not name a live FONT slot of this context; XUD_UNSUPPORTED on a
+/// context that never completed bring-up.
+XudResult xud_get_glyph_index(uint32_t* outIndex, XudContext* context, XudHandle handle, uint32_t codepoint);
+
+/// One glyph's pen metrics: raylib's GetGlyphInfo (raylib.h 406, "get advanced glyph info for codepoint"), the same four numbers
+/// in the bake's own pixel space - which is why the bake's height is part of every query that turns them into a position. The lookup above
+/// runs first, so the codepoint in hand is a codepoint and not an index, and a codepoint the set does not cover answers the fallback row
+/// rather than a refusal. XUD_INVALID_ARG on a NULL out-info or context, or on a handle that does not name a live FONT slot of this
+/// context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_glyph_info(XudGlyphInfo* outInfo, XudContext* context, XudHandle handle, uint32_t codepoint);
+
+/// One glyph's box in the atlas, in texels rather than in texture coordinates: raylib's GetGlyphAtlasRec (raylib.h 407, "get re
+/// ctangle in texture atlas for codepoint"), whose answer is a Rectangle in texels. The divide that turns it into the [0,1] a sampler wants
+/// is a divide by an extent both the caller and this rung can read, so the rung that states the box states it in texels and the rung that
+/// draws converts. A width of 0 is a codepoint with no outline, a space, and is the answer rather than an absent row. XUD_INVALID_ARG on a
+/// NULL out-rec or context, or on a handle that does not name a live FONT slot of this context; XUD_UNSUPPORTED on a context that never
+/// completed bring-up.
+XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context, XudHandle handle, uint32_t codepoint);
 
 /*-----------------------------------------------------------------------------------------------
  * The clock API - raylib's time half, above the clock rung

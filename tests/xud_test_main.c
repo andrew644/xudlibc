@@ -19,7 +19,11 @@
  *          pure half and against a real context in the GPU half. The material area runs above the c
  *          amera and below the core, which is the layer order: it borrows the handle table, the batc
  *          h and the renderer, so it runs above all three, and its pure half is complete with no dr
- *          iver present because a handle table and a material record are host allocations.
+ *          iver present because a handle table and a material record are host allocations. The font
+ *          area runs above the texture and the model and below the core, which is the layer order: the
+ *          font rung's atlas IS a TEXTURE slot, so the area that checks the rung above that one runs
+ *          above it, and its pure half is complete with no driver present because a bake is stb writi
+ *          ng into a heap buffer.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -62,6 +66,7 @@ int main(void) {
     xud_test_texture();
     xud_test_model();
     xud_test_time();
+    xud_test_font();
     xud_test_core();
     xud_test_vendor();
 

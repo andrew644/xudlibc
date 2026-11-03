@@ -66,6 +66,10 @@ void xud_test_model(void); /* the model rung and the public model API: the docum
 void xud_test_time(void); /* the clock rung and the public clock API: the saturating tick difference, the seconds division and the frequ
                              ency that refuses it, the two mark rows and the boundary count, the guards the public calls reach, and the
                              one real clock the GPU half reads back */
+void xud_test_font(void); /* the font rung and the public font API: the description's check and its box budget, the default set's bounds,
+                             the atlas's first attempt, stb's three bake steps over one real font file, the coverage-to-texel conversion,
+                             the row lookup and its fallback, the two metric reads, the measurement and its scale, and the one TEXTURE slot
+                             this rung owns */
 void xud_test_core(void);
 void xud_test_vendor(void); /* the three vendored single-header rungs: cgltf, stb_truetype, miniaudio */
 

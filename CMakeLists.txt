@@ -166,6 +166,7 @@ add_library(xud STATIC
     src/xud/xud_model.c
     src/xud/xud_texture.c
     src/xud/xud_time.c
+    src/xud/xud_font.c
     src/xud/xud_shader.c
     src/xud/xud_pipeline.c
     src/xud/xud_renderpass.c
@@ -215,6 +216,7 @@ add_executable(xud_test
     tests/xud_test_model.c
     tests/xud_test_texture.c
     tests/xud_test_time.c
+    tests/xud_test_font.c
     tests/xud_test_core.c
     tests/xud_test_vendor.c
 )

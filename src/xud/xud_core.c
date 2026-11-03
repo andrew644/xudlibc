@@ -43,6 +43,7 @@
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_diagnostics.h"
+#include "xud_font.h" /* Required for: xud_font_close_all, the FONT kind's half of the same teardown rung - the rung above the TEXTURE kind's, because a font record names a TEXTURE slot rather than owning driver objects of its own */
 #include "xud_handle.h"
 #include "xud_input.h"
 #include "xud_instance.h"
@@ -424,6 +425,7 @@ XudResult xud_close_context(XudContext** context) {
     uint32_t meshRecordsClosed = 0u;
     uint32_t textureRecordsClosed = 0u;
     uint32_t modelRecordsClosed = 0u;
+    uint32_t fontRecordsClosed = 0u;
 
     if (context == NULL)
         return XUD_INVALID_ARG;
@@ -445,15 +447,17 @@ XudResult xud_close_context(XudContext** context) {
        here for the reason the material's is not - a mesh record owns five VkBuffers and one host-visi
        ble block and a texture record owns an image, a view, a sampler and one host-visible block, so
        closing either calls a driver and a block left behind in a slot is a block the allocator's own
-       close cannot see. xud_model_close_all() is the fifth name that appears here, and it runs ABOVE
-       all four rather than beside them for the reason the other four do not run above each other: a
-       model record owns no driver object of its own, it names MESH and MATERIAL slots, so closing it
-       calls the mesh and the material rungs below it and a model left in its slot when either of those
-       walks is a mesh whose record still names a material about to be freed. The ladder therefore rea
-       ds model, texture, mesh, material, table, and MODEL is the only rung of the five whose order is
-       forced rather than chosen. TEXTURE runs above MESH because the two kinds' records are independe
-       nt of each other and the order only has to be above the table's, so the ladder reads texture, me
-       sh, material, table. All four rungs run ABOVE this call, and every other kind's slots are still
+       close cannot see. xud_model_close_all() is the fifth name that appears here and xud_font_close_all()
+       the sixth, and both run ABOVE the other four rather than beside them for the same reason: a model
+       record owns no driver object of its own, it names MESH and MATERIAL slots, and a font record owns
+       none either - it names one TEXTURE slot, the atlas it baked - so closing either calls a rung below
+       it, and a model left in its slot when either of those walks runs is a mesh whose record still names
+       a material about to be freed, and a font left in its slot when the TEXTURE walk runs is a record
+       naming an image about to be destroyed. The ladder therefore reads model, font, texture, mesh, mate
+       rial, table, and MODEL and FONT are the two rungs of the six whose order is forced rather than cho-
+       sen. TEXTURE runs above MESH because the two kinds' records are independent of each other and the
+       order only has to be above the table's, so the ladder reads texture, mesh, material, table. All six
+       rungs run ABOVE this call, and every other kind's slots are still
        the sentinel this layer opens them with, because no rung above has landed for them, so freeing t
        hose arrays retires nothing of the driver's, and the rungs below still have to tear their own ob
        jects down after it. The renderer goes next because the frame
@@ -488,6 +492,9 @@ XudResult xud_close_context(XudContext** context) {
        handle before freeing, so a context torn down twice cannot double-free. */
     if (victim->handleTable != NULL) {
         rung = xud_model_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &modelRecordsClosed);
+        if ((rung != XUD_OK) && (first == XUD_OK))
+            first = rung;
+        rung = xud_font_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &fontRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;
         rung = xud_texture_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &textureRecordsClosed);
