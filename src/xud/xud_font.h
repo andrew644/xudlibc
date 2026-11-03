@@ -7,9 +7,10 @@
  *   Owns : XudFontRecord - the record behind a FONT-kind slot of the handle layer - plus the
  *          pure halves above it (xud_font_check(), xud_font_default_count(), xud_font_atlas_dim
  *          (), xud_font_bake(), xud_font_atlas_rgba(), xud_font_glyph_index(), xud_font_glyph_at
- *          las_rec(), xud_font_glyph_info(), xud_font_measure(), xud_font_result_from_stb()), th
- *          e accessor (xud_font_get()), the driver halves (xud_font_open(), xud_font_close()) an
- *          d the teardown rung above the table's own close (xud_font_close_all()).
+ *          las_rec(), xud_font_glyph_info(), xud_font_measure(), xud_font_result_from_stb()) and
+ *          the pen walk above the shapes rung (xud_font_append_text()), the accessor (xud_font_g
+ *          et()), the driver halves (xud_font_open(), xud_font_close()) and the teardown rung abo
+ *          ve the table's own close (xud_font_close_all()).
  *   Layer: above the texture rung and below xud.h. This is the SECOND rung that owns other hand
  *          les (the model's owns MESH and MATERIAL slots, this one owns exactly one TEXTURE slot
  *          : the glyph atlas) and the only place in this tree that calls stb_truetype at all. Th
@@ -34,16 +35,18 @@
  *   ler's back - a sort would move a caller's rows relative to the array it handed, and a caller th
  *   at kept its own index into that array would then be reading the wrong glyph.
  *
- *   What this rung does NOT own, and why: no draw call and no pipeline variant. The batch's draw ro
- *   w names one index range and one index buffer for the whole batch, and the solid pipeline's frag
- *   stage reads no texture at all (set 1 is unbound today - see shaders/solid.frag), so a glyph qua
- *   d that sampled this rung's atlas would need a textured variant beside the solid one, which is a
- *   change to the pipeline list rather than a call above it. The text step's drawing half is theref
- *   ore an open ask, not a stub here: what is landed is the atlas, the metrics and the measurement,
- *   which is everything a draw row needs beside the variant itself. Also absent for the same reaso
- *   n as the model rung states for its own omissions: no SDF generation (raylib's FONT_SDF is a seco
- *   nd pipeline variant reading a second atlas format), no bitmap-font (.fnt/.bmf) reader and no sp
- *   rite-font reader, all three of which are file formats stb_truetype does not read at all.
+ *   What this rung does NOT own, and why: no pipeline variant and no sampler. The draw half of the
+ *   text step landed as the pen walk and the public pair below this note, and the variant it draws
+ *   through landed with the textured column of the pipeline list (shaders/solid_textured.frag and
+ *   set 1's sampler array), so the one piece of the text step still missing is the SAMPLER's half:
+ *   nothing in this tree can put a texture's view into set 1's array (xud_material.h's setOne is
+ *   declared and never allocated, and xud_descriptor.c stamps its 1x1 white default into all six
+ *   teen entries), so a glyph quad appended here still samples white and draws as a tinted rectan
+ *   gle rather than as a letter. The bytes the walk writes are the whole of the step beside that
+ *   half, and the walk says so rather than papering over a letter it cannot show. Also absent for
+ *   the reason the model rung states for its own omissions: no SDF generation (raylib's FONT_SDF is
+ *   a second atlas format and a second variant reading it), no bitmap-font (.fnt/.bmf) reader and
+ *   no sprite-font reader, all three of which are file formats stb_truetype does not read at all.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -55,6 +58,7 @@
 #include "stb_truetype.h" /* Required for: stbtt_pack_context, stbtt_packedchar, stbtt_pack_range, stbtt_fontinfo - the bake this rung runs. Included again here on purpose: the implementation lives in xud_vendor_stb_truetype.c, and this header is the caller's half of that split, the same way xud_model.h includes cgltf.h. */
 #include "xud.h" /* Required for: XudResult, XudHandle, XudFontData, XudGlyphInfo, XudGlyphAtlasRec, XUD_HANDLE_KIND_FONT - the public surface this rung is the half of */
 #include "xud_allocator.h" /* Required for: XudAllocator, handed down to the texture rung's block */
+#include "xud_batch.h" /* Required for: XudBatch - the batch a glyph quad is appended into, which is the batch the renderer owns */
 #include "xud_device.h" /* Required for: XudDevice, the VkDevice the atlas this rung uploads belongs to */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in, and the TEXTURE slot it owns */
 #include "xud_loader.h" /* Required for: XudLoader, handed down to the texture rung */
@@ -312,6 +316,68 @@ XudResult xud_font_measure(float* outWidth, const XudGlyphRow* rows, uint32_t gl
 /// that handed a buffer the difference between "not a font" and "a font this rung cannot read". XUD_OK on the suc
 /// cess answers; XUD_UNSUPPORTED on every refusal; XUD_INTERNAL_ERROR on nothing - the default is that code so a
 /// n unhandled shape still refuses rather than passing.
+/*-----------------------------------------------------------------------------------------------
+ * The pen walk: the string above the rows, and the one shape it appends
+ *
+ *   The walk is this rung's and the quad is the shapes rung's, and the split is where it is for
+ *   one reason: the shapes rung has no idea what an atlas is, so it takes a uv box already divided
+ *   by an extent, and this rung is where the extent is in sight, so this rung does the divide. The
+ *   note beside the counts in xud_shapes.h states the same fact from the other side, and the todo
+ *   item below this one is the public half of the extent, which is what would let a caller do the
+ *   divide itself rather than read it here.
+ *
+ *   The position is the PEN's start rather than the line's top-left, and that is the row's own
+ *   spelling read literally: offsetY is the pen's step to the box's TOP edge, so a position that
+ *   named the top-left would be a different number at every glyph. The pen then moves by the row's
+ *   advanceX scaled plus the tracking after EVERY glyph including the last one, which is the same
+ *   step xud_font_measure() sums, and is why a measure and a draw of one string cannot disagree
+ *   about where the pen ends. The scale is the requested em height divided by the bake's own, the
+ *   same division the measure does, so one atlas serves many sizes (raylib's Font.baseSize exists
+ *   for that reason and this rung is the other half of it).
+ *
+ *   A codepoint with no outline - a space - has a box of zero width and still moves the pen, so
+ *   the append is skipped and the advance is not: that is the answer the rows state rather than an
+ *   absent row, and skipping both would run two words into one.
+ *
+ *   What the walk cannot do, and why it says so rather than papering over it: the append is per
+ *   glyph rather than per string, so a string that runs out of batch capacity draws the glyphs that
+ *   fit and refuses at the next glyph boundary, which is the same shape xud_draw_model() states for
+ *   a model whose last mesh did not fit - a batch's rows are a list, and a partial string is a
+ *   frame that drew part of it. And the quad appended still samples set 1's white default rather
+ *   than this font's atlas, for the reason the note at the top of this file gives.
+ *-----------------------------------------------------------------------------------------------*/
+
+static_assert(XUD_FONT_ATLAS_MAX_DIM <= 16777216u,
+    "xud_font.h: the atlas's extent is exactly representable as a float, so the divide the pen walk does is a divide by a divisor a float "
+    "names exactly and a glyph's uv is not off by a rounding of the extent");
+
+/// Pure in the shapes rung's sense: append one string's glyph quads into the batch, walking the pen
+/// from the caller's position by each row's own advance plus the caller's tracking, and texturing
+/// each quad with that row's own atlas box divided by the record's own extent - the first real uv
+/// this tree has ever written into the UV stream. The walk skips the append for a codepoint whose
+/// box is empty (a space) while still moving the pen, and it refuses a requested em height that is
+/// not a positive number rather than scaling by zero or by a NaN into a degenerate box the shapes
+/// rung would refuse anyway. A live record with no bake height, no rows or no extent is a state the
+/// open made rather than an argument a caller can fix, and is XUD_INTERNAL_ERROR.
+///
+/// XUD_INVALID_ARG on a NULL batch, record or text array, a textCount of zero, or a pixelSize that
+/// is not strictly positive (which refuses zero, a negative height and a NaN in one comparison, the
+/// reason the sphere's note gives for a NaN radius); the shapes rung's own codes for each quad it
+/// appends; XUD_OUT_OF_MEMORY when one glyph quad does not fit the batch, with the glyphs before it
+/// already appended; XUD_INTERNAL_ERROR on a record whose own numbers are the sentinels; XUD_OK only
+/// when every quad that was attempted completed.
+XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, const uint32_t* text, uint32_t textCount, XudVector3 position,
+    float pixelSize, float spacing, XudColor color);
+
+/// Pure: stb's own answer turned into this library's code. The packer answers 1 for success and 0
+/// for "this set does not fit this atlas", and the font header's two sniff functions answer a
+/// negative offset and a zero count for "this is not a font" - three shapes of refusal, two codes
+/// here: a set that does not fit is the description's fault and is XUD_UNSUPPORTED (the same code
+/// the texture rung gives for an extent its own bound refuses), and a buffer that is not a font is
+/// XUD_UNSUPPORTED too, because this library has no way to tell a caller that handed a buffer the
+/// difference between "not a font" and "a font this rung cannot read". XUD_OK on the success
+/// answers; XUD_UNSUPPORTED on every refusal; XUD_INTERNAL_ERROR on nothing - the default is that
+/// code so an unhandled shape still refuses rather than passing.
 XudResult xud_font_result_from_stb(int packed, int fontOffset);
 
 /// Pure: the accessor the rung above reaches instead of the slot array - validate against the FONT kind, then

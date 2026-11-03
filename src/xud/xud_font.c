@@ -40,6 +40,7 @@
 #include "xud_device.h" /* Required for: XudDevice, the handle every guard below checks exists */
 #include "xud_handle.h" /* Required for: xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
 #include "xud_loader.h" /* Required for: xud_loader_is_open, xud_loader_device_bound - the two guards every driver half runs */
+#include "xud_shapes.h" /* Required for: xud_shapes_append_glyph_quad() - the one shape this rung's pen walk appends */
 #include "xud_texture.h" /* Required for: XUD_TEXTURE_FILTER_LINEAR, XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE, XUD_TEXTURE_BYTES_PER_TEXEL, xud_texture_open/close - the atlas */
 
 static_assert(XUD_FONT_ATLAS_BUDGET(XUD_FONT_ATLAS_MIN_DIM, XUD_FONT_MIN_PIXEL_SIZE) > 0u,
@@ -382,6 +383,102 @@ XudResult xud_font_measure(float* outWidth, const XudGlyphRow* rows, uint32_t gl
         width += (rows[index].advanceX * scale) + spacing;
     }
     *outWidth = width;
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The pen walk - above the shapes rung, and the first real uv this tree writes
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, const uint32_t* text, uint32_t textCount, XudVector3 position,
+    float pixelSize, float spacing, XudColor color) {
+    XudGlyphRow row;
+    XudVector3 corner0;
+    XudVector3 corner1;
+    XudVector2 uv0;
+    XudVector2 uv1;
+    float scale = 0.0f;
+    float penX = 0.0f;
+    float atlasWidth = 0.0f;
+    float atlasHeight = 0.0f;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t index = 0u;
+    uint32_t step = 0u;
+
+    if ((batch == NULL) || (record == NULL) || (text == NULL) || (textCount == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The requested em height, in one comparison: a height of zero would scale every box to nothing
+       and a negative one would flip it, and both are refusals rather than draws of a degenerate quad
+       the shapes rung would refuse anyway - and the same comparison refuses a NaN, which is the reas
+       on the sphere's note gives for a NaN radius, one rung up.
+    */
+    if (!(pixelSize > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The record's own numbers are the walk's divisors, so a record that never had them is a state xud_
+       font_open() made rather than an argument a caller could fix, and it is reported rather than divided
+       by: a uv that came out of a zero extent would be an inf in a float stream.
+    */
+    if ((record->pixelSize == 0u) || (record->glyphCount == 0u) || (record->glyphs == NULL) || (record->atlasWidth == 0u)
+        || (record->atlasHeight == 0u)) {
+        return XUD_INTERNAL_ERROR;
+    }
+
+    /* The scale is the divide the measure does, read from the other side: one atlas, many sizes, and
+       the requested height is in the shape's own space rather than in the bake's, which is what lets a
+       caller ask for an em height in clip units and get a width back in the same units.
+    */
+    scale = pixelSize / (float)record->pixelSize;
+    atlasWidth = (float)record->atlasWidth;
+    atlasHeight = (float)record->atlasHeight;
+    penX = position.x;
+
+    for (step = 0u; step < textCount; step++) {
+        result = xud_font_glyph_index(record->glyphs, record->glyphCount, text[step], &index);
+        if (result != XUD_OK) {
+            return result;
+        }
+        row = record->glyphs[index];
+
+        /* The two boxes, spelled the way the shapes rung's pairing note spells them: corner0 is the
+           corner with the SMALLER x and the LARGER y, which is the atlas box's own top-down spelling
+           turned into this rung's y-up space, and uv0 is the same corner of the atlas box rather than
+           the diagonally opposite one - which is why the divide below needs no flip at any glyph. The
+           top edge is the pen's y MINUS the row's offsetY because offsetY is the pen's step to the box's
+           top and is negative above the baseline in stb's own y-down bake space.
+        */
+        corner0.x = penX + (row.offsetX * scale);
+        corner0.y = position.y - (row.offsetY * scale);
+        corner0.z = position.z;
+        corner1.x = corner0.x + ((float)row.atlasWidth * scale);
+        corner1.y = corner0.y - ((float)row.atlasHeight * scale);
+        corner1.z = position.z;
+        uv0.x = (float)row.atlasX / atlasWidth;
+        uv0.y = (float)row.atlasY / atlasHeight;
+        uv1.x = (float)(row.atlasX + row.atlasWidth) / atlasWidth;
+        uv1.y = (float)(row.atlasY + row.atlasHeight) / atlasHeight;
+
+        /* A codepoint with no outline - a space - has a box of zero width and still moves the pen: the
+           append is skipped and the advance is not, which is the answer the rows state rather than an
+           absent row, and skipping both would run two words into one. The box check is on the texel
+           counts rather than on the scaled floats so a subpixel-scaled box is drawn rather than dropped.
+        */
+        if ((row.atlasWidth > 0u) && (row.atlasHeight > 0u)) {
+            result = xud_shapes_append_glyph_quad(batch, corner0, corner1, uv0, uv1, color);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+
+        /* The same step xud_font_measure() sums, after EVERY glyph including the last one, which is what
+           makes a measure and a draw of one string agree about where the pen ends.
+        */
+        penX += (row.advanceX * scale) + spacing;
+    }
+
     return XUD_OK;
 }
 
@@ -740,6 +837,68 @@ XudResult xud_get_glyph_info(XudGlyphInfo* outInfo, XudContext* context, XudHand
         return result;
     }
     return xud_font_glyph_info(outInfo, record->glyphs, record->glyphCount, index);
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The one guard every public draw above this rung needs
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The guard is one function rather than one block per public call, the same shape xud_shapes.c gives
+   the drawing API above it: a text draw reaches the same two fields of the same owner and answers the
+   same two codes as every other draw above the renderer does, and it is file-local because it is not
+   the layer's contract - the contract is the walk and the public pair, and this is the half they share.
+*/
+static XudResult xud_font_context_batch(XudBatch** outBatch, XudContext* context) {
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->renderer == NULL) || (context->renderer->batch == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    *outBatch = context->renderer->batch;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The public text pair - raylib's DrawText/DrawTextEx above the pen walk
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_draw_text(
+    XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, XudVector3 position, float pixelSize, XudColor color) {
+    XudBatch* batch = NULL;
+    const XudFontRecord* record = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_font_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_font_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_font_append_text(batch, record, text, textCount, position, pixelSize, 0.0f, color);
+}
+
+XudResult xud_draw_text_ex(XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, XudVector3 position,
+    float pixelSize, float spacing, XudColor color) {
+    XudBatch* batch = NULL;
+    const XudFontRecord* record = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_font_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_font_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_font_append_text(batch, record, text, textCount, position, pixelSize, spacing, color);
 }
 
 XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context, XudHandle handle, uint32_t codepoint) {

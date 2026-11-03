@@ -19,7 +19,8 @@
  * xud_get_key_pressed() / xud_get_char_pressed() / xud_get_key _name() / xud_set_exit_key() / xud_get_exit_key() and the mouse block below
  * it), the clock API above the clock rung (raylib's GetTime/GetFrameTime half - xud_get_time() / xud_get_frame_time() /
  * xud_get_timer_value() / xud_get_timer_frequency()), the font API above the font rung (raylib's LoadFontEx/MeasureTextEx/GetGlyphInfo half
- * - xud_load_font() / xud_close_font() / xud_measure_text() / xud_get_glyph_index() / xud_get_glyph_info() / xud_get_glyph_atlas_rec()),
+ * - xud_load_font() / xud_close_font() / xud_measure_text() / xud_get_glyph_index() / xud_get_glyph_info() / xud_get_glyph_atlas_rec()
+ *   / xud_draw_text() / xud_draw_text_ex()),
  * the value types a caller passes down (XudVector2 / XudVector3 / XudColor / XudMaterial / XudTextureData / XudMeshData / XudFontData /
  * XudGlyphInfo / XudGlyphAtlasRec), the key and mouse-button tokens that API's queries take, and the runtime Vulkan query xud_vul
  * kan_supported(). Layer: top of the stack (public API). Everything below it is internal - xud_core.h/.c, xud_loa der.h/.c,
@@ -41,10 +42,10 @@
  * takes or fills a table today and the object pairs above it are what hand a handle out and what a handle names); the sha pes rung's calls
  * are the geometry a caller draws, which is what the drawing API above the renderer reaches. What is here today above the renderer is the
  * frame pair, the shapes family (a triangle, a box, a sphere, a line, a point and the two wire forms), the camera pair, the material pair,
- * the mesh pair, the model pair and the two draws that name a handle (xud_draw_mesh() / xud_draw_model()); what is still missing there is
- * the camera + transform math above the shapes - the model matrix is the identity today, so a mesh is placed by the camera alone - plus
- * the textured variant above the solid one, and the object kinds a public handle would name that still have no rung above the table
- * (fonts).
+ * the mesh pair, the model pair, the text pair and the two draws that name a handle (xud_draw_mesh() / xud_draw_model()); what is still
+ * missing there is the camera + transform math above the shapes - the model matrix is the identity today, so a mesh is placed by the camera
+ * alone - plus the sampler that would put a font's atlas into set 1 for the text pair to draw through, and no object kind is left without a
+ * rung above the table today (the FONT kind's public half landed with the font pair, which is the last one that was missing).
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -922,15 +923,19 @@ XudResult xud_draw_model(XudContext* context, XudHandle handle);
  *   rung: the bake is the font rung's and the atlas it bakes is uploaded by the texture rung below it,
  *   so a caller names a context and a font FILE and never an atlas, a sampler or a VkImage.
  *
- * What is NOT here, and why: the draw half. The batch's draw row names one index range and one index
- *   buffer for the whole batch, and the solid pipeline's fragment stage reads no texture at all (set 1
- *   is unbound today, see shaders/solid.frag), so a glyph quad that sampled this rung's atlas would nee
- *   d a textured variant beside the solid one - a change to the pipeline list rather than a call above i
- *   t. What is landed is therefore everything a draw row needs beside the variant itself: the atlas, the m
- *   etrics and the measurement. Also absent for the reason the font rung's own note gives: raylib's FONT_SDF
- *   (a second pipeline variant reading a second atlas format), its LoadFontFromImage and its bitmap/sprite fo
- *   nt loaders (file formats stb_truetype does not read at all), and its default bitmap font - which is why thi
- *   s library has no xud_load_font_default() and no default font a context falls back to.
+ * What is NOT here, and why: no sampler for the text pair to draw through. The pair landed, the pen
+ *   walk it delegates to landed, and the textured variant of the pipeline list landed beside it, but
+ *   nothing in this tree can put a texture's view into set 1's sampler array (xud_material.h declares
+ *   a setOne and never allocates one, and xud_descriptor.c stamps its 1x1 white default into all six
+ *   teen entries), so a glyph quad drawn here still samples white and draws as a tinted rectangle
+ *   rather than as a letter - the bytes it writes are the whole of the step beside that half, and the
+ *   note at the top of xud_font.h states the same fact from the rung's side. Also absent for the reas
+ *   on the font rung's own note gives: raylib's FONT_SDF (a second atlas format and a second variant
+ *   reading it), its LoadFontFromImage and its bitmap/sprite font loaders (file formats stb_truetype
+ *   does not read at all), its DrawText3D (a text run whose pen walks a plane other than the screen's,
+ *   which is a transform this library's camera does not hand a caller per draw) and its default bitmap
+ *   font - which is why this library has no xud_load_font_default() and no default font a context
+ *   falls back to.
  *-----------------------------------------------------------------------------------------------*/
 
 /// Load a font this context owns: the object half of the font rung, and the fifth public create pair wh
@@ -972,6 +977,42 @@ XudResult xud_close_font(XudContext* context, XudHandle handle);
 /// of zero, or on a handle that does not name a live FONT slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_measure_text(
     float* outWidth, XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, float pixelSize, float spacing);
+
+/// Draw one string: raylib's DrawText (raylib.h 415, "draw text (with default font size spacing)") and
+///   DrawTextEx (raylib.h 416, "draw text with custom font size and spacing") above the pen walk, and the
+///   first draw in this tree that writes a real uv. The position is the PEN's start rather than the line's
+///   top-left: its x is the string's left edge and its y is the baseline every glyph's box hangs from, which
+///   is the row's own spelling read literally (offsetY is the pen's step to the box's TOP edge, and a number
+///   that named the top-left instead would be a different number at every glyph). The pen then moves by each
+///   row's own advance scaled by the requested em height over the bake's own, plus the tracking, after EVERY
+///   glyph including the last one - the same step xud_measure_text() sums, which is what makes a measure and a
+///   draw of one string agree about where the pen ends, and is why a centring call can ask for a width and get
+///   the string it asked for at that width. A codepoint the set does not cover draws the fallback row, the same
+///   row the three lookups above answer, and a codepoint with no outline (a space) draws no quad but still moves
+///   the pen, which is the answer the rows state rather than an absent row - skipping both would run two words
+///   into one. The quads are appended one glyph at a time, so a string that runs out of batch capacity draws the
+///   glyphs that fit and refuses at the next glyph boundary, the same shape xud_draw_model() states for a model
+///   whose last mesh did not fit. What the draw cannot do yet, and why it says so rather than papering over it:
+///   the quad it appends still samples set 1's white default rather than this font's atlas, because nothing in
+///   this tree can put a texture's view into that sampler array - so a string drawn today spends its vertices,
+///   its indices, its uvs and its colour and draws as tinted rectangles rather than as letters. XUD_INVALID_ARG
+///   on a NULL context or text array, on a textCount of zero, or on a pixelSize that is not strictly
+///   positive (which refuses zero, a negative height and a NaN in one comparison), or on a handle that does not
+///   name a live FONT slot of this context; XUD_UNSUPPORTED on a context whose bring-up never completed, which
+///   is the state that has no batch to append into; the shapes rung's own codes for each quad it appends; XUD_OUT
+///   _OF_MEMORY when one glyph quad does not fit the batch, with the glyphs before it already appended.
+XudResult xud_draw_text(
+    XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, XudVector3 position, float pixelSize, XudColor color);
+
+/// The same draw with the tracking raylib's DrawTextEx carries: the extra x step added after EVERY glyph
+///   including the last one, which is the same step xud_measure_text() takes a spacing for, so a draw and a
+///   measure that pass the same tracking cannot disagree about where the pen ends. A negative tracking is not
+///   refused: it is letter-spacing tightened, and a string walked that far can have its boxes overlap, which is
+///   what kerning looks like from the far side of it - raylib's Font kerning is a per-pair table this rung has
+///   no source for, and a caller that wants the look without one asks for the negative step itself. XUD_INVALID_ARG
+///   on the same arguments as the pair above, and on nothing else; the same codes for the same reasons.
+XudResult xud_draw_text_ex(XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, XudVector3 position,
+    float pixelSize, float spacing, XudColor color);
 
 /// Which of a font's rows a codepoint names: raylib's GetGlyphIndex (raylib.h 405), and the fallback it states rather than a
 /// refusal - a codepoint the set does not cover answers the row that holds '?', so a caller drawing a string the font cannot render gets
