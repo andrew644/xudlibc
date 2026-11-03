@@ -8,20 +8,26 @@
  *          containers and the two refusals, through a bare handle table, the frame count and the
  *          count read back out of the record beside the ones the container's own header declares
  *          them, the public load/close pair and the two queries against a shell context and ag
- *          ainst a real one, and the teardown rung above the table's own close - and nothing els
- *          e: the slot arrays and the generation bumps are the handle area's, the context's own
+ *          ainst a real one, the play/stop pair's validation against a shell and its three states
+ *          against a real context, and the teardown rung above the table's own close - and nothing
+ *          else: the slot arrays and the generation bumps are the handle area's, the context's own
  *          bring-up and teardown are the core area's, and the vendor area's miniaudio check is o
  *          nly that the library links, which is not that this rung reads a container.
  *
- *   Layer: tests, above the handle area and below the core area. The whole area but the last hal
- *          f runs with no driver present at all, and that is the point of it rather than a conven
+ *   Layer: tests, above the handle area and below the core area. The whole area but the last two
+ *          halves runs with no driver present at all, and that is the point of it rather than a conven
  *          ience: the audio rung's driver half calls no Vulkan entry point and no driver function,
  *          so a decode is miniaudio reading a caller's bytes into a heap block, and a bare handle t
  *          able is one host allocation - which makes the decode, the record, the refusals and the te
  *          ardown rung all checkable headless where the model's and the font areas needed a device to
  *          see anything at all. The GPU half runs the same public pair against a real context, which i
  *          s where the numbers the pure half read out of the record are seen again through the public
- *          queries, one decode rather than two hopes.
+ *          queries, one decode rather than two hopes. The play/stop pair is the reason a third half
+ *          landed: its validation is answerable against a shell because the pair validates the handle
+ *          BEFORE the sound rung is spent, and its three states are not answerable at all without an
+ *          audio backend, so the states are gated beside the GPU half rather than counted as a hope -
+ *          and the gated half accepts the backend's absence as an answer, which is the one place in th
+ *          is area where an environment question rather than a bug can change a code.
  *
  *   What the checks are stated against: the container's own header rather than a table of decode res
  *          ults someone copied - four of the six files are canonical RIFF PCM, so their fmt chunk decla
@@ -52,6 +58,7 @@
 #include "xud_audio.h" /* Required for: XudAudioStreamRecord and the rung's own check/codes/stride/conversions/access/open/close/close_all halves */
 #include "xud_core.h" /* Required for: struct XudContext, whose handleTable the public calls reach */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_table_open/close, xud_handle_table_live_count - the slot this record lives in */
+#include "xud_sound.h" /* Required for: XudSound and xud_sound_close - the sound rung the public play/stop pair spends, and the one rung this area closes by hand beside the context's own teardown */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
 
 /*-----------------------------------------------------------------------------------------------
@@ -871,6 +878,169 @@ static void xud_test_audio_gpu(void) {
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The play/stop pair, against a shell: the pair's validation, and the one thing that is answerable
+ * without an audio backend
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_audio_play(void) {
+    XudContext shell;
+    XudContext empty;
+    XudHandleTable* table = NULL;
+    XudHandle handle = { 0u, 0u, 0u };
+    XudHandle stale = { 0u, 0u, 0u };
+    XudHandle foreign = { 0u, 0u, 0u };
+    XudAudioData audio;
+    bool playing = false;
+
+    memset(&shell, 0, sizeof(shell));
+    memset(&empty, 0, sizeof(empty));
+    memset(&handle, 0, sizeof(handle));
+    memset(&audio, 0, sizeof(audio));
+
+    xud_check(xud_handle_table_open(&table) == XUD_OK, "play-table",
+        "a bare table is what the pair reaches, which is the point of the pair's validation being answerable with no audio device spent at "
+        "all");
+    if (table == NULL) {
+        return;
+    }
+    shell.handleTable = table;
+
+    audio.fileData = xudTestAudioFile[0];
+    audio.fileBytes = xudTestAudioBytes[0];
+    xud_check(
+        xud_load_audio(&handle, &shell, &audio) == XUD_OK, "play-loaded", "a stream is loaded to be the thing the pair is asked about");
+
+    xud_check(xud_play_audio(NULL, handle) == XUD_INVALID_ARG, "play-null-context", "a stream with no context to own it is refused");
+    xud_check(xud_play_audio(&empty, handle) == XUD_UNSUPPORTED, "play-no-rungs-below",
+        "and a context that owns no handle table is refused as UNSUPPORTED rather than as a bad handle, the same split the load above "
+        "gives");
+
+    stale = handle;
+    stale.generation = handle.generation + 1u;
+    xud_check(xud_play_audio(&shell, stale) == XUD_INVALID_ARG, "play-stale",
+        "a handle kept past the release that freed its slot is refused as a bad argument, which is the pair's validation running BEFORE "
+        "the "
+        "sound rung is spent - the one order that makes this answerable at all on a machine with no audio backend");
+    foreign = handle;
+    foreign.kind = XUD_HANDLE_KIND_MESH;
+    xud_check(xud_play_audio(&shell, foreign) == XUD_INVALID_ARG, "play-foreign-kind",
+        "and a handle of another kind is refused rather than a row spent at that other kind's slot index");
+
+    xud_check(xud_is_audio_playing(&playing, &shell, handle) == XUD_OK, "play-question-answers",
+        "the one question answers through a shell, which is the state this rung owns rather than miniaudio's clock");
+    xud_check(playing == false, "play-never-played",
+        "and answers false, so a stream that was never played is a stream the mixer is not reading rather than an error the question would "
+        "have to guess at");
+
+    xud_check(xud_stop_audio(&shell, handle) == XUD_ALREADY, "play-stop-never-played",
+        "a stop on a stream that never had a node answers ALREADY rather than a refusal, which is the state this call asks for already bei"
+        "ng the state it has, and it is the state a context that never spent an audio device leaves behind");
+    xud_check(xud_stop_audio(&shell, stale) == XUD_INVALID_ARG, "play-stop-stale",
+        "and the stop validates the handle even on a context whose sound rung was never spent, which is what makes a stale handle's refus"
+        "al a bad argument rather than an ALREADY that would have read the slot");
+
+    xud_check(xud_close_audio(&shell, handle) == XUD_OK, "play-close-never-played",
+        "the public close releases a stream that was never played, which is the detach above it answering OK on a slot with no row behind i"
+        "t");
+
+    xud_check(xud_handle_table_close(&shell.handleTable) == XUD_OK, "play-table-close",
+        "and the shell's table closes, so the half leaves no slot and no block behind - and no audio device was ever spent to find any of i"
+        "t");
+    xud_check(shell.handleTable == NULL, "play-table-cleared", "and is cleared through the shell's own copy");
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The play/stop pair, against a real context: the rung spent, and the row's three states
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_audio_device(void) {
+    XudContext* context = NULL;
+    XudHandle handle = { 0u, 0u, 0u };
+    XudAudioData audio;
+    XudResult played = XUD_INVALID_ARG;
+    bool playing = false;
+    uint32_t closed = 0u;
+
+    memset(&handle, 0, sizeof(handle));
+    memset(&audio, 0, sizeof(audio));
+
+    xud_check(xud_init_context(&context, 64u, 64u) == XUD_OK, "device-context",
+        "a real context is up, which is the one thing the sound rung needs and a decode does not");
+    if (context == NULL) {
+        return;
+    }
+
+    audio.fileData = xudTestAudioFile[5];
+    audio.fileBytes = xudTestAudioBytes[5];
+    xud_check(xud_load_audio(&handle, context, &audio) == XUD_OK, "device-loaded",
+        "the largest of the files is decoded, which is the stream the row will read rather than a copy of it");
+
+    played = xud_play_audio(context, handle);
+    xud_check(played == XUD_OK || played == XUD_UNSUPPORTED, "device-play-answers",
+        "the play either spends the rung or refuses: the two answers are this machine's audio backend being there and not being there, an"
+        "d neither is a bug - which is why this half is gated rather than counted as a hope");
+    if (played != XUD_OK) {
+        xud_check(context->sound == NULL, "device-play-refused-spent-nothing",
+            "and a refusal leaves the field NULL rather than a rung half-open, which is what makes the teardown below the same on either "
+            "answer");
+        xud_check(xud_close_audio(context, handle) == XUD_OK, "device-close-after-refusal",
+            "and the stream still closes, because a row that was never spent is a row the detach above the close has nothing to refuse");
+        xud_check(xud_close_context(&context) == XUD_OK, "device-context-closed",
+            "and the context closes over a sound rung that was never opened, which is the ALREADY the eighth name in that teardown gives "
+            "for a "
+            "field bring-up left NULL");
+        xud_check(context == NULL, "device-context-null", "and is cleared");
+        return;
+    }
+
+    xud_check(context->sound != NULL, "device-rung-spent",
+        "the rung is under the context now, which is the lazy spend rather than a bring-up that asked for an audio device nothing was "
+        "going to play");
+    xud_check(
+        xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-question", "the question answers through the real context");
+    xud_check(playing == true, "device-playing",
+        "and answers true, so the row's own state is what the question reads rather than a hope about the mixer");
+
+    xud_check(xud_close_audio(context, handle) == XUD_UNSUPPORTED, "device-close-over-playing-row",
+        "the public close refuses over a row that is playing, which is the detach above it rather than a stop this rung would have to do "
+        "on "
+        "the caller's behalf - the one guard that keeps a mixer from reading a block an audio record is about to free");
+
+    xud_check(xud_play_audio(context, handle) == XUD_ALREADY, "device-play-twice",
+        "a second play of the same stream answers ALREADY rather than spending a second node, which is the row being the stream's rather "
+        "than "
+        "raylib's fresh sound per call");
+
+    xud_check(xud_stop_audio(context, handle) == XUD_OK, "device-stop", "the stop tells the mixer, and the node stays attached");
+    xud_check(xud_stop_audio(context, handle) == XUD_ALREADY, "device-stop-twice",
+        "and a stop run twice answers ALREADY rather than a refusal, which is the pair being idempotent rather than a second driver call "
+        "wait"
+        "ing behind it");
+    xud_check(
+        xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-question-after-stop", "the question answers beside the stop");
+    xud_check(playing == false, "device-stopped",
+        "and answers false, so the row is a node that exists and is not reading rather than a node that was destroyed");
+
+    xud_check(xud_play_audio(context, handle) == XUD_OK, "device-play-resumes",
+        "a play after a stop answers OK, which is the node staying attached: the row went back to the next play of the same slot rather "
+        "than "
+        "to a new one");
+    xud_check(xud_stop_audio(context, handle) == XUD_OK, "device-stop-before-close",
+        "and the caller stops it before closing, which is the answer the refusal above asked for");
+
+    xud_check(xud_close_audio(context, handle) == XUD_OK, "device-close",
+        "the public close releases it, with the detach above it having given the bufferRef reference back before the record's block went");
+
+    xud_check(xud_sound_close(&context->sound, &closed) == XUD_OK, "device-sound-close",
+        "the rung's own teardown closes what the play spent, and the context's teardown runs the same rung above the audio's close_all");
+    xud_check(context->sound == NULL, "device-sound-cleared",
+        "and is cleared through the context's own copy of the pointer, which is what makes the teardown below not run it twice");
+    xud_check(
+        xud_close_context(&context) == XUD_OK, "device-context-closed", "the context closes over a sound rung that was already closed");
+    xud_check(context == NULL, "device-context-null", "and is cleared, so the half leaves no row, no engine and no block behind");
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The area's entry point
  *-----------------------------------------------------------------------------------------------*/
 
@@ -892,8 +1062,10 @@ void xud_test_audio(void) {
     xud_test_audio_decode();
     xud_test_audio_refused();
     xud_test_audio_shell();
+    xud_test_audio_play();
     if (xud_gpu_tests_enabled()) {
         xud_test_audio_gpu();
+        xud_test_audio_device();
     }
 
     xud_test_audio_file_drop();

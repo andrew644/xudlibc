@@ -3,12 +3,15 @@
  *   hello_audio.c - one container's bytes, decoded into the stream behind one handle
  *
  *   Owns : two containers read off disk, one context, two streams loaded from the bytes the
- *          decoder reads, the three numbers and the one length each stream answers, and the
- *          teardown that gives the streams back before it gives back the context. Nothing else:
- *          no draw call, no camera, no batch, no play call, no mixer, no device of its own.
+ *          decoder reads, the three numbers and the one length each stream answers, one stream
+ *          played and stopped through the sound rung, and the teardown that gives the streams
+ *          back before it gives back the context. Nothing else: no draw call, no camera, no bat
+ *          ch. The play call, the mixer and the device ARE here now, and they are here through t
+ *          he public pair rather than through anything this file names.
  *
  *   Layer: examples. Public API only (xud.h) plus stdio for the lines it prints and stdlib for
- *          the one buffer a container is read into - and nothing else. That is the whole point
+ *          the one buffer a container is read into - and nothing else, which is why the wait below
+ *          reads the clock rung rather than sleeping through a libc call. That is the whole point
  *          of the public header here: user code names a FILE and a handle, and never a miniaudio
  *          call, a decoder config, a heap block, a graph node or a device. The one thing the
  *          public header cannot do for a caller is read the file: xud_load_audio takes BYTES,
@@ -25,15 +28,20 @@
  *   swapchain it never draws into, and that is the honest cost of the API as it stands today
  *   rather than a stub: the window is not decoration, it is the owner.
  *
- *   What this example does NOT play, and why it still says so: there is no play call in xud.h.
- *   raylib's PlayAudio/StopAudio/SetAudioFootprint half is a device with a mixer and a queue of
- *   sounds above it, which is a SECOND rung rather than a call above the load (xud_audio.h's own
- *   note states that split), so the honest version of "play this file" here is everything a play
- *   row needs beside the device itself: the frames, the frame count, the channel count, the rate
- *   and the length in seconds - raylib's LoadAudioStream and GetAudioLength, which is what this
- *   tree has. A run below prints those numbers rather than hearing them, and a reader who wants
- *   the sound itself should read the printed frame count as the walk a device would take, not as
- *   silence waiting for a mixer that was never built.
+ *   What this example plays, and what it still prints: the second audio rung landed, so the ogg
+ *   wrapper is HEARD as well as printed - xud_play_audio/xud_stop_audio, raylib's PlayAudio/StopA
+ *   udio half, above miniaudio's engine (its ma_device, its node graph and its mixer). The numbers
+ *   are still printed beside it for the reason the print is a fact and the play is an event: the
+ *   three numbers and the one length are what a run says, and the two seconds of the same recordi
+ *   ng are what a run does, and a run that only heard would be a run a reader could not check.
+ *   Only the first wrapper is played, and that is the point rather than an oversight: the pair is
+ *   one recording in two wrappers, so hearing it twice would be hearing the same fact twice, and
+ *   the second stream's row is never spent, which is the lazy spend the sound rung's own note desc
+ *   ribes - an audio device is spent on the first play, not at bring-up, and a stream that was nev
+ *   er played is a stream whose close has no row to refuse. The play is asynchronous, so the examp
+ *   le waits out the length it printed before it stops and closes: the device's own thread pulls f
+ *   rames at real-time rate, and a run that walked on would exit mid-walk and hear a tenth of a sec
+ *   ond of the recording rather than the recording.
  *
  *   The two containers, and why they are two: they are the SAME track in two wrappers, which is
  *   what makes the pair one statement about the decoders rather than two about the files. The
@@ -52,7 +60,7 @@
 #include <stdio.h> /* Required for: fopen, fseek, ftell, fread, fclose and printf, the file read and the report */
 #include <stdlib.h> /* Required for: malloc and free, the one buffer a container is read into */
 
-#include "xud.h" /* Required for: XudAudioData, XudAudioInfo, xud_load_audio/xud_close_audio, xud_get_audio_info and xud_get_audio_length - the whole public audio API, and no internal header */
+#include "xud.h" /* Required for: XudAudioData, XudAudioInfo, XudContext, xud_load_audio/xud_close_audio, xud_get_audio_info, xud_get_audio_length and xud_play_audio/xud_stop_audio - the whole public audio API above both rungs, and no internal header */
 
 /*-----------------------------------------------------------------------------------------------
  * The window, the containers and the run
@@ -134,24 +142,26 @@ static uint8_t* xud_hello_audio_read(const char* path, uint32_t* outBytes) {
    because a frame is one sample per channel and the block behind the handle is frameCount times
    channels of interleaved f32 - the one number a play row would step over, which is why it is
    the number this example prints last. */
-static void xud_hello_audio_report(XudContext* context, XudHandle stream, const char* path) {
+static float xud_hello_audio_report(XudContext* context, XudHandle stream, const char* path) {
     XudAudioInfo info;
     float seconds = 0.0f;
     XudResult result = xud_get_audio_info(&info, context, stream);
 
     if (result != XUD_OK) {
         printf("hello_audio: xud_get_audio_info -> %s, so the run cannot say what was loaded\n", xud_result_name(result));
-        return;
+        return 0.0f;
     }
     printf("hello_audio: %s -> %u channel(s) at %u Hz\n", path, info.channels, info.sampleRate);
 
     result = xud_get_audio_length(&seconds, context, stream);
     if (result != XUD_OK) {
         printf("hello_audio: xud_get_audio_length -> %s, so the run cannot say how long it is\n", xud_result_name(result));
-        return;
+        return 0.0f;
     }
-    printf("hello_audio: %llu frame(s) of interleaved f32 = %.3f s, the walk a play row would take\n", (unsigned long long)info.frameCount,
-        seconds);
+    printf("hello_audio: %llu frame(s) of interleaved f32 = %.3f s, the walk the play below then takes\n",
+        (unsigned long long)info.frameCount, seconds);
+
+    return seconds;
 }
 
 int main(void) {
@@ -191,7 +201,34 @@ int main(void) {
         }
         loaded++;
 
-        xud_hello_audio_report(context, stream, xudHelloAudioPaths[row]);
+        const float lengthSeconds = xud_hello_audio_report(context, stream, xudHelloAudioPaths[row]);
+
+        /* The play, the wait and the stop, on the first wrapper only: the pair is one recording in
+           two wrappers, so hearing it twice would be hearing the same fact twice, and the second
+           stream is left with no row behind it, which is the sound rung spent on the first play rat
+           her than at bring-up. The WAIT is the point of this block: the play hands the row to the
+           device's own thread, which pulls frames at real-time rate, so a process that walked on wo
+           uld exit mid-walk and the caller would hear the first tenth of a second of the recordi
+           ng rather than the recording. The wait is the clock rung's own read rather than a libc s
+           leep, which is what keeps this file to the public header plus stdio and stdlib, and it is
+           bounded by the length the report above printed rather than by a guess. The stop is not de
+           coration either: a stream closed while its row is playing refuses (the detach above the c
+           lose refuses rather than stopping on the caller's behalf), so the stop is the answer that
+           refusal would ask for and the close below is what releases the block. */
+        if (row == 0u) {
+            double waited = 0.0;
+
+            step = xud_play_audio(context, stream);
+            printf("hello_audio: xud_play_audio -> %s, heard through the engine's own device\n", xud_result_name(step));
+            while (waited < (double)lengthSeconds) {
+                if (xud_get_time(&waited, context) != XUD_OK) {
+                    break;
+                }
+            }
+            printf("hello_audio: waited %.3f s on the clock rung, so the walk was heard rather than cut short\n", waited);
+            step = xud_stop_audio(context, stream);
+            printf("hello_audio: xud_stop_audio -> %s\n", xud_result_name(step));
+        }
 
         /* The stream given back before the context: an AUDIOSTREAM slot is a record that owns a
            block the decoder allocated, and xud_close_context() retires the table as its top rung
@@ -202,7 +239,8 @@ int main(void) {
         free(buffer);
     }
 
-    printf("hello_audio: %u of %u containers decoded, %u refused (this vendored miniaudio reads wav, flac, mp3 and ogg; qoa and xm still "
+    printf("hello_audio: %u of %u containers decoded, %u refused, one of them heard (this vendored miniaudio reads wav, flac, mp3 and ogg; "
+           "qoa and xm still "
            "refuse)\n",
         loaded, XUD_HELLO_AUDIO_COUNT, XUD_HELLO_AUDIO_COUNT - loaded);
 

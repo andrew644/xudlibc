@@ -32,6 +32,7 @@
 #include "xud.h" /* Required for: XudResult, XudHandle, XudAudioData, XudAudioInfo, XUD_HANDLE_KIND_AUDIOSTREAM - the public surface above */
 #include "xud_core.h" /* Required for: struct XudContext, whose handleTable the public calls reach */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
+#include "xud_sound.h" /* Required for: xud_sound_detach - the one call the public close runs ABOVE this rung rather than beside it, for the reason the row's own note in that header states */
 
 #include <assert.h> /* Required for: static_assert, the public token mirror below */
 #include <stdlib.h> /* Required for: calloc, free - the record this rung spends */
@@ -440,6 +441,19 @@ XudResult xud_close_audio(XudContext* context, XudHandle handle) {
     }
     if (context->handleTable == NULL) {
         return XUD_UNSUPPORTED;
+    }
+
+    /* The sound rung's row given back before this rung frees the record it reads: a row is a ma_au
+       dio_buffer_ref over the block below and a node attached to a graph that is reading it, so a
+       close that went first would be a mixer reading memory that was just freed. The rung above is
+       asked first and it refuses (XUD_UNSUPPORTED) while the row is playing, which is the honest a
+       nswer rather than a stop this rung would have to do on the caller's behalf.
+    */
+    if (context->sound != NULL) {
+        XudResult rung = xud_sound_detach(context->sound, context->handleTable, handle);
+        if (rung != XUD_OK) {
+            return rung;
+        }
     }
 
     return xud_audio_close(context->handleTable, handle);

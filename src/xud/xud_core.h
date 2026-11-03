@@ -40,6 +40,7 @@
 #include "xud_loader.h" /* Required for: XudLoader, the loader the context owns from bring-up on */
 #include "xud_physical.h" /* Required for: XudPhysicalDevice, the chosen handle plus the caps the context owns from the physical layer on */
 #include "xud_renderer.h" /* Required for: XudRenderer, the renderer rung - the pipeline, the render pass, the framebuffer per swapchain image and the frame loop the context owns from the first-triangle step on, and the rung that goes SECOND in the teardown order */
+#include "xud_sound.h" /* Required for: XudSound, the sound rung the context owns from the first play on - miniaudio's engine (its ma_device, its node graph and its mixer), spent lazily rather than at bring-up because an audio device is a driver resource a context that only ever draws never asks for */
 #include "xud_swapchain.h" /* Required for: XudSwapchain, the VkSwapchainKHR plus the images vkGetSwapchainImagesKHR handed it - the context owns one from the swapchain step on, and the teardown order below makes it die before the device whose queue it used */
 #include "xud_time.h" /* Required for: XudTime, the clock rung the context owns above the window it reads - GLFW's own timer read against this context's own epoch, so the elapsed is a per-context question and the frame pair's boundary is what fills the two mark rows */
 #include "xud_window.h" /* Required for: XudWindow, the GLFW window plus the VkSurfaceKHR it was handed - the context will own one, and the teardown order below is what makes the surface die before the window and the window before the instance */
@@ -223,6 +224,20 @@ struct XudContext {
        1's layout exists and its SET does not, because the texture step is what allocates it.
      */
     XudDescriptor* descriptor; /* the layouts, the pool, set 0 and the uniform buffer inside it  */
+
+    /* Owned from the first play rather than from bring-up: this is the one rung of this struct tha
+       t xud_init_context() leaves NULL on a context that comes back XUD_OK, and the reason is in t
+       he rung's own header note - an audio device is a driver resource, and a context that only ev
+       er draws is a context that never asked for one. xud_play_audio() spends it on the first play
+       it is asked for and leaves the field NULL when the backend is absent, which is why the play
+       call answers the refusal again rather than half-opening a rung. xud_close_context() closes it
+       through xud_sound_close() ABOVE xud_audio_close_all() for the reason the detach note in that
+       file gives: a row is a node reading a block an audio record owns, so the rows go before the
+       records they read, and every other rung of this struct is XUD_ALREADY on a field that was ne
+       ver filled, which is what makes a context that never played anything tear down the same way
+       as one that did.
+    */
+    XudSound* sound; /* miniaudio's engine, its device and its mixer, plus one node pair per AUDIOSTREAM slot */
 };
 
 #endif /* XUD_XUD_CORE_H_ */

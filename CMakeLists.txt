@@ -176,6 +176,7 @@ add_library(xud STATIC
     src/xud/xud_time.c
     src/xud/xud_font.c
     src/xud/xud_audio.c
+    src/xud/xud_sound.c
     src/xud/xud_shader.c
     src/xud/xud_pipeline.c
     src/xud/xud_renderpass.c

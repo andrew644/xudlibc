@@ -54,6 +54,7 @@
 #include "xud_model.h" /* Required for: xud_model_close_all, the MODEL kind's half of the same teardown rung - and the rung above the MESH and the MATERIAL kinds', because a model record names slots of both rather than owning driver objects of its own */
 #include "xud_physical.h"
 #include "xud_renderer.h"
+#include "xud_sound.h" /* Required for: xud_sound_close, the sound rung's half of the same teardown rung - it runs ABOVE xud_audio_close_all() because a row is a node reading a block an audio record owns, and it is the one rung of the context that bring-up leaves NULL, which is why its close answers XUD_ALREADY on a context that never played anything */
 #include "xud_swapchain.h"
 #include "xud_texture.h" /* Required for: xud_texture_close_all, the TEXTURE kind's half of the same teardown rung - the rung above the MESH kind's, because a texture record owns an image, a view, a sampler and one host-visible block */
 #include "xud_time.h" /* Required for: xud_time_open/xud_time_close/xud_time_tick, the clock rung this bring-up opens above the window it reads and the frame pair runs at every boundary - and the reason xud_core.c stays free of any GLFW symbol of its own */
@@ -428,6 +429,7 @@ XudResult xud_close_context(XudContext** context) {
     uint32_t modelRecordsClosed = 0u;
     uint32_t fontRecordsClosed = 0u;
     uint32_t audioRecordsClosed = 0u;
+    uint32_t soundRowsClosed = 0u;
 
     if (context == NULL)
         return XUD_INVALID_ARG;
@@ -455,7 +457,11 @@ XudResult xud_close_context(XudContext** context) {
        none either - it names one TEXTURE slot, the atlas it baked - so closing either calls a rung below
        it, and a model left in its slot when either of those walks runs is a mesh whose record still names
        a material about to be freed, and a font left in its slot when the TEXTURE walk runs is a record
-       naming an image about to be destroyed. The ladder therefore reads model, font, texture, mesh, mate
+       naming an image about to be destroyed. xud_sound_close() is the eighth name that appears here and it
+       runs ABOVE xud_audio_close_all() rather than beside it for the reason the detach note in xud_sound.c
+       states: a row is a node reading a block an audio record owns, so the rows go before the records they
+       read, and it is the one rung of the eight that bring-up leaves NULL, which is why it answers XUD_ALREADY
+       on a context that never played anything rather than a refusal. The ladder therefore reads model, font, texture, mesh, mate
        rial, audio, table, and MODEL and FONT are the two rungs of the seven whose order is forced rather than cho-
        sen. AUDIOSTREAM is the one rung of the seven whose place is a choice rather than a forced order, because an audio record owns one host
        block and names no other handle, so it runs beside the MATERIAL kind's; TEXTURE runs above MESH because the two kinds' records are independent of each other and the
@@ -508,6 +514,9 @@ XudResult xud_close_context(XudContext** context) {
             first = rung;
         rung = xud_material_close_all(victim->handleTable, &materialRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
+            first = rung;
+        rung = xud_sound_close(&victim->sound, &soundRowsClosed);
+        if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
             first = rung;
         rung = xud_audio_close_all(victim->handleTable, &audioRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK)) {

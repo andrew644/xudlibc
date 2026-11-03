@@ -1003,9 +1003,9 @@ XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context,
  * above the audio rung: miniaudio's decoder over one host PCM block, and the AUDIOSTREAM-kind
  * handle that names it. What is here is everything a play row needs beside the device itself -
  * the frames, the frame count, the channel count and the rate, plus the two conversions between
- * frames and seconds - and no play call, because raylib's PlayAudio/StopAudio/SetAudioFootprint
- * half is a device with a mixer and a queue above it, which is a second rung rather than a call
- * above this one. The containers this vendored miniaudio has no decoder for (qoa, xm) answer
+ * frames and seconds - and the play half is the section below this one, above the sound rung, wh
+ * ich landed as the second audio rung the audio rung's own note said was missing. The containers
+ * this vendored miniaudio has no decoder for (qoa, xm) answer
  * XUD_UNSUPPORTED rather than a half-decoded stream, and there is no per-format loader name here
  * for the reason the value type's own note gives.
  *-----------------------------------------------------------------------------------------------*/
@@ -1038,6 +1038,51 @@ XudResult xud_get_audio_info(XudAudioInfo* outInfo, XudContext* context, XudHand
 /// a handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never
 /// completed bring-up.
 XudResult xud_get_audio_length(float* outSeconds, XudContext* context, XudHandle handle);
+
+/*-----------------------------------------------------------------------------------------------
+ * The audio playback API - raylib's PlayAudio/StopAudio half, above the sound rung
+ *
+ * This is raylib's other audio half (reference/raylib/raylib.h: PlayAudio, StopAudio) above the
+ * sound rung: miniaudio's engine - its ma_device, its node graph and its mixer - with one node pa
+ * ir per AUDIOSTREAM slot attached to that graph, reading the block the audio rung below already
+ * decoded. The pair here is keyed by the stream rather than by a sound index a caller has to reme
+ * mber, which is the one place this surface diverges from raylib's: PlayAudio answers an index and
+ * StopAudio(stream, sound) takes it back, and in this repo the thing a caller holds is a handle wi
+ * th a generation in it, so the stream's handle is the identity of its row and a stream played twi
+ * ce reuses the one node rather than spending a second one. SetAudioFootprint is not here: it is a
+ * spatializer question above this rung rather than a device question inside it, and every node her
+ * e is initialized NO_SPATIALIZATION for that reason. The rung is spent on the first play rather th
+ * an at bring-up, because an audio device is a driver resource a context that only ever draws never
+ * asks for.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Start one stream's node: raylib's PlayAudio (raylib.h 507, "play audio stream from an internal
+/// AUDIOSTREAM handle"), except that the row is the stream's rather than a fresh sound per call. The
+/// node is spent on the first play of the slot and reused after that, and it reads the block the aud
+/// io rung owns by reference rather than by copy. A play on a row that had reached the end restarts a
+/// t frame 0; a play on a row stopped mid-way resumes where it stopped, which is miniaudio's own note
+/// that a stopped sound is not rewound. XUD_INVALID_ARG on a NULL context or on a handle that does no
+/// t name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never completed b
+/// ring-up, on a stream whose block has no frames to read, or when no audio backend this vendored min
+/// iaudio can drive is present; XUD_ALREADY when the row is already playing; XUD_OUT_OF_MEMORY when th
+/// e row or the node cannot be spent.
+XudResult xud_play_audio(XudContext* context, XudHandle stream);
+
+/// Stop one stream's node: raylib's StopAudio (raylib.h 508, "stop playing audio stream"), with th
+/// e stream's handle as the row's identity rather than a sound index. The node stays attached, so the
+/// next play of the same slot costs a state change rather than a new node, and the frames go back to th
+/// e audio record unchanged. XUD_INVALID_ARG on a NULL context or on a handle that does not name a liv
+/// e AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up; XUD_
+/// ALREADY when the slot never had a node or its node is already stopped.
+XudResult xud_stop_audio(XudContext* context, XudHandle stream);
+
+/// Is the mixer reading this stream right now: the one question a row answers, read off this rung's o
+/// wn bookkeeping rather than off miniaudio's clock, so the answer is a state this library owns and no
+/// t a race against the thread that pulls frames. XUD_INVALID_ARG on a NULL out-playing, context, or on a
+/// handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that n
+/// ever completed bring-up; XUD_OK with false on a stream that was never played, which is the answer rat
+/// her than an error.
+XudResult xud_is_audio_playing(bool* outPlaying, XudContext* context, XudHandle stream);
 
 /*-----------------------------------------------------------------------------------------------
  * The clock API - raylib's time half, above the clock rung

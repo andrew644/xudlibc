@@ -32,15 +32,19 @@
  *   that it asked rather than assuming what it got - the record carries the rate and the channel
  *   count miniaudio actually answered, not the ones the description asked for.
  *
- *   What this rung does NOT own, and why: no playback. raylib's PlayAudio/StopAudio/SetAudioFootpr
- *   int half is a device with a mixer and a queue of sounds above it, and miniaudio's own low-level
- *   device (ma_device) plays a graph of nodes rather than a buffer, so the play half is a second run
- *   g - the device and its graph - rather than a call above this one. What is landed is therefore eve
- *   rything a play row needs beside the device itself: the frames, the frame count, the channel coun
- *   t and the rate, plus the two conversions between frames and seconds a play row's time argument ne
- *   eds. Also absent for the reason AGENTS.md states rather than built here: the containers this ven
- *   dored miniaudio has no decoder for even with stb_vorbis inlined through the vendor TU - qoa and
- *   xm/mod - answer MA_INVALID_FILE rather than a half-decoded stream, and adding those decoders is
+ *   What this rung does NOT own, and why: no playback and no device of its own. raylib's PlayAud
+ *   io/StopAudio/SetAudioFootprint half is a device with a mixer and a queue of sounds above it, and
+ *   miniaudio's own low-level device (ma_device) plays a graph of nodes rather than a buffer, so the
+ *   play half was a second rung rather than a call above this one - and that second rung has NOW lan
+ *   ded, as xud_sound.h: it spends miniaudio's engine (its ma_device, its node graph and its mixer) a
+ *   bove the block this rung owns and attaches one node pair per AUDIOSTREAM slot to that graph. What
+ *   is landed HERE is therefore still everything a play row needs beside the device itself: the frame
+ *   s, the frame count, the channel count and the rate, plus the two conversions between frames and
+ *   seconds a play row's time argument needs, and what the rung above reads is the block below, by re
+ *   ference rather than by copy, which is what keeps this rung the single owner of the one PCM block p
+ *   er stream. Also absent for the reason AGENTS.md states rather than built here: the containers this
+ *   vendored miniaudio has no decoder for even with stb_vorbis inlined through the vendor TU - qoa an
+ *   d xm/mod - answer MA_INVALID_FILE rather than a half-decoded stream, and adding those decoders is
  *   an ask to include their headers, not a decoder to write here.
  *
  *   Copyright (c) 2026 xudlibc authors.
