@@ -42,10 +42,11 @@
  *   h vertex-input state: the pipeline's four bindings and four attributes are the batch's and a m
  *   esh's streams have the same strides and formats, so a mesh is drawn by binding its own four b
  *   uffers to those same binding indices beside the rows that name it. That last half is NOT here
- *   today - xud_draw_mesh() is open work, recorded in todo.md, because the batch's draw row names
- *   one index range and one index buffer for the whole batch, and a row that replays through a me
- *   sh's buffers needs a per-row buffer binding beside it. That is a change to the batch's row, an
- *   d the batch's row is a committed rung.
+ *   today, and it landed one rung above this file rather than in it: the batch's xud_batch_record
+ *   _mesh_draw() is the row that names a mesh's five buffers beside the arena, and xud_draw_mesh()
+ *   / xud_draw_model() are xud.h's public pair above that. A mesh is therefore a set of buffers
+ *   and a row, not a second pipeline - which is what the same strides and the same formats above
+ *   are the whole of.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/

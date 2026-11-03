@@ -233,6 +233,46 @@ static_assert(XUD_BATCH_TOPOLOGY_COUNT == (XUD_BATCH_TOPOLOGY_LINES + 1u), "the 
 static_assert(XUD_BATCH_NO_MATERIAL > 0u, "the sentinel is not a material slot any live row can name");
 
 /*-----------------------------------------------------------------------------------------------
+ * The geometry a draw row replays through
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The batch's arena was the whole of the geometry until the mesh rung landed: every shape appended
+   bytes into it and every draw row named a range of its one index buffer. A mesh is the other half
+   of the settled SoA decision read at a rung above - the same four streams, the same four widths,
+   the same four formats, one index buffer of its own - and it is drawn by binding ITS buffers at
+   the same four binding numbers beside the rows that name it. The pipeline's vertex-input state
+   needs no second row for that: binding is command-buffer state, not pipeline state, so a row of
+   the pipeline list stays one row per (topology x variant) while a draw row names which buffers
+   feed it. That is why the row gains an index into a list of buffer sets rather than a set of
+   buffers of its own: a model drawn twice in one frame names one geometry row both times, and a
+   row that carried its own five VkBuffers would be five numbers per draw rather than one.
+
+   Index 0 is the batch's own arena and is not a slot that can be allocated or refused, which is
+   why the sentinel is 0 rather than the 0xFFFFFFFF shape XUD_BATCH_NO_MATERIAL uses: "the batch's
+   own" is the default every pending run accumulates under, and a default that needs no branch in
+   the append path is the cheaper half of the pair. */
+#define XUD_BATCH_GEOMETRY_OWN 0u /* the batch's own four streams and its own index buffer */
+#define XUD_BATCH_GEOMETRY_NONE                                                                                                            \
+    0xFFFFFFFFu /* nothing is bound yet: the frame loop's replay starts                                                                    \
+here rather than at the arena, and the sentinel is what makes its first rebind unconditional                                               \
+instead of a fact about which row happened to come first */
+#define XUD_BATCH_GEOMETRY_MIN 8u /* the geometry list's step, the same doubling shape the draw list and the rest of this tree uses */
+
+/* The five buffers one geometry row binds: the four attribute streams at the pipeline's binding
+   numbers 0..3 and the one index buffer the draw's index range reads. The count is the batch's
+   stream count plus one rather than xud_mesh.h's XUD_MESH_BUFFER_COUNT, because xud_mesh.h
+   includes this header and this header cannot include it back; the two counts are asserted
+   equal at the mesh rung for exactly that reason. */
+#define XUD_BATCH_GEOMETRY_BUFFER_COUNT (XUD_BATCH_STREAM_COUNT + 1u)
+
+static_assert(XUD_BATCH_GEOMETRY_BUFFER_COUNT == (XUD_BATCH_STREAM_COUNT + 1u),
+    "the geometry row binds the four streams plus one index buffer, and the index buffer is the fifth row of the bind");
+static_assert(XUD_BATCH_GEOMETRY_OWN < XUD_BATCH_GEOMETRY_MIN,
+    "the batch's own arena is below every slot the list can hand out, so a sentinel can never collide with a mesh's row");
+static_assert(XUD_BATCH_GEOMETRY_NONE > XUD_BATCH_GEOMETRY_MIN,
+    "nothing-bound is above every entry the list can hand out, so it can never be mistaken for a mesh's row");
+
+/*-----------------------------------------------------------------------------------------------
  * The batch's own objects, and what each was created with
  *-----------------------------------------------------------------------------------------------*/
 
@@ -258,6 +298,22 @@ struct XudBatchDraw {
                             rlgl.h 3116 */
     uint32_t variant; /* which of the plan's two pipeline variants this draw uses */
     uint32_t materialIndex; /* which material slot, XUD_BATCH_NO_MATERIAL while no material exists */
+    uint32_t geometryIndex; /* which entry of the batch's geometry list this draw binds its buffers
+                                from - XUD_BATCH_GEOMETRY_OWN for the batch's own arena, which is
+                                what every shape's append accumulates under and the only value a
+                                row recorded by xud_batch_record_draw can carry */
+};
+
+typedef struct XudBatchGeometry XudBatchGeometry;
+struct XudBatchGeometry {
+    VkBuffer buffer[XUD_BATCH_GEOMETRY_BUFFER_COUNT]; /* the four streams then the index buffer, in the
+                                                          order vkCmdBindVertexBuffers and vkCmdBindIndexBuffer
+                                                          are handed them; borrowed, never owned by this rung */
+    VkDeviceSize offset[XUD_BATCH_GEOMETRY_BUFFER_COUNT]; /* where each starts inside its own buffer - the
+                                                              second argument of the same two calls, 0 for both
+                                                              the batch's arena and a mesh's five */
+    uint32_t indexCount; /* indices the bound index buffer holds, so a row's range is 0..indexCount and
+                            a draw can never be handed a range past the buffer this row binds */
 };
 
 typedef struct XudBatch XudBatch;
@@ -329,6 +385,16 @@ struct XudBatch {
     XudBatchDraw* draws; /* heap array, grown on the doubling sequence below */
     uint32_t drawCount; /* rows above that are live */
     uint32_t drawCapacity; /* rows allocated for them */
+
+    /* --- the geometry the rows above name: the batch's own arena is index 0 of the ROWS rather
+       than an entry of this array, whose entry at position p answers the row index p+1. The list
+       is the set of buffer sets this frame's rows bind, so a frame that draws one model twice
+       records one geometry row and two draw rows. It is reset with the draw counts because it is
+       indexed by rows recorded after the reset, and a list that kept the last frame's rows would
+       be a list that grew one entry per draw forever. */
+    XudBatchGeometry* geometry; /* heap array of the meshes this frame's rows bind, grown on the same doubling step */
+    uint32_t geometryCount; /* entries handed out - 0 while only the sentinel is in play */
+    uint32_t geometryCapacity; /* entries allocated for them */
     uint32_t growCount; /* how many times the capacity doubled - the counter a test reads to know the growth path ran more than once */
 };
 
@@ -415,6 +481,13 @@ XudResult xud_batch_note_refused(XudBatch* batch, uint32_t requestedVertices, ui
 /// out-pointer.
 XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_t* outIndices);
 
+/// Pure: the variant and the material slot the pending draws are being accumulated under - the pair
+/// a draw that names a handle BESIDE the arena records under rather than chooses: a mesh draws with
+/// the material that was begun around it, so the caller above reads the state rather than naming a
+/// material of its own, and the mesh's row is then the same row xud_batch_set_material() would have
+/// split. XUD_INVALID_ARG on a NULL batch or out-pointer.
+XudResult xud_batch_state_get(const XudBatch* batch, uint32_t* outVariant, uint32_t* outMaterialIndex);
+
 /// Pure: whether the capacity ask the batch recorded is bigger than the batch can hold - the one
 /// question the frame boundary above needs before it calls xud_batch_grow, and the reason it is
 /// asked rather than answered above: the batch owns BOTH halves of the comparison, the vertex ask
@@ -461,6 +534,24 @@ XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint
 /// past the variant list; XUD_OUT_OF_MEMORY only when that doubling step fails on the host.
 XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex);
 
+/// Pure: record one draw row that replays through buffers BESIDE the batch's arena - a mesh's own
+/// five - and return the geometry entry it bound. The pending run of the batch's own arena is
+/// closed into a row of its own first if it has content in it, exactly as xud_batch_set_topology
+/// and xud_batch_set_material split, and then the mesh's row is recorded complete: its index range
+/// is the whole of that mesh's index buffer (0/indexCount), because a mesh has no append state to
+/// accumulate into. The five buffers are deduped against the geometry list already recorded, so a
+/// frame that draws one model twice records one geometry row and two draw rows, and the frame loop
+/// rebinds once rather than twice. The row takes no capacity ask and notes no refusal: a mesh's
+/// bytes are already in its own buffers and the batch's arena is not touched by this row, which is
+/// what makes a frame of nothing but mesh draws a frame that never grows. XUD_INVALID_ARG on a NULL
+/// batch, buffers or offsets array, a topology at or past the topology list, a variant at or past
+/// the variant list, an indexCount below three or not a whole number of triangles (the mesh rung's
+/// own rule, read again here because this row is what names that range), or a NULL buffer in the
+/// five (a draw that binds a null buffer is a draw reading nothing); XUD_OUT_OF_MEMORY only when
+/// the draw list's or the geometry list's doubling step fails on the host.
+XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, const VkBuffer* buffers,
+    const VkDeviceSize* offsets, uint32_t indexCount);
+
 /// Pure: move the batch's topology state, and close the pending run into a draw row of the SAME
 /// batch first if the state actually changes and the run has content in it. This is raylib's
 /// `rlBegin(mode)` read at its other half (reference/raylib/rlgl.h 1454-1478): on a mode change it
@@ -493,6 +584,14 @@ XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32
 /// reaching into the batch's own heap array (the repo's accessor rule, one rung below). XUD_INVALID_ARG
 /// on a NULL batch/out-row or an index at or above the batch's recorded count.
 XudResult xud_batch_draw_get(const XudBatch* batch, uint32_t index, XudBatchDraw* outRow);
+
+/// Pure: ONE geometry row by index, so the frame loop above can rebind the buffers a draw row names
+/// without reaching into the batch's own heap array - the same accessor rule xud_batch_draw_get
+/// states one field over. Index 0 is the batch's own arena and is answered from the batch's own
+/// stream rows rather than from the heap array, which is what makes the sentinel a real row the
+/// loop can bind rather than a value the loop has to special-case. XUD_INVALID_ARG on a NULL
+/// batch/out-row or an index past the entries handed out; XUD_OK otherwise.
+XudResult xud_batch_geometry_get(const XudBatch* batch, uint32_t index, XudBatchGeometry* outRow);
 
 /// Pure: append one vertex's four attribute values into the arena at the live vertex index, and
 /// bump the count. The write is a memcpy into the mapped arena - the only host write this rung

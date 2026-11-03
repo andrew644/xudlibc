@@ -5,8 +5,9 @@
  *   Owns : the pure half of the rung (xud_model_check(), xud_model_gate(), xud_model_stage_bind(
  *          ), xud_model_read(), xud_model_bounds(), xud_model_path_dir(), xud_model_result_from_
  *          cgltf(), xud_model_get()), the driver half against a real context (xud_model_open(), x
- *          _model_close(), xud_model_close_all()), the public pair and the two public queries, an
- *          d the one glTF document every check below is stated against - built in memory as a GLB
+ *          _model_close(), xud_model_close_all()), the public pair, the two public queries and the
+ *          draw that names a handle (xud_draw_model()), and the one glTF document every check below
+ *          is stated against - built in memory as a GLB rather than read from a file.
  *          rather than read from a file. What is NOT here: the mesh arena's layout and the write t
  *          hat fills it (the mesh area's), the material record's variant axis (the material area's
  *          ), the handle layer's validation order (the handle area's), and cgltf's own parsing (th
@@ -601,6 +602,7 @@ static void xud_test_model_gpu(void) {
     XudHandle stale = { 0u, 0u, 0u };
     XudHandle answeredHandle = { 0u, 0u, 0u };
     const XudModelRecord* record = NULL;
+    const XudModelRecord* loadedRecord = NULL;
     const XudMeshRecord* meshRecord = NULL;
     const XudMaterialRecord* materialRecord = NULL;
     XudVector3 boundsMin;
@@ -746,6 +748,47 @@ static void xud_test_model_gpu(void) {
                     && boundsMax.z == 0.0f,
                 "gpu-model/bounding-box",
                 "and answers the box the pure half's fold produced, so the public query and the rung's fold cannot disagree");
+            /* The draw half, against a real device: the loaded model is still live in a slot here,
+               so the public draw has a handle to name, and nothing was appended to the batch's
+               arena, so this is the frame whose whole content is the model's rows. The mesh's bytes
+               were written once at the load rather than here, which is what makes a draw a row and
+               not an append.
+            */
+            xud_check(xud_model_get(context->handleTable, loadedHandle, &loadedRecord) == XUD_OK, "gpu-model/draw-record-reads",
+                "the loaded model's record reads back, which is the only way to name the slots its own draw should have used");
+            xud_check(loadedRecord != NULL, "gpu-model/draw-record-not-null", "and the record is there");
+            if (loadedRecord != NULL) {
+                xud_check(xud_begin_drawing(context) == XUD_OK, "gpu-model/frame-opens", "the frame opens");
+                xud_check(xud_draw_model(context, loadedHandle) == XUD_OK, "gpu-model/draw-model-ok",
+                    "the public draw records one row per primitive, each replaying through that primitive's own five buffers");
+                xud_check(context->renderer->batch->drawCount == loadedRecord->meshCount, "gpu-model/draw-one-row-per-primitive",
+                    "and the row count is the primitive count, which is the reason a model is a list of MESH slots rather than one row");
+                xud_check(context->renderer->batch->geometryCount == loadedRecord->meshCount,
+                    "gpu-model/draw-one-geometry-entry-per-primitive",
+                    "and one set of buffers per primitive, so two primitives of one model never share a bind");
+                xud_check(context->renderer->batch->draws[0].geometryIndex == 1u, "gpu-model/draw-names-the-geometry-list",
+                    "and the row replays through the first entry of the geometry list rather than the batch's own arena, which is the half "
+                    "that makes a mesh's bytes its own");
+                xud_check(context->renderer->batch->draws[0].firstIndex == 0u, "gpu-model/draw-range-starts-at-zero",
+                    "and its range starts at 0, because a mesh's index buffer is its own rather than a window of the arena's");
+                xud_check(context->renderer->batch->draws[0].indexCount == XUD_TEST_MODEL_INDICES,
+                    "gpu-model/draw-range-is-the-primitive's", "and its length is the primitive's index count");
+                xud_check(context->renderer->batch->draws[0].materialIndex == loadedRecord->meshMaterial[0].index,
+                    "gpu-model/draw-used-the-documents-material",
+                    "and the row names the document's first material rather than the default or the batch's own, which is the half the "
+                    "load read for that primitive");
+                xud_check(context->renderer->batch->draws[0].variant == XUD_BATCH_VARIANT_OPAQUE, "gpu-model/draw-variant-is-the-materials",
+                    "and the variant that material's record carries rather than one the batch chose, which is the variant axis the load "
+                    "read reaching a row");
+                result = xud_end_drawing(context);
+                xud_check(result == XUD_OK, "gpu-model/frame-presents",
+                    "and the frame presents, so the rebind of a mesh's buffers beside the arena is a command buffer the validation layer "
+                    "accepted");
+                xud_check(context->renderer->batch->drawCount == 0u, "gpu-model/draw-frame-end-rows-empty",
+                    "and the row list is empty at the frame's end");
+                xud_check(context->renderer->batch->geometryCount == 0u, "gpu-model/draw-frame-end-geometry-retired",
+                    "and the geometry list is retired with it, because it is indexed by rows recorded after the reset");
+            }
             xud_check(xud_close_model(context, loadedHandle) == XUD_OK, "gpu-model/load-close",
                 "and the loaded model closes the same way the opened one did");
             xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_MESH, &live) == XUD_OK,

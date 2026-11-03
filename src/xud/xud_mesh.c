@@ -40,6 +40,7 @@
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
 #include "xud_loader.h" /* Required for: XudLoader, xud_loader_device_bound - the device-table rows and the bound-handle check */
 #include "xud_physical.h" /* Required for: XudDeviceCaps, the vertex-input limits a mesh's streams are gated on */
+#include "xud_renderer.h" /* Required for: XudRenderer, the record whose batch a public draw call records a mesh's row into */
 #include "xud_vulkan.h" /* Required for: xud_result_from_vk - the one VkResult funnel, and why this rung uses the general one and never the swapchain's */
 #include <assert.h> /* Required for: static_assert, the public token mirror below */
 #include <stdlib.h> /* Required for: calloc and free - the one allocation a mesh spends */
@@ -58,6 +59,8 @@ static_assert(
     XUD_BATCH_VERTEX_SIZE == 36u, "xud_mesh.c: the four streams a mesh owns are the batch's 36 B/vertex, read rather than remembered");
 static_assert(XUD_MESH_BYTES_PER_VERTEX == (XUD_BATCH_VERTEX_SIZE + (3u * XUD_BATCH_INDEX_SIZE)),
     "xud_mesh.c: one vertex of a mesh's arena is its four streams plus the three indices that vertex owns");
+static_assert(XUD_MESH_BUFFER_COUNT == XUD_BATCH_GEOMETRY_BUFFER_COUNT,
+    "xud_mesh.c: a mesh's five buffers are the five a batch geometry row names, so the draw that binds one binds all of it");
 
 /*-----------------------------------------------------------------------------------------------
  * The layout's arithmetic - pure, and the whole of it
@@ -889,4 +892,66 @@ XudResult xud_close_mesh(XudContext* context, XudHandle handle) {
     }
 
     return xud_mesh_close(context->handleTable, handle, context->loader, context->device, context->allocator);
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The public draw above the context - the first public call that names a handle
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_draw_mesh(XudContext* context, XudHandle handle) {
+    XudBatch* batch = NULL;
+    const XudMeshRecord* record = NULL;
+    VkBuffer buffers[XUD_MESH_BUFFER_COUNT];
+    VkDeviceSize offsets[XUD_MESH_BUFFER_COUNT];
+    uint32_t variant = 0u;
+    uint32_t materialIndex = 0u;
+    uint32_t slot = 0u;
+    XudResult result = XUD_OK;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->renderer == NULL) || (context->renderer->batch == NULL)) {
+        /* The same guard xud_shapes.c gives a shape that has no batch to append into: a context that
+           never completed bring-up or a renderer whose batch a resize retired has no rows to record,
+           and this is a caller holding on rather than a state the library leaves behind.
+        */
+        return XUD_UNSUPPORTED;
+    }
+    batch = context->renderer->batch;
+
+    result = xud_mesh_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    for (slot = 0u; slot < XUD_MESH_BUFFER_COUNT; slot++) {
+        buffers[slot] = record->buffer[slot];
+        /* The offset is 0 rather than the record's bind offset, because the two numbers belong to two
+           different calls: bindOffset is where each of the five was bound INSIDE the one VkDeviceMemory
+           block the mesh's open acquired, and this array is the offset INSIDE each buffer, which is 0
+           because each of the five is its own VkBuffer created exactly as large as its own stream.
+        */
+        offsets[slot] = 0u;
+        if (buffers[slot] == VK_NULL_HANDLE) {
+            /* A live MESH slot whose buffer array still names nothing is a state xud_mesh_open() made
+               rather than an argument a caller could fix, so it is reported rather than bound: a draw
+               that bound a null buffer would be a draw reading nothing.
+            */
+            return XUD_INTERNAL_ERROR;
+        }
+    }
+
+    result = xud_batch_state_get(batch, &variant, &materialIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The mesh draws under the material that was begun around it rather than under one of its own,
+       which is what makes xud_draw_mesh() take no material argument: a mesh is geometry and the
+       material is the state above it. The topology is the mesh rung's one topology rather than the
+       batch's current one, because a mesh's index buffer is a list of triangles whatever the pending
+       run of the arena was assembled as.
+    */
+    return xud_batch_record_mesh_draw(batch, XUD_BATCH_TOPOLOGY_TRIANGLES, variant, materialIndex, buffers, offsets, record->indexCount);
 }

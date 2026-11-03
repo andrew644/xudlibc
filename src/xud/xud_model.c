@@ -43,6 +43,7 @@
 #include "xud_loader.h" /* Required for: xud_loader_is_open, xud_loader_device_bound */
 #include "xud_material.h" /* Required for: xud_material_open/close, XUD_BLEND_* */
 #include "xud_mesh.h" /* Required for: xud_mesh_open/close, XUD_MESH_BUFFER_COUNT, XUD_MESH_MAX_VERTICES */
+#include "xud_renderer.h" /* Required for: XudRenderer, the record whose batch a public draw call records a model's rows into */
 
 /*-----------------------------------------------------------------------------------------------
  * The component types this rung converts, and the slots a primitive's attributes land in
@@ -1066,4 +1067,96 @@ XudResult xud_get_model_bounding_box(XudVector3* outMin, XudVector3* outMax, Xud
     *outMin = record->boundsMin;
     *outMax = record->boundsMax;
     return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The public draw above the context - the model's row of the drawing API
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_draw_model(XudContext* context, XudHandle handle) {
+    XudBatch* batch = NULL;
+    const XudModelRecord* model = NULL;
+    const XudMeshRecord* mesh = NULL;
+    const XudMaterialRecord* material = NULL;
+    VkBuffer buffers[XUD_MESH_BUFFER_COUNT];
+    VkDeviceSize offsets[XUD_MESH_BUFFER_COUNT];
+    uint32_t primitive = 0u;
+    uint32_t slot = 0u;
+    XudResult result = XUD_OK;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->handleTable == NULL) || (context->renderer == NULL) || (context->renderer->batch == NULL)) {
+        /* The same guard xud_shapes.c gives a shape that has no batch to append into, widened to the
+           handle table because this call reads the model's slots from it: a context that never
+           completed bring-up or a renderer whose batch a resize retired has no rows to record, and
+           this is a caller holding on rather than a state the library leaves behind.
+        */
+        return XUD_UNSUPPORTED;
+    }
+    batch = context->renderer->batch;
+
+    result = xud_model_get(context->handleTable, handle, &model);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The loop over the model's primitives, and the reason a model is a list of slots rather than a
+       row of the batch: a glTF mesh is a PRIMITIVE and each primitive carries its own material, so
+       one model is more than one draw row and the batch's row names one material. Each row is
+       recorded with the variant and the material slot the load read for that primitive, whatever
+       material the caller had begun around this call - a model brings its own materials with it, so
+       the material around the call is not the material of its primitives.
+    */
+    for (primitive = 0u; primitive < model->meshCount; primitive++) {
+        result = xud_mesh_get(context->handleTable, model->mesh[primitive], &mesh);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_material_get(context->handleTable, model->meshMaterial[primitive], &material);
+        if (result != XUD_OK) {
+            return result;
+        }
+
+        for (slot = 0u; slot < XUD_MESH_BUFFER_COUNT; slot++) {
+            buffers[slot] = mesh->buffer[slot];
+            /* 0 rather than the record's bind offset, for the reason xud_draw_mesh() states: bindOffset
+               belongs to vkBindBufferMemory's inside-the-block argument, and this array is the inside-
+               each-buffer argument of the two bind calls, which is 0 because each of the five is its
+               own VkBuffer.
+            */
+            offsets[slot] = 0u;
+            if (buffers[slot] == VK_NULL_HANDLE) {
+                /* A live MESH slot whose buffers are gone is a state this rung's own open made rather
+                   than an argument a caller could fix, so it is reported rather than bound: a draw
+                   that bound a null buffer would be a draw reading nothing.
+                */
+                return XUD_INTERNAL_ERROR;
+            }
+        }
+
+        result = xud_batch_record_mesh_draw(batch, XUD_BATCH_TOPOLOGY_TRIANGLES, material->variant, model->meshMaterial[primitive].index,
+            buffers, offsets, mesh->indexCount);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    /* The batch's state moves to the LAST primitive's pair, which is raylib's DrawModel leaving the
+       last mesh's texture state behind it: a caller that draws a model and then draws a shape wants
+       that shape to draw with the model's last material rather than with one it has to name again.
+       The call is the state half rather than a row of its own, because the rows above are already
+       complete and there is no pending run to split.
+    */
+    if (model->meshCount == 0u) {
+        /* Cannot happen on a live MODEL slot: xud_model_check() refuses a document with no primitive,
+           so a record that reached this loop ran at least once. It is reported rather than assumed,
+           because the line below reads meshCount - 1 and an unsigned wrap there would be a slot far
+           past the array rather than a refusal.
+        */
+        return XUD_OK;
+    }
+
+    return xud_batch_set_material(batch, model->meshMaterial[model->meshCount - 1u].index, material->variant);
 }

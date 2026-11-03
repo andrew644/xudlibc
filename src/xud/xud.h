@@ -39,14 +39,12 @@
  * the handle and the shapes rung's public call s, and both are public for the reason their own notes state: the handle is the curren cy a
  * caller holds and the slot arrays behind it are internal (xud.h declares no table type and calls no handle function, so no public call
  * takes or fills a table today and the object pairs above it are what hand a handle out and what a handle names); the sha pes rung's calls
- * are the geometry a caller draws, which is what the drawing API above t he renderer reaches. What is here today above the renderer is the
- * frame pair, the shape s family (a triangle, a box, a sphere, a line, a point and the two wire forms), the cam era pair, the material pair
- * and the mesh pair; what is still missing there is DrawMesh
- *          - the mesh rung's bytes exist and are uploaded, but the batch's draw row names one inde
- *          x range and one index buffer for the whole batch, so a row that replays through a mesh's
- *          own buffers needs a per-row buffer binding beside it, and that is a change to a commit
- *          ted rung - plus the camera + transform math above the shapes, and the object kinds a pu
- *          blic handle would name that still have no rung above the table (fonts).
+ * are the geometry a caller draws, which is what the drawing API above the renderer reaches. What is here today above the renderer is the
+ * frame pair, the shapes family (a triangle, a box, a sphere, a line, a point and the two wire forms), the camera pair, the material pair,
+ * the mesh pair, the model pair and the two draws that name a handle (xud_draw_mesh() / xud_draw_model()); what is still missing there is
+ * the camera + transform math above the shapes - the model matrix is the identity today, so a mesh is placed by the camera alone - plus
+ * the textured variant above the solid one, and the object kinds a public handle would name that still have no rung above the table
+ * (fonts).
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -817,11 +815,11 @@ XudResult xud_close_texture(XudContext* context, XudHandle handle);
 /// has nothing to check. The document is then freed here rather than kept, because the mesh rung's
 /// own create copied the bytes the accessors pointed at into the mesh's mapped arena - so a model is
 /// a list of the objects the rungs below own and never a live document. On XUD_OK *outHandle names a
-/// live MODEL slot of THIS context's table. There is no draw half here: the batch's draw row names
-/// one index range and one index buffer for the whole batch, so a row that replays through a mesh's
-/// own buffers needs a per-row binding beside it, and that is a change to a committed rung. XUD_INVA
-/// LID_ARG on a NULL out-handle, context or path, on an empty path, on a path whose directory prefix
-/// does not fit this rung's bound, or on a document that is broken (no mesh, no POSITION, accessors
+/// live MODEL slot of THIS context's table. The draw half is xud_draw_model() above this pair rather
+/// than a member of it: a model is a list of MESH slots, so the draw is the loop over that list, and
+/// the batch's row that replays through a mesh's own buffers beside the arena is the batch rung's. XUD
+/// INVALID_ARG on a NULL out-handle, context or path, on an empty path, on a path whose directory
+/// prefix does not fit this rung's bound, or on a document that is broken (no mesh, no POSITION, accessors
 /// that disagree about the vertex count, an index at or past the vertex count, an accessor that reads
 /// past its buffer view, a buffer whose bytes were never loaded, or counts past this rung's bounds);
 /// XUD_NOT_FOUND when the path names no file; XUD_MALFORMED when the container or the JSON does not
@@ -861,6 +859,36 @@ XudResult xud_get_model_mesh_count(uint32_t* outCount, XudContext* context, XudH
 /// INVALID_ARG on a NULL out-corner or context, or on a handle that does not name a live MODEL slot of
 /// this context; XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_get_model_bounding_box(XudVector3* outMin, XudVector3* outMax, XudContext* context, XudHandle handle);
+
+/// Draw one mesh this context owns: the first public draw that names a handle, and the mesh's row of
+/// the drawing API. Nothing is appended here - the mesh's bytes are already in its own five buffers,
+/// uploaded once at xud_upload_mesh() - so the call records one draw row that replays through them:
+/// the batch's pending run of its own arena is closed into a row of its own first if it has content
+/// in it, and the mesh's row names the whole of that mesh's index range, the topology the mesh rung's
+/// one topology states (TRIANGLES, whatever the pending run was assembled as), and the variant and
+/// the material the batch's state is currently under - a mesh draws with the material that was begun
+/// around it, which is why this call takes no material of its own. XUD_INVALID_ARG on a NULL context
+/// or on a handle that does not name a live MESH slot of this context; XUD_UNSUPPORTED on a context
+/// that never completed bring-up; XUD_INTERNAL_ERROR on a live MESH slot whose buffers are gone, which
+/// is a state the mesh rung's own open made rather than an argument a caller could fix; the batch's
+/// codes otherwise, XUD_OUT_OF_MEMORY being the only one a caller can act on.
+XudResult xud_draw_mesh(XudContext* context, XudHandle handle);
+
+/// Draw every mesh a model owns, each with the material the load read for it: the model's row of the
+/// drawing API, and the reason raylib's DrawModel3D loses its position/rotation/scale arguments. The
+/// model matrix is the identity today (the camera + transform step above the shapes has not landed),
+/// so a model is placed by the camera alone and a caller that wants it elsewhere moves the camera. A
+/// model is a list of MESH slots and one MATERIAL slot per primitive, so this call is the loop over
+/// that list rather than one row: each mesh is recorded with the variant and the material slot the
+/// load read for it, whatever material was begun around the call, and the batch's state moves to the
+/// LAST mesh's pair on success, which is raylib's DrawModel leaving the last mesh's texture state
+/// behind it. XUD_INVALID_ARG on a NULL context or on a handle that does not name a live MODEL slot
+/// of this context; XUD_UNSUPPORTED on a context that never completed bring-up; XUD_INTERNAL_ERROR if
+/// any MESH or MATERIAL slot the load created has lost its buffers or its record, which is a state the
+/// model rung's own open made; the batch's codes otherwise, and a row that refused leaves the rows
+/// recorded so far recorded - the batch's rows are a list, and a partial model is a frame that drew
+/// part of it rather than a frame that drew none of it.
+XudResult xud_draw_model(XudContext* context, XudHandle handle);
 
 /*-----------------------------------------------------------------------------------------------
  * The font API - raylib's font half, above the font rung

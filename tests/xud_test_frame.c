@@ -148,8 +148,9 @@ static void xud_test_frame_pure(void) {
     */
     {
         XudPushRow pushRow;
-        const XudBatchDraw sentinelRow = { 0u, 3u, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL };
-        const XudBatchDraw realRow = { 12u, 6u, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_TRANSPARENT, 3u };
+        const XudBatchDraw sentinelRow
+            = { 0u, 3u, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, XUD_BATCH_GEOMETRY_OWN };
+        const XudBatchDraw realRow = { 12u, 6u, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_TRANSPARENT, 3u, XUD_BATCH_GEOMETRY_OWN };
         uint32_t axis = 0u;
         uint32_t offDiagonal = 0u;
 

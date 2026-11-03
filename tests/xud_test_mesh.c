@@ -20,10 +20,10 @@
  *   What the checks are stated against: the offsets rather than the bytes at them for the layout,
  *   and the bytes at the offsets for the write, so the two halves cannot both be "the same numbers
  *   copied twice" - and the record's live driver state (a non-null arena memory, a non-null mapp
- *   ing, five non-null buffers) rather than a pixel, because nothing draws a mesh yet: the batch'
- *   s draw row names one index range and one index buffer for the whole batch, so a row that repl
- *   ays through a mesh's own buffers needs a per-row binding beside it, and that is open work on
- *   a committed rung.
+ *   ing, five non-null buffers) rather than a pixel, because a mesh's bytes are its own and the
+ *   frame's whole content can be one mesh row: the GPU half draws the same mesh twice through the
+ *   public pair and checks the row list and the geometry list at the frame's end, which is where
+ *   the rebind of a mesh's buffers beside the arena is observable.
  *
  *   Deterministic: fixed meshes, fixed alignments, fixed loop counts, no time, no randomness, no
  *   filesystem.
@@ -477,6 +477,31 @@ static void xud_test_mesh_gpu(void) {
     xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_MESH, &live) == XUD_OK, "gpu-mesh/live-two-query",
         "the live count answers");
     xud_check(live == 2u, "gpu-mesh/live-two", "and two MESH slots are live");
+
+    /* The draw half, against a real device: the second mesh is still live in a slot here, so the
+       public draw has a handle to name, and nothing was appended to the batch's arena, so this is
+       the frame whose whole content is a mesh row - the case an empty arena used to be. The mesh is
+       drawn twice, which is the dedup's own case: two rows over one geometry entry.
+    */
+    xud_check(xud_begin_drawing(context) == XUD_OK, "gpu-mesh/frame-opens", "the frame opens");
+    xud_check(xud_draw_mesh(context, second) == XUD_OK, "gpu-mesh/draw-mesh-ok",
+        "the first public draw that names a handle records a row that replays through the mesh's own five buffers");
+    xud_check(context->renderer->batch->drawCount == 1u, "gpu-mesh/draw-recorded-mid-frame",
+        "and the row is already a row mid-frame rather than a pending run, because a mesh has no append "
+        "state to accumulate into");
+    xud_check(context->renderer->batch->geometryCount == 1u, "gpu-mesh/draw-one-geometry-entry", "one geometry entry for the one mesh");
+    xud_check(xud_draw_mesh(context, second) == XUD_OK, "gpu-mesh/draw-mesh-twice", "the same mesh drawn again records a row again");
+    xud_check(context->renderer->batch->drawCount == 2u, "gpu-mesh/draw-two-rows", "and two rows");
+    xud_check(context->renderer->batch->geometryCount == 1u, "gpu-mesh/draw-deduped-geometry",
+        "but still one geometry entry, so the frame loop rebinds once rather than twice - which is what "
+        "a frame that draws one model a hundred times pays for");
+    result = xud_end_drawing(context);
+    xud_check(result == XUD_OK, "gpu-mesh/frame-presents",
+        "and the frame presents, so the rebind of a mesh's buffers beside the arena is a command buffer "
+        "the validation layer accepted");
+    xud_check(context->renderer->batch->drawCount == 0u, "gpu-mesh/frame-end-rows-empty", "the row list is empty at the frame's end");
+    xud_check(context->renderer->batch->geometryCount == 0u, "gpu-mesh/frame-end-geometry-retired",
+        "and the geometry list is retired with it, because it is indexed by rows recorded after the reset");
 
     /* The cross-kind close, refused before anything is destroyed. */
     xud_check(xud_create_material(&material, context, (XudMaterial) { .blendMode = XUD_BLEND_OPAQUE }) == XUD_OK,

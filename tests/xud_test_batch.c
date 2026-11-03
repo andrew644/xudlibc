@@ -634,9 +634,146 @@ static void xud_test_batch_pure(void) {
     b.stagingMapped = NULL;
     b.stagingMappedLive = 0u;
 
+    /*--- the geometry a row replays through, and the mesh's row that names it ------------------*/
+
+    {
+        VkBuffer meshBuffers[XUD_BATCH_GEOMETRY_BUFFER_COUNT];
+        VkDeviceSize meshOffsets[XUD_BATCH_GEOMETRY_BUFFER_COUNT];
+        XudBatchGeometry geometryRow;
+        uint32_t stateVariant = 0u;
+        uint32_t stateMaterial = 0u;
+        uint32_t drawBefore = 0u;
+        uint32_t slot = 0u;
+
+        xud_check(xud_batch_state_get(&b, &stateVariant, &stateMaterial) == XUD_OK, "batch/state-read", "the pair reads");
+        xud_check((stateVariant == b.currentVariant) && (stateMaterial == b.currentMaterial), "batch/state-is-the-current-pair",
+            "the pair the pending draws accumulate under, which is the pair a draw that names a handle "
+            "records under rather than chooses");
+        xud_check(xud_batch_state_get(NULL, &stateVariant, &stateMaterial) == XUD_INVALID_ARG, "batch/state-null-batch", "refused");
+        xud_check(xud_batch_state_get(&b, NULL, &stateMaterial) == XUD_INVALID_ARG, "batch/state-null-out", "refused");
+
+        meshBuffers[0] = (VkBuffer)&b.stream[0].binding;
+        meshBuffers[1] = (VkBuffer)&b.stream[1].binding;
+        meshBuffers[2] = (VkBuffer)&b.stream[2].binding;
+        meshBuffers[3] = (VkBuffer)&b.stream[3].binding;
+        meshBuffers[XUD_BATCH_STREAM_COUNT] = (VkBuffer)&b.indexBufferInfo;
+        for (slot = 0u; slot < XUD_BATCH_GEOMETRY_BUFFER_COUNT; slot++) {
+            meshOffsets[slot] = 0u;
+        }
+
+        xud_check(xud_batch_record_mesh_draw(
+                      NULL, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+                == XUD_INVALID_ARG,
+            "batch/mesh-draw-null-batch", "refused");
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_COUNT, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+                == XUD_INVALID_ARG,
+            "batch/mesh-draw-bad-topology",
+            "a row that names no topology the batch names is a bad argument, the same rule its own "
+            "record of the arena's rows applies");
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+                == XUD_INVALID_ARG,
+            "batch/mesh-draw-bad-variant", "a row that names no variant the plan names is a bad argument");
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, NULL, meshOffsets, 3u)
+                == XUD_INVALID_ARG,
+            "batch/mesh-draw-null-buffers",
+            "the five buffers are the argument of two bind calls, so an array of nothing is a bad argument rather than a row that binds "
+            "nothing");
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, NULL, 3u)
+                == XUD_INVALID_ARG,
+            "batch/mesh-draw-null-offsets", "and so is an array of nothing for the second argument of the same two calls");
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 2u)
+                == XUD_INVALID_ARG,
+            "batch/mesh-draw-index-count-below-three", "the mesh rung's own rule, read again where the range is named");
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 4u)
+                == XUD_INVALID_ARG,
+            "batch/mesh-draw-index-count-not-whole-triangles", "and a range that is not a whole number of triangles is the same refusal");
+        meshBuffers[XUD_BATCH_STREAM_COUNT] = VK_NULL_HANDLE;
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+                == XUD_INVALID_ARG,
+            "batch/mesh-draw-null-buffer",
+            "a row that binds a null buffer is a draw that reads nothing, so the five are checked before the row is recorded");
+        meshBuffers[XUD_BATCH_STREAM_COUNT] = (VkBuffer)&b.indexBufferInfo;
+
+        b.pendingFirstIndex = 0u;
+        b.pendingIndexCount = 3u;
+        drawBefore = b.drawCount;
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 6u)
+                == XUD_OK,
+            "batch/mesh-draw-recorded", "the mesh's row records");
+        xud_check(b.drawCount == (drawBefore + 2u), "batch/mesh-draw-closed-the-pending-run",
+            "the arena's pending run became a row of its own first, because a mesh appends nothing and "
+            "the bytes a shape already wrote cannot end up in a row that binds a mesh's buffers");
+        xud_check(b.draws[b.drawCount - 2u].geometryIndex == XUD_BATCH_GEOMETRY_OWN, "batch/mesh-draw-pending-row-names-the-arena",
+            "and that row still names the batch's own arena");
+        xud_check(b.draws[b.drawCount - 1u].geometryIndex == 1u, "batch/mesh-draw-geometry-slot",
+            "the mesh's row names the first entry of the geometry list - one past the sentinel, which is "
+            "why the list's indices are one past its positions");
+        xud_check(b.draws[b.drawCount - 1u].firstIndex == 0u, "batch/mesh-draw-range-starts-at-zero",
+            "a mesh's range is the whole of its own index buffer, so it starts at 0 rather than at a window of the arena's");
+        xud_check(b.draws[b.drawCount - 1u].indexCount == 6u, "batch/mesh-draw-range-is-the-meshs-count",
+            "and its length is the mesh's index count, which is the argument the mesh rung's record states");
+        xud_check(b.pendingIndexCount == 0u, "batch/mesh-draw-appended-nothing",
+            "a mesh appends nothing: its bytes are already in its own buffers, so the arena's pending run stays empty");
+        xud_check(b.geometryCount == 1u, "batch/mesh-draw-recorded-one-geometry-entry", "one entry for one mesh");
+
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 6u)
+                == XUD_OK,
+            "batch/mesh-draw-same-buffers-recorded", "the same mesh drawn again records a row");
+        xud_check(b.geometryCount == 1u, "batch/mesh-draw-deduped-the-buffers",
+            "but the five buffers are deduped, so a frame that draws one model twice records one geometry "
+            "entry and two draw rows - the frame loop rebinds once rather than twice");
+        xud_check(b.draws[b.drawCount - 1u].geometryIndex == 1u, "batch/mesh-draw-reused-the-entry",
+            "and the second row names the entry the first named");
+
+        meshBuffers[0] = (VkBuffer)&b.stagingBufferInfo;
+        xud_check(xud_batch_record_mesh_draw(
+                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+                == XUD_OK,
+            "batch/mesh-draw-second-mesh", "a different buffer set records a row");
+        xud_check(b.geometryCount == 2u, "batch/mesh-draw-second-entry", "and it gets its own entry, so the two meshes never share a bind");
+        xud_check(b.draws[b.drawCount - 1u].geometryIndex == 2u, "batch/mesh-draw-second-slot", "and its row names that entry");
+
+        xud_check(xud_batch_geometry_get(&b, XUD_BATCH_GEOMETRY_OWN, &geometryRow) == XUD_OK, "batch/geometry-own-reads",
+            "the sentinel is a real row the loop can bind rather than a value the loop has to special-case");
+        xud_check(geometryRow.buffer[XUD_BATCH_STREAM_COUNT] == b.indexBuffer, "batch/geometry-own-is-the-arena",
+            "and it is built from the stream rows that are live now, which is what keeps a grow that "
+            "recreated the six buffers from leaving a stale row behind");
+        xud_check(geometryRow.offset[XUD_BATCH_STREAM_COUNT] == 0u, "batch/geometry-own-offset-is-zero",
+            "each stream is its own buffer bound at its range's offset, so the vertex data starts at 0 inside it");
+        xud_check(xud_batch_geometry_get(&b, 1u, &geometryRow) == XUD_OK, "batch/geometry-entry-reads", "an entry of the list reads back");
+        xud_check(geometryRow.buffer[0] == (VkBuffer)&b.stream[0].binding, "batch/geometry-entry-is-the-meshs-buffers",
+            "and it is the five that row was recorded with");
+        xud_check(geometryRow.indexCount == 6u, "batch/geometry-entry-index-count",
+            "and the range the mesh's row named is readable from the entry it binds");
+        xud_check(xud_batch_geometry_get(&b, b.geometryCount + 1u, &geometryRow) == XUD_INVALID_ARG, "batch/geometry-past-the-list",
+            "one past the entries handed out is refused");
+        xud_check(xud_batch_geometry_get(NULL, 0u, &geometryRow) == XUD_INVALID_ARG, "batch/geometry-null-batch", "refused");
+
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "batch/invariant-still-holds-with-mesh-rows",
+            "every row names an entry of the geometry list that exists, which is the half that only exists "
+            "once a row can name geometry beside the arena");
+
+        xud_check(xud_batch_reset(&b) == XUD_OK, "batch/reset-with-geometry", "the reset completes");
+        xud_check(b.geometryCount == 0u, "batch/reset-retires-the-geometry-list",
+            "the list is frame-local, because it is indexed by rows recorded after the reset - a list that "
+            "kept the last frame's entries would grow one entry per draw forever");
+    }
+
     free(b.draws);
     b.draws = NULL;
     b.drawCapacity = 0u;
+    free(b.geometry);
+    b.geometry = NULL;
+    b.geometryCapacity = 0u;
 }
 
 /*-----------------------------------------------------------------------------------------------

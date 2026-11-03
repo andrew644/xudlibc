@@ -483,6 +483,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
     XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex) {
     XudBatchDraw drawRow;
+    XudBatchGeometry geometryRow;
     XudQueue graphicsQueue;
     XudQueue presentQueue;
     XudFramebuffer* row = NULL;
@@ -507,6 +508,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     VkDeviceSize stagingBytes = 0u;
     uint32_t draw = 0u;
     uint32_t pipelineRow = 0u;
+    uint32_t boundGeometry = XUD_BATCH_GEOMETRY_NONE;
     XudPushRow pushRow;
 
     if ((frame == NULL) || (loader == NULL) || (device == NULL) || (swapchain == NULL) || (pipeline == NULL) || (pass == NULL)
@@ -912,6 +914,13 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
            state-setting belongs.
         */
         loader->deviceTable.vkCmdBindIndexBuffer(frame->commandBuffer, batch->indexBuffer, 0u, XUD_FRAME_INDEX_TYPE);
+
+        /* The two binds above are the batch's own arena, so from here on the arena IS the bound
+           geometry and a row that names it needs no rebind. A frame whose arena is empty binds
+           nothing here, and boundGeometry stays NONE - which is what makes the loop's first row
+           rebind unconditionally rather than a fact about which row happened to come first.
+        */
+        boundGeometry = XUD_BATCH_GEOMETRY_OWN;
     }
 
     /* The block's upload: ONE vkCmdCopyBuffer carrying ONE region, from the block's arena into set 0's
@@ -982,6 +991,27 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
            names, read here at the use side because this loop is what indexes the array. */
         if ((drawRow.topology >= XUD_BATCH_TOPOLOGY_COUNT) || (drawRow.variant >= XUD_BATCH_VARIANT_COUNT)) {
             break;
+        }
+        /* The geometry is rebound only when the row names a different set of buffers than the one
+           already bound, so a frame of nothing but shapes - the case every example ran before the
+           mesh rung landed - records exactly the two binds above the pass and pays nothing here.
+           A mesh's row is the other case: its four streams and its own index buffer are bound at
+           the SAME four binding numbers, because the pipeline's vertex-input state is four binding
+           rows and four attribute rows whose strides and formats are the batch's, and a mesh's
+           streams were created against those same four widths and four formats (xud_mesh.h reads
+           them off xud_batch.h for exactly that reason). Binding is command-buffer state, so the
+           last bind before a draw is the one that draw reads - the same rule the pipeline bind and
+           the push row beside it already state, one channel over.
+        */
+        if (drawRow.geometryIndex != boundGeometry) {
+            if (xud_batch_geometry_get(batch, drawRow.geometryIndex, &geometryRow) != XUD_OK) {
+                break;
+            }
+            loader->deviceTable.vkCmdBindVertexBuffers(
+                frame->commandBuffer, XUD_FRAME_FIRST_BINDING, XUD_BATCH_STREAM_COUNT, geometryRow.buffer, geometryRow.offset);
+            loader->deviceTable.vkCmdBindIndexBuffer(frame->commandBuffer, geometryRow.buffer[XUD_BATCH_STREAM_COUNT],
+                geometryRow.offset[XUD_BATCH_STREAM_COUNT], XUD_FRAME_INDEX_TYPE);
+            boundGeometry = drawRow.geometryIndex;
         }
         /* The pipeline is bound per draw row, not once per frame: the pair is what picks the row, and
            a bind is command-buffer state, so the last bind before a draw is the one that draw uses.

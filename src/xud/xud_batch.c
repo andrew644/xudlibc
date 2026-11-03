@@ -341,9 +341,18 @@ XudResult xud_batch_check_invariant(const XudBatch* batch) {
     if ((batch->vertexCount > batch->vertexCapacity) || (batch->indexCount > batch->indexCapacity)) {
         return XUD_UNSUPPORTED;
     }
-    if (batch->indexCount > 0u) {
-        return XUD_OK;
+
+    /* The third half, which only exists once a row can name geometry beside the arena: every
+       recorded row names an entry of the geometry list that exists - the sentinel, or one of the
+       entries handed out. A row naming past the list is a row the frame loop above would bind
+       buffers from past the end of a heap array, and that is a broken state of this rung's own
+       record rather than an argument a caller could have fixed. */
+    for (index = 0u; index < batch->drawCount; index++) {
+        if (batch->draws[index].geometryIndex > batch->geometryCount) {
+            return XUD_UNSUPPORTED;
+        }
     }
+
     return XUD_OK;
 }
 
@@ -387,8 +396,48 @@ XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint
     return XUD_OK;
 }
 
-XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex) {
+/* The one capacity step both draw paths share: the draw list's doubling, in one place so the
+   pending run's record and a mesh's record cannot grow the same array two ways. The step is the
+   batch's own XUD_BATCH_DRAW_MIN rather than a doubling of drawCapacity because the sequence the
+   rest of this tree uses is a step of the minimum, and a doubling of a capacity that started at
+   0 would double 0 forever. */
+static XudResult xud_batch_draw_reserve(XudBatch* batch) {
     XudBatchDraw* rows = NULL;
+
+    if (batch->drawCount < batch->drawCapacity) {
+        return XUD_OK;
+    }
+    rows = realloc(batch->draws, (size_t)(batch->drawCapacity + XUD_BATCH_DRAW_MIN) * sizeof(XudBatchDraw));
+    if (rows == NULL) {
+        return XUD_OUT_OF_MEMORY;
+    }
+    batch->draws = rows;
+    batch->drawCapacity += XUD_BATCH_DRAW_MIN;
+
+    return XUD_OK;
+}
+
+/* The same step for the geometry list. The list is the set of buffer sets this frame's rows bind,
+   so its bound is the number of DISTINCT meshes a frame draws, not the number of draws - which is
+   what a frame that draws one model a hundred times pays for. */
+static XudResult xud_batch_geometry_reserve(XudBatch* batch) {
+    XudBatchGeometry* rows = NULL;
+
+    if (batch->geometryCount < batch->geometryCapacity) {
+        return XUD_OK;
+    }
+    rows = realloc(batch->geometry, (size_t)(batch->geometryCapacity + XUD_BATCH_GEOMETRY_MIN) * sizeof(XudBatchGeometry));
+    if (rows == NULL) {
+        return XUD_OUT_OF_MEMORY;
+    }
+    batch->geometry = rows;
+    batch->geometryCapacity += XUD_BATCH_GEOMETRY_MIN;
+
+    return XUD_OK;
+}
+
+XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex) {
+    XudResult result = XUD_OK;
 
     if (batch == NULL) {
         return XUD_INVALID_ARG;
@@ -397,13 +446,9 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
         return XUD_INVALID_ARG;
     }
 
-    if (batch->drawCount == batch->drawCapacity) {
-        rows = realloc(batch->draws, (size_t)(batch->drawCapacity + XUD_BATCH_DRAW_MIN) * sizeof(*batch->draws));
-        if (rows == NULL) {
-            return XUD_OUT_OF_MEMORY;
-        }
-        batch->draws = rows;
-        batch->drawCapacity += XUD_BATCH_DRAW_MIN;
+    result = xud_batch_draw_reserve(batch);
+    if (result != XUD_OK) {
+        return result;
     }
 
     batch->draws[batch->drawCount].firstIndex = batch->pendingFirstIndex;
@@ -411,10 +456,96 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
     batch->draws[batch->drawCount].topology = topology;
     batch->draws[batch->drawCount].variant = variant;
     batch->draws[batch->drawCount].materialIndex = materialIndex;
+    batch->draws[batch->drawCount].geometryIndex = XUD_BATCH_GEOMETRY_OWN;
     batch->drawCount++;
 
     batch->pendingFirstIndex = batch->indexCount;
     batch->pendingIndexCount = 0u;
+
+    return XUD_OK;
+}
+
+/* The mesh's row, seen from the batch's side. A mesh is the settled SoA decision read one rung
+   above: the same four streams, the same four widths, the same four formats, and an index buffer
+   of its own. What changes here is therefore not the pipeline's vertex-input state - four bindings
+   and four attributes, unchanged - but which buffers are bound at those four binding numbers
+   beside this row, and binding is command-buffer state rather than pipeline state. The pending run
+   of the batch's OWN arena is closed first, because a mesh appends nothing and the bytes a shape
+   already wrote cannot end up in a row that binds a mesh's buffers; the mesh's own row is then
+   recorded complete, its range being the whole of that mesh's index buffer. The five buffers are
+   deduped against the list already recorded, so the frame loop rebinds once per distinct mesh
+   rather than once per draw, and the list's indices are one past the array's positions because
+   index 0 is the batch's own arena - a row xud_batch_geometry_get builds from the batch's live
+   stream rows rather than a stored one, which is what keeps a grow that recreated the six buffers
+   from leaving a stale row behind. */
+XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, const VkBuffer* buffers,
+    const VkDeviceSize* offsets, uint32_t indexCount) {
+    XudResult result = XUD_OK;
+    uint32_t geometryIndex = XUD_BATCH_GEOMETRY_OWN;
+    uint32_t found = 0u;
+    uint32_t slot = 0u;
+    uint32_t candidate = 0u;
+
+    if ((batch == NULL) || (buffers == NULL) || (offsets == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((topology >= XUD_BATCH_TOPOLOGY_COUNT) || (variant >= XUD_BATCH_VARIANT_COUNT)) {
+        return XUD_INVALID_ARG;
+    }
+    if (indexCount < 3u || ((indexCount % 3u) != 0u)) {
+        return XUD_INVALID_ARG; /* the mesh rung's own rule, read again where the range is named */
+    }
+    for (slot = 0u; slot < XUD_BATCH_GEOMETRY_BUFFER_COUNT; slot++) {
+        if (buffers[slot] == VK_NULL_HANDLE) {
+            return XUD_INVALID_ARG; /* a row that binds a null buffer is a draw that reads nothing */
+        }
+    }
+
+    if (batch->pendingIndexCount != 0u) {
+        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    for (candidate = 0u; (found == 0u) && (candidate < batch->geometryCount); candidate++) {
+        found = 1u;
+        for (slot = 0u; slot < XUD_BATCH_GEOMETRY_BUFFER_COUNT; slot++) {
+            if ((batch->geometry[candidate].buffer[slot] != buffers[slot]) || (batch->geometry[candidate].offset[slot] != offsets[slot])) {
+                found = 0u;
+                break;
+            }
+        }
+        if (found != 0u) {
+            geometryIndex = candidate + 1u;
+        }
+    }
+    if (found == 0u) {
+        result = xud_batch_geometry_reserve(batch);
+        if (result != XUD_OK) {
+            return result;
+        }
+        for (slot = 0u; slot < XUD_BATCH_GEOMETRY_BUFFER_COUNT; slot++) {
+            batch->geometry[batch->geometryCount].buffer[slot] = buffers[slot];
+            batch->geometry[batch->geometryCount].offset[slot] = offsets[slot];
+        }
+        batch->geometry[batch->geometryCount].indexCount = indexCount;
+        geometryIndex = batch->geometryCount + 1u;
+        batch->geometryCount++;
+    }
+
+    result = xud_batch_draw_reserve(batch);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    batch->draws[batch->drawCount].firstIndex = 0u;
+    batch->draws[batch->drawCount].indexCount = indexCount;
+    batch->draws[batch->drawCount].topology = topology;
+    batch->draws[batch->drawCount].variant = variant;
+    batch->draws[batch->drawCount].materialIndex = materialIndex;
+    batch->draws[batch->drawCount].geometryIndex = geometryIndex;
+    batch->drawCount++;
 
     return XUD_OK;
 }
@@ -485,6 +616,34 @@ XudResult xud_batch_draw_get(const XudBatch* batch, uint32_t index, XudBatchDraw
     }
 
     *outRow = batch->draws[index];
+    return XUD_OK;
+}
+
+XudResult xud_batch_geometry_get(const XudBatch* batch, uint32_t index, XudBatchGeometry* outRow) {
+    uint32_t slot = 0u;
+
+    if ((batch == NULL) || (outRow == NULL) || (index > batch->geometryCount)) {
+        return XUD_INVALID_ARG;
+    }
+
+    if (index == XUD_BATCH_GEOMETRY_OWN) {
+        /* The batch's own arena, built from the stream rows that are live now rather than from a
+           stored row: xud_batch_grow() recreates the six buffers, and a stored copy of the old
+           ones would be a row the frame loop bound a draw from after the recreate. The offsets are
+           0 because each stream is its own VkBuffer bound at its range's offset, so the vertex
+           data starts at buffer offset 0 - the same fact the frame loop's first bind states.
+        */
+        for (slot = 0u; slot < XUD_BATCH_STREAM_COUNT; slot++) {
+            outRow->buffer[slot] = batch->stream[slot].buffer;
+            outRow->offset[slot] = 0u;
+        }
+        outRow->buffer[XUD_BATCH_STREAM_COUNT] = batch->indexBuffer;
+        outRow->offset[XUD_BATCH_STREAM_COUNT] = 0u;
+        outRow->indexCount = batch->indexCount;
+        return XUD_OK;
+    }
+
+    *outRow = batch->geometry[index - 1u];
     return XUD_OK;
 }
 
@@ -574,6 +733,7 @@ XudResult xud_batch_reset(XudBatch* batch) {
     batch->currentTopology = XUD_BATCH_TOPOLOGY_TRIANGLES;
     batch->currentVariant = XUD_BATCH_VARIANT_OPAQUE;
     batch->currentMaterial = XUD_BATCH_NO_MATERIAL;
+    batch->geometryCount = 0u;
 
     return XUD_OK;
 }
@@ -605,6 +765,17 @@ XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_
 
     *outVertices = batch->wantedVertices;
     *outIndices = batch->wantedIndices;
+
+    return XUD_OK;
+}
+
+XudResult xud_batch_state_get(const XudBatch* batch, uint32_t* outVariant, uint32_t* outMaterialIndex) {
+    if ((batch == NULL) || (outVariant == NULL) || (outMaterialIndex == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outVariant = batch->currentVariant;
+    *outMaterialIndex = batch->currentMaterial;
 
     return XUD_OK;
 }
@@ -1184,6 +1355,11 @@ XudResult xud_batch_close(XudBatch** ioBatch, const XudDevice* device, XudLoader
     victim->draws = NULL;
     victim->drawCount = 0u;
     victim->drawCapacity = 0u;
+
+    free(victim->geometry);
+    victim->geometry = NULL;
+    victim->geometryCount = 0u;
+    victim->geometryCapacity = 0u;
 
     free(victim);
     *ioBatch = NULL;
