@@ -2,9 +2,9 @@
  *
  *   hello_audio.c - one container's bytes, decoded into the stream behind one handle
  *
- *   Owns : two containers read off disk, one context, one stream loaded from the bytes the
- *          decoder reads, the three numbers and the one length that stream answers, and the
- *          teardown that gives the stream back before it gives back the context. Nothing else:
+ *   Owns : two containers read off disk, one context, two streams loaded from the bytes the
+ *          decoder reads, the three numbers and the one length each stream answers, and the
+ *          teardown that gives the streams back before it gives back the context. Nothing else:
  *          no draw call, no camera, no batch, no play call, no mixer, no device of its own.
  *
  *   Layer: examples. Public API only (xud.h) plus stdio for the lines it prints and stdlib for
@@ -37,12 +37,13 @@
  *
  *   The two containers, and why they are two: they are the SAME track in two wrappers, which is
  *   what makes the pair one statement about the decoders rather than two about the files. The
- *   vendored miniaudio inlines dr_wav, dr_flac and dr_mp3 and nothing else, so the ogg wrapper
- *   answers XUD_UNSUPPORTED before a slot is spent and the flac wrapper answers a stream - the
- *   refusal is the container's own, not the track's, and the run says which wrapper this tree
- *   reads and which it does not. Adding the ogg decoder is an ask to include stb_vorbis rather
- *   than a decoder to write here (AGENTS.md's rule), and the ask is recorded in todo.md rather
- *   than assumed away by a run that would otherwise look like it had played the file.
+ *   ogg wrapper is walked by stb_vorbis and the flac one by dr_flac, so a run prints the same
+ *   channel count, the same rate and the same frame count twice over, and the agreement is a
+ *   fact about the recording rather than about whichever decoder walked it. The ogg decoder
+ *   came in as an ask to include stb_vorbis rather than as a decoder written here (AGENTS.md's
+ *   rule), and it is inlined through src/xud/xud_vendor_miniaudio.c, the one TU that decides
+ *   what miniaudio compiles - which is why the wrappers this tree reads are a property of the
+ *   vendored copy rather than a choice this rung made.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -73,8 +74,9 @@
 #define XUD_HELLO_AUDIO_FLAC "resources/audio/target.flac"
 
 /* The containers this example walks, in the order it walks them: the asked-for wrapper first, so
-   the line that reads as the answer to "play target.ogg" is the first line out, and the wrapper
-   this tree reads second, so the numbers below are the answer beside it rather than before it. */
+   the line that reads as the answer to "play target.ogg" is the first line out, and the same
+   take behind the other wrapper second, so the two blocks below are one fact read by two
+   decoders rather than two facts about two files. */
 static const char* const xudHelloAudioPaths[] = { XUD_HELLO_AUDIO_OGG, XUD_HELLO_AUDIO_FLAC };
 #define XUD_HELLO_AUDIO_COUNT ((uint32_t)(sizeof(xudHelloAudioPaths) / sizeof(xudHelloAudioPaths[0])))
 
@@ -200,8 +202,9 @@ int main(void) {
         free(buffer);
     }
 
-    printf("hello_audio: %u of %u containers decoded, %u refused (this vendored miniaudio reads wav, flac and mp3 only)\n", loaded,
-        XUD_HELLO_AUDIO_COUNT, XUD_HELLO_AUDIO_COUNT - loaded);
+    printf("hello_audio: %u of %u containers decoded, %u refused (this vendored miniaudio reads wav, flac, mp3 and ogg; qoa and xm still "
+           "refuse)\n",
+        loaded, XUD_HELLO_AUDIO_COUNT, XUD_HELLO_AUDIO_COUNT - loaded);
 
     const XudResult closed = xud_close_context(&context);
 

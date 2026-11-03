@@ -450,7 +450,7 @@ typedef struct XudGlyphAtlasRec {
 /// the container, so a caller's token could disagree with the file it names and become a claim this
 /// rung would then be making about a buffer it never read.
 typedef struct XudAudioData {
-    const uint8_t* fileData; /* the container's bytes: wav, flac or mp3, whatever the decoder reads */
+    const uint8_t* fileData; /* the container's bytes: wav, flac, mp3 or ogg, whatever the decoder reads */
     uint32_t fileBytes; /* their length, which is the one bound this rung can apply before it spends */
 } XudAudioData;
 
@@ -1005,7 +1005,7 @@ XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context,
  * the frames, the frame count, the channel count and the rate, plus the two conversions between
  * frames and seconds - and no play call, because raylib's PlayAudio/StopAudio/SetAudioFootprint
  * half is a device with a mixer and a queue above it, which is a second rung rather than a call
- * above this one. The containers this vendored miniaudio cannot read (ogg, qoa, xm) answer
+ * above this one. The containers this vendored miniaudio has no decoder for (qoa, xm) answer
  * XUD_UNSUPPORTED rather than a half-decoded stream, and there is no per-format loader name here
  * for the reason the value type's own note gives.
  *-----------------------------------------------------------------------------------------------*/

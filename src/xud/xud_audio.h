@@ -26,11 +26,11 @@
  *   init, which is why raylib's own note that a stream is "already decoded" is the shape it has.
  *
  *   Why the frames are f32 rather than the file's own sample type: miniaudio's decoder answers f32
- *   for every container it reads (wav, flac and mp3 alike), and the mixer above has to multiply a
- *   sample by a volume and an envelope, which is an f32 question. A second, int16 stream shape would
- *   be a second mixer path beside the one that exists, so this rung asks for f32 and states that it
- *   asked rather than assuming what it got - the record carries the rate and the channel count minia
- *   udio actually answered, not the ones the description asked for.
+ *   for every container it reads (wav, flac, mp3 and ogg alike), and the mixer above has to multiply
+ *   a sample by a volume and an envelope, which is an f32 question. A second, int16 stream shape
+ *   would be a second mixer path beside the one that exists, so this rung asks for f32 and states
+ *   that it asked rather than assuming what it got - the record carries the rate and the channel
+ *   count miniaudio actually answered, not the ones the description asked for.
  *
  *   What this rung does NOT own, and why: no playback. raylib's PlayAudio/StopAudio/SetAudioFootpr
  *   int half is a device with a mixer and a queue of sounds above it, and miniaudio's own low-level
@@ -39,9 +39,9 @@
  *   rything a play row needs beside the device itself: the frames, the frame count, the channel coun
  *   t and the rate, plus the two conversions between frames and seconds a play row's time argument ne
  *   eds. Also absent for the reason AGENTS.md states rather than built here: the containers this ven
- *   dored miniaudio cannot read - ogg (stb_vorbis is not inlined in the vendored copy), qoa and xm/mo
- *   d - answer MA_INVALID_FILE rather than a half-decoded stream, and adding those decoders is an as
- *   k to include their headers, not a decoder to write here.
+ *   dored miniaudio has no decoder for even with stb_vorbis inlined through the vendor TU - qoa and
+ *   xm/mod - answer MA_INVALID_FILE rather than a half-decoded stream, and adding those decoders is
+ *   an ask to include their headers, not a decoder to write here.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *

@@ -4,8 +4,8 @@
  *
  *   Owns : the description's argument check and its two bounds, miniaudio's codes turned into
  *          this library's, the frame-to-bytes stride arithmetic and its ceiling, the two conver
- *          sions between frames and seconds, the decode run over six real audio files of four
- *          containers through a bare handle table, the frame count and the rate and the channel
+ *          sions between frames and seconds, the decode run over seven real audio files of four
+ *          containers and the two refusals, through a bare handle table, the frame count and the
  *          count read back out of the record beside the ones the container's own header declares
  *          them, the public load/close pair and the two queries against a shell context and ag
  *          ainst a real one, and the teardown rung above the table's own close - and nothing els
@@ -37,9 +37,9 @@
  *          pure half's own numbers are arithmetic on this rung's bounds rather than the files' answers, so
  *          the pure half runs with no file present at all.
  *
- *   Deterministic: six fixed files, one fixed fragment length, one fixed claimed length, no time, no
- *   randomness, and the three containers this vendored miniaudio cannot read are asked about rather than
- *   skipped, so a decoder that gained ogg support would fail this area rather than quietly pass it.
+ *   Deterministic: nine fixed files, one fixed fragment length, one fixed claimed length, no time, no
+ *   randomness, and the two containers this vendored miniaudio still cannot read are asked about rather
+ *   than skipped, so a decoder that gained qoa support would fail this area rather than quietly pass it.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
@@ -60,26 +60,29 @@
  *   Four are canonical RIFF PCM, which is what makes their header a declaration this rung's dec
  *   oder can be checked AGAIN rather than a result someone copied out of a decoder: the fmt chunk
  *   states the channel count and the rate and the data chunk states the byte count, so the frame
- *   count of one of these is arithmetic on the file's own numbers. One is flac and one is mp3, a
- *   nd neither declares a PCM size, so the two are stated weaker for that reason rather than for
- *   convenience. The three that are asked about and refused - ogg, qoa and xm - are refused bec
- *   ause the vendored miniaudio inlines dr_wav, dr_flac and dr_mp3 and nothing else, which is why
- *   this library has no audio-format token: the containers it cannot read are a property of the
- *   vendored copy rather than a choice this rung made.
+ *   count of one of these is arithmetic on the file's own numbers. One is flac, one is mp3 and one
+ *   is ogg, and none of the three declares a PCM size, so all three are stated weaker for that
+ *   reason rather than for convenience. The two that are asked about and refused - qoa and xm -
+ *   are refused because the vendored miniaudio inlines dr_wav, dr_flac, dr_mp3 and stb_vorbis and
+ *   nothing else, which is why this library has no audio-format token: the containers it cannot
+ *   read are a property of the vendored copy rather than a choice this rung made.
  *-----------------------------------------------------------------------------------------------*/
 
 #define XUD_TEST_AUDIO_WAV_A "resources/audio/coin.wav" /* canonical RIFF PCM, 8-bit mono 22050 Hz */
 #define XUD_TEST_AUDIO_WAV_B "resources/audio/sound.wav" /* canonical RIFF PCM, 32-bit float mono 44100 Hz */
 #define XUD_TEST_AUDIO_WAV_C "resources/audio/spring.wav" /* canonical RIFF PCM, 16-bit mono 22050 Hz */
 #define XUD_TEST_AUDIO_WAV_D "resources/audio/weird.wav" /* canonical RIFF PCM, 8-bit mono 22050 Hz, a different body */
-#define XUD_TEST_AUDIO_FLAC "resources/audio/target.flac" /* flac, two channels */
-#define XUD_TEST_AUDIO_MP3 "resources/audio/country.mp3" /* mp3, two channels, the largest of the six */
-#define XUD_TEST_AUDIO_OGG "resources/audio/target.ogg" /* a container the vendored miniaudio has no decoder for */
-#define XUD_TEST_AUDIO_QOA "resources/audio/target.qoa" /* ditto */
+#define XUD_TEST_AUDIO_FLAC "resources/audio/target.flac" /* flac, two channels, one take of the target track */
+#define XUD_TEST_AUDIO_MP3 "resources/audio/country.mp3" /* mp3, two channels, the largest of the nine */
+#define XUD_TEST_AUDIO_OGG "resources/audio/target.ogg" /* the same take behind the ogg wrapper, through stb_vorbis */
+#define XUD_TEST_AUDIO_QOA "resources/audio/target.qoa" /* a container the vendored miniaudio has no decoder for */
 #define XUD_TEST_AUDIO_XM "resources/audio/mini1111.xm" /* ditto */
 
-#define XUD_TEST_AUDIO_COUNT 9u /* the six that decode and the three that refuse */
+#define XUD_TEST_AUDIO_COUNT 9u /* the seven that decode and the two that refuse */
 #define XUD_TEST_AUDIO_WAV_COUNT 4u /* the ones whose header declares a PCM size, and so the ones with a strong check */
+#define XUD_TEST_AUDIO_DECODED_COUNT 7u /* the four wavs, the flac, the mp3 and the ogg, and so the loop bound below */
+#define XUD_TEST_AUDIO_FLAC_INDEX 4u /* the flac's slot, and the take the ogg's numbers are compared against below */
+#define XUD_TEST_AUDIO_OGG_INDEX 6u /* the same take behind the other wrapper */
 #define XUD_TEST_AUDIO_FRAGMENT                                                                                                            \
     12u /* a length that passes this rung's check and then refuses at the decoder - the split this rung adds on top of miniaudio */
 
@@ -439,6 +442,12 @@ static void xud_test_audio_decode(void) {
     uint32_t closed = 0u;
     uint32_t live = 0u;
     uint32_t i;
+    uint32_t flacChannels = 0u;
+    uint32_t flacRate = 0u;
+    uint64_t flacFrames = 0u;
+    uint32_t oggChannels = 0u;
+    uint32_t oggRate = 0u;
+    uint64_t oggFrames = 0u;
 
     memset(&handle, 0, sizeof(handle));
     memset(&audio, 0, sizeof(audio));
@@ -503,15 +512,15 @@ static void xud_test_audio_decode(void) {
         record = NULL;
     }
 
-    for (i = XUD_TEST_AUDIO_WAV_COUNT; i < 6u; i++) {
+    for (i = XUD_TEST_AUDIO_WAV_COUNT; i < XUD_TEST_AUDIO_DECODED_COUNT; i++) {
         XudResult result = XUD_INTERNAL_ERROR;
 
         audio.fileData = xudTestAudioFile[i];
         audio.fileBytes = xudTestAudioBytes[i];
         result = xud_audio_open(&handle, table, &audio);
         xud_check(result == XUD_OK, "decode-compressed-ok",
-            "a real flac and a real mp3 decode through the same path as the wavs, which is the reason there is no per-format loader name "
-            "here");
+            "a real flac, a real mp3 and a real ogg decode through the same path as the wavs, which is the reason there is no per-format "
+            "loader name here");
         if (result != XUD_OK) {
             continue;
         }
@@ -526,6 +535,16 @@ static void xud_test_audio_decode(void) {
                 "look like a stream that never decoded");
             xud_check(record->frames != NULL, "decode-compressed-block",
                 "and the block exists, which is the pair of the frame count rather than a fact about its size");
+            if (i == XUD_TEST_AUDIO_FLAC_INDEX) {
+                flacChannels = record->channels;
+                flacRate = record->sampleRate;
+                flacFrames = record->frameCount;
+            }
+            if (i == XUD_TEST_AUDIO_OGG_INDEX) {
+                oggChannels = record->channels;
+                oggRate = record->sampleRate;
+                oggFrames = record->frameCount;
+            }
         }
         xud_check(xud_audio_close(table, handle) == XUD_OK, "decode-compressed-close",
             "and it closes, so the block a compressed file spent is not left behind in a slot");
@@ -533,7 +552,15 @@ static void xud_test_audio_decode(void) {
         record = NULL;
     }
 
-    for (i = 6u; i < XUD_TEST_AUDIO_COUNT; i++) {
+    /* The same take behind two wrappers, and the reason the two answers have to agree: target.flac
+       and target.ogg are one recording carried by two containers, walked here by dr_flac and by
+       stb_vorbis, so the three numbers are a fact about the recording rather than a fact about
+       whichever decoder walked it - the one cross-decoder statement this area can make. */
+    xud_check((flacChannels == oggChannels) && (flacRate == oggRate) && (flacFrames == oggFrames), "decode-two-wrappers-agree",
+        "and the flac and the ogg of one take answer the same channel count, rate and frame count, which is the one fact stated across two "
+        "decoders here");
+
+    for (i = XUD_TEST_AUDIO_DECODED_COUNT; i < XUD_TEST_AUDIO_COUNT; i++) {
         audio.fileData = xudTestAudioFile[i];
         audio.fileBytes = xudTestAudioBytes[i];
         xud_check(xud_audio_open(&handle, table, &audio) == XUD_UNSUPPORTED, "decode-unsupported-container",
