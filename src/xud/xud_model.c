@@ -762,7 +762,12 @@ XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader*
                 variant = XUD_BLEND_TRANSPARENT;
             }
         }
-        result = xud_material_open(&record->material[m], table, variant);
+        /* XUD_HANDLE_NONE beside the variant: a glTF image is not yet a texture of this context, so
+           every material this load makes is an unmapped one and draws through the row its alpha mod
+           e names. The decode step is what hands a real handle to this call, and the material rung
+           then resolves those materials to the textured row on its own.
+        */
+        result = xud_material_open(&record->material[m], table, variant, XUD_HANDLE_NONE);
         if (result != XUD_OK) {
             goto fail;
         }

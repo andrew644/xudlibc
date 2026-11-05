@@ -5,16 +5,21 @@
  *
  *   Owns : XudMaterialRecord - the object record the handle layer's slot `record` field has
  *          been waiting for - plus the rungs that fill and clear that field (xud_material_open(),
- *          xud_material_close(), xud_material_get(), xud_material_close_all()) and the public
- *          surface xud.h declares above them: xud_create_material()/xud_close_material() for the
- *          object's lifetime and xud_begin_material()/xud_end_material() for the drawing state.
+ *          xud_material_close(), xud_material_get(), xud_material_close_all()) and the two rungs t
+ *          hat decide a record's two members before it is filled (xud_material_resolve_variant(), t
+ *          he row a mapped material draws through, and xud_material_check_map(), the map's validati
+ *          on) and the public surface xud.h declares above them: xud_create_material()/xud_close_ma
+ *          terial() for the object's lifetime and xud_begin_material()/xud_end_material() for the d
+ *          rawing state.
  *   Layer: above the handle table - it is the FIRST rung that fills a slot's record field with
  *          anything other than the sentinel, which is why the handle layer's own note says every
  *          slot is still a sentinel and this file's note does not - and below xud.h. It owns one
  *          host allocation per material and nothing of the driver's; it borrows the handle table
- *          (the slot), the batch (a material change is the batch's row split) and the renderer
- *          (the wanted-material state lives there, beside the camera state the frame loop
- *          re-applies every frame).
+ *          (the slot, and the TEXTURE-kind array its diffuse map is validated against - one table
+ *          holds every kind's array, so naming a texture of the same context needs no second hand
+ *          le and no reach into the texture rung), the batch (a material change is the batch's row
+ *          split) and the renderer (the wanted-material state lives there, beside the camera state
+ *          the frame loop re-applies every frame).
  *
  *   Why a material is a handle plus a state call rather than an argument on every draw: raylib
  *   names the material at the draw (BeginModelFrom takes the Material at the draw call) and holds
@@ -30,19 +35,33 @@
  *   back to the default rather than waiting for the next frame's reset.
  *
  *   What the record holds, and why that is the whole of it today: the pipeline variant every
- *   draw of this material uses, which is live the moment a material is, and the set-1 half -
- *   the per-material VkDescriptorSet the descriptor-layout rung declares (XUD_DESCRIPTOR_SET_
- *   MATERIAL) and never allocates. The variant is the material's because in Vulkan the blend
- *   attachment state is PIPELINE state, not draw state: raylib's Material is { shader, maps[],
- *   params[] } (reference/raylib/raylib.h 388-392) and none of those three is a blend mode -
- *   raylib's blend mode is a global its BeginBlendMode()/EndBlendMode() pair scopes - and the
- *   two things a material owns in this library are therefore the pipeline row its draws bind
- *   and the set-1 bindings its draws name. The shader half of raylib's Material is not a member
- *   here at all: this tree has one shader pair (shaders/solid.vert + solid.frag, landed S16) and
- *   no second pipeline to name, so a per-material shader choice is an open ask, not a field.
- *   The maps half is the set-1 field below, and it is VK_NULL_HANDLE for as long as the texture
- *   step has not landed - the same "placeholder with a named owner" shape the descriptor rung
- *   states for the block members no shader reads.
+ *   draw of this material uses, which is live the moment a material is, the diffuse map its draws
+ *   sample, which is a handle and not an image - and the set-1 half, the per-material VkDescriptor
+ *   Set the descriptor-layout rung declares (XUD_DESCRIPTOR_SET_MATERIAL) and never allocates. The
+ *   variant is the material's because in Vulkan the blend attachment state is PIPELINE state, not
+ *   draw state: raylib's Material is { shader, maps[], params[] } (reference/raylib/raylib.h 388-3
+ *   92) and none of those three is a blend mode - raylib's blend mode is a global its BeginBlendMo
+ *   de()/EndBlendMode() pair scopes - and the two things a material owns in this library are theref
+ *   ore the pipeline row its draws bind and the set-1 bindings its draws name. The shader half of r
+ *   aylib's Material is not a member here at all: this tree has one shader pair (shaders/solid.vert
+ *   + solid.frag, landed S16) and no second pipeline to name, so a per-material shader choice is a
+ *   n open ask, not a field. The maps half is the handle below rather than raylib's ten-row array,
+ *   because one map has a pipeline row that reads it (XUD_BATCH_VARIANT_TEXTURED's frag module samp
+ *   les set 1) and nine do not; naming a map moves the variant to that row, which is what makes "a
+ *   material with a map draws textured" a fact of the record rather than a rule every draw call ha
+ *   s to remember. The set-1 field is still VK_NULL_HANDLE: naming a map is not binding one, and t
+ *   he write of a mapped texture into set 1 is the step after this one - the same "placeholder with
+ *   a named owner" shape the descriptor rung states for the block members no shader reads.
+ *
+ *   Why the map is a handle the material names rather than an object the material owns: a texture
+ *   is one image a dozen materials can sample, and an image with two owners is an image closed twi
+ *   ce. The texture rung's slot is the owner (its close destroys the image, the view and the sample
+ *   r), so the material's close frees its own record and calls nothing of the map's, and the one da
+ *   ngling state that ordering allows - a texture closed while a material still names it - is caugh
+ *   t where it would otherwise do damage: xud_begin_material() re-validates the map against the TEX
+ *   TURE array and refuses, so no frame is ever recorded with a textured row whose image is gone. T
+ *   he variant the renderer and the batch hold is read off the record after that check, which is wh
+ *   y the frame loop never has to re-read a map.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
@@ -89,29 +108,62 @@ static_assert(XUD_BLEND_COUNT == XUD_BATCH_VARIANT_COUNT,
    with a lifetime of its own - the handle layer's own note says the field "is the field they
    fill and the field their teardown rung has to close before the slot goes free", and this
    file is that teardown rung. Freeing a record is host-only: nothing in it has been created
-   through a driver, and the set-1 half that eventually will have is VK_NULL_HANDLE until the
-   texture step lands, so xud_material_close() frees memory and calls nothing.
+   through a driver, the map it names belongs to the texture rung's slot and not to this one, and t
+   he set-1 half that eventually will have is VK_NULL_HANDLE until the step that writes a mapped te
+   xture into a set lands, so xud_material_close() frees memory and calls nothing.
+
+   The three members, in the order the two rungs above fill them: the row, the map that decides th
+   e row, and the set that map will eventually be bound into. The variant is the RESOLVED one, so n
+   o rung below the create has to ask whether this material has a map to know which pipeline row it
+   binds. The map is named and not owned: the texture rung's close destroys the image, the view and
+   the sampler, and this record keeps only the handle that says which one its draws sample. The set
+   is the sentinel, because naming a map is not binding one.
 */
 typedef struct XudMaterialRecord {
-    uint32_t variant; /* which row of the pipeline list every draw of this material binds - XUD_BATCH_VARIANT_* */
-    VkDescriptorSet setOne; /* this material's set 1: VK_NULL_HANDLE until the texture step allocates one, and the only Vulkan handle a slot
-                               will ever own of its own */
+    uint32_t variant; /* XUD_BATCH_VARIANT_*, and the textured row whenever the map below names a texture */
+    XudHandle diffuseMap; /* the TEXTURE slot this material's draws sample; XUD_HANDLE_KIND_NONE when it has no map */
+    VkDescriptorSet setOne; /* VK_NULL_HANDLE until this material's own map is written into a set of its own */
 } XudMaterialRecord;
 
 /*-----------------------------------------------------------------------------------------------
  * The layer's contract
  *-----------------------------------------------------------------------------------------------*/
 
+/// Pure: the row of the pipeline list a material draws through, which is the one place the rule "a
+/// material with a map draws textured" lives. The map's row is not a flag beside the blend mode's
+/// row - the variant axis IS the pipeline list's variant axis, and the row that samples set 1 is a
+/// different frag module - so the rule has to be applied once, at the record, rather than at every
+/// draw that reads it. A mapped material keeps nothing of its blend mode but its name: the textured
+/// row's blend attachment state is the transparent row's (xud_pipeline.c's two rows are the same f
+/// actor pair), so the override moves which module runs and not how the result is blended. XUD_INV
+/// ALID_ARG on a NULL out-variant or a blend mode at or past the axis; XUD_OK with the resolved row
+/// , which is the textured one for any non-zero hasMap and the blend mode itself otherwise.
+XudResult xud_material_resolve_variant(uint32_t* outVariant, uint32_t blendMode, uint32_t hasMap);
+
+/// Pure: the map half of a material description - XUD_HANDLE_KIND_NONE is the no-map state and nee
+/// ds no array to be checked against (so a description a caller zero-initialised passes without a t
+/// able existing), and any other handle is validated against the TEXTURE kind of the SAME table th
+/// e material's own slot lives in, which is what makes a map from another context, a map released b
+/// efore the material was even created and a handle of a third kind all refusals rather than a mate
+/// rial that names someone else's image. This rung validates and takes ownership of nothing: the t
+/// exture rung's slot owns the image either way. XUD_INVALID_ARG on a NULL table or on a handle tha
+/// t does not name a live TEXTURE slot; XUD_OK on the no-map handle and on a live map.
+XudResult xud_material_check_map(const XudHandleTable* table, XudHandle diffuseMap);
+
 /// Pure: allocate one MATERIAL-kind slot of this table AND the record that fills it, in the one
-/// order that leaves nothing behind: the slot first (so the record has a slot to be found in),
-/// then the record, and a record that cannot be allocated is freed alongside the slot it was
-/// about to fill before either is left reachable. On XUD_OK *outHandle names a live slot whose
-/// record is no longer the sentinel for the first time in this tree. The record itself is not
-/// handed out - a second pointer to it would be a second owner - it is read back by the access
-/// or below. XUD_INVALID_ARG on a NULL out-handle or table, or on a
-/// variant at or past the variant list; the handle layer's own XUD_OUT_OF_RESOURCES at its slot
-/// bound and XUD_OUT_OF_MEMORY when either allocation fails.
-XudResult xud_material_open(XudHandle* outHandle, XudHandleTable* table, uint32_t variant);
+/// order that leaves nothing behind: the map validated first (so a description that names no textu
+/// re spends nothing), then the slot (so the record has a slot to be found in), then the record, a
+/// nd a record that cannot be allocated is freed alongside the slot it was about to fill before eit
+/// her is left reachable. The record's variant is the resolved one rather than the blend mode as gi
+/// ven: a material created with a map is a material of the textured row from the moment it exists, s
+/// o the draws it is begun around and the model primitives that carry it read one number off the re
+/// cord and cannot disagree about the row. On XUD_OK *outHandle names a live slot whose record is n
+/// o longer the sentinel for the first time in this tree. The record itself is not handed out - a s
+/// econd pointer to it would be a second owner - it is read back by the accessor below. XUD_INVALID
+/// _ARG on a NULL out-handle or table, on a blend mode at or past the axis, or on a diffuse map tha
+/// t names no live TEXTURE slot of this table; the handle layer's own XUD_OUT_OF_RESOURCES at its s
+/// lot bound and XUD_OUT_OF_MEMORY when either allocation fails.
+XudResult xud_material_open(XudHandle* outHandle, XudHandleTable* table, uint32_t blendMode, XudHandle diffuseMap);
 
 /// Pure: release one live MATERIAL-kind slot and free the record it names - the record is
 /// cleared from the slot BEFORE the slot is marked free, so a slot that is free and a slot

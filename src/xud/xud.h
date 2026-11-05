@@ -255,6 +255,11 @@ typedef struct XudHandle {
 #define XUD_HANDLE_KIND_COUNT                                                                                                              \
     (XUD_HANDLE_KIND_MAX + 1u) /* one past the highest kind value, which is the row count of the table's per-kind arrays */
 
+/// The handle that names nothing, spelled out: a zero-initialised XudHandle carries the kind no liv
+/// e slot ever has, so this is the value a caller writes where a public description may name an obj
+/// ect but does not have to - the diffuse map of an unmapped XudMaterial today.
+#define XUD_HANDLE_NONE ((XudHandle) { .index = 0u, .generation = 0u, .kind = XUD_HANDLE_KIND_NONE })
+
 static_assert(sizeof(XudHandle) == 12u,
     "xud.h: the handle is three uint32_t and no padding - index, generation and tag - so a layout change is a change of the public "
     "currency, not of one layer");
@@ -330,12 +335,25 @@ typedef struct XudTextureData {
  * -392) is { shader, maps[], params[] } and none of those three is a blend mode - raylib's blend
  * mode is a global its BeginBlendMode()/EndBlendMode() pair scopes (raylib.h 1058-1059). In Vulka
  * n the blend attachment state is PIPELINE state rather than draw state, so the row of the pipeli
- * ne list a draw binds is the material's own, and the one member this type carries today is that
- * row. The shader half is not a member at all: this tree has one shader pair and no second pipeli
- * ne to choose between, so a per-material shader is an open ask rather than a field. The maps hal
- * f is the material's set-1 bindings, and the texture step is what will give a material any - set
- * 1 is declared and never allocated, so a material created today owns no descriptor and no sample
- * r, and its record's set-1 field is the sentinel with that named owner.
+ * ne list a draw binds is the material's own, and the first member this type carries is that row.
+ * The shader half is not a member at all: this tree has one shader pair and no second pipeline to
+ * choose between, so a per-material shader is an open ask rather than a field.
+ *
+ * The maps half is ONE member here rather than raylib's ten-row array, and the one map is the dif
+ * fuse map (raylib's MATERIAL_MAP_DIFFUSE, the alias of MATERIAL_MAP_ALBEDO at raylib.h 771/784, w
+ * hich SetMaterialTexture names - raylib.h 1657) because it is the only map this tree has a pipeli
+ * ne row that reads: the textured variant's frag module samples set 1 and no other row samples any
+ * thing. So a material that names a map draws through XUD_BLEND_TEXTURED whatever its blendMode sa
+ * ys - the mapped surface is a different pipeline row, not a flag beside the row - and the other n
+ * ine of raylib's maps (metalness, normal, roughness, occlusion, emission, height, the three cube
+ * s, BRDF) are open asks rather than members, because a member nothing reads is a member a caller
+ * would set for nothing.
+ *
+ * The map is a handle and the texture rung's slot stays the owner of the image: a material NAMES i
+ * ts map and does not own it, so two materials may sample one texture, closing the material closes
+ * nothing of the texture's, and a texture closed while a material still names it is caught at the
+ * next xud_begin_material() as a refusal rather than drawn through as a sample of a destroyed imag
+ * e.
  *
  * The tokens are this library's own two variants rather than raylib's BLEND_ALPHA/ADDITIVE/... enum
  * : raylib's eight names are blend FACTOR pairs and this tree implements exactly one of them (SRC_
@@ -357,16 +375,22 @@ static_assert(XUD_BLEND_COUNT == (XUD_BLEND_TEXTURED + 1u),
     "xud.h: the three blend tokens are contiguous from opaque up, so the count is one past the highest");
 
 /// The one material description a caller hands down: the blend behaviour every draw of this materi
-/// al uses, which is the row of the pipeline list those draws bind. A value type in the handle's
-/// opposite bucket - it names nothing the library owns, has no lifetime and no close of its own,
-/// and the object it describes is the handle's.
+/// al uses, and the one texture those draws sample. A value type in the handle's opposite bucket -
+/// it names nothing the library owns, has no lifetime and no close of its own, and the object it d
+/// escribes is the handle's. The blendMode is the row of the pipeline list the draws bind UNLESS di
+/// ffuseMap names a texture: the row that samples a map is a different pipeline row, so a mapped ma
+/// terial draws through XUD_BLEND_TEXTURED, whose blend attachment state is the transparent row's -
+/// so the override loses the name of the blend mode and nothing else. A diffuseMap of kind XUD_HAN
+/// DLE_KIND_NONE (XUD_HANDLE_NONE, which is what a zero-initialised description already carries) is
+/// the no-map state and moves no row.
 typedef struct XudMaterial {
-    uint32_t blendMode; /* XUD_BLEND_* - which row of the pipeline list this material's draws bind */
+    uint32_t blendMode; /* XUD_BLEND_* - the row of the pipeline list this material's draws bind, unless the map below names a texture */
+    XudHandle diffuseMap; /* a live TEXTURE slot of this same context, or XUD_HANDLE_NONE - the texel every draw of this material samples */
 } XudMaterial;
 
-static_assert(sizeof(XudMaterial) == 4u,
-    "xud.h: a material description is the one uint32_t the axis needs, so the record a caller decla"
-    "res is a variant and not a conversion");
+static_assert(sizeof(XudMaterial) == 16u,
+    "xud.h: a material description is the axis's uint32_t plus the three uint32_t of one handle, s"
+    "o a caller's record is a variant and a named map and not a conversion");
 
 /// The one mesh description a caller hands down: the geometry of one object, as the batch's four at
 /// tribute streams plus the one index buffer the settled decision names. Every array is the caller's
@@ -708,7 +732,10 @@ XudResult xud_end_camera_3d(XudContext* context);
 /// h's row split, so a begin mid-frame closes the run that was pending under the previous state in
 /// to a row of its own and starts a new one, and a frame that mixes two materials records one row
 /// per material. XUD_INVALID_ARG on a NULL context or on a handle that does not name a live MATERI
-/// AL slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up.
+/// AL slot of this context - or on one whose DIFFUSE MAP no longer names a live TEXTURE slot of it,
+/// which is the texture closed behind the material that names it and is refused here rather than dr
+/// awn through as a sample of a destroyed image; XUD_UNSUPPORTED on a context that never completed b
+/// ring-up.
 XudResult xud_begin_material(XudContext* context, XudHandle handle);
 
 /// Take the material away: raylib's EndBlendMode() read literally ("reset to default: alpha blen
@@ -745,14 +772,18 @@ XudResult xud_end_drawing(XudContext* context);
 
 /// Create a material this context owns: the object half of the material rung. The description is v
 /// alidated before anything is spent, so a blend mode outside the axis is a bad argument rather th
-/// an a material that draws through a row that does not exist; the slot and the record are alloca
-/// ted in the one order that leaves nothing reachable and unfilled, so a refusal on either allocati
-/// on leaves no half-material behind. On XUD_OK *outHandle names a live MATERIAL slot of THIS con
+/// an a material that draws through a row that does not exist, and a diffuseMap that is neither XUD
+/// _HANDLE_NONE nor a live TEXTURE slot of THIS context's table is refused the same way - the map i
+/// s named by handle and owned by the texture rung, so the create takes no ownership of it and no i
+/// mage is read here. The variant the record carries is the resolved one: the textured row when the
+/// material has a map, the blend mode's row when it has none. The slot and the record are then allo
+/// cated in the one order that leaves nothing reachable and unfilled, so a refusal on either alloca
+/// tion leaves no half-material behind. On XUD_OK *outHandle names a live MATERIAL slot of THIS con
 /// text's table and the caller holds it for as long as the material does - a handle kept past the
 /// close that released it is refused, not dangling. XUD_INVALID_ARG on a NULL out-handle or context
-/// , or on a blend mode outside the axis; XUD_OUT_OF_RESOURCES at the handle layer's own slot bound
-/// ; XUD_OUT_OF_MEMORY when the record cannot be allocated; XUD_UNSUPPORTED on a context that neve
-/// r completed bring-up.
+/// , on a blend mode outside the axis, or on a diffuse map that names no live TEXTURE slot of this c
+/// ontext; XUD_OUT_OF_RESOURCES at the handle layer's own slot bound; XUD_OUT_OF_MEMORY when the rec
+/// ord cannot be allocated; XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_create_material(XudHandle* outHandle, XudContext* context, const XudMaterial material);
 
 /// Release one material: the object half closed. The handle is validated against the MATERIAL kind
@@ -761,8 +792,11 @@ XudResult xud_create_material(XudHandle* outHandle, XudContext* context, const X
 /// and the table's own teardown can never find a record it would have to free twice. A material the
 /// renderer is currently drawing with is taken out of that state as well, so the frames after here
 /// are drawn with no material rather than with rows naming a slot whose record no longer exists - t
-/// he same rule the camera pair states for a camera that began and ended inside one frame. XUD_INVA
-/// LID_ARG on a NULL context or on a handle that does not name a live MATERIAL slot of this context
+/// he same rule the camera pair states for a camera that began and ended inside one frame. The dif
+/// fuse map is NOT closed with the material: the texture rung's slot owns the image and outlives ev
+/// ery material that names it, so a caller that wants the map gone closes it itself and the materia
+/// ls that named it start refusing their begin. XUD_INVALID_ARG on a NULL context or on a handle th
+/// at does not name a live MATERIAL slot of this context
 /// ; XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_close_material(XudContext* context, XudHandle handle);
 

@@ -3,9 +3,10 @@
  *                    layer, and the public create/close pair and the begin/end state pair
  *                    xud.h declares above it
  *
- *   Owns : the four rungs xud_material.h declares (xud_material_open(), xud_material_close(),
- *          xud_material_get(), xud_material_close_all()) and the four public calls xud.h
- *          declares above them (xud_create_material(), xud_close_material(), xud_begin_
+ *   Owns : the six rungs xud_material.h declares (xud_material_resolve_variant(), xud_material_che
+ *          ck_map(), xud_material_open(), xud_material_close(), xud_material_get(), xud_material_cl
+ *          ose_all()) and the four public calls xud.h declares above them (xud_create_material(), x
+ *          ud_close_material(), xud_begin_
  *          material(), xud_end_material()). The split is the point of the file: everything
  *          here is host-side - one malloc per material, freed at the slot's release and at the
  *          table's teardown - so the whole rung is checkable with no driver present, and the
@@ -49,22 +50,73 @@ static_assert(
     XUD_BLEND_COUNT == XUD_BATCH_VARIANT_COUNT, "xud_material.c: the two axes must stay the same length, so growing one grows the other");
 
 /*-----------------------------------------------------------------------------------------------
+ * The record's two members, decided before the record exists
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_material_resolve_variant(uint32_t* outVariant, uint32_t blendMode, uint32_t hasMap) {
+    if ((outVariant == NULL) || (blendMode >= XUD_BLEND_COUNT)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The one branch the whole "mapped materials are textured" rule lives in. The textured row is
+       chosen rather than combined with the blend mode because the variant axis is the pipeline lis
+       t's variant axis and there is one row per entry of it: a material cannot draw through two ro
+       ws at once, and the row that samples a map is the only one whose frag module reads set 1. Th
+       e blend mode it replaces is not lost in any other sense - xud_pipeline.c gives the textured r
+       ow the same SRC_ALPHA/ONE_MINUS_SRC_ALPHA pair as the transparent one - so what the override
+       costs a caller is the name of its blend mode and nothing of its blending.
+    */
+    *outVariant = (hasMap != 0u) ? (uint32_t)XUD_BATCH_VARIANT_TEXTURED : blendMode;
+    return XUD_OK;
+}
+
+XudResult xud_material_check_map(const XudHandleTable* table, XudHandle diffuseMap) {
+    if (table == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (diffuseMap.kind == XUD_HANDLE_KIND_NONE) {
+        /* The no-map state, and the state a zero-initialised description already carries: there is
+           no slot to look for, so there is no array to look in, which is why an unmapped material
+           is answerable against a table that has no TEXTURE array yet.
+        */
+        return XUD_OK;
+    }
+
+    /* The same three-part validation every public entry point runs, against the TEXTURE kind of th
+       e table the material's own slot lives in. One table holds one array per kind, so this needs n
+       o second handle and no reach into the texture rung: the material rung asks the handle layer wh
+       ether a (index, generation) pair names a live TEXTURE slot and nothing more. A map from anothe
+       r context, a map already released and a handle of a third kind all fail the same test.
+    */
+    return xud_handle_validate(table, diffuseMap, XUD_HANDLE_KIND_TEXTURE);
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The record's lifetime - the three rungs that fill, read and clear one slot's record field
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_material_open(XudHandle* outHandle, XudHandleTable* table, uint32_t variant) {
+XudResult xud_material_open(XudHandle* outHandle, XudHandleTable* table, uint32_t blendMode, XudHandle diffuseMap) {
     XudMaterialRecord* record = NULL;
+    uint32_t variant = 0u;
     XudResult result = XUD_INVALID_ARG;
 
     if ((outHandle == NULL) || (table == NULL)) {
         return XUD_INVALID_ARG;
     }
-    if (variant >= XUD_BATCH_VARIANT_COUNT) {
+    if (xud_material_resolve_variant(&variant, blendMode, (diffuseMap.kind != XUD_HANDLE_KIND_NONE) ? 1u : 0u) != XUD_OK) {
         /* The variant is the row of the pipeline list this material will ask the frame loop to
-           bind, so an out-of-range variant is not a value the row split can name - refused
+           bind, so a blend mode outside the axis is not a value the row split can name - refused
            before a slot is spent, so a refusal leaves no half-material behind.
         */
         return XUD_INVALID_ARG;
+    }
+    result = xud_material_check_map(table, diffuseMap);
+    if (result != XUD_OK) {
+        /* Refused before the slot too: a material whose map names no image of this context is a de
+           scription this rung cannot fill, and a slot spent on it would be a slot a caller could be
+           gin and draw a textured row through.
+        */
+        return result;
     }
 
     /* The slot first, then the record: the order is the one that leaves nothing reachable and
@@ -87,6 +139,7 @@ XudResult xud_material_open(XudHandle* outHandle, XudHandleTable* table, uint32_
     }
 
     record->variant = variant;
+    record->diffuseMap = diffuseMap;
     record->setOne = VK_NULL_HANDLE;
 
     /* The set is written through the handle layer's own accessor rather than by indexing the
@@ -235,13 +288,15 @@ XudResult xud_create_material(XudHandle* outHandle, XudContext* context, const X
     /* Validated before anything is spent: a blend mode outside the axis is a bad argument from
        the caller, and the answer is the same one every other public entry point gives for it.
        The token is translated here and nowhere else - the record carries the batch's variant,
-       and this is the one place the public value type is read.
+       and this is the one place the public value type's blend channel is read. The map half is val
+       idated one rung down, because what it has to be validated against is the TEXTURE array of th
+       is context's table rather than a value inside the description.
     */
     if (material.blendMode >= XUD_BLEND_COUNT) {
         return XUD_INVALID_ARG;
     }
 
-    return xud_material_open(outHandle, context->handleTable, material.blendMode);
+    return xud_material_open(outHandle, context->handleTable, material.blendMode, material.diffuseMap);
 }
 
 XudResult xud_close_material(XudContext* context, XudHandle handle) {
@@ -323,6 +378,18 @@ XudResult xud_begin_material(XudContext* context, XudHandle handle) {
        out of scope at the end of a frame cannot leave the next frame reading a dead record.
     */
     result = xud_material_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The map is read again HERE rather than trusted from the create: the material names the text
+       ure and the texture rung owns it, so a caller that closed the map between the create and thi
+       s begin has left a material whose draws would sample a destroyed image. The check is the crea
+       te's own, run again against the same table, and it is the last place the state can be refused
+       before it becomes a batch row - the renderer below stores the variant alone and the frame loo
+       p never looks the map up, so a begin that passed is a frame that cannot reach the dead image.
+    */
+    result = xud_material_check_map(context->handleTable, record->diffuseMap);
     if (result != XUD_OK) {
         return result;
     }

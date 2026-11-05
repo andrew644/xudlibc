@@ -17,12 +17,13 @@
  *   ere the state the frame loop records a row FROM and the re-apply at a frame's opening are check
  *   ed.
  *
- *   What the checks are stated against: the record's two members rather than a descriptor set, becau
- *   se the texture step has not landed and a material created today owns no set - the set-1 field's
- *   owner is named and its value is the sentinel, which is the one state that is honest about an emp
- *   ty half. A material's effect on a frame is checked as the batch's state mid-frame and as the re-
- *   apply at the next frame's opening rather than as a pixel, because the row the frame loop records
- *   is retired inside the frame it recorded it in and a pixel would be a check of the rasteriser.
+ *   What the checks are stated against: the record's three members and the two pure rungs that dec
+ *   ide them, rather than a descriptor set, because naming a map is not binding one - the set-1 fiel
+ *   d's owner is named and its value is the sentinel, which is the one state that is honest about an
+ *   empty half. A material's effect on a frame is checked as the batch's state mid-frame and as the
+ *   re-apply at the next frame's opening rather than as a pixel, because the row the frame loop reco
+ *   rds is retired inside the frame it recorded it in and a pixel would be a check of the rasteriser
+ *   .
  *
  *   Deterministic: fixed materials, fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -70,9 +71,12 @@ static void xud_test_material_pure(void) {
     XudHandle second = { 0u, 0u, 0u };
     XudHandle kept = { 0u, 0u, 0u };
     XudHandle foreign = { 0u, 0u, 0u };
+    XudHandle map = { 0u, 0u, 0u };
+    XudHandle mapped = { 0u, 0u, 0u };
     XudMaterialRecord const* record = NULL;
     XudMaterial description;
     XudMaterial broken;
+    uint32_t variant = 0u;
     uint32_t closed = 0u;
 
     memset(&shell, 0, sizeof(shell));
@@ -169,6 +173,96 @@ static void xud_test_material_pure(void) {
     xud_check(record->variant == XUD_BLEND_OPAQUE, "material/get-second-variant",
         "and it carries its own variant, which is what makes the variant per material rather than a"
         "global the last create overwrote");
+    xud_check(record->diffuseMap.kind == XUD_HANDLE_KIND_NONE, "material/get-second-unmapped",
+        "and a description that named no map records no map, so the no-map state is a kind rather th"
+        "an a slot a zero-initialised description happens to have aimed at slot zero");
+
+    /*--- the diffuse map: the row it moves, and what it has to name -------------------*/
+
+    /* The pure rung first, because it is arithmetic on two numbers and needs no table at all: the
+       map's row is a rule about the variant axis, and the axis is the pipeline list's, so a materi
+       al cannot draw through two rows at once.
+    */
+    xud_check(xud_material_resolve_variant(NULL, XUD_BLEND_OPAQUE, 0u) == XUD_INVALID_ARG, "material/resolve-null-out",
+        "a variant with nowhere to be written is refused");
+    xud_check(xud_material_resolve_variant(&variant, XUD_BLEND_COUNT, 0u) == XUD_INVALID_ARG, "material/resolve-past-blend",
+        "and a blend mode at or past the axis is refused by the rung rather than by the create, so th"
+        "e bound lives with the rule");
+    variant = 0xFFFFFFFFu;
+    xud_check(xud_material_resolve_variant(&variant, XUD_BLEND_TRANSPARENT, 0u) == XUD_OK, "material/resolve-unmapped",
+        "an unmapped material answers");
+    xud_check(variant == XUD_BATCH_VARIANT_TRANSPARENT, "material/resolve-unmapped-row",
+        "and answers its own blend mode, so the no-map state costs no row change and the opaque defau"
+        "lt is still the opaque default");
+    variant = 0xFFFFFFFFu;
+    xud_check(
+        xud_material_resolve_variant(&variant, XUD_BLEND_OPAQUE, 1u) == XUD_OK, "material/resolve-mapped", "a mapped material answers");
+    xud_check(variant == XUD_BATCH_VARIANT_TEXTURED, "material/resolve-mapped-row",
+        "and the map moves the OPAQUE material to the textured row, because a map cannot be sampled b"
+        "y the row whose frag module never reads set 1");
+    xud_material_resolve_variant(&variant, XUD_BLEND_TRANSPARENT, 1u);
+    xud_check(variant == XUD_BATCH_VARIANT_TEXTURED, "material/resolve-mapped-overrides-transparent",
+        "and it moves the transparent one there too, which is the whole of the override: the textured"
+        " row's blend attachment state is the transparent row's, so what is lost is the name of the b"
+        "lend mode and not the blending");
+    xud_material_resolve_variant(&variant, XUD_BLEND_OPAQUE, 7u);
+    xud_check(variant == XUD_BATCH_VARIANT_TEXTURED, "material/resolve-any-nonzero-is-a-map",
+        "and the map argument is a bound test rather than a switch, so any non-zero asks for the same"
+        " row");
+
+    /* The map's own check, before any material spends a slot on it. The slot is allocated through
+       the handle layer rather than through xud_create_texture() because the material rung validates
+       the HANDLE and reads no image: a TEXTURE-kind row of the same table is the whole of what a m
+       ap has to be, and a real texture would put a driver between the pure rungs and the facts the
+       y state.
+    */
+    xud_check(xud_material_check_map(NULL, XUD_HANDLE_NONE) == XUD_INVALID_ARG, "material/check-map-null-table",
+        "a map with no table to be answered from is refused even when it names nothing");
+    xud_check(xud_material_check_map(table, XUD_HANDLE_NONE) == XUD_OK, "material/check-map-none-ok",
+        "and the no-map handle answers OK against a table that has no TEXTURE array at all, which is "
+        "what keeps an unmapped material from needing one");
+    xud_check(
+        xud_material_check_map(table, (XudHandle) { .index = 0u, .generation = 0u, .kind = XUD_HANDLE_KIND_TEXTURE }) == XUD_INVALID_ARG,
+        "material/check-map-no-array",
+        "a texture handle against a table that never allocated the kind's array is refused, so the fi"
+        "rst texture of a context cannot be named by a handle a caller made up");
+    xud_check(xud_handle_alloc(&map, table, XUD_HANDLE_KIND_TEXTURE) == XUD_OK, "material/map-slot",
+        "a TEXTURE slot of THIS table, allocated through the handle layer - the whole of what a map ha"
+        "s to be to the material rung, which validates a handle and reads no image");
+    xud_check(xud_material_check_map(table, map) == XUD_OK, "material/check-map-live", "and the live slot answers OK");
+    xud_check(xud_material_check_map(table, handle) == XUD_INVALID_ARG, "material/check-map-cross-kind",
+        "and a MATERIAL handle handed to the map check is refused by the tag, which is what makes a ma"
+        "terial sampling itself a caught error rather than an index that happens to land");
+
+    description = XUD_TEST_MATERIAL_OPAQUE;
+    description.diffuseMap = map;
+    xud_check(xud_create_material(&mapped, &shell, description) == XUD_OK, "material/create-mapped-ok",
+        "the opaque description with a map on it is created");
+    xud_check(xud_material_get(table, mapped, &record) == XUD_OK, "material/get-mapped-ok", "and its record reads back");
+    xud_check(record->variant == XUD_BATCH_VARIANT_TEXTURED, "material/mapped-variant",
+        "and the variant the record carries is the textured row rather than the opaque one the descri"
+        "ption asked for - the rule is applied once, at the record, so no draw above has to remember i"
+        "t");
+    xud_check((record->diffuseMap.kind == XUD_HANDLE_KIND_TEXTURE) && (record->diffuseMap.index == map.index)
+            && (record->diffuseMap.generation == map.generation),
+        "material/mapped-record-names-the-map",
+        "and the record names the map by the full handle, so the release of that slot is a state the m"
+        "aterial can be checked against later rather than a number that silently still matches");
+    xud_check(record->setOne == VK_NULL_HANDLE, "material/mapped-set-one-sentinel",
+        "and naming a map is not binding one: the set-1 field is still the sentinel, which is the step"
+        " after this one and the only honest value it has today");
+
+    broken = description;
+    broken.diffuseMap = handle;
+    xud_check(xud_create_material(&foreign, &shell, broken) == XUD_INVALID_ARG, "material/create-map-cross-kind",
+        "a map of another kind is refused at the create, before the slot is spent");
+    broken.diffuseMap = (XudHandle) { .index = 999u, .generation = 0u, .kind = XUD_HANDLE_KIND_TEXTURE };
+    xud_check(xud_create_material(&foreign, &shell, broken) == XUD_INVALID_ARG, "material/create-map-past-array",
+        "and a map index past the array is refused by the same test, so a fabricated handle buys no ma"
+        "terial");
+    xud_check(foreign.kind == 0u, "material/create-map-refusal-left-handle",
+        "and neither refusal wrote the out-handle, so a caller cannot read a half-material out of a r"
+        "efused create");
 
     /*--- the scoped state pair, and the renderer's copy of the record -------------------*/
 
@@ -265,6 +359,39 @@ static void xud_test_material_pure(void) {
         "and the batch went back to the default with it, which is the same move the end pair applies"
         "and the reason the two pairs cannot disagree about the batch's state");
 
+    /*--- the mapped material through the state pair, and the map closed behind it ------*/
+
+    xud_check(xud_begin_material(&shell, mapped) == XUD_OK, "material/begin-mapped-ok", "the mapped material is put in the drawing state");
+    xud_check(renderer.materialVariant == XUD_BATCH_VARIANT_TEXTURED, "material/begin-mapped-copied-the-resolved-variant",
+        "and the variant the renderer stores is the record's resolved one, so the frame's opening rea"
+        "ds the textured row without ever asking whether this material has a map");
+    xud_check((batch.currentMaterial == mapped.index) && (batch.currentVariant == XUD_BATCH_VARIANT_TEXTURED),
+        "material/begin-mapped-moved-the-row",
+        "and the batch moved to the textured row at the call, which is the row the frame loop binds a"
+        "nd the only one whose frag module reads the map this material names");
+    xud_check(xud_end_material(&shell) == XUD_OK, "material/end-mapped-ok", "and it is taken away again");
+
+    /* The map's slot released while the material still names it. The material never owned the tex
+       ture - one image, many materials - so nothing above closed it for them, and the one dangling
+       state that ordering allows is caught where it would otherwise become a draw: at the begin.
+    */
+    xud_check(xud_handle_free(table, map) == XUD_OK, "material/map-slot-released",
+        "the texture behind the map is released through the handle layer, which is what a caller's xud"
+        "_close_texture() does one rung up");
+    xud_check(xud_begin_material(&shell, mapped) == XUD_INVALID_ARG, "material/begin-map-gone",
+        "and the material that still names it is refused at the begin rather than beginning a frame t"
+        "hat samples an image that is gone");
+    xud_check(renderer.materialWanted == 0u, "material/begin-map-gone-stored-nothing",
+        "and the refusal stored nothing, so the frames after here are drawn with no material rather t"
+        "han with the last textured row this call would have moved in");
+    xud_check((batch.currentMaterial == XUD_BATCH_NO_MATERIAL) && (batch.currentVariant == XUD_BATCH_VARIANT_OPAQUE),
+        "material/begin-map-gone-left-the-batch",
+        "and the batch is where the end left it, so a refused begin is a state move that did not happe"
+        "n rather than one that half-happened");
+    xud_check(xud_close_material(&shell, mapped) == XUD_OK, "material/close-mapped-ok",
+        "and the mapped material still closes: naming a map is not owning one, so a dead map does not "
+        "strand the material that named it");
+
     /*--- the teardown rung, and the order it owes ---------------------------------------*/
 
     /* Two more materials, one of them released through the public pair and one of them left live a
@@ -304,9 +431,22 @@ static void xud_test_material_pure(void) {
  *-----------------------------------------------------------------------------------------------*/
 
 static void xud_test_material_gpu(void) {
+    static const uint8_t texels2x2[4u * 4u] = { 220u, 40u, 40u, 255u, 40u, 220u, 40u, 255u, 40u, 40u, 220u, 255u, 220u, 220u, 40u, 255u };
     XudContext* context = NULL;
     XudResult result = XUD_OK;
     XudHandle handle = { 0u, 0u, 0u };
+    XudHandle map = { 0u, 0u, 0u };
+    XudHandle mapped = { 0u, 0u, 0u };
+    XudHandle mapless = { 0u, 0u, 0u };
+    XudHandle plain = { 0u, 0u, 0u };
+    XudBatchDraw row;
+    const XudTextureData mapData = {
+        .width = 2u,
+        .height = 2u,
+        .rgba = texels2x2,
+        .filter = XUD_TEXTURE_FILTER_NEAREST,
+        .addressMode = XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE,
+    };
     XudMaterialRecord const* record = NULL;
     uint32_t live = 0u;
 
@@ -420,9 +560,80 @@ static void xud_test_material_gpu(void) {
     xud_check(xud_close_material(context, handle) == XUD_INVALID_ARG, "gpu-material/close-twice",
         "and a second close is refused, so the release is one free and not two");
 
-    /* The teardown inside a real context: the material was already released, so the rung above the
-       table has one record of a released slot to free before the arrays go. This is the path xud_c
-       lose_context() runs, and the sanitizer build is what says it freed it.
+    /*--- the diffuse map, against a real texture and a real device -------------------*/
+
+    xud_check(xud_create_texture(&map, context, &mapData) == XUD_OK, "gpu-material/map-created",
+        "a 2x2 texture is created, and it is the map half of the checks below rather than a texture ar"
+        "ea's check repeated");
+    xud_check(xud_create_material(&mapped, context, (XudMaterial) { .blendMode = XUD_BLEND_OPAQUE, .diffuseMap = map }) == XUD_OK,
+        "gpu-material/create-mapped-ok", "the opaque description with a real texture on it is created against a real device");
+    xud_check(xud_material_get(context->handleTable, mapped, &record) == XUD_OK, "gpu-material/get-mapped-ok", "and its record reads back");
+    xud_check(record->variant == XUD_BATCH_VARIANT_TEXTURED, "gpu-material/mapped-variant",
+        "and the record's row is the textured one, which against a real device is the row whose frag m"
+        "odule is solid_textured.frag and samples set 1");
+    xud_check((record->diffuseMap.kind == XUD_HANDLE_KIND_TEXTURE) && (record->diffuseMap.index == map.index),
+        "gpu-material/mapped-names-the-map", "and the record names the texture that was handed to it");
+    xud_check(
+        xud_begin_material(context, mapped) == XUD_OK, "gpu-material/begin-mapped-ok", "the mapped material is put in the drawing state");
+    xud_check(context->renderer->materialVariant == XUD_BATCH_VARIANT_TEXTURED, "gpu-material/mapped-renderer-variant",
+        "and the renderer holds the resolved row, which is what the next frame's opening re-applies wi"
+        "thout a lookup into the table");
+    xud_check(xud_begin_drawing(context) == XUD_OK, "gpu-material/mapped-frame-opens", "a frame opens with the mapped material live");
+    xud_check((context->renderer->batch->currentMaterial == mapped.index)
+            && (context->renderer->batch->currentVariant == XUD_BATCH_VARIANT_TEXTURED),
+        "gpu-material/opening-reapplied-the-textured-row",
+        "and the frame's opening moved the batch to the textured row rather than to the opaque blend m"
+        "ode the description asked for, so the row the frame loop records for these draws is the one t"
+        "hat can sample the map");
+    xud_check(xud_draw_cube(context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f }, 1.0f, 1.0f, 1.0f,
+                  (XudColor) { .r = 40u, .g = 200u, .b = 120u, .a = 255u })
+            == XUD_OK,
+        "gpu-material/mapped-cube-appended", "a box drawn under the mapped material");
+    xud_check(xud_create_material(&plain, context, XUD_TEST_MATERIAL_OPAQUE) == XUD_OK, "gpu-material/create-plain-ok",
+        "an unmapped opaque material, made only to move the state again below");
+    xud_check(xud_begin_material(context, plain) == XUD_OK, "gpu-material/begin-plain-ok", "and begun, mid-frame, over the mapped run");
+    xud_check(context->renderer->batch->drawCount == 1u, "gpu-material/map-change-split-the-run",
+        "and the mapped run became a row of its own at that begin, which is the row split reading the "
+        "map's row as an axis of its own");
+    xud_check(
+        xud_batch_draw_get(context->renderer->batch, 0u, &row) == XUD_OK, "gpu-material/row-read-back", "the recorded row reads back");
+    xud_check(row.variant == XUD_BATCH_VARIANT_TEXTURED, "gpu-material/recorded-row-is-the-textured-row",
+        "and the row the frame loop binds for the mapped draws names the textured variant, which is th"
+        "e one fact a pixel would otherwise be standing in for: the pipeline those vertices ran under i"
+        "s the one that samples set 1");
+    xud_check(row.materialIndex == mapped.index, "gpu-material/recorded-row-names-the-mapped-material",
+        "and the row names the mapped material's slot, so the row and the record agree about which mat"
+        "erial the draws were made under");
+    xud_check(xud_end_material(context) == XUD_OK, "gpu-material/end-plain-ok", "and the plain material is taken away again");
+    result = xud_end_drawing(context);
+    xud_check(result == XUD_OK, "gpu-material/mapped-frame-closes", "and the frame that drew it closed");
+
+    /* The ownership rule, read at the two closes. The material's close closes no texture: a textu
+       re is one image a dozen materials sample, and an image with two owners is an image destroyed
+       twice. The texture's close then leaves the material that named it alive and its begin refuse
+       d, which is the half that keeps the dangling state out of a frame.
+    */
+    xud_check(xud_close_material(context, mapped) == XUD_OK, "gpu-material/close-mapped-ok", "the mapped material is released");
+    xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK, "gpu-material/map-live-query",
+        "the texture live count answers");
+    xud_check(live == 1u, "gpu-material/close-mapped-leaves-the-map",
+        "and is still one, so the material's close closed the material and nothing of the map's");
+    xud_check(xud_create_material(&mapless, context, (XudMaterial) { .blendMode = XUD_BLEND_OPAQUE, .diffuseMap = map }) == XUD_OK,
+        "gpu-material/create-mapped-second-ok", "a second material may name the same texture");
+    xud_check(xud_close_texture(context, map) == XUD_OK, "gpu-material/close-map-ok", "and the texture is closed while one still names it");
+    xud_check(xud_begin_material(context, mapless) == XUD_INVALID_ARG, "gpu-material/begin-map-gone",
+        "and that material is refused at its begin, which is the check the pure half states run agains"
+        "t a real slot whose image has been destroyed");
+    xud_check(context->renderer->materialWanted == 0u, "gpu-material/begin-map-gone-stored-nothing",
+        "and nothing was stored, so no frame is recorded with a textured row whose image is gone");
+    xud_check(xud_close_material(context, mapless) == XUD_OK, "gpu-material/close-mapless-material-ok",
+        "and the material whose map went away still closes, because it never owned the map");
+    xud_check(
+        xud_close_material(context, plain) == XUD_OK, "gpu-material/close-plain-ok", "and so does the plain one the split above used");
+
+    /* The teardown inside a real context: every material above was released through the public pair,
+       so the rung above the table has the released slots' records to free before the arrays go. This
+       is the path xud_close_context() runs, and the sanitizer build is what says it freed them.
     */
     result = xud_close_context(&context);
     xud_check(result == XUD_OK, "gpu-material/close-clean", "the whole ladder tears back down with nothing refused");
