@@ -1,10 +1,12 @@
-/* xud_test_vendor.c - the vendor rungs: the three implementation TUs, called so the link proves them */
+/* xud_test_vendor.c - the vendor rungs: the four implementation TUs, called so the link proves them */
 
 #include "cgltf.h"
 #include "miniaudio.h"
+#include "stb_image.h"
 #include "stb_truetype.h"
 #include "xud_test_harness.h"
 
+#include <stdlib.h> /* Required for: free, the bytes stb decodes into */
 #include <string.h> /* Required for: strcmp */
 
 static void xud_test_vendor_cgltf(void) {
@@ -72,6 +74,76 @@ static void xud_test_vendor_stb_truetype(void) {
     xud_check(stbtt_GetFontOffsetForIndex(notfont, 0) == -1, "vendor/stb-not-a-font-index", "the same refusal on the other entry point");
 }
 
+/* A 2x2 24-bit BMP, which is the one image whose bytes are short enough to write out by hand - no e
+   ncoder anywhere in the tree, and every byte below is a fact about the container rather than a file
+   on disk. Fourteen bytes of file header ('B','M', the 70-byte total, the reserved pair, and the 54-w
+   here the texels start), forty of info header (its own 40, the two axes, the plane count, the 24 bit
+   s per texel, BI_RGB, the 16-byte texel body and the four words a reader may ignore), then the body
+   . Each row is padded to a multiple of four bytes, so two texels take eight, and a POSITIVE height
+   means the rows are stored bottom-up: the file's first row is the picture's BOTTOM one (blue, white
+   ) and its second is the top one (red, green), each in BGR. stb hands its rows back top-down unless
+   asked otherwise, so the decoded first texel is the red one and the alpha byte is filled opaque by t
+   he conversion, since a 24-bit body carries none.
+*/
+static const unsigned char xudTestBmp2x2[70u] = { 66u, 77u, 70u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 54u, 0u, 0u, 0u, 40u, 0u, 0u, 0u, 2u, 0u, 0u,
+    0u, 2u, 0u, 0u, 0u, 1u, 0u, 24u, 0u, 0u, 0u, 0u, 0u, 16u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
+    255u, 0u, 0u, 255u, 255u, 255u, 0u, 0u, 0u, 0u, 255u, 0u, 255u, 0u, 0u, 0u };
+
+static void xud_test_vendor_stb_image(void) {
+    static const unsigned char notAnImage[] = { 'n', 'o', 't', 'a', 'n', 'i', 'm', 'g' };
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    unsigned char* pixels = NULL;
+
+    xud_check(sizeof(xudTestBmp2x2) == 70u, "vendor/stb-image-bmp-size",
+        "14 bytes of file header, 40 of info header and two rows of eight, which is the size the file"
+        "header's own size field states");
+
+    xud_check(stbi_info_from_memory(xudTestBmp2x2, (int)sizeof(xudTestBmp2x2), &width, &height, &channels) == 1, "vendor/stb-image-info",
+        "the extent query reads the header without decoding the pixels, which is the half a caller che"
+        "cks against an image bound before it spends anything");
+    xud_check((width == 2) && (height == 2), "vendor/stb-image-info-extent", "and answers the two axes the header states");
+    xud_check(channels == 3, "vendor/stb-image-info-channels", "a 24-bit BMP is three channels, before any conversion ask");
+    xud_check(stbi_is_16_bit_from_memory(xudTestBmp2x2, (int)sizeof(xudTestBmp2x2)) == 0, "vendor/stb-image-not-16-bit",
+        "eight bits per channel, which is the only depth this library's texture format can hold");
+
+    pixels = stbi_load_from_memory(xudTestBmp2x2, (int)sizeof(xudTestBmp2x2), &width, &height, &channels, STBI_rgb_alpha);
+    xud_check(pixels != NULL, "vendor/stb-image-load-rgba", "the decode the texture rung's upload path needs: four bytes per texel");
+    xud_check((width == 2) && (height == 2), "vendor/stb-image-load-extent", "the out-extent is the decoded one");
+    xud_check(channels == 3, "vendor/stb-image-load-source-channels",
+        "and the channel out-param stays the FILE's count, so a caller can tell what was converted and"
+        " what was already four");
+    xud_check((pixels[0] == 255u) && (pixels[1] == 0u) && (pixels[2] == 0u) && (pixels[3] == 255u), "vendor/stb-image-top-left-red",
+        "the first texel is the picture's TOP-left one - stb's rows are top-down, which is the order a"
+        " VkImage's texel array is written in - and the BGR file bytes came out as RGB");
+    xud_check((pixels[4] == 0u) && (pixels[5] == 255u) && (pixels[6] == 0u) && (pixels[7] == 255u), "vendor/stb-image-top-right-green",
+        "the second texel of the top row is the green one, not the white one the file's first row star"
+        "ts with, which is the bottom-up flip done");
+    xud_check((pixels[8] == 0u) && (pixels[9] == 0u) && (pixels[10] == 255u) && (pixels[11] == 255u), "vendor/stb-image-bottom-left-blue",
+        "and the second decoded row is the file's first one, blue then white");
+    xud_check((pixels[12] == 255u) && (pixels[13] == 255u) && (pixels[14] == 255u) && (pixels[15] == 255u),
+        "vendor/stb-image-bottom-right-white",
+        "and the alpha channel was filled opaque by the convert"
+        "ion, since a 24-bit BMP has none to read");
+    stbi_image_free(pixels);
+
+    pixels = stbi_load_from_memory(xudTestBmp2x2, (int)sizeof(xudTestBmp2x2), &width, &height, &channels, 0);
+    xud_check(pixels != NULL, "vendor/stb-image-load-native", "the same image with no conversion ask decodes too");
+    xud_check(channels == 3, "vendor/stb-image-load-native-channels",
+        "and three channels is what it came out as, so the fourth byte per texel the texture rung want"
+        "s is the caller's ask rather than the decoder's default");
+    stbi_image_free(pixels);
+
+    xud_check(stbi_load_from_memory(notAnImage, (int)sizeof(notAnImage), &width, &height, &channels, STBI_rgb_alpha) == NULL,
+        "vendor/stb-image-not-an-image", "bytes that match no container are a NULL answer and not a partially-filled extent");
+    xud_check(stbi_failure_reason() != NULL, "vendor/stb-image-failure-reason",
+        "and the reason is a string a loader could put in a diagnostic rather than an unexplained NULL");
+    xud_check(stbi_info_from_memory(xudTestBmp2x2, 8, &width, &height, &channels) == 0, "vendor/stb-image-truncated",
+        "the first eight bytes are the file header alone, and a header whose info block is missing is "
+        "a refusal at the extent query too");
+}
+
 static void xud_test_vendor_miniaudio(void) {
     ma_uint32 major = 0u;
     ma_uint32 minor = 0u;
@@ -94,5 +166,6 @@ static void xud_test_vendor_miniaudio(void) {
 void xud_test_vendor(void) {
     xud_test_vendor_cgltf();
     xud_test_vendor_stb_truetype();
+    xud_test_vendor_stb_image();
     xud_test_vendor_miniaudio();
 }

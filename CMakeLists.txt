@@ -152,6 +152,7 @@ add_library(xud STATIC
     src/external/volk.c
     src/xud/xud_vendor_cgltf.c
     src/xud/xud_vendor_stb_truetype.c
+    src/xud/xud_vendor_stb_image.c
     src/xud/xud_vendor_miniaudio.c
     src/xud/xud_core.c
     src/xud/xud_diagnostics.c
