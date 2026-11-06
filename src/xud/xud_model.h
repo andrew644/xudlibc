@@ -51,12 +51,14 @@
 #include "xud.h" /* Required for: XudResult, XudHandle, XudVector3, XudMeshData, XUD_HANDLE_KIND_MODEL - the public surface this rung is the half of */
 #include "xud_allocator.h" /* Required for: XudAllocator, handed down to the mesh rung's block */
 #include "xud_batch.h" /* Required for: XUD_BATCH_STREAM_*, XUD_BATCH_VERTEX_SIZE, XUD_BATCH_INDEX_SIZE - the four streams a primitive's accessors are read into */
+#include "xud_descriptor.h" /* Required for: XudDescriptor, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - set 1's sampler array a model's map occupies one entry of */
 #include "xud_device.h" /* Required for: XudDevice, the VkDevice every mesh this rung uploads belongs to */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
 #include "xud_loader.h" /* Required for: XudLoader, handed down to the mesh rung */
 #include "xud_material.h" /* Required for: xud_material_open/close - the MATERIAL slots this rung creates and tears down */
 #include "xud_mesh.h" /* Required for: XUD_MESH_BUFFER_COUNT, XUD_MESH_MAX_VERTICES, xud_mesh_open/close - the MESH slots this rung creates and tears down */
 #include "xud_physical.h" /* Required for: XudDeviceCaps, handed down to the mesh rung's caps gate */
+#include "xud_texture.h" /* Required for: XudTextureRecord, XUD_TEXTURE_FILTER_*, XUD_TEXTURE_ADDRESS_*, xud_texture_open/close/get - the TEXTURE slots a map occupies */
 
 #include <assert.h> /* Required for: static_assert, the stage's padding-free layout below */
 #include <stddef.h> /* Required for: size_t, cgltf_size's own */
@@ -117,40 +119,56 @@ static_assert(XUD_BATCH_VERTEX_SIZE
 
 #define XUD_MODEL_MAX_MESHES 512u /* primitives per model, the MESH slots one load spends */
 #define XUD_MODEL_MAX_MATERIALS 1024u /* one MATERIAL slot per document material plus the default every untextured primitive draws with */
+#define XUD_MODEL_MAX_TEXTURES                                                                                                             \
+    XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE /* one TEXTURE slot per distinct base-color image a material names, and each one holds an entry of set 1's sampler array, which is the real ceiling */
 #define XUD_MODEL_PATH_MAX 1024u /* the longest model path xud_load_model() takes, and the longest directory prefix it derives */
+
+#define XUD_MODEL_NO_IMAGE 0xFFFFFFFFu /* the image index a material that names no base-color image answers, past any document's count */
 
 static_assert(XUD_MODEL_MAX_MESHES <= XUD_HANDLE_SLOT_MAX_CAPACITY,
     "xud_model.h: a model's meshes are slots of the handle layer, so its own bound cannot exceed the table's");
 static_assert(XUD_MODEL_MAX_MATERIALS <= XUD_HANDLE_SLOT_MAX_CAPACITY,
     "xud_model.h: a model's materials are slots of the handle layer too, so its bound cannot exceed the table's");
+static_assert(XUD_MODEL_MAX_TEXTURES <= XUD_HANDLE_SLOT_MAX_CAPACITY,
+    "xud_model.h: a model's textures are slots of the handle layer too, so its bound cannot exceed the table's");
+static_assert(XUD_MODEL_MAX_TEXTURES <= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE,
+    "xud_model.h: every texture a model holds a sampler-array entry, so its own bound cannot exceed the array's");
 static_assert(XUD_MODEL_MAX_MESHES > 0u, "xud_model.h: a model must be able to name at least one mesh");
+static_assert(XUD_MODEL_NO_IMAGE >= XUD_MODEL_MAX_TEXTURES,
+    "xud_model.h: the no-image sentinel is past the texture bound, so an index names an image or names nothing");
 static_assert(XUD_MODEL_PATH_MAX > 1u, "xud_model.h: a path must be at least one character plus a terminator");
 
 /*-----------------------------------------------------------------------------------------------
  * What a MODEL-kind slot records
  *-----------------------------------------------------------------------------------------------
  *
- * Three handle arrays and one allocation behind them: `mesh` and `meshMaterial` are meshCount
- *   rows each and `material` is materialCount, so one block of (2*meshCount + materialCount) han
- *   dles carries all three and one free retires them. The block is a field of the record rather
- *   than a local because it is what the teardown rung has to free, and the three pointers are
- *   read-only views into it.
+ * Four handle arrays and one allocation behind them: `mesh` and `meshMaterial` are meshCount
+ *   rows each, `material` is materialCount and `texture` is textureCount, so one block of
+ *   (2*meshCount + materialCount + textureCount) handles carries all four and one free retires
+ *   them. The block is a field of the record rather than a local because it is what the teardown
+ *   rung has to free, and the four pointers are read-only views into it.
  *
  * `meshMaterial` is per-mesh rather than per-material because a draw names the mesh it draws and
  *   the material it draws it with, and the pair the renderer's wanted-material state holds is a
  *   handle and a variant, not an index into a list. `material` is the distinct set the load crea
  *   ted, and it is a separate array rather than a walk of `meshMaterial` because two primitives
  *   can share one material and a teardown that walked the per-mesh array would close the shared
- *   slot twice.
+ *   slot twice. `texture` is the same distinct-set rule one rung lower: two materials can name
+ *   the same image, and the image decodes once rather than once per material. The textures are
+ *   the model's to own because the load made them and the caller cannot name them - no public
+ *   query hands the handles out - so the model's close retires them and their sampler-array
+ *   entries with them, and a texture the model closed is a texture nothing else can still name.
  */
 
 typedef struct XudModelRecord {
     uint32_t meshCount; /* MESH slots this load created, one per glTF primitive */
     uint32_t materialCount; /* MATERIAL slots this load created, one per document material plus the default */
-    uint8_t* handleBlock; /* the ONE allocation the three arrays below live in */
+    uint32_t textureCount; /* TEXTURE slots this load created, one per distinct base-color image a material names */
+    uint8_t* handleBlock; /* the ONE allocation the four arrays below live in */
     XudHandle* mesh; /* meshCount handles: the MESH slot one primitive was uploaded into */
     XudHandle* meshMaterial; /* meshCount handles: the MATERIAL slot that mesh draws with */
     XudHandle* material; /* materialCount handles: the MATERIAL slots this load created */
+    XudHandle* texture; /* textureCount handles: the TEXTURE slots the materials' maps sample */
     XudVector3 boundsMin; /* the model's bounding box, folded from every stage at the read */
     XudVector3 boundsMax;
 } XudModelRecord;
@@ -242,45 +260,83 @@ XudResult xud_model_path_dir(char* outDir, uint32_t outCapacity, uint32_t* outLe
 /// an invariant of the library above that broke, not a document the caller can fix.
 XudResult xud_model_result_from_cgltf(cgltf_result result);
 
+/// Pure: the image a material's base-color texture names, or XUD_MODEL_NO_IMAGE when the material
+/// carries no map at all - no pbrMetallicRoughness block, no baseColorTexture, or a texture view
+/// whose source image is absent. A baseColorTexture that samples a texcoord other than 0 is
+/// XUD_UNSUPPORTED rather than a silent answer: the mesh's one UV stream is TEXCOORD_0, and a map
+/// whose coordinates come from a stream this rung does not read would be sampled with the wrong
+/// ones rather than with none. XUD_INVALID_ARG on a NULL document or out-index, or on a material
+/// index at or past the document's count; XUD_OK with the index written in either shape, the
+/// no-map one being XUD_MODEL_NO_IMAGE.
+XudResult xud_model_image_for_material(const cgltf_data* data, uint32_t materialIndex, uint32_t* outImageIndex);
+
+/// Pure: decode one document image into a width*height array of RGBA bytes, four per texel. The
+/// bytes are stb_image's own allocation in the shape its load answers - the caller frees them
+/// with stbi_image_free() - and the decode asks for four channels so an RGB source arrives with
+/// an alpha filled in rather than a third channel the texture rung's format would have to invent.
+/// An image read from a buffer view uses the buffer bytes the load already brought in, and one
+/// read from a URI uses the URI resolved against `dir` (NULL treated as the empty prefix), which
+/// is the model's own directory prefix for the reason xud_model_path_dir() states for buffers.
+/// XUD_INVALID_ARG on a NULL document, out-width, out-height or out-rgba, on an image index at
+/// or past the document's count, or on an image that names neither a buffer view nor a URI, or on
+/// a buffer view whose buffer was never loaded or that reads past it; XUD_UNSUPPORTED when a
+/// URI-resolved path does not fit; XUD_MALFORMED when stb_image refuses the bytes; XUD_OK with
+/// *outWidth, *outHeight and *outRgba written in.
+XudResult xud_model_image_decode(
+    const cgltf_data* data, uint32_t imageIndex, const char* dir, uint32_t* outWidth, uint32_t* outHeight, uint8_t** outRgba);
+
 /// Pure: the accessor one rung above reaches instead of the slot array. XUD_INVALID_ARG on a NULL
 /// out-record or on a handle that does not name a live MODEL slot of this table; XUD_OK with *ou
 /// tRecord naming the record the slot names.
 XudResult xud_model_get(const XudHandleTable* table, XudHandle handle, const XudModelRecord** outRecord);
 
 /// Driver: bring one model up, in the order that leaves nothing reachable and unfilled: the gate
-/// first (so no slot is spent for a document that will be refused), then the MODEL slot, then the
-/// record, then the MATERIAL slots (one per document material plus the default), then per primi
-/// tive its stage block, its read, its MESH slot through the mesh rung below and its stage freed.
-/// Every refusal closes what the steps above created, in the reverse order, so a model that refu
-/// sed part-way leaves no live mesh and no live material behind. On XUD_OK *outHandle names a
-/// live MODEL slot whose record is no longer the sentinel and whose meshCount is the primitive
-/// total. XUD_INVALID_ARG on a NULL out-handle, table, loader, device, caps, allocator or docu
-/// ment, or on a device handle that does not exist; XUD_UNSUPPORTED on a loader that is closed,
-/// on a device that is not this loader's, or on a document this rung does not read; the mesh
-/// rung's and the handle layer's own codes on the rows they run.
+/// first (so no slot is spent for a document that will be refused), then the distinct base-color
+/// images decoded and opened as TEXTURE slots holding entries of set 1's sampler array (so a
+/// map's decode cannot be the step that spends the MODEL slot), then the MODEL slot, then the
+/// record, then the MATERIAL slots (one per document material plus the default, each naming the
+/// texture its base-color image decoded to), then per primitive its stage block, its read, its
+/// MESH slot through the mesh rung below and its stage freed. Every refusal retires what the
+/// steps above created, in the reverse order - the sampler-array entries given back before the
+/// textures they name are destroyed - so a model that refused part-way leaves no live mesh,
+/// material or texture behind. `dir` is the model path's directory prefix, the prefix a URI
+/// image resolves against, and `descriptor` is set 1's sampler array the map's entry is bound
+/// into. On XUD_OK *outHandle names a live MODEL slot whose record is no longer the sentinel and
+/// whose meshCount is the primitive total. XUD_INVALID_ARG on a NULL out-handle, table, loader,
+/// device, caps, descriptor, allocator or document, or on a device handle that does not exist;
+/// XUD_UNSUPPORTED on a loader that is closed, on a device that is not this loader's, on a
+/// document this rung does not read or that names more distinct images than set 1's sampler array
+/// can hold, or on a URI image whose path does not fit; XUD_MALFORMED when a decode refuses the
+/// bytes; the mesh, texture, descriptor and handle layers' own codes on the rows they run.
 XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudAllocator* alloc, const cgltf_data* data);
+    XudDescriptor* descriptor, XudAllocator* alloc, const cgltf_data* data, const char* dir);
 
 /// Driver: release one live MODEL slot - close every MESH slot this load created through the mesh
-/// rung below, close every MATERIAL slot it created through the material rung, clear the slot's
+/// rung below, close every MATERIAL slot it created through the material rung, retire every TEXT
+/// URE slot it created (the sampler-array entry given back before the view and sampler it names
+/// are destroyed, in the meshes-before-materials order: a mesh names its material and a material
+/// names its map, so each rung goes down before the rung that names it), then clear the slot's
 /// record field BEFORE the record is freed (the material rung's rule: a free slot must not still
-/// own a record, or this path and the table's would both free it), and free the record and its
+/// own a record, or this path and the table's would both free it) and free the record and its
 /// handle block. The handle is validated against the MODEL kind first, so a stale handle, a hand
 /// le of another kind and a fabricated one refuse before anything is closed. XUD_INVALID_ARG on a
-/// NULL table, loader, device or allocator, or on a handle that does not name a live MODEL slot;
-/// XUD_UNSUPPORTED on a closed loader or a device that is not this loader's; the mesh rung's own
-/// code when one of its closes refused.
-XudResult xud_model_close(XudHandleTable* table, XudHandle handle, XudLoader* loader, const XudDevice* device, XudAllocator* alloc);
+/// NULL table, loader, device, descriptor or allocator, or on a handle that does not name a live
+/// MODEL slot; XUD_UNSUPPORTED on a closed loader or a device that is not this loader's; the
+/// mesh rung's own code when one of its closes refused.
+XudResult xud_model_close(
+    XudHandleTable* table, XudHandle handle, XudLoader* loader, const XudDevice* device, XudDescriptor* descriptor, XudAllocator* alloc);
 
-/// Teardown: the rung above the handle table's own close, and above the mesh and the material
-/// rungs' - it runs FIRST of the four, so the MESH and MATERIAL slots a model created are closed
-/// through their own rungs here rather than left for their close_all to find after the model's
-/// record is gone. Every MODEL slot's record is closed (live or released: xud_handle_free() leaves
-/// the record field as it was) and the field cleared, so xud_handle_table_close() can free the
-/// arrays without leaking a record behind them and the mesh rung's walk below cannot double-free
-/// a mesh this walk already closed. XUD_INVALID_ARG on a NULL table, loader, device, allocator
-/// or out-count, or on a device handle that does not exist; XUD_UNSUPPORTED on a closed loader
-/// or a device that is not this loader's; XUD_OK with 0 on a table with no MODEL array.
-XudResult xud_model_close_all(XudHandleTable* table, XudLoader* loader, const XudDevice* device, XudAllocator* alloc, uint32_t* outClosed);
+/// Teardown: the rung above the handle table's own close, and above the mesh, the material and
+/// the texture rungs' - it runs FIRST of the four, so the MESH, MATERIAL and TEXTURE slots a
+/// model created are closed through their own rungs here rather than left for their close_all to
+/// find after the model's record is gone. Every MODEL slot's record is closed (live or released:
+/// xud_handle_free() leaves the record field as it was) and the field cleared, so
+/// xud_handle_table_close() can free the arrays without leaking a record behind them and the
+/// mesh rung's walk below cannot double-free a mesh this walk already closed. XUD_INVALID_ARG on
+/// a NULL table, loader, device, descriptor or allocator, or on a device handle that does not
+/// exist; XUD_UNSUPPORTED on a closed loader or a device that is not this loader's; XUD_OK with
+/// 0 on a table with no MODEL array.
+XudResult xud_model_close_all(
+    XudHandleTable* table, XudLoader* loader, const XudDevice* device, XudDescriptor* descriptor, XudAllocator* alloc, uint32_t* outClosed);
 
 #endif /* XUD_XUD_MODEL_H_ */

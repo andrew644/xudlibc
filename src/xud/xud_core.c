@@ -454,10 +454,10 @@ XudResult xud_close_context(XudContext** context) {
        closing either calls a driver and a block left behind in a slot is a block the allocator's own
        close cannot see. xud_model_close_all() is the fifth name that appears here, xud_font_close_all()
        the sixth and xud_audio_close_all() the seventh; the model and the font rungs run ABOVE the other four rather than beside them for the same reason: a model
-       record owns no driver object of its own, it names MESH and MATERIAL slots, and a font record owns
+       record owns no driver object of its own, it names MESH, MATERIAL and TEXTURE slots, and a font record owns
        none either - it names one TEXTURE slot, the atlas it baked - so closing either calls a rung below
        it, and a model left in its slot when either of those walks runs is a mesh whose record still names
-       a material about to be freed, and a font left in its slot when the TEXTURE walk runs is a record
+       a material about to be freed and a map whose sampler entry the descriptor's own close cannot see, and a font left in its slot when the TEXTURE walk runs is a record
        naming an image about to be destroyed. xud_sound_close() is the eighth name that appears here and it
        runs ABOVE xud_audio_close_all() rather than beside it for the reason the detach note in xud_sound.c
        states: a row is a node reading a block an audio record owns, so the rows go before the records they
@@ -501,7 +501,8 @@ XudResult xud_close_context(XudContext** context) {
        through bring-up is closed by this same code path, and every one of them clears its out
        handle before freeing, so a context torn down twice cannot double-free. */
     if (victim->handleTable != NULL) {
-        rung = xud_model_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &modelRecordsClosed);
+        rung = xud_model_close_all(
+            victim->handleTable, victim->loader, victim->device, victim->descriptor, victim->allocator, &modelRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;
         rung = xud_font_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &fontRecordsClosed);

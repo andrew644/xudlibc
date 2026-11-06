@@ -1,5 +1,4 @@
 # TODO
-- Decode glTF images to textures (needs stb_image included) and wire them into the model's material slots
 - Map the glTF sampler's filter/wrap onto `XUD_TEXTURE_*` tokens
 - Add a deterministic textured-draw test with a readback, and a textured model example
 - Add xud_get_font_atlas_dim(): the atlas extent is only in the internal record today

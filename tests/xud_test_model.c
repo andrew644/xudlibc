@@ -38,6 +38,7 @@
 #include <stdlib.h> /* Required for: calloc and free, the stage block and the synthetic record this area allocates and frees */
 #include <string.h> /* Required for: memset, the cgltf options this area builds itself */
 
+#include "stb_image.h" /* Required for: stbi_image_free, which retires the decode's own allocation the pure half checks against */
 #include "xud.h" /* Required for: XudResult, XudHandle, XudVector3, XudContext, XudMeshData and the public model API */
 #include "xud_batch.h" /* Required for: XUD_BATCH_VERTEX_SIZE, XUD_BATCH_INDEX_SIZE, XUD_BATCH_STREAM_* - the stage's layout, read rather than restated */
 #include "xud_core.h" /* Required for: struct XudContext, whose rungs the public pair and the driver half are handed */
@@ -46,37 +47,133 @@
 #include "xud_mesh.h" /* Required for: XUD_MESH_BUFFER_COUNT, XUD_MESH_INDEX_SLOT, XudMeshRecord and xud_mesh_get - the MESH slots this rung creates */
 #include "xud_model.h" /* Required for: XudModelRecord, XudModelStage and every rung this area checks */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
+#include "xud_texture.h" /* Required for: XudTextureRecord and xud_texture_get - the TEXTURE slots the load's map occupies */
 
 /*-----------------------------------------------------------------------------------------------
  * The one document every check below is stated against
  *-----------------------------------------------------------------------------------------------
  *
- * One triangle, three vertices, five accessors, two materials plus the default. The buffer is 114
+ * One triangle, three vertices, five accessors, two materials plus the default. The buffer is 197
  *   bytes and the layout is the one the bufferViews and the accessors below agree about, so the doc
  *   ument is a fact the test can read rather than a fact it has to trust. The floats are copied as
  *   the platform's own bytes rather than spelled out, which is the little-endian the glTF format a
  *   sked for on the platform this run is built for - the same round trip that makes the read's chec
- *   ks below meaningful is what makes this one meaningful.
+ *   ks below meaningful is what makes this one meaningful. The first material names a base-color
+ *   texture, and the texture's image is a 4x4 RGBA PNG embedded in the same buffer the geometry
+ *   lives in, so the document exercises both halves of the map the rung decodes.
  */
 
 static const char xudTestModelJson[]
     = "{\"asset\":{\"version\":\"2.0\",\"generator\":\"xudlibc\"},"
-      "\"buffers\":[{\"byteLength\":114}],"
+      "\"buffers\":[{\"byteLength\":197}],"
       "\"bufferViews\":["
       "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36,\"type\":\"VEC3\"},"
       "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":36,\"type\":\"VEC3\"},"
       "{\"buffer\":0,\"byteOffset\":72,\"byteLength\":24,\"type\":\"VEC2\"},"
       "{\"buffer\":0,\"byteOffset\":96,\"byteLength\":12,\"componentType\":5121,\"type\":\"VEC4\"},"
-      "{\"buffer\":0,\"byteOffset\":102,\"byteLength\":6,\"type\":\"SCALAR\",\"componentType\":5123}],"
+      "{\"buffer\":0,\"byteOffset\":102,\"byteLength\":6,\"type\":\"SCALAR\",\"componentType\":5123},"
+      "{\"buffer\":0,\"byteOffset\":114,\"byteLength\":83}],"
       "\"accessors\":["
       "{\"bufferView\":0,\"byteOffset\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
       "{\"bufferView\":1,\"byteOffset\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
       "{\"bufferView\":2,\"byteOffset\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"},"
       "{\"bufferView\":3,\"byteOffset\":0,\"componentType\":5121,\"count\":3,\"normalized\":true,\"type\":\"VEC4\"},"
       "{\"bufferView\":4,\"byteOffset\":0,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+      "\"images\":[{\"bufferView\":5,\"mimeType\":\"image/png\"}],"
+      "\"textures\":[{\"sampler\":0,\"source\":0}],"
+      "\"samplers\":[{\"magFilter\":10240,\"minFilter\":10240,\"magWrap\":33071,\"minWrap\":33071}],"
       "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2,\"COLOR_0\":3},"
       "\"indices\":4,\"material\":0}]}],"
-      "\"materials\":[{\"name\":\"opaque\"},{\"name\":\"blend\",\"alphaMode\":\"BLEND\"}]}";
+      "\"materials\":[{\"name\":\"opaque\",\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}},"
+      "{\"name\":\"blend\",\"alphaMode\":\"BLEND\"}]}";
+
+/* A 4x4 RGBA PNG, a checkerboard of four red and four blue 2x2 blocks, the bytes stb_image
+   decodes back to the same 16 texels the GPU half then reads out of the texture the load opens. */
+static const unsigned char xudTestModelPng[83] = {
+    0x89u,
+    0x50u,
+    0x4Eu,
+    0x47u,
+    0x0Du,
+    0x0Au,
+    0x1Au,
+    0x0Au,
+    0x00u,
+    0x00u,
+    0x00u,
+    0x0Du,
+    0x49u,
+    0x48u,
+    0x44u,
+    0x52u,
+    0x00u,
+    0x00u,
+    0x00u,
+    0x04u,
+    0x00u,
+    0x00u,
+    0x00u,
+    0x04u,
+    0x08u,
+    0x06u,
+    0x00u,
+    0x00u,
+    0x00u,
+    0xA9u,
+    0xF1u,
+    0x9Eu,
+    0x7Eu,
+    0x00u,
+    0x00u,
+    0x00u,
+    0x1Au,
+    0x49u,
+    0x44u,
+    0x41u,
+    0x54u,
+    0x78u,
+    0xDAu,
+    0x63u,
+    0xF8u,
+    0xCFu,
+    0xC0u,
+    0xF0u,
+    0x1Fu,
+    0x84u,
+    0xA1u,
+    0xD4u,
+    0x7Fu,
+    0x06u,
+    0x0Cu,
+    0x01u,
+    0x18u,
+    0x03u,
+    0x21u,
+    0x81u,
+    0x26u,
+    0x00u,
+    0x00u,
+    0x2Cu,
+    0x50u,
+    0x1Fu,
+    0xE1u,
+    0xF4u,
+    0x15u,
+    0xDCu,
+    0xA7u,
+    0x00u,
+    0x00u,
+    0x00u,
+    0x00u,
+    0x49u,
+    0x45u,
+    0x4Eu,
+    0x44u,
+    0xAEu,
+    0x42u,
+    0x60u,
+    0x82u,
+};
 
 static const float xudTestModelPos[9] = { 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f };
 static const float xudTestModelNormal[9] = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f };
@@ -84,7 +181,8 @@ static const float xudTestModelUv[6] = { 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f };
 static const uint8_t xudTestModelColor[12] = { 255u, 0u, 0u, 255u, 0u, 255u, 0u, 255u, 0u, 0u, 255u, 255u };
 static const uint16_t xudTestModelIndex[3] = { 0u, 1u, 2u };
 
-#define XUD_TEST_MODEL_BUFFER_BYTES 114u /* the one buffer every bufferView and accessor above agrees about */
+#define XUD_TEST_MODEL_BUFFER_BYTES                                                                                                        \
+    197u /* the one buffer every bufferView and accessor above agrees about, geometry and PNG image together */
 #define XUD_TEST_MODEL_MESHES 1u /* one mesh */
 #define XUD_TEST_MODEL_PRIMITIVES 1u /* one primitive */
 #define XUD_TEST_MODEL_MATERIALS 2u /* the document's two materials, plus the default the rung adds */
@@ -180,6 +278,9 @@ static uint32_t xud_test_model_build_bin(unsigned char* out, uint32_t outCapacit
     for (i = 0u; i < 3u; i++) {
         out[102u + (i * 2u)] = (unsigned char)(xudTestModelIndex[i] & 0xFFu);
         out[103u + (i * 2u)] = (unsigned char)((xudTestModelIndex[i] >> 8) & 0xFFu);
+    }
+    for (i = 0u; i < sizeof(xudTestModelPng); i++) {
+        out[114u + i] = xudTestModelPng[i];
     }
     return XUD_TEST_MODEL_BUFFER_BYTES;
 }
@@ -526,6 +627,79 @@ static void xud_test_model_pure(void) {
     xud_check(xud_model_result_from_cgltf(cgltf_result_max_enum) == XUD_INTERNAL_ERROR, "map-max-enum",
         "and a code outside the list is an invariant of the library above that broke, not a document");
 
+    /* The material-to-image resolver and the decode itself, the two pure steps the open between the
+       gate and the texture rung. The document's first material names the PNG that rides in the same
+       buffer as the geometry, the second names nothing, and the refusals are reached by editing the
+       same parsed document. */
+    {
+        uint32_t imageIndex = XUD_MODEL_NO_IMAGE;
+        uint32_t width = 0u;
+        uint32_t height = 0u;
+        uint8_t* rgba = NULL;
+
+        document = xud_test_model_document(glb, glbLength);
+        xud_check(document != NULL, "image-document", "the same document again, for the resolver and the decode below");
+        if (document == NULL) {
+            return;
+        }
+        xud_check(xud_model_image_for_material(NULL, 0u, &imageIndex) == XUD_INVALID_ARG, "image-null-document",
+            "no document is a bad argument rather than an empty one");
+        xud_check(xud_model_image_for_material(document, 0u, NULL) == XUD_INVALID_ARG, "image-null-out",
+            "an out-index with nowhere to be written is refused");
+        xud_check(xud_model_image_for_material(document, 2u, &imageIndex) == XUD_INVALID_ARG, "image-material-past",
+            "a material index at the document's count is refused, not read");
+        xud_check(xud_model_image_for_material(document, 0u, &imageIndex) == XUD_OK, "image-first-material",
+            "the first material's base-color texture resolves");
+        xud_check(imageIndex == 0u, "image-first-value", "and it is the document's one image");
+        xud_check(
+            xud_model_image_for_material(document, 1u, &imageIndex) == XUD_OK, "image-second-material", "the second material resolves too");
+        xud_check(imageIndex == XUD_MODEL_NO_IMAGE, "image-second-none", "and it names no image, which is the no-map state");
+
+        document->materials[0].pbr_metallic_roughness.base_color_texture.texcoord = 1u;
+        xud_check(xud_model_image_for_material(document, 0u, &imageIndex) == XUD_UNSUPPORTED, "image-texcoord-one",
+            "a map that samples UV_1 is well-formed and is not read - the mesh's one UV stream is the reason");
+        document->materials[0].pbr_metallic_roughness.base_color_texture.texcoord = 0u;
+        xud_check(xud_model_check(document, &meshCount, &materialCount) == XUD_OK, "check-with-map",
+            "and with the texcoord back the walk passes again, so the gate and the resolver agree on the same field");
+
+        xud_check(xud_model_image_decode(document, 0u, NULL, &width, &height, &rgba) == XUD_OK, "decode-ok",
+            "the embedded image decodes from the buffer the load already brought in");
+        xud_check(width == 4u && height == 4u, "decode-extent", "and it is the 4x4 the PNG's header says it is");
+        xud_check(rgba != NULL, "decode-rgba", "and the bytes are there");
+        if (rgba != NULL) {
+            xud_check(rgba[0] == 255u && rgba[1] == 0u && rgba[2] == 0u && rgba[3] == 255u, "decode-top-left",
+                "and the top-left texel is the checkerboard's red block");
+            xud_check(rgba[(8u * 4u) + 0u] == 0u && rgba[(8u * 4u) + 2u] == 255u, "decode-top-right",
+                "and the top-right texel is its blue block, so both halves of the board reached the decode");
+            stbi_image_free(rgba);
+        }
+        xud_check(xud_model_image_decode(document, 0u, NULL, NULL, &height, &rgba) == XUD_INVALID_ARG, "decode-null-out",
+            "an out-width with nowhere to be written is refused");
+        xud_check(xud_model_image_decode(NULL, 0u, NULL, &width, &height, &rgba) == XUD_INVALID_ARG, "decode-null-document",
+            "and so is a document with no bytes to read from");
+        xud_check(xud_model_image_decode(document, 1u, NULL, &width, &height, &rgba) == XUD_INVALID_ARG, "decode-image-past",
+            "and an image index at the document's count");
+
+        document->images[0].buffer_view->offset = 115u;
+        document->images[0].buffer_view->size = 83u;
+        xud_check(xud_model_image_decode(document, 0u, NULL, &width, &height, &rgba) == XUD_INVALID_ARG, "decode-past-buffer",
+            "a view that reads past its buffer is a broken document, refused before the decode runs");
+        document->images[0].buffer_view->offset = 114u;
+        document->images[0].buffer_view->size = 0u;
+        xud_check(xud_model_image_decode(document, 0u, NULL, &width, &height, &rgba) == XUD_MALFORMED, "decode-empty-view",
+            "and a view of no bytes is a malformed image rather than an empty one");
+        document->images[0].buffer_view->size = 83u;
+        document->images[0].buffer_view = NULL;
+        document->images[0].uri = "xud_test_model_absent.png";
+        xud_check(xud_model_image_decode(document, 0u, NULL, &width, &height, &rgba) == XUD_MALFORMED, "decode-uri-absent",
+            "a URI that names no file is the same refusal a bad embedded image is, and no bytes leak out of it");
+        document->images[0].uri = NULL;
+        xud_check(xud_model_image_decode(document, 0u, NULL, &width, &height, &rgba) == XUD_INVALID_ARG, "decode-no-source",
+            "and an image that names neither a buffer view nor a URI is a broken document");
+        cgltf_free(document);
+        document = NULL;
+    }
+
     /* The record's slot, without a driver: the accessor's three refusals and the sentinel state. The
        record below is synthetic - the driver half's open is what allocates a real one - so this area
        frees it itself rather than leaving it for a rung that would need a device to run.
@@ -569,8 +743,8 @@ static void xud_test_model_pure(void) {
         xud_check(xud_model_get(table, modelHandle, NULL) == XUD_INVALID_ARG, "get-null-out-record",
             "an out-record with nowhere to be written is refused");
         xud_check(xud_model_get(NULL, modelHandle, &gotRecord) == XUD_INVALID_ARG, "get-null-table", "no table is refused");
-        xud_check(xud_model_close_all(table, NULL, NULL, NULL, &meshCount) == XUD_INVALID_ARG, "close-all-null-rungs",
-            "the teardown rung refuses a NULL loader, device or allocator before it walks anything");
+        xud_check(xud_model_close_all(table, NULL, NULL, NULL, NULL, &meshCount) == XUD_INVALID_ARG, "close-all-null-rungs",
+            "the teardown rung refuses a NULL loader, device, descriptor or allocator before it walks anything");
         xud_check(xud_handle_record_set(table, XUD_HANDLE_KIND_MODEL, modelHandle.index, NULL) == XUD_OK, "record-cleared",
             "the field is cleared before the record is freed, which is the rule every close in this tree states");
         free(record);
@@ -605,6 +779,7 @@ static void xud_test_model_gpu(void) {
     const XudModelRecord* loadedRecord = NULL;
     const XudMeshRecord* meshRecord = NULL;
     const XudMaterialRecord* materialRecord = NULL;
+    const XudTextureRecord* textureRecord = NULL;
     XudVector3 boundsMin;
     XudVector3 boundsMax;
     XudResult result = XUD_OK;
@@ -635,9 +810,21 @@ static void xud_test_model_gpu(void) {
         return;
     }
 
-    result = xud_model_open(
-        &modelHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps, context->allocator, document);
+    result = xud_model_open(&modelHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps,
+        context->descriptor, context->allocator, document, NULL);
     xud_check(result == XUD_OK, "gpu-model/open", "the fixed document opens against a real device");
+    xud_check(xud_model_open(&answeredHandle, NULL, context->loader, context->device, &context->physicalDevice->caps, context->descriptor,
+                  context->allocator, document, NULL)
+            == XUD_INVALID_ARG,
+        "gpu-model/null-table", "and a table with no slots is refused before the gate spends anything");
+    xud_check(xud_model_open(&answeredHandle, context->handleTable, NULL, context->device, &context->physicalDevice->caps,
+                  context->descriptor, context->allocator, document, NULL)
+            == XUD_INVALID_ARG,
+        "gpu-model/null-loader", "and so is a loader with no state to open through");
+    xud_check(xud_model_open(&answeredHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps, NULL,
+                  context->allocator, document, NULL)
+            == XUD_INVALID_ARG,
+        "gpu-model/null-descriptor", "and so is a descriptor array the map's sampler entry has nowhere to be bound into");
     if (result != XUD_OK) {
         cgltf_free(document);
         xud_close_context(&context);
@@ -651,7 +838,7 @@ static void xud_test_model_gpu(void) {
     result = xud_model_get(context->handleTable, modelHandle, &record);
     xud_check(result == XUD_OK, "gpu-model/get", "the record reads back through the accessor, which is the only way to reach it");
     if (record == NULL) {
-        (void)xud_model_close(context->handleTable, modelHandle, context->loader, context->device, context->allocator);
+        (void)xud_model_close(context->handleTable, modelHandle, context->loader, context->device, context->descriptor, context->allocator);
         cgltf_free(document);
         xud_close_context(&context);
         return;
@@ -660,6 +847,8 @@ static void xud_test_model_gpu(void) {
     xud_check(record->meshCount == XUD_TEST_MODEL_MESHES, "gpu-model/mesh-count", "one primitive spent one MESH slot");
     xud_check(record->materialCount == (XUD_TEST_MODEL_MATERIALS + 1u), "gpu-model/material-count",
         "two document materials and the default spent three MATERIAL slots");
+    xud_check(record->textureCount == 1u, "gpu-model/texture-count",
+        "the first material's base-color image spent one TEXTURE slot, and the second and the default spent none");
     xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_MESH, &live) == XUD_OK, "gpu-model/mesh-live-query",
         "the live count answers");
     xud_check(live == record->meshCount, "gpu-model/mesh-live",
@@ -668,6 +857,10 @@ static void xud_test_model_gpu(void) {
         "the live count answers again");
     xud_check(live == record->materialCount, "gpu-model/material-live",
         "and so for the MATERIAL kind, which is the default material's slot included");
+    xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK, "gpu-model/texture-live-query",
+        "the live count answers a third time");
+    xud_check(live == record->textureCount, "gpu-model/texture-live",
+        "and so for the TEXTURE kind, so the map the load opened is the live slot of its kind");
 
     xud_check(xud_mesh_get(context->handleTable, record->mesh[0], &meshRecord) == XUD_OK, "gpu-model/mesh-slot-live",
         "the MESH slot the record names is still live and still filled");
@@ -681,9 +874,27 @@ static void xud_test_model_gpu(void) {
     }
     xud_check(xud_material_get(context->handleTable, record->material[0], &materialRecord) == XUD_OK, "gpu-model/material-slot-live",
         "the first MATERIAL slot the record names is live");
-    xud_check(materialRecord != NULL && materialRecord->variant == XUD_BATCH_VARIANT_OPAQUE, "gpu-model/material-variant",
-        "and it is the opaque variant, because the document's first material is opaque and the variant is chosen from the material rather "
-        "than from the primitive");
+    xud_check(materialRecord != NULL && materialRecord->variant == XUD_BATCH_VARIANT_TEXTURED, "gpu-model/material-variant",
+        "and it is the textured variant, because the document's first material names a base-color image and a map moves the variant to the "
+        "row that samples it rather than the row its alpha mode would name");
+    xud_check(materialRecord != NULL && materialRecord->diffuseMap.index == record->texture[0].index
+            && materialRecord->diffuseMap.generation == record->texture[0].generation,
+        "gpu-model/material-names-the-map",
+        "and its diffuse map is the texture slot the load opened for the document's image, so the material's draws sample the decoded PNG "
+        "rather than the batch's default");
+    xud_check(xud_texture_get(context->handleTable, record->texture[0], &textureRecord) == XUD_OK, "gpu-model/texture-slot-live",
+        "the TEXTURE slot the record names is still live and still filled");
+    xud_check(textureRecord != NULL && textureRecord->width == 4u && textureRecord->height == 4u, "gpu-model/texture-extent",
+        "and it is the 4x4 the decode answered, so the PNG's extent reached the image rather than being dropped at the load");
+    xud_check(textureRecord != NULL && textureRecord->samplerSlotLive == 1u, "gpu-model/texture-sampler-slot",
+        "and it holds an entry of set 1's sampler array, which is the row the textured material's draw binds the map through");
+    {
+        uint32_t textureIndex = 0u;
+        xud_check(xud_material_resolve_texture(context->handleTable, materialRecord, &textureIndex) == XUD_OK,
+            "gpu-model/material-resolve-texture", "the material's own resolve rung answers for the mapped record");
+        xud_check(textureIndex == ((textureRecord != NULL) ? textureRecord->samplerSlot : 0u), "gpu-model/material-resolves-to-the-slot",
+            "and it answers the entry the texture holds, so a draw through this material samples the map the document named");
+    }
     xud_check(xud_material_get(context->handleTable, record->material[1], &materialRecord) == XUD_OK, "gpu-model/second-material-slot-live",
         "the second MATERIAL slot the record names is live");
     xud_check(materialRecord != NULL && materialRecord->variant == XUD_BATCH_VARIANT_TRANSPARENT, "gpu-model/second-material-variant",
@@ -716,8 +927,15 @@ static void xud_test_model_gpu(void) {
         "gpu-model/material-live-after-close-query", "the live count answers again");
     xud_check(
         live == 0u, "gpu-model/material-live-after-close", "and so are the MATERIAL slots, which is the default material's slot included");
+    xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK,
+        "gpu-model/texture-live-after-close-query", "the live count answers a third time");
+    xud_check(live == 0u, "gpu-model/texture-live-after-close",
+        "and so are the TEXTURE slots the model's map occupied, so the close retires the map and its sampler entry rather than leaving "
+        "them "
+        "for the texture rung's own walk");
 
-    xud_check(xud_model_close_all(context->handleTable, context->loader, context->device, context->allocator, &closed) == XUD_OK,
+    xud_check(xud_model_close_all(context->handleTable, context->loader, context->device, context->descriptor, context->allocator, &closed)
+            == XUD_OK,
         "gpu-model/close-all-idempotent", "the teardown rung runs again with nothing left and is not refused");
     xud_check(closed == 0u, "gpu-model/close-all-count",
         "and it closed nothing, so the close above the mesh and the material rungs is idempotent rather than a double free waiting for the "
@@ -777,9 +995,11 @@ static void xud_test_model_gpu(void) {
                     "gpu-model/draw-used-the-documents-material",
                     "and the row names the document's first material rather than the default or the batch's own, which is the half the "
                     "load read for that primitive");
-                xud_check(context->renderer->batch->draws[0].variant == XUD_BATCH_VARIANT_OPAQUE, "gpu-model/draw-variant-is-the-materials",
-                    "and the variant that material's record carries rather than one the batch chose, which is the variant axis the load "
-                    "read reaching a row");
+                xud_check(context->renderer->batch->draws[0].variant == XUD_BATCH_VARIANT_TEXTURED,
+                    "gpu-model/draw-variant-is-the-materials",
+                    "and the variant that material's record carries rather than one the batch chose, which is the textured row the "
+                    "material's "
+                    "map moves it to");
                 result = xud_end_drawing(context);
                 xud_check(result == XUD_OK, "gpu-model/frame-presents",
                     "and the frame presents, so the rebind of a mesh's buffers beside the arena is a command buffer the validation layer "
