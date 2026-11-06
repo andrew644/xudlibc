@@ -261,8 +261,10 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
     */
     outRow->materialIndex = (drawRow->materialIndex == XUD_BATCH_NO_MATERIAL) ? 0u : drawRow->materialIndex;
 
-    /* Set 1 is declared and never allocated (the texture step's), so there is no sampler array to na
-       me an entry of. 0 is the only entry that could ever be read.
+    /* Every slot of set 1's sampler array is written at the descriptor rung's bring-up, and slot 0 of
+       it is the white default, so 0 is the slot a draw samples through until the record call above
+       names another one: the number is a slot the frame loop's slice rebind can bind, not a channel
+       this rung has anything to choose between.
     */
     outRow->textureIndex = 0u;
 
@@ -509,6 +511,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     uint32_t draw = 0u;
     uint32_t pipelineRow = 0u;
     uint32_t boundGeometry = XUD_BATCH_GEOMETRY_NONE;
+    uint32_t boundTexture = 0u;
     XudPushRow pushRow;
 
     if ((frame == NULL) || (loader == NULL) || (device == NULL) || (swapchain == NULL) || (pipeline == NULL) || (pass == NULL)
@@ -966,9 +969,10 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        that happen to match. The count is a SET count starting at firstSet, so the array is the two s
        ets of this layout in set order and every descriptor of the LAST one is bound with it: the sam
        pler array's 16 entries are live without naming them one by one, and firstDescriptorIndex is
-       0 because the whole array is bound rather than a slice of it. One call rather than two because
-       the two sets are one contiguous run of the layout's set numbering and the bind's own arguments
-       say so.
+       NULL, which is the spec's zero form: the per-frame bind leaves set 1 at the array's first slot
+       and the per-draw rebind below moves it to the slot a row's texture names. One call rather than
+       two because the two sets are one contiguous run of the layout's set numbering and the bind's own
+       arguments say so.
      */
     {
         const VkDescriptorSet setRows[XUD_FRAME_SET_COUNT]
@@ -976,6 +980,14 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
             XUD_FRAME_FIRST_SET, XUD_FRAME_SET_COUNT, setRows, 0u, NULL);
     }
+
+    /* The slice of set 1 the draws below will see, as this bind leaves it: the pFirstDescriptorIndex the
+       call above named is NULL, which is the spec's "an array of zeros" form, so the textured frag's one
+       sampler starts the frame at slot 0 of the array - the white default - and boundTexture is 0 for
+       exactly that reason rather than for any reason of its own. A row whose texture names a different
+       slot is what moves it, one rebind per change rather than per draw, the same shape the geometry
+       rebind above the pass keeps for the batch's buffers.
+    */
 
     loader->deviceTable.vkCmdBeginRenderPass(frame->commandBuffer, &passBegin, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -1045,6 +1057,25 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         */
         if (xud_frame_fill_push_row(&pushRow, &drawRow) != XUD_OK) {
             break;
+        }
+        /* The texture channel of the same per-draw row, on the BINDING side rather than the shader's: the
+           textured frag declares ONE sampler at set 1's binding and picks its slot with this bind's
+           firstDescriptorIndex rather than an index in the stage, the shape shaders/solid_textured.frag
+           states for the reason a non-constant array index would need the non-uniform-indexing feature
+           this library does not ask for. A row that names a slot past the array's size ends the list,
+           the same rule the topology and variant guards at the top of this loop apply to their two
+           axes, read at the third number a draw row carries. The rebind is a ONE-set bind rather than
+           the two-set run above the pass: only set 1 moved, so naming set 0 again would be restating a
+           fact the driver already holds, and the slice is the row's own texture slot with the array's
+           first slot where the per-frame bind left it. */
+        if (pushRow.textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
+            break;
+        }
+        if (pushRow.textureIndex != boundTexture) {
+            const uint32_t slice = pushRow.textureIndex;
+            loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
+                XUD_DESCRIPTOR_SET_MATERIAL, XUD_FRAME_MATERIAL_SET_COUNT, &descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL], 0u, &slice);
+            boundTexture = pushRow.textureIndex;
         }
         loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
             descriptor->pushRange.offset, descriptor->pushRange.size, &pushRow);

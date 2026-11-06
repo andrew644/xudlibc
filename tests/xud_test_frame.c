@@ -178,8 +178,8 @@ static void xud_test_frame_pure(void) {
             "n index a read could use and the sentinel indexes nothing");
         xud_check((pushRow.textureIndex == 0u) && (pushRow.flags == XUD_BATCH_VARIANT_OPAQUE) && (pushRow.reserved == 0u),
             "frame/push-other-members",
-            "texture 0 (set 1 is declared and never allocated, so there is no sampler array with an e"
-            "ntry in it), flags the variant the draw was flushed under, and the padding byte-zeroed");
+            "texture 0, the slot the frame loop's per-frame bind leaves set 1 at - the white default - and flags "
+            "the variant the draw was flushed under, and the padding byte-zeroed");
 
         xud_check(xud_frame_fill_push_row(&pushRow, &realRow) == XUD_OK, "frame/push-real-ok", "and so for a real material slot");
         xud_check((pushRow.materialIndex == 3u) && (pushRow.flags == XUD_BATCH_VARIANT_TRANSPARENT), "frame/push-real-passthrough",
@@ -337,8 +337,12 @@ static void xud_test_gpu_draw(void) {
        one of them - the check below the loop says the frame loop unmapped nothing.
     */
     xud_check((context->renderer->descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] != VK_NULL_HANDLE)
+            && (context->renderer->descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] != VK_NULL_HANDLE)
             && (context->renderer->descriptor->uniformBuffer != VK_NULL_HANDLE),
-        "gpu-draw/set-and-block-live", "set 0 and the uniform buffer inside it are both live, which is what the bind and the copy name");
+        "gpu-draw/sets-and-block-live",
+        "set 0, the uniform buffer inside it and set 1 are all live: the bind names the two sets and the copy names the "
+        "buffer, and set 1 is the set the frame loop's per-draw slice rebind names, so a nil one of the three is a frame that "
+        "binds or copies nothing");
     xud_check((context->renderer->descriptor->uniformStagingBuffer != VK_NULL_HANDLE)
             && (context->renderer->descriptor->uniformStagingMapped != NULL)
             && (context->renderer->descriptor->uniformStagingMappedLive == 1u),

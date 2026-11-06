@@ -155,7 +155,13 @@
           at firstSet: the two sets of this layout, both of which the descriptor rung allocated and                                        \
           wrote at its bring-up. Every descriptor of the LAST set bound is bound with it, which is what                                    \
           makes the sampler array's 16 entries live without naming them one by one, and firstDescriptorIndex                               \
-          below is 0 because the whole array is bound rather than a slice of it */
+          is 0 because the per-frame bind leaves set 1 at the array's first slot - the slice a draw's texture                              \
+          names is the per-draw rebind of xud_frame_draw(), which binds this one set again at that draw's first                          \
+          DescriptorIndex rather than a different call shape */
+
+#define XUD_FRAME_MATERIAL_SET_COUNT                                                                                                       \
+    1u /* the descriptorCount of the per-draw slice rebind of set 1: a bind that moves ONE set names one set,                            \
+          and the one set it names is the material set, whose firstSet is its own row of the layout's set numbering */
 
 #define XUD_FRAME_UNIFORM_READ_STAGES                                                                                                      \
     (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT                                                                                                   \
@@ -181,6 +187,8 @@ static_assert(XUD_FRAME_FIRST_BINDING == 0u, "the batch's four streams are bindi
 static_assert(XUD_FRAME_VERTEX_READ_ACCESS == VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, "the streams are read as vertex attributes");
 static_assert(XUD_FRAME_INDEX_TYPE == VK_INDEX_TYPE_UINT32, "the batch's indices are uint32_t entries");
 static_assert(XUD_FRAME_FIRST_SET == 0u, "set 0 is the per-frame set and it is the first set bound");
+static_assert(XUD_FRAME_MATERIAL_SET_COUNT == 1u,
+    "the slice rebind moves one set only, so its count is one rather than the two-set run the per-frame bind names");
 static_assert(XUD_FRAME_SET_COUNT == XUD_DESCRIPTOR_SET_COUNT,
     "both sets of this layout are bound by the one call, which is what makes the textured pipeline row read a set that was allocated and "
     "written rather than one that was only declared");
@@ -395,7 +403,11 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
 /// ets call against the pipeline's own layout - so the block the shader reads is a block that holds s
 /// omething rather than a block that was never written. The push row of the same layout is pushed BE
 /// SIDE every draw this loop records (xud_frame_fill_push_row builds it from the batch's draw row and
-/// the driver half pushes it against the layout's own recorded range), so the vertex is placed by thi
+/// the driver half pushes it against the layout's own recorded range) and, when the row's texture channel names a slot other than the one set 1 was left
+/// at - the per-frame bind leaves it at the array's first slot - the loop rebinds set 1 as a
+/// one-descriptor slice at that slot with a one-set call whose firstDescriptorIndex is the row's
+/// texture slot, the binding half of the textured column whose fragment stage declares one sampler
+/// rather than the array. so the vertex is placed by thi
 /// s frame's viewProj times this draw's model matrix - the per-draw channel and the per-frame set are
 /// both live, and what is still identity in both is the matrices themselves, because a non-identity m
 /// atrix is a transform the step above this one has to choose.
