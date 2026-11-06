@@ -919,3 +919,21 @@ XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context,
     }
     return xud_font_glyph_atlas_rec(outRec, record->glyphs, record->glyphCount, index);
 }
+
+XudResult xud_get_font_atlas_dim(XudContext* context, XudHandle handle, uint32_t* outWidth, uint32_t* outHeight) {
+    const XudFontRecord* record = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if ((outWidth == NULL) || (outHeight == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    *outWidth = 0u;
+    *outHeight = 0u;
+    result = xud_font_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+    *outWidth = record->atlasWidth;
+    *outHeight = record->atlasHeight;
+    return XUD_OK;
+}

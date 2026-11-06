@@ -19,7 +19,7 @@
  * xud_get_key_pressed() / xud_get_char_pressed() / xud_get_key _name() / xud_set_exit_key() / xud_get_exit_key() and the mouse block below
  * it), the clock API above the clock rung (raylib's GetTime/GetFrameTime half - xud_get_time() / xud_get_frame_time() /
  * xud_get_timer_value() / xud_get_timer_frequency()), the font API above the font rung (raylib's LoadFontEx/MeasureTextEx/GetGlyphInfo half
- * - xud_load_font() / xud_close_font() / xud_measure_text() / xud_get_glyph_index() / xud_get_glyph_info() / xud_get_glyph_atlas_rec()
+ * - xud_load_font() / xud_close_font() / xud_measure_text() / xud_get_glyph_index() / xud_get_glyph_info() / xud_get_glyph_atlas_rec() / xud_get_font_atlas_dim()
  *   / xud_draw_text() / xud_draw_text_ex()),
  * the value types a caller passes down (XudVector2 / XudVector3 / XudColor / XudMaterial / XudTextureData / XudMeshData / XudFontData /
  * XudGlyphInfo / XudGlyphAtlasRec), the key and mouse-button tokens that API's queries take, and the runtime Vulkan query xud_vul
@@ -1070,6 +1070,12 @@ XudResult xud_get_glyph_info(XudGlyphInfo* outInfo, XudContext* context, XudHand
 /// NULL out-rec or context, or on a handle that does not name a live FONT slot of this context; XUD_UNSUPPORTED on a context that never
 /// completed bring-up.
 XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context, XudHandle handle, uint32_t codepoint);
+
+/// The atlas extent behind a font, in texels: the public half of the extent the record keeps and the pen walk divides by, and the number a caller
+/// that wants the [0,1] a sampler wants from the public rec above does its own divide by. The atlas is square by construction, so the two answers
+/// are one number read as a pair, and they are stated as a pair because the record states it as one. XUD_INVALID_ARG on a NULL context or on either
+/// out-param, or on a handle that does not name a live FONT slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_font_atlas_dim(XudContext* context, XudHandle handle, uint32_t* outWidth, uint32_t* outHeight);
 
 /*-----------------------------------------------------------------------------------------------
  * The audio API - raylib's LoadAudioStream/GetAudioLength half, above the audio rung

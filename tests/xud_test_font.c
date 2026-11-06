@@ -6,7 +6,7 @@
  *          atlas's first attempt, stb's three bake steps run over a real font file, the coverage-to
  *          texel conversion, the row lookup and its fallback, the two metric reads, the measuremen
  *          t and the scale it divides by, the code stb's own answers turn into this library's, and
- *          the public pair xud_load_font()/xud_close_font() plus the four public queries - and not
+ *          the public pair xud_load_font()/xud_close_font() plus the five public queries - and not
  *          hing else: the handle layer's own validation order is the handle area's, the atlas's up
  *          load (the staging arena, the copy, the layout transition, the sampler and the view) is t
  *          he texture area's, the allocator's block discipline is the allocator area's, and the te
@@ -764,7 +764,7 @@ static void xud_test_font_text_walk(void) {
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The public pair and the four public queries, against a real context
+ * The public pair and the five public queries, against a real context
  *-----------------------------------------------------------------------------------------------*/
 
 static void xud_test_font_gpu(void) {
@@ -852,6 +852,24 @@ static void xud_test_font_gpu(void) {
         "a letter's box is not empty, so the atlas the texture rung made has this glyph in it");
     xud_check((rec.x + rec.width) <= (float)record->atlasWidth, "gpu-rec-inside",
         "and the box is inside the extent the record says, which is the one fact that ties the rows to the uploaded atlas");
+
+    {
+        uint32_t atlasWidth = 0u;
+        uint32_t atlasHeight = 0u;
+
+        xud_check(xud_get_font_atlas_dim(context, handle, &atlasWidth, &atlasHeight) == XUD_OK, "gpu-dim-query",
+            "the public extent query answers for the live font, which is the number the rec-inside check above tied the rows to");
+        xud_check(
+            atlasWidth == record->atlasWidth, "gpu-dim-width", "and the width it answers is the record's own rather than a recomputation");
+        xud_check(atlasHeight == record->atlasHeight, "gpu-dim-height",
+            "and the height is the same number read as a pair, as the record states it");
+        xud_check(xud_get_font_atlas_dim(context, handle, NULL, &atlasHeight) == XUD_INVALID_ARG, "gpu-dim-null-width",
+            "and a half of the extent with nowhere to be written is refused");
+        xud_check(xud_get_font_atlas_dim(context, handle, &atlasWidth, NULL) == XUD_INVALID_ARG, "gpu-dim-null-height",
+            "and so is the other half, so a refusal cannot leave one side of the pair written and the other stale");
+        xud_check(xud_get_font_atlas_dim(NULL, handle, &atlasWidth, &atlasHeight) == XUD_INVALID_ARG, "gpu-dim-null-context",
+            "and a context with nothing behind it is refused the same way");
+    }
 
     xud_check(xud_measure_text(&width, context, handle, oneChar, 1u, (float)XUD_TEST_FONT_SIZE, 0.0f) == XUD_OK, "gpu-measure-query",
         "the public measurement answers");
@@ -997,6 +1015,8 @@ static void xud_test_font_gpu(void) {
         "and so for the queries, which is the same validation the close runs");
     xud_check(xud_measure_text(&width, context, stale, oneChar, 1u, 1.0f, 0.0f) == XUD_INVALID_ARG, "gpu-measure-stale",
         "and so for the measurement");
+    xud_check(xud_get_font_atlas_dim(context, stale, &closed, &closed) == XUD_INVALID_ARG, "gpu-dim-stale",
+        "and so for the extent query, which runs the same validation the close runs");
 
     xud_check(xud_font_close_all(context->handleTable, context->loader, context->device, context->allocator, &closed) == XUD_OK,
         "gpu-close-all-idempotent", "the teardown rung runs again with nothing left and is not refused");

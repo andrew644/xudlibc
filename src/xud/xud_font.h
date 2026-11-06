@@ -322,9 +322,9 @@ XudResult xud_font_measure(float* outWidth, const XudGlyphRow* rows, uint32_t gl
  *   The walk is this rung's and the quad is the shapes rung's, and the split is where it is for
  *   one reason: the shapes rung has no idea what an atlas is, so it takes a uv box already divided
  *   by an extent, and this rung is where the extent is in sight, so this rung does the divide. The
- *   note beside the counts in xud_shapes.h states the same fact from the other side, and the todo
- *   item below this one is the public half of the extent, which is what would let a caller do the
- *   divide itself rather than read it here.
+ *   note beside the counts in xud_shapes.h states the same fact from the other side, and the public half
+ *   of the extent xud_get_font_atlas_dim() reads out is what lets a caller do the divide itself rather
+ *   than read it here.
  *
  *   The position is the PEN's start rather than the line's top-left, and that is the row's own
  *   spelling read literally: offsetY is the pen's step to the box's TOP edge, so a position that
