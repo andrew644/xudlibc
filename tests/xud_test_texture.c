@@ -726,6 +726,24 @@ static void xud_test_texture_gpu(void) {
    texel, a channel swap, a missing encoding) at dozens of bytes away rather than within reach. */
 #define XUD_TEST_READBACK_TOLERANCE 2u
 
+/* The band, in sheet units, inside which a pixel's centre is "on" a texel border: the expected
+   texel is the centre's floor stated in double, but the hardware runs the same uv-to-texel step in
+   its own fixed-point rounding, and a centre that is one rounding step from a border is a centre
+   the hardware is entitled to hand to either side of it. Two keeps a genuine sampling error (a
+   texel two away, a channel swap) out of the accepted set. */
+#define XUD_TEST_READBACK_BORDER_EPS 1e-3
+
+/* The repair's bound: an acquire that keeps answering the swapchain's out-of-date codes after this
+   many repairs is a compositor that is not going to stop resizing, and a test that retried it
+   forever would hang rather than report. Four repairs cover the one resize a tiling compositor does
+   when it tiles the window, with the rest of the budget for the frame the recreate itself needs. */
+#define XUD_TEST_READBACK_ACQUIRE_TRIES 4u
+
+/* The coverage's bound: the loop below is meant to stop when the compositor stops resizing, and the
+   cap is the guard against a compositor that never does - a frame that recreates the swapchain every
+   time it runs would otherwise restart the coverage for ever. */
+#define XUD_TEST_READBACK_COVER_FRAMES_MAX 128u
+
 /* The sRGB transfer function's one step, stated in float rather than looked up: the fixed-function
    encode the swapchain's SRGB format runs on store, byte value in, byte value out. The 12.92/0.00
    31308 half is the linear piece the standard keeps for the darkest values, and 1/2.4 is the
@@ -735,6 +753,62 @@ static uint32_t xud_test_srgb_byte(uint8_t value) {
     const float e = (c <= 0.0031308f) ? (12.92f * c) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
 
     return (uint32_t)(e * 255.0f + 0.5f);
+}
+
+/* The frame the readback draws, one per call: the boundary pair with the quad under the material,
+   every step checked. The pass is the frame's position in the run, and the first pass alone carries
+   the named checks - every later pass, a second image of the same swapchain or a frame of a repair,
+   carries the frame check. */
+static void xud_test_readback_frame(XudContext* context, XudHandle material, XudHandle quad, uint32_t pass) {
+    XudResult result = XUD_OK;
+    const int first = (pass == 0u) ? 1 : 0;
+
+    result = xud_begin_drawing(context);
+    xud_check(result == XUD_OK, (first != 0) ? "gpu-texture/readback-begin" : "gpu-texture/readback-frame",
+        (first != 0) ? "the frame boundary opens" : "and every later frame boundary opens with it");
+    result = xud_begin_material(context, material);
+    xud_check(result == XUD_OK, (first != 0) ? "gpu-texture/readback-material-begun" : "gpu-texture/readback-frame",
+        (first != 0) ? "the material's scoped state moves the batch onto the textured row" : "and the material is re-begun under it");
+    result = xud_draw_mesh(context, quad);
+    xud_check(result == XUD_OK, (first != 0) ? "gpu-texture/readback-draw" : "gpu-texture/readback-frame",
+        (first != 0) ? "the quad's row is recorded under the begun material" : "and the quad is drawn into the next image");
+    result = xud_end_material(context);
+    xud_check(result == XUD_OK, "gpu-texture/readback-material-ended", "the scoped state is taken away");
+    result = xud_end_drawing(context);
+    xud_check(result == XUD_OK, (first != 0) ? "gpu-texture/readback-end" : "gpu-texture/readback-frame",
+        (first != 0) ? "the frame closes - the textured row is replayed and presented, and end-drawing's fence makes the copy below "
+                       "see the pixels"
+                     : "and the later frames close with it");
+}
+
+/* One frame per image, not one frame at all: the acquire below is handed ANY free image by the
+   driver, and only an image the quad has actually been drawn into holds the quad - so the quad is
+   drawn once per swapchain image, after which every image of the swapchain holds it and the answer
+   is the same no matter which one the acquire returns. The count is read off the swapchain on every
+   pass of the loop rather than once before it: a compositor that resized the window (a tiling one
+   does, when it tiles the window) makes the frame's own acquire or present answer the swapchain's
+   out-of-date codes, and end-drawing's resize then replaces the swapchain and retires the images
+   the quad was drawn into - so the coverage restarts from zero whenever the swapchain's handle
+   changes rather than counting against a count the old swapchain had. */
+static void xud_test_readback_cover(XudContext* context, XudHandle material, XudHandle quad, uint32_t* ioPass) {
+    uint32_t covered = 0u;
+    uint32_t frames = 0u;
+    VkSwapchainKHR coveredSwapchain = context->swapchain->swapchain;
+
+    while ((covered < context->swapchain->imageCount) && (frames < XUD_TEST_READBACK_COVER_FRAMES_MAX)) {
+        xud_test_readback_frame(context, material, quad, *ioPass);
+        *ioPass = *ioPass + 1u;
+        frames = frames + 1u;
+        if (context->swapchain->swapchain != coveredSwapchain) {
+            /* The frame above ran to its end and its end-drawing replaced the swapchain after the
+               draw, so the frame drew into the swapchain the resize just retired - its coverage is
+               the old swapchain's, and the new one starts at zero. */
+            coveredSwapchain = context->swapchain->swapchain;
+            covered = 0u;
+        } else {
+            covered = covered + 1u;
+        }
+    }
 }
 
 static void xud_test_texture_readback_gpu(void) {
@@ -811,37 +885,9 @@ static void xud_test_texture_readback_gpu(void) {
             .vertexCount = 4u, .indexCount = 6u, .pos = quadPos, .texcoords = quadUv, .color = NULL, .normal = NULL, .index = quadIndex });
     xud_check(result == XUD_OK, "gpu-texture/readback-quad-uploaded", "the full-screen quad is uploaded");
 
-    /* One frame per image, not one frame at all: the acquire below is handed ANY free image by the
-       driver, and only an image the quad has actually been drawn into holds the quad - so the
-       quad is drawn once per swapchain image, after which every image of the swapchain holds it
-       and the answer is the same no matter which one the acquire returns. */
-    const uint32_t imageCount = context->swapchain->imageCount;
     uint32_t pass = 0u;
 
-    for (pass = 0u; pass < imageCount; pass++) {
-        result = xud_begin_drawing(context);
-        xud_check(result == XUD_OK, (pass == 0u) ? "gpu-texture/readback-begin" : "gpu-texture/readback-frame",
-            (pass == 0u) ? "the frame boundary opens" : "and every later frame boundary opens with it");
-        result = xud_begin_material(context, material);
-        xud_check(result == XUD_OK, (pass == 0u) ? "gpu-texture/readback-material-begun" : "gpu-texture/readback-frame",
-            (pass == 0u) ? "the material's scoped state moves the batch onto the textured row" : "and the material is re-begun under it");
-        result = xud_draw_mesh(context, quad);
-        xud_check(result == XUD_OK, (pass == 0u) ? "gpu-texture/readback-draw" : "gpu-texture/readback-frame",
-            (pass == 0u) ? "the quad's row is recorded under the begun material" : "and the quad is drawn into the next image");
-        result = xud_end_material(context);
-        xud_check(result == XUD_OK, "gpu-texture/readback-material-ended", "the scoped state is taken away");
-        result = xud_end_drawing(context);
-        xud_check(result == XUD_OK, (pass == 0u) ? "gpu-texture/readback-end" : "gpu-texture/readback-frame",
-            (pass == 0u) ? "the frame closes - the textured row is replayed and presented, and end-drawing's fence makes the copy below "
-                           "see the pixels"
-                         : "and the later frames close with it");
-    }
-
-    /* The extent and the format are the swapchain's own rather than the window's request, which is
-       what the quad was rasterized against and the byte layout the comparison below reads. */
-    const uint32_t width = context->swapchain->createInfo.imageExtent.width;
-    const uint32_t height = context->swapchain->createInfo.imageExtent.height;
-    const VkFormat format = context->swapchain->createInfo.imageFormat;
+    xud_test_readback_cover(context, material, quad, &pass);
 
     /* The image to copy: after a present, a presentable image must not be transitioned or copied
        until it is ACQUIRED again (the vkQueueSubmit rule the layout transition below would
@@ -849,14 +895,60 @@ static void xud_test_texture_readback_gpu(void) {
        the layout persists across present and acquire, which is exactly the invariant the frame
        loop's own imageLayouts array relies on every other frame - so the first barrier below starts
        from PRESENT_SRC_KHR, the same step the frame loop's first barrier takes on a re-acquired
-       image. */
+       image. The acquire is the one step a compositor can race: a resize that landed after the
+       frames above leaves the swapchain out of date, and an out-of-date acquire answers
+       VK_ERROR_OUT_OF_DATE_KHR (or VK_SUBOPTIMAL_KHR) rather than VK_SUCCESS. The repair is the
+       frame loop's own discipline for that answer, run one frame at a time: the image the
+       out-of-date acquire named is still an image the app may present, so it is presented rather
+       than held, one more coverage pass then runs, and that pass's own frame answers the same
+       swapchain-boundary code on its acquire or present, so end-drawing's resize rebuilds the
+       swapchain at the window's current extent before the acquire is asked again. */
     uint32_t acquired = 0u;
 
-    vk = context->loader->deviceTable.vkAcquireNextImageKHR(
-        context->device->device, context->swapchain->swapchain, UINT64_MAX, VK_NULL_HANDLE, VK_NULL_HANDLE, &acquired);
+    for (uint32_t try = 0u;; try ++) {
+        acquired = 0u;
+        vk = context->loader->deviceTable.vkAcquireNextImageKHR(
+            context->device->device, context->swapchain->swapchain, UINT64_MAX, VK_NULL_HANDLE, VK_NULL_HANDLE, &acquired);
+        if (vk == VK_SUCCESS) {
+            break;
+        }
+        if ((vk != VK_ERROR_OUT_OF_DATE_KHR) && (vk != VK_SUBOPTIMAL_KHR)) {
+            break;
+        }
+        if (try + 1u >= XUD_TEST_READBACK_ACQUIRE_TRIES) {
+            break;
+        }
+
+        /* The repair's present, the frame loop's present without the frame: the out-of-date
+           acquire's image is given back on the present queue before the repair's frames acquire
+           of their own, because an acquired image that is never presented is one the swapchain
+           keeps in the app's in-flight count and the repair's own acquires would starve on. No
+           wait semaphore: nothing the queue did on this image is unfinished, the same reason the
+           frame loop's present waits on nothing. */
+        {
+            VkPresentInfoKHR presentInfo;
+
+            memset(&presentInfo, 0, sizeof presentInfo);
+            presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+            presentInfo.waitSemaphoreCount = 0u;
+            presentInfo.swapchainCount = 1u;
+            presentInfo.pSwapchains = &context->swapchain->swapchain;
+            presentInfo.pImageIndices = &acquired;
+            (void)context->loader->deviceTable.vkQueuePresentKHR(context->device->presentQueue.queue, &presentInfo);
+        }
+
+        xud_test_readback_cover(context, material, quad, &pass);
+    }
     xud_check(vk == VK_SUCCESS, "gpu-texture/readback-acquired", "an image of the swapchain is acquired for the copy");
-    xud_check(acquired < imageCount, "gpu-texture/readback-image-index", "and it names a live image of the swapchain");
+    xud_check(acquired < context->swapchain->imageCount, "gpu-texture/readback-image-index", "and it names a live image of the swapchain");
     VkImage image = context->swapchain->images[acquired];
+
+    /* The extent and the format are the swapchain's own rather than the window's request, which is
+       what the quad was rasterized against and the byte layout the comparison below reads - read
+       after the acquire, because a repair above may have rebuilt the swapchain at a new extent. */
+    const uint32_t width = context->swapchain->createInfo.imageExtent.width;
+    const uint32_t height = context->swapchain->createInfo.imageExtent.height;
+    const VkFormat format = context->swapchain->createInfo.imageFormat;
     xud_check((width >= XUD_TEST_READBACK_SHEET) && (height >= XUD_TEST_READBACK_SHEET), "gpu-texture/readback-extent",
         "and the presented extent is at least the sheet's, so every texel has pixels over it");
     xud_check((format == VK_FORMAT_R8G8B8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_SRGB) || (format == VK_FORMAT_R8G8B8A8_UNORM)
@@ -998,19 +1090,39 @@ static void xud_test_texture_readback_gpu(void) {
        texel (floor((x+0.5)*8/w), floor((h-y-0.5)*8/h)) under NEAREST - and the expected byte is
        the texel through the swapchain's encoding when the format is SRGB and the raw byte when it
        is not. The BGRA spelling swaps the red and the blue, because the format's own byte order
-       is the buffer's. */
+       is the buffer's. At an extent other than 32x32 - the one a tiling compositor's resize makes
+       of this window - the mapping is no longer exact in the float the hardware uses, so the
+       centre is stated in double and a centre within the border band of a texel border accepts
+       either side of it, the two answers the hardware's own rounding may give. The quad's two
+       triangles also share the screen's anti-diagonal, and the rasteriser may leave a pixel of
+       that line to neither triangle, in which case the pixel holds the pass's clear colour rather
+       than a texel - so a pixel within two of the diagonal accepts the clear as well. */
     const int srgb = ((format == VK_FORMAT_R8G8B8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_SRGB)) ? 1 : 0;
     const int bgra = ((format == VK_FORMAT_B8G8R8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_UNORM)) ? 1 : 0;
+    const double seamBand = 4.0 / ((width < height) ? (double)width : (double)height);
 
     for (y = 0u; y < height; y++) {
         for (x = 0u; x < width; x++) {
             /* floor of the pixel's centre through the uv to the sheet, as the note above states
                it: the x half is a straight scale, the y half is mirrored because the uv's v=0 is
-               the window's bottom row, and the truncate-to-uint32 is the floor for a non-negative
-               product - at the 32x32 extent this is x/4 and (7-y)/4 and no centre lands on a
-               texel border. */
-            const uint32_t col = (uint32_t)(((float)x + 0.5f) * ((float)XUD_TEST_READBACK_SHEET / (float)width));
-            const uint32_t row = (uint32_t)(((float)(height - y) - 0.5f) * ((float)XUD_TEST_READBACK_SHEET / (float)height));
+               the window's bottom row, and the truncate is the floor for a non-negative value. The
+               double is what makes the answer exact: at a large extent the float product rounds,
+               and a rounded product on the wrong side of a border is a wrong texel. */
+            const double cxc = ((double)x + 0.5) * ((double)XUD_TEST_READBACK_SHEET / (double)width);
+            const double cyc = ((double)(height - y) - 0.5) * ((double)XUD_TEST_READBACK_SHEET / (double)height);
+            const uint32_t col = (uint32_t)cxc;
+            const uint32_t row = (uint32_t)cyc;
+            const double fracX = cxc - (double)col;
+            const double fracY = cyc - (double)row;
+            /* The candidate texels, the floor and, when the centre is inside the border band, the
+               neighbour across the border - clamped at the sheet's edge, where the sampler clamps
+               too and the other side of the border does not exist. */
+            const int32_t colLo = (fracX < XUD_TEST_READBACK_BORDER_EPS) && (col > 0u) ? (int32_t)col - 1 : (int32_t)col;
+            const int32_t colHi
+                = (fracX > (1.0 - XUD_TEST_READBACK_BORDER_EPS)) && (col + 1u < XUD_TEST_READBACK_SHEET) ? (int32_t)col + 1 : (int32_t)col;
+            const int32_t rowLo = (fracY < XUD_TEST_READBACK_BORDER_EPS) && (row > 0u) ? (int32_t)row - 1 : (int32_t)row;
+            const int32_t rowHi
+                = (fracY > (1.0 - XUD_TEST_READBACK_BORDER_EPS)) && (row + 1u < XUD_TEST_READBACK_SHEET) ? (int32_t)row + 1 : (int32_t)row;
             const uint32_t at = ((row * XUD_TEST_READBACK_SHEET) + col) * XUD_TEXTURE_BYTES_PER_TEXEL;
             const uint32_t expectedR = srgb ? xud_test_srgb_byte(texels8x8[at]) : (uint32_t)texels8x8[at];
             const uint32_t expectedG = srgb ? xud_test_srgb_byte(texels8x8[at + 1u]) : (uint32_t)texels8x8[at + 1u];
@@ -1021,10 +1133,42 @@ static void xud_test_texture_readback_gpu(void) {
             const uint32_t actualB = (bgra != 0) ? (uint32_t)pixels[px * 4u] : (uint32_t)pixels[px * 4u + 2u];
             const uint32_t actualA = (uint32_t)pixels[px * 4u + 3u];
 
-            if ((actualR > expectedR + XUD_TEST_READBACK_TOLERANCE) || (actualR + XUD_TEST_READBACK_TOLERANCE < expectedR)
-                || (actualG > expectedG + XUD_TEST_READBACK_TOLERANCE) || (actualG + XUD_TEST_READBACK_TOLERANCE < expectedG)
-                || (actualB > expectedB + XUD_TEST_READBACK_TOLERANCE) || (actualB + XUD_TEST_READBACK_TOLERANCE < expectedB)
-                || (actualA < (255u - XUD_TEST_READBACK_TOLERANCE))) {
+            /* The pass, one candidate texel at a time: any of them matching the pixel's bytes
+               through the swapchain's encoding is the answer the centre is entitled to. */
+            int ok = 0;
+            int cy;
+            int cx;
+
+            for (cy = rowLo; (cy <= rowHi) && (ok == 0); cy++) {
+                for (cx = colLo; (cx <= colHi) && (ok == 0); cx++) {
+                    const uint32_t atC = (((uint32_t)cy * XUD_TEST_READBACK_SHEET) + (uint32_t)cx) * XUD_TEXTURE_BYTES_PER_TEXEL;
+                    const uint32_t candR = srgb ? xud_test_srgb_byte(texels8x8[atC]) : (uint32_t)texels8x8[atC];
+                    const uint32_t candG = srgb ? xud_test_srgb_byte(texels8x8[atC + 1u]) : (uint32_t)texels8x8[atC + 1u];
+                    const uint32_t candB = srgb ? xud_test_srgb_byte(texels8x8[atC + 2u]) : (uint32_t)texels8x8[atC + 2u];
+
+                    ok = ((actualR <= (candR + XUD_TEST_READBACK_TOLERANCE)) && ((actualR + XUD_TEST_READBACK_TOLERANCE) >= candR)
+                             && (actualG <= (candG + XUD_TEST_READBACK_TOLERANCE)) && ((actualG + XUD_TEST_READBACK_TOLERANCE) >= candG)
+                             && (actualB <= (candB + XUD_TEST_READBACK_TOLERANCE)) && ((actualB + XUD_TEST_READBACK_TOLERANCE) >= candB)
+                             && (actualA >= (255u - XUD_TEST_READBACK_TOLERANCE)))
+                        ? 1
+                        : 0;
+                }
+            }
+            /* The seam's half of the acceptance: the pixel's centre through the quad's NDC, the v
+               axis flipped to the screen's, and the shared diagonal is u + v = 0 - a centre inside
+               the band is a centre the rasteriser may have left uncovered, and an uncovered pixel
+               holds the pass's clear, (0, 0, 0, 1), which encodes to the same bytes in every one
+               of the four formats. */
+            if (ok == 0) {
+                const double u = (2.0 * (double)x + 1.0) / (double)width - 1.0;
+                const double v = (2.0 * (double)y + 1.0) / (double)height - 1.0;
+
+                if ((fabs(u + v) <= seamBand) && (actualR <= XUD_TEST_READBACK_TOLERANCE) && (actualG <= XUD_TEST_READBACK_TOLERANCE)
+                    && (actualB <= XUD_TEST_READBACK_TOLERANCE) && (actualA >= (255u - XUD_TEST_READBACK_TOLERANCE))) {
+                    ok = 1;
+                }
+            }
+            if (ok == 0) {
                 if (wrong < 4u) {
                     printf("FAIL readback pixel (%u,%u) got (%u,%u,%u,%u) want (%u,%u,%u)\n", x, y, actualR, actualG, actualB, actualA,
                         expectedR, expectedG, expectedB);
