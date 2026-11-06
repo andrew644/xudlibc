@@ -37,6 +37,7 @@
 #include <stdlib.h> /* Required for: calloc, free - the record, the rows, the atlas and the default set */
 
 #include "xud_core.h" /* Required for: struct XudContext, whose handleTable/loader/device/physicalDevice/allocator the public pair reaches */
+#include "xud_descriptor.h" /* Required for: XudDescriptor, xud_descriptor_bind/release_texture_slot - the atlas's entry of set 1's sampler array */
 #include "xud_device.h" /* Required for: XudDevice, the handle every guard below checks exists */
 #include "xud_handle.h" /* Required for: xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
 #include "xud_loader.h" /* Required for: xud_loader_is_open, xud_loader_device_bound - the two guards every driver half runs */
@@ -387,16 +388,19 @@ XudResult xud_font_measure(float* outWidth, const XudGlyphRow* rows, uint32_t gl
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The pen walk - above the shapes rung, and the first real uv this tree writes
+ * The pen walk - above the shapes rung, through the textured column with the atlas's own slot
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, const uint32_t* text, uint32_t textCount, XudVector3 position,
-    float pixelSize, float spacing, XudColor color) {
+XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, uint32_t textureIndex, const uint32_t* text,
+    uint32_t textCount, XudVector3 position, float pixelSize, float spacing, XudColor color) {
     XudGlyphRow row;
     XudVector3 corner0;
     XudVector3 corner1;
     XudVector2 uv0;
     XudVector2 uv1;
+    uint32_t oldVariant = 0u;
+    uint32_t oldMaterial = 0u;
+    uint32_t oldTexture = 0u;
     float scale = 0.0f;
     float penX = 0.0f;
     float atlasWidth = 0.0f;
@@ -406,6 +410,9 @@ XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, con
     uint32_t step = 0u;
 
     if ((batch == NULL) || (record == NULL) || (text == NULL) || (textCount == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((textureIndex != XUD_BATCH_NO_TEXTURE) && (textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
         return XUD_INVALID_ARG;
     }
 
@@ -436,9 +443,26 @@ XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, con
     atlasHeight = (float)record->atlasHeight;
     penX = position.x;
 
+    /* The state move, before a byte is written: the glyphs draw through the textured row with the
+       atlas's own set-1 slot, and the batch's state is what a draw row is flushed under, so the row
+       the glyphs flush with is the state they are appended under. The move the caller's state was
+       read at first: a text draw is not a material change the caller asked for, so the state the
+       shapes a caller appends after the walk draw with is the one the walk found, and the flush at
+       the walk's end closes the glyph run under the textured row rather than under that one.
+    */
+    result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_TEXTURED, textureIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
+
     for (step = 0u; step < textCount; step++) {
         result = xud_font_glyph_index(record->glyphs, record->glyphCount, text[step], &index);
         if (result != XUD_OK) {
+            (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
             return result;
         }
         row = record->glyphs[index];
@@ -469,6 +493,7 @@ XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, con
         if ((row.atlasWidth > 0u) && (row.atlasHeight > 0u)) {
             result = xud_shapes_append_glyph_quad(batch, corner0, corner1, uv0, uv1, color);
             if (result != XUD_OK) {
+                (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
                 return result;
             }
         }
@@ -479,6 +504,44 @@ XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, con
         penX += (row.advanceX * scale) + spacing;
     }
 
+    /* The move back, and the flush it carries: a run pending under the textured row closes into a
+       draw row of that row before the state goes back, and a walk that drew nothing (a string of
+       spaces) moves the state back without recording a row at all.
+    */
+    result = xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The atlas's own set-1 slot - the sampler's half of the draw
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The slot a draw through this record's atlas samples with: the entry of set 1's sampler array the
+   texture rung wrote the atlas's own view and sampler into when the context-level open ran. A
+   record whose atlas is the sentinel or occupies no entry of the array answers the no-texture
+   sentinel rather than an index, and the row then samples slot 0's white default - the same
+   answer the material rung gives a map that cannot be sampled, rather than a refusal at the draw.
+*/
+static XudResult xud_font_atlas_slot(const XudHandleTable* table, const XudFontRecord* record, uint32_t* outSlot) {
+    const XudTextureRecord* texture = NULL;
+
+    if ((record == NULL) || (outSlot == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    *outSlot = XUD_BATCH_NO_TEXTURE;
+    if (record->atlas.kind == XUD_HANDLE_KIND_NONE) {
+        return XUD_INTERNAL_ERROR;
+    }
+    if (xud_texture_get(table, record->atlas, &texture) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (texture->samplerSlot != XUD_TEXTURE_SAMPLER_SLOT_NONE) {
+        *outSlot = texture->samplerSlot;
+    }
     return XUD_OK;
 }
 
@@ -513,7 +576,7 @@ XudResult xud_font_get(const XudHandleTable* table, XudHandle handle, const XudF
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_font_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudAllocator* alloc, const XudFontData* data) {
+    XudDescriptor* descriptor, XudAllocator* alloc, const XudFontData* data) {
     XudFontRecord* record = NULL;
     XudGlyphRow* rows = NULL;
     uint8_t* coverage = NULL;
@@ -643,14 +706,49 @@ XudResult xud_font_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* 
     record->glyphs = rows;
     record->atlasWidth = dim;
     record->atlasHeight = dim;
-    if (xud_handle_record_set(table, XUD_HANDLE_KIND_FONT, fontHandle.index, record) != XUD_OK) {
-        (void)xud_texture_close(table, atlasHandle, loader, device, alloc);
-        free(rows);
-        free(record);
-        (void)xud_handle_free(table, fontHandle);
-        *outHandle = (XudHandle) { 0u, 0u, XUD_HANDLE_KIND_NONE };
-        return XUD_INVALID_ARG;
+
+    /* The atlas's entry of set 1's sampler array: the same two steps the model rung runs for its maps and
+       xud_create_texture() runs above the context - a texture that holds no entry of the array is one the
+       walk's resolve answers with the no-map sentinel, and the walk then samples slot 0's white default
+       rather than the atlas. The entry is the atlas's to give back at the close, and the record's own
+       field is what makes it so rather than a fact only the free list knows.
+    */
+    {
+        XudTextureRecord* atlasRecord = NULL;
+        uint32_t samplerSlot = XUD_TEXTURE_SAMPLER_SLOT_NONE;
+
+        if (xud_texture_get(table, atlasHandle, (const XudTextureRecord**)&atlasRecord) != XUD_OK) {
+            (void)xud_texture_close(table, atlasHandle, loader, device, alloc);
+            free(rows);
+            free(record);
+            (void)xud_handle_free(table, fontHandle);
+            *outHandle = (XudHandle) { 0u, 0u, XUD_HANDLE_KIND_NONE };
+            return XUD_INVALID_ARG;
+        }
+        result = xud_descriptor_bind_texture_slot(
+            descriptor, loader, device, atlasRecord->view, atlasRecord->sampler, atlasRecord->imageLayout, &samplerSlot);
+        if (result != XUD_OK) {
+            (void)xud_texture_close(table, atlasHandle, loader, device, alloc);
+            free(rows);
+            free(record);
+            (void)xud_handle_free(table, fontHandle);
+            *outHandle = (XudHandle) { 0u, 0u, XUD_HANDLE_KIND_NONE };
+            return result;
+        }
+        atlasRecord->samplerSlot = samplerSlot;
+        atlasRecord->samplerSlotLive = 1u;
+
+        if (xud_handle_record_set(table, XUD_HANDLE_KIND_FONT, fontHandle.index, record) != XUD_OK) {
+            (void)xud_descriptor_release_texture_slot(descriptor, loader, device, samplerSlot);
+            (void)xud_texture_close(table, atlasHandle, loader, device, alloc);
+            free(rows);
+            free(record);
+            (void)xud_handle_free(table, fontHandle);
+            *outHandle = (XudHandle) { 0u, 0u, XUD_HANDLE_KIND_NONE };
+            return XUD_INVALID_ARG;
+        }
     }
+
     return XUD_OK;
 }
 
@@ -658,7 +756,8 @@ XudResult xud_font_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* 
  * The close - everything the record owns, in the reverse of the order above
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_font_close(XudHandleTable* table, XudHandle handle, XudLoader* loader, const XudDevice* device, XudAllocator* alloc) {
+XudResult xud_font_close(
+    XudHandleTable* table, XudHandle handle, XudLoader* loader, const XudDevice* device, XudDescriptor* descriptor, XudAllocator* alloc) {
     XudFontRecord* record = NULL;
     XudHandle atlasHandle;
     XudResult result = XUD_INTERNAL_ERROR;
@@ -692,6 +791,22 @@ XudResult xud_font_close(XudHandleTable* table, XudHandle handle, XudLoader* loa
     */
     atlasHandle = record->atlas;
     if (atlasHandle.kind == XUD_HANDLE_KIND_TEXTURE) {
+        XudTextureRecord* atlasRecord = NULL;
+
+        /* The entry of set 1's array goes back to the free list BEFORE the close below destroys the view
+           and sampler the entry names: a bound set whose entry still named a destroyed view and sampler
+           is the state xud_descriptor_release_texture_slot exists to leave behind. A refusal is a close
+           that does not run rather than an object retired over a descriptor still naming it, the public
+           close one rung up stated for the same order.
+        */
+        if (xud_texture_get(table, atlasHandle, (const XudTextureRecord**)&atlasRecord) == XUD_OK) {
+            if ((atlasRecord != NULL) && (atlasRecord->samplerSlotLive != 0u)) {
+                result = xud_descriptor_release_texture_slot(descriptor, loader, device, atlasRecord->samplerSlot);
+                if (result != XUD_OK) {
+                    return result;
+                }
+            }
+        }
         result = xud_texture_close(table, atlasHandle, loader, device, alloc);
         if (result != XUD_OK) {
             return result;
@@ -713,7 +828,8 @@ XudResult xud_font_close(XudHandleTable* table, XudHandle handle, XudLoader* loa
  * The teardown rung - above xud_texture_close_all()
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_font_close_all(XudHandleTable* table, XudLoader* loader, const XudDevice* device, XudAllocator* alloc, uint32_t* outClosed) {
+XudResult xud_font_close_all(XudHandleTable* table, XudLoader* loader, const XudDevice* device, XudDescriptor* descriptor,
+    XudAllocator* alloc, uint32_t* outClosed) {
     XudFontRecord* record = NULL;
     XudHandle atlasHandle;
     XudResult first = XUD_OK;
@@ -749,6 +865,20 @@ XudResult xud_font_close_all(XudHandleTable* table, XudLoader* loader, const Xud
         }
         atlasHandle = ((XudFontRecord*)record)->atlas;
         if (atlasHandle.kind == XUD_HANDLE_KIND_TEXTURE) {
+            XudTextureRecord* atlasRecord = NULL;
+
+            /* The same slot order as the close one rung up: the entry gives itself back before the view
+               and sampler it names are destroyed, and a refusal is recorded on first rather than returned,
+               the walk's own rule - the walk keeps retiring what is left rather than stopping on one.
+            */
+            if (xud_texture_get(table, atlasHandle, (const XudTextureRecord**)&atlasRecord) == XUD_OK) {
+                if ((atlasRecord != NULL) && (atlasRecord->samplerSlotLive != 0u)) {
+                    XudResult slot = xud_descriptor_release_texture_slot(descriptor, loader, device, atlasRecord->samplerSlot);
+                    if ((slot != XUD_OK) && (first == XUD_OK)) {
+                        first = slot;
+                    }
+                }
+            }
             first = xud_texture_close(table, atlasHandle, loader, device, alloc);
             if (first != XUD_OK) {
                 return first;
@@ -772,21 +902,22 @@ XudResult xud_load_font(XudHandle* outHandle, XudContext* context, const XudFont
         return XUD_INVALID_ARG;
     }
     if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->physicalDevice == NULL)
-        || (context->allocator == NULL)) {
+        || (context->allocator == NULL) || (context->descriptor == NULL)) {
         return XUD_UNSUPPORTED;
     }
-    return xud_font_open(
-        outHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps, context->allocator, font);
+    return xud_font_open(outHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps,
+        context->descriptor, context->allocator, font);
 }
 
 XudResult xud_close_font(XudContext* context, XudHandle handle) {
     if (context == NULL) {
         return XUD_INVALID_ARG;
     }
-    if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->allocator == NULL)) {
+    if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->allocator == NULL)
+        || (context->descriptor == NULL)) {
         return XUD_UNSUPPORTED;
     }
-    return xud_font_close(context->handleTable, handle, context->loader, context->device, context->allocator);
+    return xud_font_close(context->handleTable, handle, context->loader, context->device, context->descriptor, context->allocator);
 }
 
 XudResult xud_measure_text(
@@ -869,6 +1000,7 @@ XudResult xud_draw_text(
     XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, XudVector3 position, float pixelSize, XudColor color) {
     XudBatch* batch = NULL;
     const XudFontRecord* record = NULL;
+    uint32_t textureIndex = XUD_BATCH_NO_TEXTURE;
     XudResult result = XUD_INVALID_ARG;
 
     result = xud_font_context_batch(&batch, context);
@@ -879,14 +1011,19 @@ XudResult xud_draw_text(
     if (result != XUD_OK) {
         return result;
     }
+    result = xud_font_atlas_slot(context->handleTable, record, &textureIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
 
-    return xud_font_append_text(batch, record, text, textCount, position, pixelSize, 0.0f, color);
+    return xud_font_append_text(batch, record, textureIndex, text, textCount, position, pixelSize, 0.0f, color);
 }
 
 XudResult xud_draw_text_ex(XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, XudVector3 position,
     float pixelSize, float spacing, XudColor color) {
     XudBatch* batch = NULL;
     const XudFontRecord* record = NULL;
+    uint32_t textureIndex = XUD_BATCH_NO_TEXTURE;
     XudResult result = XUD_INVALID_ARG;
 
     result = xud_font_context_batch(&batch, context);
@@ -897,8 +1034,12 @@ XudResult xud_draw_text_ex(XudContext* context, XudHandle handle, const uint32_t
     if (result != XUD_OK) {
         return result;
     }
+    result = xud_font_atlas_slot(context->handleTable, record, &textureIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
 
-    return xud_font_append_text(batch, record, text, textCount, position, pixelSize, spacing, color);
+    return xud_font_append_text(batch, record, textureIndex, text, textCount, position, pixelSize, spacing, color);
 }
 
 XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context, XudHandle handle, uint32_t codepoint) {

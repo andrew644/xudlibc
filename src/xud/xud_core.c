@@ -505,7 +505,8 @@ XudResult xud_close_context(XudContext** context) {
             victim->handleTable, victim->loader, victim->device, victim->descriptor, victim->allocator, &modelRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;
-        rung = xud_font_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &fontRecordsClosed);
+        rung = xud_font_close_all(
+            victim->handleTable, victim->loader, victim->device, victim->descriptor, victim->allocator, &fontRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;
         rung = xud_texture_close_all(

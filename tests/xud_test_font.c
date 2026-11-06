@@ -47,6 +47,7 @@
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_table_live_count - the slot this record lives in, and the TEXTURE slot it owns */
 #include "xud_shapes.h" /* Required for: xud_shapes_append_glyph_quad() and the glyph constants the walk does NOT write */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
+#include "xud_texture.h" /* Required for: xud_texture_get, XudTextureRecord - the atlas's sampler slot the GPU half checks holds an entry */
 
 /*-----------------------------------------------------------------------------------------------
  * The one font file every "the font is fine" check below is the same font seen through a
@@ -582,7 +583,12 @@ static void xud_test_font_text_walk(void) {
     b.stagingMapped = xudTestTextArena;
     b.stagingMappedLive = 1u;
 
-    xud_check(xud_font_append_text(&b, &record, string, 3u, position, 8.0f, 0.25f, color) == XUD_OK, "walk-ok",
+    xud_check(xud_batch_set_material(&b, 7u, XUD_BATCH_VARIANT_TRANSPARENT, 1u) == XUD_OK, "walk-pre-state",
+        "the walk moves the batch's material state to the textured row for its quads, so this area starts it on a known row to read it "
+        "back "
+        "against");
+
+    xud_check(xud_font_append_text(&b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, position, 8.0f, 0.25f, color) == XUD_OK, "walk-ok",
         "a letter, a space and a letter append");
     xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "walk-stats",
         "and the batch's counters answer after them");
@@ -591,7 +597,33 @@ static void xud_test_font_text_walk(void) {
         "row");
     xud_check(indexCount == (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u), "walk-two-quads-close",
         "and 12 indices, the two triangles that close each of the two quads");
-    xud_check(drawCount == 0u, "walk-records-no-draw", "and appending records no draw row, as every other shape's append does");
+    {
+        XudBatchDraw walkRow;
+        uint32_t variant = 0u;
+        uint32_t material = 0u;
+        uint32_t texture = 0u;
+
+        xud_check(drawCount == 1u, "walk-records-one-draw",
+            "the glyph run flushes as one draw row of its own when the walk's state move back closes it, rather than riding in a row of "
+            "the "
+            "caller's state");
+        xud_check(
+            xud_batch_draw_get(&b, 0u, &walkRow) == XUD_OK, "walk-draw-row-get", "and the row answers for the counters that named it");
+        xud_check((walkRow.topology == XUD_BATCH_TOPOLOGY_TRIANGLES) && (walkRow.variant == XUD_BATCH_VARIANT_TEXTURED),
+            "walk-draw-row-textured",
+            "the row names the textured column of the pipeline list, so the glyphs sample the atlas rather than the solid column's light");
+        xud_check((walkRow.materialIndex == XUD_BATCH_NO_MATERIAL) && (walkRow.textureIndex == XUD_BATCH_NO_TEXTURE),
+            "walk-draw-row-sentinels",
+            "and the no-material and no-map sentinels for the slots the walk itself names rather than a material it does not own");
+        xud_check((walkRow.firstIndex == 0u) && (walkRow.indexCount == (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)), "walk-draw-row-range",
+            "and the row's range is the walk's twelve indices and nothing else");
+        xud_check(xud_batch_state_get(&b, &variant, &material, &texture) == XUD_OK, "walk-state-query",
+            "and the state answers after the "
+            "walk");
+        xud_check((variant == XUD_BATCH_VARIANT_TRANSPARENT) && (material == 7u) && (texture == 1u), "walk-state-restored",
+            "and it is the row the walk read it from: a text draw is not a material change the caller asked for, so the shapes appended "
+            "beside the glyphs draw with the state the walk found");
+    }
     xud_check(xud_batch_check_invariant(&b) == XUD_OK, "walk-invariant", "and the batch's invariant still holds over the walk");
 
     arena = (const uint8_t*)b.stagingMapped;
@@ -701,63 +733,82 @@ static void xud_test_font_text_walk(void) {
         "and the pen this file walked to is the string's start plus the measured width, which is the fact the measure's own note states "
         "from its side and is what lets a centring call ask for a width and get the string it asked for at that width");
 
-    xud_check(xud_font_append_text(&b, &record, spaceOnly, 1u, position, 8.0f, 0.25f, color) == XUD_OK, "walk-space-only-ok",
-        "a string of one space is not a refusal");
+    xud_check(xud_font_append_text(&b, &record, XUD_BATCH_NO_TEXTURE, spaceOnly, 1u, position, 8.0f, 0.25f, color) == XUD_OK,
+        "walk-space-only-ok", "a string of one space is not a refusal");
     xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "walk-space-only-stats-query",
         "and the counters answer after it");
     xud_check((vertexCount == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u)) && (indexCount == (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)),
         "walk-space-only-spent-nothing", "and it spent nothing, so a space is a row that draws no quad rather than a row that is missing");
+    xud_check(drawCount == 1u, "walk-space-only-records-nothing",
+        "and no second draw row: the run the walk moved the state for was empty, so the move back closed nothing");
 
-    xud_check(xud_font_append_text(&b, &record, uncovered, 1u, position, 8.0f, 0.25f, color) == XUD_OK, "walk-fallback-ok",
-        "a codepoint the set does not cover still draws");
+    xud_check(xud_font_append_text(&b, &record, XUD_BATCH_NO_TEXTURE, uncovered, 1u, position, 8.0f, 0.25f, color) == XUD_OK,
+        "walk-fallback-ok", "a codepoint the set does not cover still draws");
     xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "walk-fallback-stats-query",
         "and the counters answer after it");
     xud_check(vertexCount == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 3u), "walk-fallback-is-the-fallback-row",
         "and it spent one quad, which is the fallback row's box - the same row the three lookups above answer, so a measure and a draw of "
         "one string cannot disagree about which row a codepoint is");
+    xud_check(drawCount == 2u, "walk-fallback-records-a-row", "and the quad it spent flushed as a second draw row of the textured row");
+    {
+        XudBatchDraw fallbackRow;
+
+        xud_check(xud_batch_draw_get(&b, 1u, &fallbackRow) == XUD_OK, "walk-fallback-row-get", "and the second row answers");
+        xud_check((fallbackRow.variant == XUD_BATCH_VARIANT_TEXTURED) && (fallbackRow.firstIndex == (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u))
+                && (fallbackRow.indexCount == XUD_SHAPES_GLYPH_INDEX_COUNT),
+            "walk-fallback-row-range", "and its range is the one quad the walk appended, after the twelve indices the first row closed");
+    }
 
     xud_check(xud_batch_layout(&tiny, XUD_SHAPES_GLYPH_VERTEX_COUNT) == XUD_OK, "walk-tiny-layout",
         "a batch with headroom for exactly one quad lays out");
     tiny.stagingMapped = xudTestTextArena;
     tiny.stagingMappedLive = 1u;
-    xud_check(xud_font_append_text(&tiny, &record, string, 3u, position, 8.0f, 0.25f, color) == XUD_OUT_OF_MEMORY,
+    xud_check(xud_font_append_text(&tiny, &record, XUD_BATCH_NO_TEXTURE, string, 3u, position, 8.0f, 0.25f, color) == XUD_OUT_OF_MEMORY,
         "walk-refuses-at-a-glyph-boundary", "the string refuses at the second glyph rather than as a whole");
     xud_check(xud_batch_stats(&tiny, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "walk-refusal-stats-query",
         "and the counters answer after the refusal");
     xud_check(vertexCount == XUD_SHAPES_GLYPH_VERTEX_COUNT, "walk-partial-string-drew-the-first",
         "and the first glyph's quad is in the batch, so a string that does not fit draws the glyphs that do and refuses at the next glyph "
         "boundary - the same shape xud_draw_model() states for a model whose last mesh did not fit");
+    xud_check(drawCount == 1u, "walk-refusal-flushed-the-partial",
+        "and the refusal moved the state back too, so the partial run closed as its own textured draw row rather than riding in a later "
+        "row "
+        "of the caller's");
     xud_check(xud_batch_check_invariant(&tiny) == XUD_OK, "walk-refusal-invariant", "and nothing half-written is in it");
 
-    xud_check(xud_font_append_text(NULL, &record, string, 3u, position, 8.0f, 0.25f, color) == XUD_INVALID_ARG, "walk-null-batch",
-        "a batch with nowhere to append into is refused");
-    xud_check(xud_font_append_text(&b, NULL, string, 3u, position, 8.0f, 0.25f, color) == XUD_INVALID_ARG, "walk-null-record",
-        "and so is a record with no metrics to scale by");
-    xud_check(xud_font_append_text(&b, &record, NULL, 1u, position, 8.0f, 0.25f, color) == XUD_INVALID_ARG, "walk-null-text",
-        "and a string with no characters behind it");
-    xud_check(xud_font_append_text(&b, &record, string, 0u, position, 8.0f, 0.25f, color) == XUD_INVALID_ARG, "walk-empty-text",
-        "and a string whose count is zero, which is a question a caller has to mean something else by");
-    xud_check(xud_font_append_text(&b, &record, string, 3u, position, 0.0f, 0.25f, color) == XUD_INVALID_ARG, "walk-zero-height",
-        "a requested em height of zero is refused rather than scaling every box to nothing");
-    xud_check(xud_font_append_text(&b, &record, string, 3u, position, -8.0f, 0.25f, color) == XUD_INVALID_ARG, "walk-negative-height",
-        "and so is a negative one, which would flip every box upside down");
-    xud_check(xud_font_append_text(&b, &record, string, 3u, position, -(0.0f / 0.0f), 0.25f, color) == XUD_INVALID_ARG, "walk-nan-height",
+    xud_check(xud_font_append_text(NULL, &record, XUD_BATCH_NO_TEXTURE, string, 3u, position, 8.0f, 0.25f, color) == XUD_INVALID_ARG,
+        "walk-null-batch", "a batch with nowhere to append into is refused");
+    xud_check(xud_font_append_text(&b, NULL, XUD_BATCH_NO_TEXTURE, string, 3u, position, 8.0f, 0.25f, color) == XUD_INVALID_ARG,
+        "walk-null-record", "and so is a record with no metrics to scale by");
+    xud_check(xud_font_append_text(&b, &record, XUD_BATCH_NO_TEXTURE, NULL, 1u, position, 8.0f, 0.25f, color) == XUD_INVALID_ARG,
+        "walk-null-text", "and a string with no characters behind it");
+    xud_check(xud_font_append_text(&b, &record, XUD_BATCH_NO_TEXTURE, string, 0u, position, 8.0f, 0.25f, color) == XUD_INVALID_ARG,
+        "walk-empty-text", "and a string whose count is zero, which is a question a caller has to mean something else by");
+    xud_check(xud_font_append_text(&b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, position, 0.0f, 0.25f, color) == XUD_INVALID_ARG,
+        "walk-zero-height", "a requested em height of zero is refused rather than scaling every box to nothing");
+    xud_check(xud_font_append_text(&b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, position, -8.0f, 0.25f, color) == XUD_INVALID_ARG,
+        "walk-negative-height", "and so is a negative one, which would flip every box upside down");
+    xud_check(
+        xud_font_append_text(&b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, position, -(0.0f / 0.0f), 0.25f, color) == XUD_INVALID_ARG,
+        "walk-nan-height",
         "and a height that is not a number at all, refused by the same comparison as the two above - the reason the sphere's note gives "
         "for a NaN radius, one rung up");
 
     broken = record;
     broken.pixelSize = 0u;
-    xud_check(xud_font_append_text(&b, &broken, string, 3u, position, 8.0f, 0.25f, color) == XUD_INTERNAL_ERROR, "walk-no-base-height",
+    xud_check(xud_font_append_text(&b, &broken, XUD_BATCH_NO_TEXTURE, string, 3u, position, 8.0f, 0.25f, color) == XUD_INTERNAL_ERROR,
+        "walk-no-base-height",
         "a record that never had a bake height has nothing to scale against, and that is a state the open made rather than an argument a "
         "caller could fix");
     broken = record;
     broken.atlasWidth = 0u;
-    xud_check(xud_font_append_text(&b, &broken, string, 3u, position, 8.0f, 0.25f, color) == XUD_INTERNAL_ERROR, "walk-no-extent",
+    xud_check(xud_font_append_text(&b, &broken, XUD_BATCH_NO_TEXTURE, string, 3u, position, 8.0f, 0.25f, color) == XUD_INTERNAL_ERROR,
+        "walk-no-extent",
         "and a record that never had an extent has nothing to divide a texel count by - a uv out of it would be an inf in a float stream");
     broken = record;
     broken.glyphs = NULL;
-    xud_check(xud_font_append_text(&b, &broken, string, 3u, position, 8.0f, 0.25f, color) == XUD_INTERNAL_ERROR, "walk-no-rows",
-        "and a record whose rows are gone has no pen numbers to walk by");
+    xud_check(xud_font_append_text(&b, &broken, XUD_BATCH_NO_TEXTURE, string, 3u, position, 8.0f, 0.25f, color) == XUD_INTERNAL_ERROR,
+        "walk-no-rows", "and a record whose rows are gone has no pen numbers to walk by");
 
     xud_check(xud_batch_reset(&b) == XUD_OK, "walk-reset",
         "the batch's row list and topology state are retired, so the section above leaves no row behind for the next one");
@@ -842,6 +893,24 @@ static void xud_test_font_gpu(void) {
         "and the atlas is square, so the extent is one number rather than two that can disagree");
     xud_check(record->atlasWidth >= XUD_FONT_ATLAS_MIN_DIM, "gpu-atlas-attempt",
         "and it is at least this rung's floor, so the attempt loop below settled on a real extent rather than on zero");
+
+    /* The atlas's entry of set 1's sampler array: the whole reason the public pair hands the atlas down to the
+       texture rung is so the walk can draw through it, and the texture rung hands it an entry of the array the
+       same way xud_create_texture() and the model rung do for a map. A record whose atlas holds no entry is one
+       the walk's resolve answers with the no-map sentinel, and the walk then samples slot 0's white default rather
+       than the atlas, which is the shape this check exists to refuse.
+    */
+    {
+        const XudTextureRecord* atlas = NULL;
+
+        xud_check(xud_texture_get(context->handleTable, record->atlas, &atlas) == XUD_OK, "gpu-atlas-get",
+            "the atlas's own record is readable, which is what the slot below is read off");
+        xud_check((atlas != NULL) && (atlas->samplerSlotLive != 0u), "gpu-atlas-slot-live",
+            "and the atlas holds a live entry of set 1's sampler array, so the walk's resolve answers a slot rather than "
+            "the no-map sentinel");
+        xud_check((atlas == NULL) || (atlas->samplerSlot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE), "gpu-atlas-slot-bounded",
+            "and that entry is inside the array, which is the bound the walk's own textureIndex check refuses past");
+    }
 
     xud_check(xud_get_glyph_info(&info, context, handle, 65u) == XUD_OK, "gpu-info-query",
         "the public metrics query answers for a codepoint rather than for an index, which is raylib's shape");
@@ -1018,7 +1087,8 @@ static void xud_test_font_gpu(void) {
     xud_check(xud_get_font_atlas_dim(context, stale, &closed, &closed) == XUD_INVALID_ARG, "gpu-dim-stale",
         "and so for the extent query, which runs the same validation the close runs");
 
-    xud_check(xud_font_close_all(context->handleTable, context->loader, context->device, context->allocator, &closed) == XUD_OK,
+    xud_check(xud_font_close_all(context->handleTable, context->loader, context->device, context->descriptor, context->allocator, &closed)
+            == XUD_OK,
         "gpu-close-all-idempotent", "the teardown rung runs again with nothing left and is not refused");
     xud_check(closed == 0u, "gpu-close-all-count",
         "and it closed nothing, so the rung above the texture walk is idempotent rather than a double free waiting for it");

@@ -957,19 +957,17 @@ XudResult xud_draw_model(XudContext* context, XudHandle handle);
  *   rung: the bake is the font rung's and the atlas it bakes is uploaded by the texture rung below it,
  *   so a caller names a context and a font FILE and never an atlas, a sampler or a VkImage.
  *
- * What is NOT here, and why: no sampler for the text pair to draw through. The pair landed, the pen
- *   walk it delegates to landed, and the textured variant of the pipeline list landed beside it, but
- *   nothing in this tree can put a texture's view into set 1's sampler array (xud_material.h declares
- *   a setOne and never allocates one, and xud_descriptor.c stamps its 1x1 white default into all six
- *   teen entries), so a glyph quad drawn here still samples white and draws as a tinted rectangle
- *   rather than as a letter - the bytes it writes are the whole of the step beside that half, and the
- *   note at the top of xud_font.h states the same fact from the rung's side. Also absent for the reas
- *   on the font rung's own note gives: raylib's FONT_SDF (a second atlas format and a second variant
- *   reading it), its LoadFontFromImage and its bitmap/sprite font loaders (file formats stb_truetype
- *   does not read at all), its DrawText3D (a text run whose pen walks a plane other than the screen's,
- *   which is a transform this library's camera does not hand a caller per draw) and its default bitmap
- *   font - which is why this library has no xud_load_font_default() and no default font a context
- *   falls back to.
+ * What the text pair draws through, and what is still NOT here: the glyphs draw through the textured
+ *   variant of the pipeline list, and the set-1 slot they sample with is the atlas's own entry of the
+ *   sampler array, resolved from the texture record the atlas is - a record whose atlas occupies no
+ *   entry of the array draws through slot 0's white default rather than through a refusal, the same
+ *   answer the material rung gives a map it cannot sample. Absent for the reason the font rung's own
+ *   note gives: raylib's FONT_SDF (a second atlas format and a second variant reading it), its
+ *   LoadFontFromImage and its bitmap/sprite font loaders (file formats stb_truetype does not read at
+ *   all), its DrawText3D (a text run whose pen walks a plane other than the screen's, which is a
+ *   transform this library's camera does not hand a caller per draw) and its default bitmap font -
+ *   which is why this library has no xud_load_font_default() and no default font a context falls back
+ *   to.
  *-----------------------------------------------------------------------------------------------*/
 
 /// Load a font this context owns: the object half of the font rung, and the fifth public create pair wh
@@ -1026,10 +1024,12 @@ XudResult xud_measure_text(
 ///   the pen, which is the answer the rows state rather than an absent row - skipping both would run two words
 ///   into one. The quads are appended one glyph at a time, so a string that runs out of batch capacity draws the
 ///   glyphs that fit and refuses at the next glyph boundary, the same shape xud_draw_model() states for a model
-///   whose last mesh did not fit. What the draw cannot do yet, and why it says so rather than papering over it:
-///   the quad it appends still samples set 1's white default rather than this font's atlas, because nothing in
-///   this tree can put a texture's view into that sampler array - so a string drawn today spends its vertices,
-///   its indices, its uvs and its colour and draws as tinted rectangles rather than as letters. XUD_INVALID_ARG
+///   whose last mesh did not fit. The quads draw through the textured variant of the pipeline list with the set-1
+///   slot resolved from this font's own atlas - the texture record the atlas is names its entry of the sampler
+///   array, and the walk moves the batch's material state to that row for the walk and back when it is done, so
+///   the glyphs flush as one textured draw row of their own and the shapes appended beside them draw with the
+///   state the walk found; a record whose atlas occupies no entry of the array draws through slot 0's white
+///   default rather than through a refusal. XUD_INVALID_ARG
 ///   on a NULL context or text array, on a textCount of zero, or on a pixelSize that is not strictly
 ///   positive (which refuses zero, a negative height and a NaN in one comparison), or on a handle that does not
 ///   name a live FONT slot of this context; XUD_UNSUPPORTED on a context whose bring-up never completed, which

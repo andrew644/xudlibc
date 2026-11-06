@@ -75,14 +75,15 @@
 #define XUD_SHAPES_FLAT_NORMAL_Y 0.0f
 #define XUD_SHAPES_FLAT_NORMAL_Z 1.0f
 
-/* The uv every shape HERE THAT HAS NO SURFACE carries: (0, 0). The batch's UV stream is read by
-   nothing today - solid.frag reads the colour at location 1 and the normal at location 2, and
-   neither is this one - and set 1 is declared but never allocated, so there is no sampler whose
-   array a uv could address. The value is a corner of a texture that does not exist, which is what
-   a stream that nothing reads has to be filled with. The glyph quad below is the one shape in
-   this rung this constant does NOT fill, and it is the reason the stream exists at all: a box,
-   a sphere and a line have no texels a caller names, so their uv has no value to be, and a
-   glyph's texels are named, by the atlas box. */
+/* The uv every shape HERE THAT HAS NO SURFACE carries: (0, 0). The solid column of the pipeline
+   list does not read it - solid.frag reads the colour at location 1 and the normal at location 2,
+   and neither is this one - and the textured column that does read it addresses set 1's sampler
+   array through a slot the texture step wrote, so a uv a shape here writes names no texel a caller
+   named. The value is a corner of a texture that does not exist, which is what a stream whose uv no
+   caller names has to be filled with. The glyph quad below is the one shape in this rung this
+   constant does NOT fill, and it is the reason the stream exists at all: a box, a sphere and a line
+   have no texels a caller names, so their uv has no value to be, and a glyph's texels are named,
+   by the atlas box. */
 #define XUD_SHAPES_UV_S 0.0f
 #define XUD_SHAPES_UV_T 0.0f
 
@@ -317,15 +318,13 @@ static_assert((XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT == XUD_SHAPES_SPHERE_VERTEX_C
    this header) is what makes "larger y" the top corner, and is also why the append's proper-box
    test reads corner0.y > corner1.y rather than the other way round.
 
-   What is NOT true yet, and why: nothing in this tree can put a texture's view into set 1's
-   sampler array (xud_descriptor.c stamps its own 1x1 white default into all sixteen entries and
-   xud_material.h's setOne is never allocated), so a glyph quad appended today still samples white
-   and draws as a tinted rectangle rather than a letter. The bytes this append writes are the
-   shape's half of that step; the sampler's half is the material step's. What is also not here: the
-   divide. The append takes a uv box in texture coordinates rather than an atlas box in texels and
-   an extent, because the shapes rung has no idea what an atlas is; the divide by the extent
-   happens where the extent is in sight, which is the draw above this rung - and the extent is not
-   public yet, which is the todo item below this one. */
+   What is also not here: the divide. The append takes a uv box in texture coordinates rather than
+   an atlas box in texels and an extent, because the shapes rung has no idea what an atlas is; the
+   divide by the extent happens where the extent is in sight, which is the draw above this rung. The
+   sampler's half the quad draws through is the font rung's: the walk appends these quads through
+   the textured column with the set-1 slot it resolved from the atlas, and a quad appended with the
+   no-map sentinel samples slot 0 of the array, the white default the descriptor rung stamped there
+   at its bring-up, and draws as a tinted rectangle rather than a letter. */
 #define XUD_SHAPES_GLYPH_VERTEX_COUNT 4u
 #define XUD_SHAPES_GLYPH_INDEX_COUNT 6u
 

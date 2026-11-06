@@ -20,15 +20,14 @@
  *
  *   What this example draws now and still cannot show: the public text pair landed, so the string
  *   IS drawn through the library's own walk, with the real uvs the walk writes into the batch's UV
- *   stream and the textured variant of the pipeline list beside the solid one. What is still missin
- *   g is the SAMPLER's half: nothing in this tree can put a texture's view into set 1's sampler arra
- *   y (xud_material.h declares a setOne and never allocates one, and xud_descriptor.c stamps its 1x1
- *   white default into all sixteen entries), so the glyphs the pair draws come out as tinted rectang
- *   les of the glyph's own box rather than as its outline. The boxes the caller's own walk draws bes
- *   ide them are the same boxes in a different colour, so the two walks are visible in one frame and
- *   a reader can see which numbers each of them places: the pair's glyphs are scaled uniformly in th
- *   e library's square clip space, the caller's boxes carry the window's aspect divide, and the diff
- *   erence between the two is the aspect and nothing else.
+ *   stream, the textured variant of the pipeline list beside the solid one, and the set-1 slot the
+ *   walk samples with resolved from this font's own atlas - the glyphs come out as the letterforms
+ *   of the file's own coverage, tinted by the call's colour. What the frame still cannot show is
+ *   that the two walks agree: the boxes the caller's own walk draws beside them are the same boxes
+ *   in a different colour, so the two walks are visible in one frame and a reader can see which
+ *   numbers each of them places: the pair's glyphs are scaled uniformly in the library's square
+ *   clip space, the caller's boxes carry the window's aspect divide, and the difference between
+ *   the two is the aspect and nothing else.
  *
  *   The metrics printed below are the font file's own answers, not a table copied from a font
  *   editor: the numbers a run prints are what the bake wrote, and the same numbers are what the
@@ -229,10 +228,11 @@ static XudResult xud_hello_font_draw(
     }
 
     /* The string through the public pair: the library's own walk, from the pen's start rather than
-       from the line's top-left, at the em height in clip y, with the real uvs it writes. The pair
-       still samples set 1's white default rather than this font's atlas, so what lands is a tinted
-       rectangle per glyph box rather than a glyph outline - see the note at the top of this file for
-       why that is the sampler's half rather than this call's.
+       from the line's top-left, at the em height in clip y, with the real uvs it writes, the textured
+       variant it draws through, and the set-1 slot it samples with resolved from this font's own
+       atlas - so what lands is the file's own coverage tinted by the call's colour rather than a
+       rectangle per glyph box. The boxes beside it are the caller's own walk of the same string in
+       its own colour, so the two walks are in one frame on one string on one baseline.
     */
     result = xud_draw_text_ex(context, font, text, textCount, (XudVector3) { .x = startX, .y = baseline, .z = depth }, XUD_HELLO_DRAW_EM,
         (spacing * scaleY), (XudColor) { .r = 255u, .g = 120u, .b = 90u, .a = 255u });

@@ -35,10 +35,12 @@
  *   back to the default rather than waiting for the next frame's reset.
  *
  *   What the record holds, and why that is the whole of it today: the pipeline variant every
- *   draw of this material uses, which is live the moment a material is, the diffuse map its draws
- *   sample, which is a handle and not an image - and the set-1 half, the per-material VkDescriptor
- *   Set the descriptor-layout rung declares (XUD_DESCRIPTOR_SET_MATERIAL) and never allocates. The
- *   variant is the material's because in Vulkan the blend attachment state is PIPELINE state, not
+ *   draw of this material uses, which is live the moment a material is, and the diffuse map its draws
+ *   sample, which is a handle and not an image. The set-1 half the record names through the map's own
+ *   samplerSlot is the one per-material set the descriptor-layout rung allocates
+ *   (XUD_DESCRIPTOR_SET_MATERIAL), and the texture step is what writes a map's view into its entry of that
+ *   set's sampler array - which is what makes a map's slot the record's to give back at the close rather
+ *   than a fact only the free list knows. The variant is the material's because in Vulkan the blend attachment state is PIPELINE state, not
  *   draw state: raylib's Material is { shader, maps[], params[] } (reference/raylib/raylib.h 388-3
  *   92) and none of those three is a blend mode - raylib's blend mode is a global its BeginBlendMo
  *   de()/EndBlendMode() pair scopes - and the two things a material owns in this library are theref
