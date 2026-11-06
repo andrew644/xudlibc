@@ -53,7 +53,11 @@ layout(location = 2) out vec3 outNormal;
 
 void main(void)
 {
-    gl_Position = xudFrame.viewProj * xudPush.modelMatrix * vec4(inPos, 1.0f);
+    /* Vulkan's clip space is Y-DOWN, the NDC the viewProj and the identity-space draws author
+       is Y-UP: flip the Y once, here, at the last point before the rasteriser. Culling is
+       disabled (xud_pipeline.h's XUD_PIPELINE_CULL_MODE) so the flip costs no winding change. */
+    vec4 clipPos = xudFrame.viewProj * xudPush.modelMatrix * vec4(inPos, 1.0f);
+    gl_Position = vec4(clipPos.x, -clipPos.y, clipPos.z, clipPos.w);
     outUv = inUv;
     outColor = inColor;
     outNormal = inNormal;
