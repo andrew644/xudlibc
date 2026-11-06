@@ -32,6 +32,7 @@
 #include "xud_core.h" /* Required for: struct XudContext, whose handleTable and renderer the public calls reach */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/free, xud_handle_record_get/set - the slot this rung's record lives in */
 #include "xud_renderer.h" /* Required for: XudRenderer, the record the wanted-material state lives in */
+#include "xud_texture.h" /* Required for: xud_texture_get(), XUD_TEXTURE_SAMPLER_SLOT_NONE - the slot the resolver reads off the map's record */
 #include <assert.h> /* Required for: static_assert, the public token mirror below */
 #include <stdlib.h> /* Required for: malloc, free - the one allocation a material spends */
 
@@ -89,6 +90,42 @@ XudResult xud_material_check_map(const XudHandleTable* table, XudHandle diffuseM
        r context, a map already released and a handle of a third kind all fail the same test.
     */
     return xud_handle_validate(table, diffuseMap, XUD_HANDLE_KIND_TEXTURE);
+}
+
+XudResult xud_material_resolve_texture(const XudHandleTable* table, const XudMaterialRecord* record, uint32_t* outTextureIndex) {
+    const XudTextureRecord* texture = NULL;
+
+    if ((record == NULL) || (outTextureIndex == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (record->diffuseMap.kind == XUD_HANDLE_KIND_NONE) {
+        /* The no-map state answers without a table, the same way the check above does: the slot a
+           no-map draw samples is 0 by the frame loop's sentinel mapping, so the no-texture sentinel
+           is what the state carries until a map names a slot of its own. */
+        *outTextureIndex = XUD_BATCH_NO_TEXTURE;
+        return XUD_OK;
+    }
+    if (table == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_texture_get(table, record->diffuseMap, &texture) != XUD_OK) {
+        /* The map names a slot that is not live TEXTURE anymore - closed between the create and the
+           begin, a cross-kind handle, a stale one - and a textured row that names a destroyed image
+           is the state this rung's begin exists to refuse. */
+        return XUD_INVALID_ARG;
+    }
+    if (texture->samplerSlot == XUD_TEXTURE_SAMPLER_SLOT_NONE) {
+        /* A live map that occupies no entry of set 1's array - a texture opened below the context
+           level, whose image lives nowhere the array can name - is answered with the no-texture
+           sentinel rather than an index that names nothing: the textured row its variant binds
+           samples slot 0, the white default, and a map that cannot be sampled at all drawing white
+           is an honest rendering of the fact rather than a refusal at the begin. */
+        *outTextureIndex = XUD_BATCH_NO_TEXTURE;
+        return XUD_OK;
+    }
+
+    *outTextureIndex = texture->samplerSlot;
+    return XUD_OK;
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -336,8 +373,9 @@ XudResult xud_close_material(XudContext* context, XudHandle handle) {
         renderer->material.generation = 0u;
         renderer->material.kind = XUD_HANDLE_KIND_NONE;
         renderer->materialVariant = XUD_BATCH_VARIANT_OPAQUE;
+        renderer->materialTexture = XUD_BATCH_NO_TEXTURE;
         if (renderer->batch != NULL) {
-            (void)xud_batch_set_material(renderer->batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE);
+            (void)xud_batch_set_material(renderer->batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE);
         }
     }
 
@@ -360,6 +398,7 @@ XudResult xud_close_material(XudContext* context, XudHandle handle) {
 XudResult xud_begin_material(XudContext* context, XudHandle handle) {
     const XudMaterialRecord* record = NULL;
     XudRenderer* renderer = NULL;
+    uint32_t textureIndex = XUD_BATCH_NO_TEXTURE;
     XudResult result = XUD_INVALID_ARG;
 
     if (context == NULL) {
@@ -389,13 +428,14 @@ XudResult xud_begin_material(XudContext* context, XudHandle handle) {
        before it becomes a batch row - the renderer below stores the variant alone and the frame loo
        p never looks the map up, so a begin that passed is a frame that cannot reach the dead image.
     */
-    result = xud_material_check_map(context->handleTable, record->diffuseMap);
+    result = xud_material_resolve_texture(context->handleTable, record, &textureIndex);
     if (result != XUD_OK) {
         return result;
     }
 
     renderer->material = handle;
     renderer->materialVariant = record->variant;
+    renderer->materialTexture = textureIndex;
     renderer->materialWanted = 1u;
 
     /* The state moves at the call, not only at the next frame's opening: raylib's Begin/End
@@ -406,7 +446,7 @@ XudResult xud_begin_material(XudContext* context, XudHandle handle) {
        starts a new run - which is what makes a frame that mixes two materials more than one
        row, the fact the frame loop's multi-row replay was already built for.
     */
-    return xud_batch_set_material(renderer->batch, handle.index, record->variant);
+    return xud_batch_set_material(renderer->batch, handle.index, record->variant, textureIndex);
 }
 
 XudResult xud_end_material(XudContext* context) {
@@ -432,6 +472,7 @@ XudResult xud_end_material(XudContext* context) {
     renderer->material.generation = 0u;
     renderer->material.kind = XUD_HANDLE_KIND_NONE;
     renderer->materialVariant = XUD_BATCH_VARIANT_OPAQUE;
+    renderer->materialTexture = XUD_BATCH_NO_TEXTURE;
 
     /* The batch moves back to the default HERE rather than at the next frame's reset, which is
        raylib's EndBlendMode() read literally ("reset to default: alpha blending", raylib.h
@@ -439,5 +480,5 @@ XudResult xud_end_material(XudContext* context) {
        began and ended a material inside itself records the runs either side of the End at
        their own rows rather than one row at whatever the begin moved in.
     */
-    return xud_batch_set_material(renderer->batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE);
+    return xud_batch_set_material(renderer->batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE);
 }

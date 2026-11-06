@@ -42,6 +42,7 @@
 #include "volk.h" /* Required for: VK_NO_PROTOTYPES - must precede <vulkan/vulkan.h>, see xud_loader.h */
 #include "xud.h" /* Required for: XudResult - the batch layer's own error codes */
 #include "xud_allocator.h" /* Required for: XudAllocator, XudMemoryRange - the one owner of the memory every buffer here is bound to */
+#include "xud_descriptor.h" /* Required for: XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - the bound a draw row's texture channel is validated against */
 #include "xud_device.h" /* Required for: XudDevice - the handle every create/bind/copy row is asked of */
 #include "xud_loader.h" /* Required for: XudLoader - the Volk rows every call here is made through */
 #include "xud_physical.h" /* Required for: XudDeviceCaps - the vertex-input limits and the memory rows the staging arena is chosen from */
@@ -240,6 +241,14 @@ static_assert(XUD_BATCH_VARIANT_COUNT == (XUD_BATCH_VARIANT_TEXTURED + 1u), "the
 static_assert(XUD_BATCH_TOPOLOGY_COUNT == (XUD_BATCH_TOPOLOGY_LINES + 1u), "the two topologies are contiguous from triangles up");
 static_assert(XUD_BATCH_NO_MATERIAL > 0u, "the sentinel is not a material slot any live row can name");
 
+/* "no texture slot", the same sentinel shape: a draw with no map samples slot 0 of set 1's array - the white default the
+   descriptor rung writes at its bring-up - and the frame loop maps this sentinel to that slot rather than carrying an index
+   nothing owns. */
+#define XUD_BATCH_NO_TEXTURE 0xFFFFFFFFu
+
+static_assert(XUD_BATCH_NO_TEXTURE >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE,
+    "the sentinel is past the array's size, so a row's texture channel either names a real entry or names nothing at all");
+
 /*-----------------------------------------------------------------------------------------------
  * The geometry a draw row replays through
  *-----------------------------------------------------------------------------------------------*/
@@ -306,6 +315,7 @@ struct XudBatchDraw {
                             rlgl.h 3116 */
     uint32_t variant; /* which of the plan's two pipeline variants this draw uses */
     uint32_t materialIndex; /* which material slot, XUD_BATCH_NO_MATERIAL while no material exists */
+    uint32_t textureIndex; /* which entry of set 1's sampler array this draw samples, XUD_BATCH_NO_TEXTURE while no map does */
     uint32_t geometryIndex; /* which entry of the batch's geometry list this draw binds its buffers
                                 from - XUD_BATCH_GEOMETRY_OWN for the batch's own arena, which is
                                 what every shape's append accumulates under and the only value a
@@ -386,6 +396,9 @@ struct XudBatch {
                                     live - the slot index of the handle layer's MATERIAL kind, so
                                     the number in a recorded row is the number xud_frame_fill_push_row
                                     maps into the push row's material channel */
+    uint32_t currentTexture; /* the set-1 slot the pending draws sample, XUD_BATCH_NO_TEXTURE while no map does - the
+                                  texture half of the pair set_material moves, the number a recorded row hands to the
+                                  push row's texture channel */
     uint32_t pendingFirstIndex; /* where the pending draws' indices start */
     uint32_t pendingIndexCount; /* how many indices they take */
 
@@ -494,7 +507,7 @@ XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_
 /// the material that was begun around it, so the caller above reads the state rather than naming a
 /// material of its own, and the mesh's row is then the same row xud_batch_set_material() would have
 /// split. XUD_INVALID_ARG on a NULL batch or out-pointer.
-XudResult xud_batch_state_get(const XudBatch* batch, uint32_t* outVariant, uint32_t* outMaterialIndex);
+XudResult xud_batch_state_get(const XudBatch* batch, uint32_t* outVariant, uint32_t* outMaterialIndex, uint32_t* outTextureIndex);
 
 /// Pure: whether the capacity ask the batch recorded is bigger than the batch can hold - the one
 /// question the frame boundary above needs before it calls xud_batch_grow, and the reason it is
@@ -529,7 +542,7 @@ XudResult xud_batch_check_invariant(const XudBatch* batch);
 /// change that cannot be expressed as a row inside the batch that is still open. XUD_INVALID_ARG on
 /// a NULL batch/out-flush or a variant at or past the variant list; XUD_OK with *outFlush 1 or 0.
 XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint32_t requestedVariant, uint32_t requestedMaterial,
-    uint32_t appendVertices, uint32_t appendIndices);
+    uint32_t requestedTexture, uint32_t appendVertices, uint32_t appendIndices);
 
 /// Pure: record one draw row - the index range of the pending batch plus the topology/variant/
 /// material it was accumulated under - and reset the pending pair for the next batch. This is the
@@ -540,7 +553,7 @@ XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint
 /// on the sequence the rest of this tree uses, so a record is never refused for being at a bound;
 /// XUD_INVALID_ARG on a NULL batch, a topology at or past the topology list or a variant at or
 /// past the variant list; XUD_OUT_OF_MEMORY only when that doubling step fails on the host.
-XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex);
+XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, uint32_t textureIndex);
 
 /// Pure: record one draw row that replays through buffers BESIDE the batch's arena - a mesh's own
 /// five - and return the geometry entry it bound. The pending run of the batch's own arena is
@@ -557,8 +570,8 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
 /// own rule, read again here because this row is what names that range), or a NULL buffer in the
 /// five (a draw that binds a null buffer is a draw reading nothing); XUD_OUT_OF_MEMORY only when
 /// the draw list's or the geometry list's doubling step fails on the host.
-XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, const VkBuffer* buffers,
-    const VkDeviceSize* offsets, uint32_t indexCount);
+XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, uint32_t textureIndex,
+    const VkBuffer* buffers, const VkDeviceSize* offsets, uint32_t indexCount);
 
 /// Pure: move the batch's topology state, and close the pending run into a draw row of the SAME
 /// batch first if the state actually changes and the run has content in it. This is raylib's
@@ -584,9 +597,10 @@ XudResult xud_batch_set_topology(XudBatch* batch, uint32_t topology);
 /// the variant a material draws through is the material's own record member: two separate state
 /// calls would be two splits, and the second would close a run that has no content in it. The
 /// material index is not validated here against a slot array - the batch cannot name the handle
-/// layer, and the public pair above validates the handle before it moves anything in. XUD_INVAL
-/// D_ARG on a NULL batch or a variant at or past the variant list.
-XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32_t variant);
+/// layer, and the public pair above validates the handle before it moves anything in. The texture
+/// slot is validated only against set 1's array size, the one bound this rung knows. XUD_INVALID_ARG
+/// on a NULL batch or a variant at or past the variant list.
+XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32_t variant, uint32_t textureIndex);
 
 /// Pure: ONE recorded draw row by index, so the frame loop above can replay the flush list without
 /// reaching into the batch's own heap array (the repo's accessor rule, one rung below). XUD_INVALID_ARG

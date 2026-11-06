@@ -261,12 +261,13 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
     */
     outRow->materialIndex = (drawRow->materialIndex == XUD_BATCH_NO_MATERIAL) ? 0u : drawRow->materialIndex;
 
-    /* Every slot of set 1's sampler array is written at the descriptor rung's bring-up, and slot 0 of
-       it is the white default, so 0 is the slot a draw samples through until the record call above
-       names another one: the number is a slot the frame loop's slice rebind can bind, not a channel
-       this rung has anything to choose between.
+    /* The same sentinel mapping one channel over: a draw with no map names slot 0 of set 1's
+       sampler array - the white default the descriptor rung wrote at its bring-up - and the push
+       row's member is an index a read could use, so the sentinel that indexes nothing is mapped to
+       the slot every no-map draw samples through. A real slot passes through unchanged: it is the
+       number the frame loop's slice rebind binds set 1 at beside this draw.
     */
-    outRow->textureIndex = 0u;
+    outRow->textureIndex = (drawRow->textureIndex == XUD_BATCH_NO_TEXTURE) ? 0u : drawRow->textureIndex;
 
     /* The variant the draw was flushed under, in the per-draw channel rather than a channel of this r
        ung's: the pipeline variant is chosen by BINDING a different pipeline, and this is the same fa
@@ -684,7 +685,8 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
            ed on, and what is left for a caller above to act on is the capacity half of it - the on
            ly change that cannot be expressed as a row inside a batch that is still open.
         */
-        if (xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial) != XUD_OK) {
+        if (xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial, batch->currentTexture)
+            != XUD_OK) {
             return XUD_OUT_OF_MEMORY;
         }
         result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);

@@ -1,5 +1,4 @@
 # TODO
-- Carry `textureIndex` through the batch draw row, the record calls, and `xud_draw_mesh()`/`xud_draw_model()` into the push row
 - Decode glTF images to textures (needs stb_image included) and wire them into the model's material slots
 - Map the glTF sampler's filter/wrap onto `XUD_TEXTURE_*` tokens
 - Add a deterministic textured-draw test with a readback, and a textured model example

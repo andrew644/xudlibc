@@ -148,9 +148,9 @@ static void xud_test_frame_pure(void) {
     */
     {
         XudPushRow pushRow;
-        const XudBatchDraw sentinelRow
-            = { 0u, 3u, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, XUD_BATCH_GEOMETRY_OWN };
-        const XudBatchDraw realRow = { 12u, 6u, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_TRANSPARENT, 3u, XUD_BATCH_GEOMETRY_OWN };
+        const XudBatchDraw sentinelRow = { 0u, 3u, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+            XUD_BATCH_NO_TEXTURE, XUD_BATCH_GEOMETRY_OWN };
+        const XudBatchDraw realRow = { 12u, 6u, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_TRANSPARENT, 3u, 2u, XUD_BATCH_GEOMETRY_OWN };
         uint32_t axis = 0u;
         uint32_t offDiagonal = 0u;
 
@@ -178,13 +178,18 @@ static void xud_test_frame_pure(void) {
             "n index a read could use and the sentinel indexes nothing");
         xud_check((pushRow.textureIndex == 0u) && (pushRow.flags == XUD_BATCH_VARIANT_OPAQUE) && (pushRow.reserved == 0u),
             "frame/push-other-members",
-            "texture 0, the slot the frame loop's per-frame bind leaves set 1 at - the white default - and flags "
+            "texture 0, the slot the frame loop's per-frame bind leaves set 1 at - the white default the no-texture sentinel maps to - and "
+            "flags "
             "the variant the draw was flushed under, and the padding byte-zeroed");
 
         xud_check(xud_frame_fill_push_row(&pushRow, &realRow) == XUD_OK, "frame/push-real-ok", "and so for a real material slot");
         xud_check((pushRow.materialIndex == 3u) && (pushRow.flags == XUD_BATCH_VARIANT_TRANSPARENT), "frame/push-real-passthrough",
             "a slot that is not the sentinel is passed through unchanged, and the variant follows the"
             "row - the per-draw channel carries the draw's own facts, not this rung's");
+        xud_check(pushRow.textureIndex == 2u, "frame/push-real-texture-passthrough",
+            "and the same for the texture slot: a row that names a real entry of set 1's array is "
+            "passed through unchanged, which is the slot the frame loop's slice rebind will bind set "
+            "1 at beside this draw");
         xud_check(pushRow.modelMatrix[0] == 1.0f, "frame/push-identity-again",
             "and the model matrix is the identity for every row, because the matrix is not a per-draw"
             "fact until the transform step above makes it one");

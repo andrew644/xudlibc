@@ -268,17 +268,21 @@ static void xud_test_batch_pure(void) {
 
     /*--- the flush decision ------------------------------------------------------------------*/
 
-    xud_check(xud_batch_should_flush(NULL, &b, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, 0u, 0u) == XUD_INVALID_ARG,
+    xud_check(
+        xud_batch_should_flush(NULL, &b, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, XUD_BATCH_NO_TEXTURE, 0u, 0u) == XUD_INVALID_ARG,
         "batch/flush-null-out", "refused");
-    xud_check(xud_batch_should_flush(&flush, NULL, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, 0u, 0u) == XUD_INVALID_ARG,
+    xud_check(xud_batch_should_flush(&flush, NULL, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, XUD_BATCH_NO_TEXTURE, 0u, 0u)
+            == XUD_INVALID_ARG,
         "batch/flush-null-batch", "refused");
-    xud_check(xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_MATERIAL, 0u, 0u) == XUD_INVALID_ARG,
+    xud_check(
+        xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_MATERIAL, XUD_BATCH_NO_TEXTURE, 0u, 0u) == XUD_INVALID_ARG,
         "batch/flush-bad-variant", "a variant past the two the plan names is a bad argument, not a third pipeline");
 
     /* The batch above has pendingIndexCount 0, so a variant change with nothing pending is not a
        batch to flush - the change still moves the current pair, one rung up. */
     flush = 0xDEADu;
-    xud_check(xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_TRANSPARENT, XUD_BATCH_NO_MATERIAL, 0u, 0u) == XUD_OK,
+    xud_check(
+        xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_TRANSPARENT, XUD_BATCH_NO_MATERIAL, XUD_BATCH_NO_TEXTURE, 0u, 0u) == XUD_OK,
         "batch/flush-change-with-nothing", "the decision itself answers OK");
     xud_check(flush == 0u, "batch/flush-nothing-pending-is-not-a-flush",
         "and it says do not flush: an empty pending batch is not a batch to submit, so a variant change with nothing under it is just a "
@@ -286,29 +290,36 @@ static void xud_test_batch_pure(void) {
 
     b.currentVariant = XUD_BATCH_VARIANT_OPAQUE;
     b.currentMaterial = XUD_BATCH_NO_MATERIAL;
+    b.currentTexture = XUD_BATCH_NO_TEXTURE;
     b.pendingIndexCount = 3u;
     flush = 0u;
-    xud_check(xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_TRANSPARENT, XUD_BATCH_NO_MATERIAL, 0u, 0u) == XUD_OK,
+    xud_check(
+        xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_TRANSPARENT, XUD_BATCH_NO_MATERIAL, XUD_BATCH_NO_TEXTURE, 0u, 0u) == XUD_OK,
         "batch/flush-variant-change", "the first half of the rule: a pipeline-variant change over a non-empty pending batch flushes");
     xud_check(flush == 1u, "batch/flush-variant-change-fires", "and it fires");
     flush = 0u;
-    xud_check(xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_OPAQUE, 7u, 0u, 0u) == XUD_OK, "batch/flush-material-change",
+    xud_check(xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_OPAQUE, 7u, XUD_BATCH_NO_TEXTURE, 0u, 0u) == XUD_OK,
+        "batch/flush-material-change",
         "the second half of the same rule: a material change flushes too, which is the plan's flush-on-pipeline/material-change read "
         "whole");
     xud_check(flush == 1u, "batch/flush-material-change-fires", "and it fires");
     flush = 0u;
-    xud_check(xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, 1u, 0u) == XUD_OK,
+    xud_check(xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, XUD_BATCH_NO_TEXTURE, 1u, 0u) == XUD_OK,
         "batch/flush-same-pair-fits", "same variant, same material, one more vertex than the three already live");
     xud_check(flush == 0u, "batch/flush-same-pair-does-not-fire", "and nothing flushes - the append continues the pending batch");
     flush = 0u;
-    xud_check(xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, b.vertexCapacity, 0u) == XUD_OK,
+    xud_check(
+        xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, XUD_BATCH_NO_TEXTURE, b.vertexCapacity, 0u)
+            == XUD_OK,
         "batch/flush-over-capacity",
         "the third half of the rule: an append that would pass the capacity flushes rather than wraps, because a stream that wrapped would "
         "be a draw whose index range names bytes the next frame overwrites");
     xud_check(flush == 1u, "batch/flush-over-capacity-fires", "and it fires");
     b.pendingIndexCount = 0u;
     flush = 0u;
-    xud_check(xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, b.vertexCapacity, 0u) == XUD_OK,
+    xud_check(
+        xud_batch_should_flush(&flush, &b, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, XUD_BATCH_NO_TEXTURE, b.vertexCapacity, 0u)
+            == XUD_OK,
         "batch/flush-over-capacity-empty", "the same over-capacity request with nothing pending");
     xud_check(flush == 0u, "batch/flush-over-capacity-empty-not-a-flush",
         "still not a flush - there is nothing to submit, so the answer is the caller above's refusal rather than an empty draw");
@@ -321,16 +332,27 @@ static void xud_test_batch_pure(void) {
     b.pendingFirstIndex = 0u;
     b.pendingIndexCount = 3u;
 
-    xud_check(xud_batch_record_draw(NULL, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL) == XUD_INVALID_ARG,
+    xud_check(
+        xud_batch_record_draw(NULL, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE, XUD_BATCH_NO_MATERIAL)
+            == XUD_INVALID_ARG,
         "batch/draw-null-batch", "refused");
-    xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_COUNT, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL) == XUD_INVALID_ARG,
+    xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_COUNT, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE, XUD_BATCH_NO_MATERIAL)
+            == XUD_INVALID_ARG,
         "batch/draw-bad-topology",
         "a row that names no topology the batch names is a bad argument, not a row that would bind no "
         "pipeline - the same rule the batch's own invariant check applies to a row's variant, and the "
         "reason the row is a (topology, variant) pair rather than one index");
-    xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_MATERIAL) == XUD_INVALID_ARG,
+    xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_TEXTURE, XUD_BATCH_NO_MATERIAL)
+            == XUD_INVALID_ARG,
         "batch/draw-bad-variant", "a row that names no variant the plan names is a bad argument, not a row that would bind no pipeline");
-    xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL) == XUD_OK,
+    xud_check(xud_batch_record_draw(
+                  &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)
+            == XUD_INVALID_ARG,
+        "batch/draw-bad-texture",
+        "and a slot at the array's size names no entry of set 1's sampler array, so the row is refused "
+        "rather than recording a slot the frame loop's slice rebind cannot bind");
+    xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE, XUD_BATCH_NO_MATERIAL)
+            == XUD_OK,
         "batch/draw-recorded", "the first row records");
     xud_check(
         b.draws[0u].firstIndex == 0u, "batch/draw-first-index-is-pending-start", "the row's firstIndex is where the pending batch started");
@@ -344,12 +366,15 @@ static void xud_test_batch_pure(void) {
     xud_check(b.draws[0u].materialIndex == XUD_BATCH_NO_MATERIAL, "batch/draw-material-sentinel",
         "and the sentinel, because no material slot exists yet - the row names an INDEX into the variants rather than a VkPipeline, which "
         "is what keeps a recreated pipeline from making a stale row");
+    xud_check(b.draws[0u].textureIndex == XUD_BATCH_NO_TEXTURE, "batch/draw-texture-sentinel",
+        "and the texture channel is the sentinel for a run accumulated with no map, which the frame loop "
+        "maps to slot 0 of set 1's array - the white default - in the push row");
     xud_check((b.pendingFirstIndex == b.indexCount) && (b.pendingIndexCount == 0u), "batch/draw-pending-reset",
         "recording a row moves the pending pair to start after it, which is what makes the next row's range the next window of the index "
         "buffer");
 
     for (row = 0u; row < XUD_BATCH_DRAW_MIN; row++) {
-        if (xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_OPAQUE, row) != XUD_OK) {
+        if (xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE, row) != XUD_OK) {
             xud_check(0, "batch/draw-array-grow-failed", "the doubling step failed on the host");
             break;
         }
@@ -407,16 +432,24 @@ static void xud_test_batch_pure(void) {
        The appends section below runs at the default again, which is where this section leaves the s
        tate, and its counts do not depend on the row count.
     */
-    xud_check(xud_batch_set_material(NULL, 0u, XUD_BATCH_VARIANT_OPAQUE) == XUD_INVALID_ARG, "batch/material-null-batch",
-        "a batch with no state to move is a bad argument");
-    xud_check(xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_COUNT) == XUD_INVALID_ARG, "batch/material-past-variant",
+    xud_check(xud_batch_set_material(NULL, 0u, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE) == XUD_INVALID_ARG,
+        "batch/material-null-batch", "a batch with no state to move is a bad argument");
+    xud_check(xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_TEXTURE) == XUD_INVALID_ARG,
+        "batch/material-past-variant",
         "a variant at or past the count is refused rather than a row that would bind no pipeline - the "
         "same rule the topology move applies to its own axis, one rung up");
-    xud_check((b.currentMaterial == XUD_BATCH_NO_MATERIAL) && (b.currentVariant == XUD_BATCH_VARIANT_OPAQUE),
+    xud_check(
+        xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) == XUD_INVALID_ARG,
+        "batch/material-past-texture",
+        "a slot at the array's size names no entry of set 1's sampler array, so the record call and the state "
+        "call refuse it with the same rule");
+    xud_check((b.currentMaterial == XUD_BATCH_NO_MATERIAL) && (b.currentVariant == XUD_BATCH_VARIANT_OPAQUE)
+            && (b.currentTexture == XUD_BATCH_NO_TEXTURE),
         "batch/material-refusal-left-state",
         "and the refusal left BOTH members where they were, so a refused move cannot split a run and a "
         "half-moved pair cannot name a row of the list that does not exist");
-    xud_check(xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE) == XUD_OK, "batch/material-same-pair-ok",
+    xud_check(xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE) == XUD_OK,
+        "batch/material-same-pair-ok",
         "asking for the pair already in hand is not an error - the pair is compared as a pair, so a cal"
         "ler that restates its material every draw is a no-op rather than a row per draw");
     xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 1u), "batch/material-same-pair-no-row", "and it records no row");
@@ -424,7 +457,7 @@ static void xud_test_batch_pure(void) {
     b.pendingFirstIndex = b.indexCount;
     b.pendingIndexCount = 3u;
 
-    xud_check(xud_batch_set_material(&b, 7u, XUD_BATCH_VARIANT_TRANSPARENT) == XUD_OK, "batch/material-split-ok",
+    xud_check(xud_batch_set_material(&b, 7u, XUD_BATCH_VARIANT_TRANSPARENT, XUD_BATCH_NO_TEXTURE) == XUD_OK, "batch/material-split-ok",
         "the move to a material and a variant completes");
     xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 2u), "batch/material-split-recorded-row",
         "and one row was recorded over the pending run, which is the split rather than a flush - the ba"
@@ -438,6 +471,9 @@ static void xud_test_batch_pure(void) {
     xud_check(b.draws[b.drawCount - 1u].materialIndex == XUD_BATCH_NO_MATERIAL, "batch/material-split-row-carries-the-previous-material",
         "and the material of the same run - the row is the (topology, variant, material) triple the run"
         "was drawn under, and the move's own pair is in the state, not in a row");
+    xud_check(b.draws[b.drawCount - 1u].textureIndex == XUD_BATCH_NO_TEXTURE, "batch/material-split-row-carries-no-texture",
+        "and the texture channel of the same run, which the move asked for nothing, so the row the split "
+        "closed is the one the run was accumulated under rather than the move's own triple");
     xud_check(b.draws[b.drawCount - 1u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES, "batch/material-split-row-carries-the-topology",
         "and the topology is untouched by a material move, which is what keeps a material change from "
         "turning a triangle run into a line run");
@@ -447,16 +483,33 @@ static void xud_test_batch_pure(void) {
     xud_check((b.currentMaterial == 7u) && (b.currentVariant == XUD_BATCH_VARIANT_TRANSPARENT), "batch/material-moved-both-axes",
         "and both members moved together, which is why the pair is ONE call rather than two: two state "
         "calls would be two splits and the second would close a run that has no content in it");
-    xud_check(xud_batch_set_material(&b, 7u, XUD_BATCH_VARIANT_TRANSPARENT) == XUD_OK, "batch/material-same-pair-ok-again",
-        "asking for the moved pair again is not an error");
-    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 2u), "batch/material-same-pair-again-no-row",
-        "and no row, so a caller that re-begins the same material between two draws costs nothing");
-    xud_check(xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE) == XUD_OK, "batch/material-back-ok",
-        "and the move back to the default is the same call in the other direction");
-    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 2u), "batch/material-back-empty-run-no-row",
+
+    /* The texture is the third member of the same call: the slot a material's map occupies moves with
+       the material and the variant, so a texture change alone is a split of its own and the row the
+       split closed carries the slot the run was accumulated under. */
+    b.pendingFirstIndex = b.indexCount;
+    b.pendingIndexCount = 3u;
+    xud_check(xud_batch_set_material(&b, 7u, XUD_BATCH_VARIANT_TRANSPARENT, 1u) == XUD_OK, "batch/material-texture-move-ok",
+        "the same material and variant with a different slot of set 1 moves the state");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 3u), "batch/material-texture-move-split",
+        "and it split the run, because the slot the next draws sample is pipeline state as far as the "
+        "frame loop's slice rebind is concerned, so a texture change is the same mechanism as a variant "
+        "change");
+    xud_check(b.draws[b.drawCount - 1u].textureIndex == XUD_BATCH_NO_TEXTURE,
+        "batch/material-texture-move-row-carries-the-previous-texture",
+        "and the row it closed carried the run's own slot, not the one the move asked for");
+    xud_check(b.currentTexture == 1u, "batch/material-texture-moved", "and the state holds the slot the next run accumulates under");
+    xud_check(xud_batch_set_material(&b, 7u, XUD_BATCH_VARIANT_TRANSPARENT, 1u) == XUD_OK, "batch/material-same-triple-ok-again",
+        "asking for the triple already in hand is not an error");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 3u), "batch/material-same-triple-no-row",
+        "and no row, so a caller that restates its material and its map costs nothing");
+    xud_check(xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE) == XUD_OK,
+        "batch/material-back-ok", "and the move back to the default is the same call in the other direction");
+    xud_check(b.drawCount == (XUD_BATCH_DRAW_MIN + 3u), "batch/material-back-empty-run-no-row",
         "and no row for it: the run that was pending is empty (the split above closed it), so closing "
         "it records nothing and a frame that ends its material records one row rather than two");
-    xud_check((b.currentMaterial == XUD_BATCH_NO_MATERIAL) && (b.currentVariant == XUD_BATCH_VARIANT_OPAQUE),
+    xud_check((b.currentMaterial == XUD_BATCH_NO_MATERIAL) && (b.currentVariant == XUD_BATCH_VARIANT_OPAQUE)
+            && (b.currentTexture == XUD_BATCH_NO_TEXTURE),
         "batch/material-back-at-default",
         "back at the default the batch's reset opens every frame with, which is what lets the appends "
         "section below run at the state it was written against");
@@ -642,15 +695,18 @@ static void xud_test_batch_pure(void) {
         XudBatchGeometry geometryRow;
         uint32_t stateVariant = 0u;
         uint32_t stateMaterial = 0u;
+        uint32_t stateTexture = 0u;
         uint32_t drawBefore = 0u;
         uint32_t slot = 0u;
 
-        xud_check(xud_batch_state_get(&b, &stateVariant, &stateMaterial) == XUD_OK, "batch/state-read", "the pair reads");
-        xud_check((stateVariant == b.currentVariant) && (stateMaterial == b.currentMaterial), "batch/state-is-the-current-pair",
-            "the pair the pending draws accumulate under, which is the pair a draw that names a handle "
+        xud_check(xud_batch_state_get(&b, &stateVariant, &stateMaterial, &stateTexture) == XUD_OK, "batch/state-read", "the triple reads");
+        xud_check((stateVariant == b.currentVariant) && (stateMaterial == b.currentMaterial) && (stateTexture == b.currentTexture),
+            "batch/state-is-the-current-triple",
+            "the state the pending draws accumulate under, which is what a draw that names a handle "
             "records under rather than chooses");
-        xud_check(xud_batch_state_get(NULL, &stateVariant, &stateMaterial) == XUD_INVALID_ARG, "batch/state-null-batch", "refused");
-        xud_check(xud_batch_state_get(&b, NULL, &stateMaterial) == XUD_INVALID_ARG, "batch/state-null-out", "refused");
+        xud_check(xud_batch_state_get(NULL, &stateVariant, &stateMaterial, &stateTexture) == XUD_INVALID_ARG, "batch/state-null-batch",
+            "refused");
+        xud_check(xud_batch_state_get(&b, &stateVariant, NULL, &stateTexture) == XUD_INVALID_ARG, "batch/state-null-out", "refused");
 
         meshBuffers[0] = (VkBuffer)&b.stream[0].binding;
         meshBuffers[1] = (VkBuffer)&b.stream[1].binding;
@@ -661,41 +717,41 @@ static void xud_test_batch_pure(void) {
             meshOffsets[slot] = 0u;
         }
 
-        xud_check(xud_batch_record_mesh_draw(
-                      NULL, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+        xud_check(xud_batch_record_mesh_draw(NULL, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-null-batch", "refused");
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_COUNT, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_COUNT, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-bad-topology",
             "a row that names no topology the batch names is a bad argument, the same rule its own "
             "record of the arena's rows applies");
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-bad-variant", "a row that names no variant the plan names is a bad argument");
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, NULL, meshOffsets, 3u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, NULL, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-null-buffers",
             "the five buffers are the argument of two bind calls, so an array of nothing is a bad argument rather than a row that binds "
             "nothing");
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, NULL, 3u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, NULL, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-null-offsets", "and so is an array of nothing for the second argument of the same two calls");
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 2u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 2u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-index-count-below-three", "the mesh rung's own rule, read again where the range is named");
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 4u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 4u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-index-count-not-whole-triangles", "and a range that is not a whole number of triangles is the same refusal");
         meshBuffers[XUD_BATCH_STREAM_COUNT] = VK_NULL_HANDLE;
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-null-buffer",
             "a row that binds a null buffer is a draw that reads nothing, so the five are checked before the row is recorded");
@@ -704,8 +760,8 @@ static void xud_test_batch_pure(void) {
         b.pendingFirstIndex = 0u;
         b.pendingIndexCount = 3u;
         drawBefore = b.drawCount;
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 6u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u)
                 == XUD_OK,
             "batch/mesh-draw-recorded", "the mesh's row records");
         xud_check(b.drawCount == (drawBefore + 2u), "batch/mesh-draw-closed-the-pending-run",
@@ -724,8 +780,8 @@ static void xud_test_batch_pure(void) {
             "a mesh appends nothing: its bytes are already in its own buffers, so the arena's pending run stays empty");
         xud_check(b.geometryCount == 1u, "batch/mesh-draw-recorded-one-geometry-entry", "one entry for one mesh");
 
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 6u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u)
                 == XUD_OK,
             "batch/mesh-draw-same-buffers-recorded", "the same mesh drawn again records a row");
         xud_check(b.geometryCount == 1u, "batch/mesh-draw-deduped-the-buffers",
@@ -735,8 +791,8 @@ static void xud_test_batch_pure(void) {
             "and the second row names the entry the first named");
 
         meshBuffers[0] = (VkBuffer)&b.stagingBufferInfo;
-        xud_check(xud_batch_record_mesh_draw(
-                      &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, meshBuffers, meshOffsets, 3u)
+        xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
                 == XUD_OK,
             "batch/mesh-draw-second-mesh", "a different buffer set records a row");
         xud_check(b.geometryCount == 2u, "batch/mesh-draw-second-entry", "and it gets its own entry, so the two meshes never share a bind");

@@ -357,7 +357,7 @@ XudResult xud_batch_check_invariant(const XudBatch* batch) {
 }
 
 XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint32_t requestedVariant, uint32_t requestedMaterial,
-    uint32_t appendVertices, uint32_t appendIndices) {
+    uint32_t requestedTexture, uint32_t appendVertices, uint32_t appendIndices) {
     if ((outFlush == NULL) || (batch == NULL)) {
         return XUD_INVALID_ARG;
     }
@@ -367,11 +367,15 @@ XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint
     if (requestedVariant >= XUD_BATCH_VARIANT_COUNT) {
         return XUD_INVALID_ARG;
     }
+    if ((requestedTexture != XUD_BATCH_NO_TEXTURE) && (requestedTexture >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
+        return XUD_INVALID_ARG;
+    }
 
     /* The rule, in the order the repo states it: a pipeline/material change flushes. The pending
        batch is empty when nothing has been accumulated under it, and an empty batch is not a
        batch to flush - the change still moves the current pair below. */
-    if ((requestedVariant != batch->currentVariant) || (requestedMaterial != batch->currentMaterial)) {
+    if ((requestedVariant != batch->currentVariant) || (requestedMaterial != batch->currentMaterial)
+        || (requestedTexture != batch->currentTexture)) {
         if (batch->pendingIndexCount != 0u) {
             *outFlush = 1u;
         }
@@ -436,13 +440,16 @@ static XudResult xud_batch_geometry_reserve(XudBatch* batch) {
     return XUD_OK;
 }
 
-XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex) {
+XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, uint32_t textureIndex) {
     XudResult result = XUD_OK;
 
     if (batch == NULL) {
         return XUD_INVALID_ARG;
     }
     if ((topology >= XUD_BATCH_TOPOLOGY_COUNT) || (variant >= XUD_BATCH_VARIANT_COUNT)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((textureIndex != XUD_BATCH_NO_TEXTURE) && (textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
         return XUD_INVALID_ARG;
     }
 
@@ -456,6 +463,7 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
     batch->draws[batch->drawCount].topology = topology;
     batch->draws[batch->drawCount].variant = variant;
     batch->draws[batch->drawCount].materialIndex = materialIndex;
+    batch->draws[batch->drawCount].textureIndex = textureIndex;
     batch->draws[batch->drawCount].geometryIndex = XUD_BATCH_GEOMETRY_OWN;
     batch->drawCount++;
 
@@ -478,8 +486,8 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
    index 0 is the batch's own arena - a row xud_batch_geometry_get builds from the batch's live
    stream rows rather than a stored one, which is what keeps a grow that recreated the six buffers
    from leaving a stale row behind. */
-XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, const VkBuffer* buffers,
-    const VkDeviceSize* offsets, uint32_t indexCount) {
+XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, uint32_t textureIndex,
+    const VkBuffer* buffers, const VkDeviceSize* offsets, uint32_t indexCount) {
     XudResult result = XUD_OK;
     uint32_t geometryIndex = XUD_BATCH_GEOMETRY_OWN;
     uint32_t found = 0u;
@@ -492,6 +500,9 @@ XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_
     if ((topology >= XUD_BATCH_TOPOLOGY_COUNT) || (variant >= XUD_BATCH_VARIANT_COUNT)) {
         return XUD_INVALID_ARG;
     }
+    if ((textureIndex != XUD_BATCH_NO_TEXTURE) && (textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
+        return XUD_INVALID_ARG;
+    }
     if (indexCount < 3u || ((indexCount % 3u) != 0u)) {
         return XUD_INVALID_ARG; /* the mesh rung's own rule, read again where the range is named */
     }
@@ -502,7 +513,7 @@ XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_
     }
 
     if (batch->pendingIndexCount != 0u) {
-        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial);
+        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial, batch->currentTexture);
         if (result != XUD_OK) {
             return result;
         }
@@ -544,6 +555,7 @@ XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_
     batch->draws[batch->drawCount].topology = topology;
     batch->draws[batch->drawCount].variant = variant;
     batch->draws[batch->drawCount].materialIndex = materialIndex;
+    batch->draws[batch->drawCount].textureIndex = textureIndex;
     batch->draws[batch->drawCount].geometryIndex = geometryIndex;
     batch->drawCount++;
 
@@ -566,7 +578,7 @@ XudResult xud_batch_set_topology(XudBatch* batch, uint32_t topology) {
     }
 
     if (batch->pendingIndexCount != 0u) {
-        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial);
+        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial, batch->currentTexture);
         if (result != XUD_OK) {
             return result;
         }
@@ -587,18 +599,21 @@ XudResult xud_batch_set_topology(XudBatch* batch, uint32_t topology) {
    two separate state calls would be two splits, and the second would close a run that has no con
    tent in it. The index is not validated against a slot array here - the batch cannot name the
    handle layer - the public pair above validates the handle before it moves anything in. */
-XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32_t variant) {
+XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32_t variant, uint32_t textureIndex) {
     XudResult result = XUD_OK;
 
     if ((batch == NULL) || (variant >= XUD_BATCH_VARIANT_COUNT)) {
         return XUD_INVALID_ARG;
     }
-    if ((materialIndex == batch->currentMaterial) && (variant == batch->currentVariant)) {
+    if ((textureIndex != XUD_BATCH_NO_TEXTURE) && (textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((materialIndex == batch->currentMaterial) && (variant == batch->currentVariant) && (textureIndex == batch->currentTexture)) {
         return XUD_OK;
     }
 
     if (batch->pendingIndexCount != 0u) {
-        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial);
+        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial, batch->currentTexture);
         if (result != XUD_OK) {
             return result;
         }
@@ -606,6 +621,7 @@ XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32
 
     batch->currentMaterial = materialIndex;
     batch->currentVariant = variant;
+    batch->currentTexture = textureIndex;
 
     return XUD_OK;
 }
@@ -733,6 +749,7 @@ XudResult xud_batch_reset(XudBatch* batch) {
     batch->currentTopology = XUD_BATCH_TOPOLOGY_TRIANGLES;
     batch->currentVariant = XUD_BATCH_VARIANT_OPAQUE;
     batch->currentMaterial = XUD_BATCH_NO_MATERIAL;
+    batch->currentTexture = XUD_BATCH_NO_TEXTURE;
     batch->geometryCount = 0u;
 
     return XUD_OK;
@@ -769,13 +786,14 @@ XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_
     return XUD_OK;
 }
 
-XudResult xud_batch_state_get(const XudBatch* batch, uint32_t* outVariant, uint32_t* outMaterialIndex) {
-    if ((batch == NULL) || (outVariant == NULL) || (outMaterialIndex == NULL)) {
+XudResult xud_batch_state_get(const XudBatch* batch, uint32_t* outVariant, uint32_t* outMaterialIndex, uint32_t* outTextureIndex) {
+    if ((batch == NULL) || (outVariant == NULL) || (outMaterialIndex == NULL) || (outTextureIndex == NULL)) {
         return XUD_INVALID_ARG;
     }
 
     *outVariant = batch->currentVariant;
     *outMaterialIndex = batch->currentMaterial;
+    *outTextureIndex = batch->currentTexture;
 
     return XUD_OK;
 }
@@ -1140,6 +1158,7 @@ XudResult xud_batch_open(XudBatch** outBatch, XudLoader* loader, const XudDevice
     batch->currentTopology = XUD_BATCH_TOPOLOGY_TRIANGLES;
     batch->currentVariant = XUD_BATCH_VARIANT_OPAQUE;
     batch->currentMaterial = XUD_BATCH_NO_MATERIAL;
+    batch->currentTexture = XUD_BATCH_NO_TEXTURE;
 
     result = xud_batch_layout(batch, XUD_BATCH_INITIAL_VERTICES);
     if (result != XUD_OK) {

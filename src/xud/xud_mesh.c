@@ -905,6 +905,7 @@ XudResult xud_draw_mesh(XudContext* context, XudHandle handle) {
     VkDeviceSize offsets[XUD_MESH_BUFFER_COUNT];
     uint32_t variant = 0u;
     uint32_t materialIndex = 0u;
+    uint32_t textureIndex = XUD_BATCH_NO_TEXTURE;
     uint32_t slot = 0u;
     XudResult result = XUD_OK;
 
@@ -942,7 +943,7 @@ XudResult xud_draw_mesh(XudContext* context, XudHandle handle) {
         }
     }
 
-    result = xud_batch_state_get(batch, &variant, &materialIndex);
+    result = xud_batch_state_get(batch, &variant, &materialIndex, &textureIndex);
     if (result != XUD_OK) {
         return result;
     }
@@ -953,5 +954,6 @@ XudResult xud_draw_mesh(XudContext* context, XudHandle handle) {
        batch's current one, because a mesh's index buffer is a list of triangles whatever the pending
        run of the arena was assembled as.
     */
-    return xud_batch_record_mesh_draw(batch, XUD_BATCH_TOPOLOGY_TRIANGLES, variant, materialIndex, buffers, offsets, record->indexCount);
+    return xud_batch_record_mesh_draw(
+        batch, XUD_BATCH_TOPOLOGY_TRIANGLES, variant, materialIndex, textureIndex, buffers, offsets, record->indexCount);
 }

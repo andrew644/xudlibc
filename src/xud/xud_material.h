@@ -150,6 +150,18 @@ XudResult xud_material_resolve_variant(uint32_t* outVariant, uint32_t blendMode,
 /// t does not name a live TEXTURE slot; XUD_OK on the no-map handle and on a live map.
 XudResult xud_material_check_map(const XudHandleTable* table, XudHandle diffuseMap);
 
+/// Pure: the set-1 slot a material's draws sample through - the map's own record member rather
+/// than a choice at the draw: XUD_BATCH_NO_TEXTURE when the record names no map (the slot 0 the
+/// frame loop's per-frame bind leaves set 1 at, the white default), the map's samplerSlot when it
+/// names one. The map is read through the texture rung's accessor against the SAME table the
+/// material's own slot lives in, which is the begin call's re-validation from the texture's side:
+/// a map closed after the material was created refuses here rather than leaving a textured row
+/// whose image is gone, and a live map that occupies no slot of the array refuses rather than
+/// handing out an index that names nothing. XUD_INVALID_ARG on a NULL record or out-index, or on
+/// a named map that names no live TEXTURE slot of this table; XUD_OK with *outTextureIndex written
+/// in either shape.
+XudResult xud_material_resolve_texture(const XudHandleTable* table, const XudMaterialRecord* record, uint32_t* outTextureIndex);
+
 /// Pure: allocate one MATERIAL-kind slot of this table AND the record that fills it, in the one
 /// order that leaves nothing behind: the map validated first (so a description that names no textu
 /// re spends nothing), then the slot (so the record has a slot to be found in), then the record, a

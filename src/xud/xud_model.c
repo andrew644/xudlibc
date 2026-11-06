@@ -1087,6 +1087,7 @@ XudResult xud_draw_model(XudContext* context, XudHandle handle) {
     VkDeviceSize offsets[XUD_MESH_BUFFER_COUNT];
     uint32_t primitive = 0u;
     uint32_t slot = 0u;
+    uint32_t textureIndex = XUD_BATCH_NO_TEXTURE;
     XudResult result = XUD_OK;
 
     if (context == NULL) {
@@ -1123,6 +1124,15 @@ XudResult xud_draw_model(XudContext* context, XudHandle handle) {
         if (result != XUD_OK) {
             return result;
         }
+        /* The slot the primitive's map occupies, read through the material rung's resolver rather
+           than a reach into the texture record: a model's primitive draws through the same
+           textured row a begun material does, and a map closed since the load refuses here for the
+           same reason the begin call refuses it - a textured row must not sample a destroyed image.
+        */
+        result = xud_material_resolve_texture(context->handleTable, material, &textureIndex);
+        if (result != XUD_OK) {
+            return result;
+        }
 
         for (slot = 0u; slot < XUD_MESH_BUFFER_COUNT; slot++) {
             buffers[slot] = mesh->buffer[slot];
@@ -1142,7 +1152,7 @@ XudResult xud_draw_model(XudContext* context, XudHandle handle) {
         }
 
         result = xud_batch_record_mesh_draw(batch, XUD_BATCH_TOPOLOGY_TRIANGLES, material->variant, model->meshMaterial[primitive].index,
-            buffers, offsets, mesh->indexCount);
+            textureIndex, buffers, offsets, mesh->indexCount);
         if (result != XUD_OK) {
             return result;
         }
@@ -1163,5 +1173,5 @@ XudResult xud_draw_model(XudContext* context, XudHandle handle) {
         return XUD_OK;
     }
 
-    return xud_batch_set_material(batch, model->meshMaterial[model->meshCount - 1u].index, material->variant);
+    return xud_batch_set_material(batch, model->meshMaterial[model->meshCount - 1u].index, material->variant, textureIndex);
 }

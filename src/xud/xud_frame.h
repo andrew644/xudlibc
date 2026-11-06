@@ -342,8 +342,9 @@ XudResult xud_frame_fill_submit(
 /// hanging). materialIndex is the draw row's own, with the batch's XUD_BATCH_NO_MATERIAL sentinel map
 /// ped to slot 0 because the push row's member is an index a read could use and the sentinel is 0xFF
 /// FFFFF, which indexes nothing - a real material's slot index passes through unchanged, because th
-/// e batch's material channel IS the handle layer's MATERIAL slot index; textureIndex is 0 because s
-/// et 1 is declared and never allocated, so there is no sampler array with an entry in it; flags is t
+/// e batch's material channel IS the handle layer's MATERIAL slot index; textureIndex is 0 for a n
+/// o-map draw, which is what the batch's XUD_BATCH_NO_TEXTURE sentinel maps to - slot 0 holds the w
+/// hite default the descriptor rung wrote at its bring-up - and a real slot passes through unchanged; flags is t
 /// he variant the draw was flushed under, in the per-draw channel rather than a channel of this rung
 /// 's - the pipeline variant is chosen by BINDING, and this is the same fact from the shader's side, which is what lets a stage branch on
 /// the va riant without a third pipeline. The vertex stage reads only the model matrix today, so the other m embers are recorded and

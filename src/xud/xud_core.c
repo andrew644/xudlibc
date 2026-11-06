@@ -671,7 +671,8 @@ XudResult xud_begin_drawing(XudContext* context) {
        reset just closed the previous frame's), so the move records nothing and only moves state.
     */
     if (context->renderer->materialWanted != 0u) {
-        result = xud_batch_set_material(context->renderer->batch, context->renderer->material.index, context->renderer->materialVariant);
+        result = xud_batch_set_material(context->renderer->batch, context->renderer->material.index, context->renderer->materialVariant,
+            context->renderer->materialTexture);
         if (result != XUD_OK) {
             return result;
         }

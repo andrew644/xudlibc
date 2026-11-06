@@ -129,6 +129,10 @@ struct XudRenderer {
                                  frame opening moves is a PAIR, and this rung cannot reach the tabl
                                  e it would read it from (the table is the last rung xud_init_context
                                  opens, so it does not exist yet when this one is created). */
+    uint32_t materialTexture; /* the set-1 slot that material's map occupies, resolved off the
+                                 texture record at the begin call: the texture half of the triple
+                                 the frame opening moves, XUD_BATCH_NO_TEXTURE while the material
+                                 names no map */
     uint32_t materialWanted; /* 0 = no material live, non-zero = the pair above is what the next
                                 frame is drawn with. The same shape as the flag above, and the same
                                 reason: the state is re-applied at every frame opening, so a material

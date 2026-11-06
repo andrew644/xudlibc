@@ -40,6 +40,7 @@
 #include "xud_material.h" /* Required for: XudMaterialRecord and the rung's own open/close/get/close_all */
 #include "xud_renderer.h" /* Required for: XudRenderer, the record the scoped pair stores a material into */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
+#include "xud_texture.h" /* Required for: XudTextureRecord - the record the map's slot carries so the begin's resolver reads a slot off it */
 
 /*-----------------------------------------------------------------------------------------------
  * The material rung: the object a MATERIAL slot records, and the two public pairs above it. The
@@ -73,6 +74,7 @@ static void xud_test_material_pure(void) {
     XudHandle foreign = { 0u, 0u, 0u };
     XudHandle map = { 0u, 0u, 0u };
     XudHandle mapped = { 0u, 0u, 0u };
+    XudTextureRecord* mapRecord = NULL;
     XudMaterialRecord const* record = NULL;
     XudMaterial description;
     XudMaterial broken;
@@ -94,6 +96,7 @@ static void xud_test_material_pure(void) {
     batch.currentTopology = XUD_BATCH_TOPOLOGY_TRIANGLES;
     batch.currentVariant = XUD_BATCH_VARIANT_OPAQUE;
     batch.currentMaterial = XUD_BATCH_NO_MATERIAL;
+    batch.currentTexture = XUD_BATCH_NO_TEXTURE;
     renderer.batch = &batch;
     shell.renderer = &renderer;
 
@@ -229,6 +232,14 @@ static void xud_test_material_pure(void) {
     xud_check(xud_handle_alloc(&map, table, XUD_HANDLE_KIND_TEXTURE) == XUD_OK, "material/map-slot",
         "a TEXTURE slot of THIS table, allocated through the handle layer - the whole of what a map ha"
         "s to be to the material rung, which validates a handle and reads no image");
+    /* The slot's record, filled with the one member the begin's resolver reads: a map that occupies
+       an entry of set 1's sampler array is a map the begin can put in the drawing state, and the
+       slot number is what the state move hands to the batch's texture channel. */
+    mapRecord = calloc(1u, sizeof(*mapRecord));
+    xud_check(mapRecord != NULL, "material/map-record-alloc", "the record allocates on the host");
+    mapRecord->samplerSlot = 5u;
+    xud_check(xud_handle_record_set(table, XUD_HANDLE_KIND_TEXTURE, map.index, mapRecord) == XUD_OK, "material/map-record-set",
+        "and the record is the slot's field, so the texture rung's accessor hands it back");
     xud_check(xud_material_check_map(table, map) == XUD_OK, "material/check-map-live", "and the live slot answers OK");
     xud_check(xud_material_check_map(table, handle) == XUD_INVALID_ARG, "material/check-map-cross-kind",
         "and a MATERIAL handle handed to the map check is refused by the tag, which is what makes a ma"
@@ -369,6 +380,9 @@ static void xud_test_material_pure(void) {
         "material/begin-mapped-moved-the-row",
         "and the batch moved to the textured row at the call, which is the row the frame loop binds a"
         "nd the only one whose frag module reads the map this material names");
+    xud_check((batch.currentTexture == 5u) && (renderer.materialTexture == 5u), "material/begin-mapped-carried-the-slot",
+        "and the slot the map occupies is in the batch's state and the renderer's state, which is what"
+        " the push row of every textured draw this frame reads through the row's own texture channel");
     xud_check(xud_end_material(&shell) == XUD_OK, "material/end-mapped-ok", "and it is taken away again");
 
     /* The map's slot released while the material still names it. The material never owned the tex
@@ -378,6 +392,8 @@ static void xud_test_material_pure(void) {
     xud_check(xud_handle_free(table, map) == XUD_OK, "material/map-slot-released",
         "the texture behind the map is released through the handle layer, which is what a caller's xud"
         "_close_texture() does one rung up");
+    free(mapRecord);
+    mapRecord = NULL;
     xud_check(xud_begin_material(&shell, mapped) == XUD_INVALID_ARG, "material/begin-map-gone",
         "and the material that still names it is refused at the begin rather than beginning a frame t"
         "hat samples an image that is gone");
