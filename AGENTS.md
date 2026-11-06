@@ -32,3 +32,4 @@ Read this before touching anything here. **Work only inside `/home/andrew/repos/
 - When you complete a task suggest items to add to todo.md. Don't add them yourself.
 - When you complete a task commit it.
 - Resources for testing can be found in the gitignored resources/ directory. This includes fonts, models, textures, audio etc. Don't commit these
+- You can use grim to capture screenshots for testing
