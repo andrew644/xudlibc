@@ -213,15 +213,23 @@ static XudResult xud_hello_font_draw(
     const float scaleY = scale;
     const float startX = -(measuredPx * scaleX) / 2.0f;
     const float baseline = -0.35f;
-    const float depth = 0.05f;
+    /* The depth layering. The projection's camera looks down +z with its near plane at z ~ 0, so only
+       z > 0 renders and the SMALLER positive z is the CLOSER fragment - the LESS depth test lets it
+       replace a farther one. The glyphs must therefore sit at a smaller z than the boxes, not a
+       larger one: a box at z 0.0 in front of text at z +0.05 is the layering that hid the string,
+       and a text at z < 0 is behind the near plane and clipped to nothing. The glyphs take the
+       closer layer and the boxes plus the baseline take the farther one. */
+    const float textZ = 0.2f;
+    const float boxZ = 0.3f;
+    const float boxDepth = 0.05f;
     XudResult result = XUD_OK;
 
     /* The baseline itself, first and in a colour no glyph box will answer with: it is the one line
        the pen never crosses, and it is what makes the boxes' y offsets legible as offsets from a
        reference rather than as floating boxes.
     */
-    result = xud_draw_line_3d(context, (XudVector3) { .x = startX, .y = baseline, .z = 0.0f },
-        (XudVector3) { .x = startX + measuredPx * scaleX, .y = baseline, .z = 0.0f },
+    result = xud_draw_line_3d(context, (XudVector3) { .x = startX, .y = baseline, .z = boxZ },
+        (XudVector3) { .x = startX + measuredPx * scaleX, .y = baseline, .z = boxZ },
         (XudColor) { .r = 90u, .g = 90u, .b = 120u, .a = 255u });
     if (result != XUD_OK) {
         return result;
@@ -234,7 +242,7 @@ static XudResult xud_hello_font_draw(
        rectangle per glyph box. The boxes beside it are the caller's own walk of the same string in
        its own colour, so the two walks are in one frame on one string on one baseline.
     */
-    result = xud_draw_text_ex(context, font, text, textCount, (XudVector3) { .x = startX, .y = baseline, .z = depth }, XUD_HELLO_DRAW_EM,
+    result = xud_draw_text_ex(context, font, text, textCount, (XudVector3) { .x = startX, .y = baseline, .z = textZ }, XUD_HELLO_DRAW_EM,
         (spacing * scaleY), (XudColor) { .r = 255u, .g = 120u, .b = 90u, .a = 255u });
     if (result != XUD_OK) {
         return result;
@@ -264,7 +272,7 @@ static XudResult xud_hello_font_draw(
             const float centreX = pen + (info.offsetX * scaleX) + (boxW / 2.0f);
             const float centreY = baseline - (info.offsetY * scaleY) - (boxH / 2.0f);
 
-            result = xud_draw_cube(context, (XudVector3) { .x = centreX, .y = centreY, .z = 0.0f }, boxW, boxH, depth,
+            result = xud_draw_cube(context, (XudVector3) { .x = centreX, .y = centreY, .z = boxZ }, boxW, boxH, boxDepth,
                 (XudColor) { .r = 240u, .g = 220u, .b = 120u, .a = 255u });
             if (result != XUD_OK) {
                 return result;
