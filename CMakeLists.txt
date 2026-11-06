@@ -259,6 +259,12 @@ add_executable(hello_model
 
 target_link_libraries(hello_model PRIVATE xud)
 
+add_executable(hello_textured_model
+    examples/hello_textured_model.c
+)
+
+target_link_libraries(hello_textured_model PRIVATE xud)
+
 add_executable(hello_audio
     examples/hello_audio.c
 )

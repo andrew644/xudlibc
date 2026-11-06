@@ -23,9 +23,11 @@
  *   el whose average is knowable by hand for the chain - so the three halves are three different ki
  *   nds of fact rather than one set of numbers copied twice. The GPU half observes the live driver s
  *   tate (a non-null staging memory, a non-null mapping, a non-null image, view and sampler, and the d
- *   river's own chain total for an extent this layer computed) rather than a pixel, because nothing s
- *   amples a texture yet: set 1 is declared and never allocated, so a texture's bytes exist and no d
- *   escriptor names them, and that half is recorded open rather than drawn here.
+ *   river's own chain total for an extent this layer computed). The readback half closes the last gap
+ *   that left: it draws a full-screen quad through a material that names a NEAREST sheet, copies the
+ *   presented swapchain image into a host buffer and compares every pixel against the sheet's own
+ *   texel through the swapchain format's sRGB encoding - the first check in this tree that sees a tex
+ *   el where a pixel should be.
  *
  *   Deterministic: fixed extents, fixed texel arrays, fixed loop counts, no time, no randomness, no
  *   filesystem.
@@ -33,12 +35,17 @@
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
 
+#include <math.h> /* Required for: powf, the sRGB transfer function the readback's expected bytes are stated through */
+#include <stdio.h> /* Required for: printf, the first few mismatched pixels the comparison reports */
 #include <stdlib.h> /* Required for: malloc and free, the heap staging the write is handed instead of a mapping */
 #include <string.h> /* Required for: memcmp and memset, the bytes the write is checked against */
 
 #include "xud.h" /* Required for: XudResult, XudContext, XudHandle, XudTextureData and the public texture pair */
+#include "xud_allocator.h" /* Required for: XudMemoryRange, xud_allocator_acquire_host_visible - the block the readback's buffer binds */
+#include "xud_batch.h" /* Required for: XUD_BATCH_VARIANT_TEXTURED, the variant row the readback's material resolves to */
 #include "xud_core.h" /* Required for: struct XudContext, whose handleTable/loader/device/allocator/descriptor the GPU half reaches */
 #include "xud_descriptor.h" /* Required for: the free-list mask the GPU half reads back off the descriptor rung */
+#include "xud_device.h" /* Required for: the graphics queue record the readback's copy is submitted on */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_alloc, xud_handle_table_live_count - the slot this record lives in */
 #include "xud_material.h" /* Required for: xud_create_material, the OTHER kind's handle a cross-kind close is refused on */
 #include "xud_physical.h" /* Required for: XudDeviceCaps, the synthetic caps the pure half's gate is driven by */
@@ -699,9 +706,362 @@ static void xud_test_texture_gpu(void) {
         context == NULL, "gpu-texture/context-cleared", "and the context pointer is cleared, so a close run twice cannot double-free");
 }
 
+/*-----------------------------------------------------------------------------------------------
+ * The readback half: the first check in this tree that sees a texel where a pixel should be
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The one sheet the readback draws, and the two dimensions it is stated against. The sheet is
+   NEAREST and CLAMP_TO_EDGE so the pixel a screen position lands on is a SHEET position's texel
+   rather than an average of its neighbours, and the quad is a full-screen quad in NDC whose uv runs
+   0..1 over the viewport, so pixel (x, y) of a w x h window samples sheet texel (x*8/w, y*8/h) at
+   the pixel's centre - at the 32x32 extent this machine opens, pixel (x, y) is texel (x/4, y/4)
+   exactly, with no pixel's centre on a texel border. */
+#define XUD_TEST_READBACK_EXTENT 32u
+#define XUD_TEST_READBACK_SHEET 8u
+
+/* The tolerance a read pixel is allowed to miss its expected byte by: the expected byte is the
+   sheet's texel through the sRGB transfer function stated in float, and the hardware does the same
+   transfer in its own fixed-point rounding, so the two answers are the same number up to a rounding
+   difference rather than identical bit patterns. Two keeps a genuine sampling error (a neighbour
+   texel, a channel swap, a missing encoding) at dozens of bytes away rather than within reach. */
+#define XUD_TEST_READBACK_TOLERANCE 2u
+
+/* The sRGB transfer function's one step, stated in float rather than looked up: the fixed-function
+   encode the swapchain's SRGB format runs on store, byte value in, byte value out. The 12.92/0.00
+   31308 half is the linear piece the standard keeps for the darkest values, and 1/2.4 is the
+   standard's exponent. */
+static uint32_t xud_test_srgb_byte(uint8_t value) {
+    const float c = (float)value / 255.0f;
+    const float e = (c <= 0.0031308f) ? (12.92f * c) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
+
+    return (uint32_t)(e * 255.0f + 0.5f);
+}
+
+static void xud_test_texture_readback_gpu(void) {
+    XudContext* context = NULL;
+    XudResult result = XUD_OK;
+    XudHandle texture = { 0u, 0u, 0u };
+    XudHandle material = { 0u, 0u, 0u };
+    XudHandle quad = { 0u, 0u, 0u };
+    const XudMaterialRecord* materialRecord = NULL;
+    VkResult vk = VK_SUCCESS;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkBuffer readback = VK_NULL_HANDLE;
+    XudMemoryRange readbackRange;
+    VkMemoryRequirements readbackReq;
+    VkQueue queue;
+    uint8_t* pixels = NULL;
+    const float quadPos[12] = { -1.0f, -1.0f, 0.0f, 1.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 1.0f, 0.0f };
+    const float quadUv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
+    const uint32_t quadIndex[6] = { 0u, 1u, 2u, 0u, 2u, 3u };
+    uint8_t texels8x8[XUD_TEST_READBACK_SHEET * XUD_TEST_READBACK_SHEET * XUD_TEXTURE_BYTES_PER_TEXEL];
+    uint32_t wrong = 0u;
+    uint32_t y = 0u;
+    uint32_t x = 0u;
+
+    for (y = 0u; y < XUD_TEST_READBACK_SHEET; y++) {
+        for (x = 0u; x < XUD_TEST_READBACK_SHEET; x++) {
+            const uint32_t at = ((y * XUD_TEST_READBACK_SHEET) + x) * XUD_TEXTURE_BYTES_PER_TEXEL;
+
+            texels8x8[at] = (uint8_t)(x * 32u);
+            texels8x8[at + 1u] = (uint8_t)(y * 32u);
+            texels8x8[at + 2u] = (uint8_t)((x + y) * 16u);
+            texels8x8[at + 3u] = 255u;
+        }
+    }
+
+    result = xud_init_context(&context, XUD_TEST_READBACK_EXTENT, XUD_TEST_READBACK_EXTENT);
+    xud_check(result == XUD_OK, "gpu-texture/readback-bringup",
+        "this machine has a Vulkan loader and a window system, so the ladder must complete");
+    if (context == NULL) {
+        return;
+    }
+
+    /* NEAREST and CLAMP for the reason the note on the constants above gives: the pixel a screen
+       position lands on is a sheet position's texel, and the quad's uv never leaves 0..1 anyway, so
+       the clamp is the sampler's only way of saying the sheet's edges are edges rather than wrap. */
+    result = xud_create_texture(&texture, context,
+        &(XudTextureData) { .width = XUD_TEST_READBACK_SHEET,
+            .height = XUD_TEST_READBACK_SHEET,
+            .rgba = texels8x8,
+            .filter = XUD_TEXTURE_FILTER_NEAREST,
+            .addressMode = XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE });
+    xud_check(result == XUD_OK, "gpu-texture/readback-texture-created", "the 8x8 sheet is created");
+
+    /* The material's blend mode says OPAQUE and its map says a texture, and the create's own
+       resolution is the check that the pair means the textured row: a material that names a map
+       draws through XUD_BLEND_TEXTURED whatever its blendMode said, which is the row whose fragment
+       stage samples set 1 rather than shading a fixed light. */
+    result = xud_create_material(&material, context, (XudMaterial) { .blendMode = XUD_BLEND_OPAQUE, .diffuseMap = texture });
+    xud_check(result == XUD_OK, "gpu-texture/readback-material-created", "a material that names the sheet is created");
+    xud_check(xud_material_get(context->handleTable, material, &materialRecord) == XUD_OK, "gpu-texture/readback-material-record",
+        "the record reads back");
+    xud_check((materialRecord != NULL) && (materialRecord->variant == XUD_BATCH_VARIANT_TEXTURED), "gpu-texture/readback-variant-textured",
+        "and it resolved to the textured row, so the draw below samples the sheet rather than shades a fixed light");
+
+    /* The full-screen quad: positions in NDC (the frame's block is the identity while no camera is
+       begun, and the vertex stage flips the Y at the rasteriser, which is what makes this quad cover
+       the whole window), uv 0..1 over it, colour the NULL stream's opaque white and normal the NULL
+       stream's +Z - the two streams the textured stage does not read are defaults because the check
+       is about the texel, not the tint or the shade. */
+    result = xud_upload_mesh(&quad, context,
+        &(XudMeshData) {
+            .vertexCount = 4u, .indexCount = 6u, .pos = quadPos, .texcoords = quadUv, .color = NULL, .normal = NULL, .index = quadIndex });
+    xud_check(result == XUD_OK, "gpu-texture/readback-quad-uploaded", "the full-screen quad is uploaded");
+
+    /* One frame per image, not one frame at all: the acquire below is handed ANY free image by the
+       driver, and only an image the quad has actually been drawn into holds the quad - so the
+       quad is drawn once per swapchain image, after which every image of the swapchain holds it
+       and the answer is the same no matter which one the acquire returns. */
+    const uint32_t imageCount = context->swapchain->imageCount;
+    uint32_t pass = 0u;
+
+    for (pass = 0u; pass < imageCount; pass++) {
+        result = xud_begin_drawing(context);
+        xud_check(result == XUD_OK, (pass == 0u) ? "gpu-texture/readback-begin" : "gpu-texture/readback-frame",
+            (pass == 0u) ? "the frame boundary opens" : "and every later frame boundary opens with it");
+        result = xud_begin_material(context, material);
+        xud_check(result == XUD_OK, (pass == 0u) ? "gpu-texture/readback-material-begun" : "gpu-texture/readback-frame",
+            (pass == 0u) ? "the material's scoped state moves the batch onto the textured row" : "and the material is re-begun under it");
+        result = xud_draw_mesh(context, quad);
+        xud_check(result == XUD_OK, (pass == 0u) ? "gpu-texture/readback-draw" : "gpu-texture/readback-frame",
+            (pass == 0u) ? "the quad's row is recorded under the begun material" : "and the quad is drawn into the next image");
+        result = xud_end_material(context);
+        xud_check(result == XUD_OK, "gpu-texture/readback-material-ended", "the scoped state is taken away");
+        result = xud_end_drawing(context);
+        xud_check(result == XUD_OK, (pass == 0u) ? "gpu-texture/readback-end" : "gpu-texture/readback-frame",
+            (pass == 0u) ? "the frame closes - the textured row is replayed and presented, and end-drawing's fence makes the copy below "
+                           "see the pixels"
+                         : "and the later frames close with it");
+    }
+
+    /* The extent and the format are the swapchain's own rather than the window's request, which is
+       what the quad was rasterized against and the byte layout the comparison below reads. */
+    const uint32_t width = context->swapchain->createInfo.imageExtent.width;
+    const uint32_t height = context->swapchain->createInfo.imageExtent.height;
+    const VkFormat format = context->swapchain->createInfo.imageFormat;
+
+    /* The image to copy: after a present, a presentable image must not be transitioned or copied
+       until it is ACQUIRED again (the vkQueueSubmit rule the layout transition below would
+       otherwise break), so the test acquires one of its own. It comes back in PRESENT_SRC_KHR -
+       the layout persists across present and acquire, which is exactly the invariant the frame
+       loop's own imageLayouts array relies on every other frame - so the first barrier below starts
+       from PRESENT_SRC_KHR, the same step the frame loop's first barrier takes on a re-acquired
+       image. */
+    uint32_t acquired = 0u;
+
+    vk = context->loader->deviceTable.vkAcquireNextImageKHR(
+        context->device->device, context->swapchain->swapchain, UINT64_MAX, VK_NULL_HANDLE, VK_NULL_HANDLE, &acquired);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-acquired", "an image of the swapchain is acquired for the copy");
+    xud_check(acquired < imageCount, "gpu-texture/readback-image-index", "and it names a live image of the swapchain");
+    VkImage image = context->swapchain->images[acquired];
+    xud_check((width >= XUD_TEST_READBACK_SHEET) && (height >= XUD_TEST_READBACK_SHEET), "gpu-texture/readback-extent",
+        "and the presented extent is at least the sheet's, so every texel has pixels over it");
+    xud_check((format == VK_FORMAT_R8G8B8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_SRGB) || (format == VK_FORMAT_R8G8B8A8_UNORM)
+            || (format == VK_FORMAT_B8G8R8A8_UNORM),
+        "gpu-texture/readback-format-8888",
+        "and the swapchain's format is one of the four 8888s, which is the byte layout the comparison below reads");
+
+    /* The copy's destination: one host-visible block from the allocator's own rung rather than a
+       raw vkAllocateMemory, a buffer bound at the block's base, and a mapping that is valid until
+       the release below because nothing flushes or unmaps in between. */
+    VkBufferCreateInfo bufferInfo;
+
+    memset(&bufferInfo, 0, sizeof bufferInfo);
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = (VkDeviceSize)width * (VkDeviceSize)height * (VkDeviceSize)XUD_TEXTURE_BYTES_PER_TEXEL;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    vk = context->loader->deviceTable.vkCreateBuffer(context->device->device, &bufferInfo, NULL, &readback);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-buffer-created", "the destination buffer is created");
+    context->loader->deviceTable.vkGetBufferMemoryRequirements(context->device->device, readback, &readbackReq);
+
+    /* Narrowed to the host-visible rows before the acquire, the way the batch's arena narrows its
+       own: the allocator's type rule prefers device-local, and a TRANSFER_DST buffer's mask carries
+       both - the copy needs the CPU side, so the device-local half of the mask is taken out first.
+     */
+    {
+        const VkMemoryType* memTypes = context->physicalDevice->caps.memoryProperties.memoryProperties.memoryTypes;
+        const uint32_t memTypeCount = context->physicalDevice->caps.memoryProperties.memoryProperties.memoryTypeCount;
+        uint32_t hostVisibleMask = 0u;
+        uint32_t type = 0u;
+
+        for (type = 0u; type < memTypeCount; type++) {
+            if ((memTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u) {
+                hostVisibleMask |= (1u << type);
+            }
+        }
+        xud_check((readbackReq.memoryTypeBits & hostVisibleMask) != 0u, "gpu-texture/readback-type-host-visible",
+            "the buffer's own mask and the host-visible rows intersect, so a mappable block exists for it");
+        readbackReq.memoryTypeBits &= hostVisibleMask;
+    }
+
+    result = xud_allocator_acquire_host_visible(
+        &readbackRange, context->allocator, context->loader, context->device, &context->physicalDevice->caps, &readbackReq);
+    xud_check(result == XUD_OK, "gpu-texture/readback-block-acquired", "and a host-visible block is carved for it");
+    vk = context->loader->deviceTable.vkBindBufferMemory(context->device->device, readback, readbackRange.memory, readbackRange.offset);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-buffer-bound", "and the buffer binds at the block's own base");
+    vk = context->loader->deviceTable.vkMapMemory(
+        context->device->device, readbackRange.memory, readbackRange.offset, readbackRange.size, 0u, (void**)&pixels);
+    xud_check((vk == VK_SUCCESS) && (pixels != NULL), "gpu-texture/readback-block-mapped",
+        "and the mapping is live, so a byte of the copy is a byte the CPU can read");
+
+    /* The copy itself: the image is in PRESENT_SRC_KHR as the frame loop left it (the pass's final
+       layout), a transfer read needs TRANSFER_SRC_OPTIMAL, so the barrier is the same layout step
+       the frame loop's own read barrier is one rung down. The region is the image's whole extent at
+       row 0, layer 0 - the swapchain is a single-layer image and the quad covered it. */
+    VkCommandPoolCreateInfo poolInfo;
+    VkCommandBufferAllocateInfo allocationInfo;
+    VkCommandBufferBeginInfo beginInfo;
+    VkImageMemoryBarrier imageBarrier;
+    VkSubmitInfo submitInfo;
+    VkFenceCreateInfo fenceInfo;
+
+    memset(&poolInfo, 0, sizeof poolInfo);
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    poolInfo.queueFamilyIndex = context->device->graphicsQueue.queueFamilyIndex;
+    vk = context->loader->deviceTable.vkCreateCommandPool(context->device->device, &poolInfo, NULL, &pool);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-pool-created", "a command pool is created on the graphics family");
+    memset(&allocationInfo, 0, sizeof allocationInfo);
+    allocationInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocationInfo.commandPool = pool;
+    allocationInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocationInfo.commandBufferCount = 1u;
+    vk = context->loader->deviceTable.vkAllocateCommandBuffers(context->device->device, &allocationInfo, &command);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-cmd-allocated", "and a primary command buffer is allocated from it");
+    memset(&beginInfo, 0, sizeof beginInfo);
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    vk = context->loader->deviceTable.vkBeginCommandBuffer(command, &beginInfo);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-cmd-begun", "and the buffer is begun");
+
+    memset(&imageBarrier, 0, sizeof imageBarrier);
+    imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imageBarrier.srcAccessMask = 0u;
+    imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    imageBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    imageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    imageBarrier.image = image;
+    imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    imageBarrier.subresourceRange.levelCount = 1u;
+    imageBarrier.subresourceRange.layerCount = 1u;
+    context->loader->deviceTable.vkCmdPipelineBarrier(
+        command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u, NULL, 1u, &imageBarrier);
+
+    {
+        VkImageSubresourceLayers subresource;
+        VkBufferImageCopy region;
+
+        memset(&subresource, 0, sizeof subresource);
+        subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        subresource.layerCount = 1u;
+        memset(&region, 0, sizeof region);
+        region.bufferOffset = 0u;
+        region.bufferRowLength = 0u; /* 0 is the format's own row length, and the 8888s' is width*4 */
+        region.bufferImageHeight = height;
+        region.imageSubresource = subresource;
+        region.imageExtent.width = width;
+        region.imageExtent.height = height;
+        region.imageExtent.depth = 1u;
+        context->loader->deviceTable.vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1u, &region);
+    }
+
+    imageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    imageBarrier.dstAccessMask = 0u;
+    imageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    imageBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    context->loader->deviceTable.vkCmdPipelineBarrier(
+        command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0u, 0u, NULL, 0u, NULL, 1u, &imageBarrier);
+
+    vk = context->loader->deviceTable.vkEndCommandBuffer(command);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-cmd-ended", "and the buffer is ended with the copy and its two barriers in it");
+
+    memset(&fenceInfo, 0, sizeof fenceInfo);
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    vk = context->loader->deviceTable.vkCreateFence(context->device->device, &fenceInfo, NULL, &fence);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-fence-created", "a fence is created to bound the copy");
+    memset(&submitInfo, 0, sizeof submitInfo);
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1u;
+    submitInfo.pCommandBuffers = &command;
+    queue = context->device->graphicsQueue.queue;
+    vk = context->loader->deviceTable.vkQueueSubmit(queue, 1u, &submitInfo, fence);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-submitted", "and the copy is submitted on the graphics queue");
+    vk = context->loader->deviceTable.vkWaitForFences(context->device->device, 1u, &fence, VK_TRUE, UINT64_MAX);
+    xud_check(vk == VK_SUCCESS, "gpu-texture/readback-copied", "and the fence signals, so the buffer holds the presented image");
+
+    /* The comparison, one pixel at a time: the quad's uv v=0 sits at the authoring Y's -1, which
+       the vertex stage's flip puts at the bottom of the window, so screen row 0 (the top) holds
+       the sheet's top row and pixel (x, y) centres at uv ((x+0.5)/w, 1-(y+0.5)/h), which is sheet
+       texel (floor((x+0.5)*8/w), floor((h-y-0.5)*8/h)) under NEAREST - and the expected byte is
+       the texel through the swapchain's encoding when the format is SRGB and the raw byte when it
+       is not. The BGRA spelling swaps the red and the blue, because the format's own byte order
+       is the buffer's. */
+    const int srgb = ((format == VK_FORMAT_R8G8B8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_SRGB)) ? 1 : 0;
+    const int bgra = ((format == VK_FORMAT_B8G8R8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_UNORM)) ? 1 : 0;
+
+    for (y = 0u; y < height; y++) {
+        for (x = 0u; x < width; x++) {
+            /* floor of the pixel's centre through the uv to the sheet, as the note above states
+               it: the x half is a straight scale, the y half is mirrored because the uv's v=0 is
+               the window's bottom row, and the truncate-to-uint32 is the floor for a non-negative
+               product - at the 32x32 extent this is x/4 and (7-y)/4 and no centre lands on a
+               texel border. */
+            const uint32_t col = (uint32_t)(((float)x + 0.5f) * ((float)XUD_TEST_READBACK_SHEET / (float)width));
+            const uint32_t row = (uint32_t)(((float)(height - y) - 0.5f) * ((float)XUD_TEST_READBACK_SHEET / (float)height));
+            const uint32_t at = ((row * XUD_TEST_READBACK_SHEET) + col) * XUD_TEXTURE_BYTES_PER_TEXEL;
+            const uint32_t expectedR = srgb ? xud_test_srgb_byte(texels8x8[at]) : (uint32_t)texels8x8[at];
+            const uint32_t expectedG = srgb ? xud_test_srgb_byte(texels8x8[at + 1u]) : (uint32_t)texels8x8[at + 1u];
+            const uint32_t expectedB = srgb ? xud_test_srgb_byte(texels8x8[at + 2u]) : (uint32_t)texels8x8[at + 2u];
+            const uint32_t px = (y * width) + x;
+            const uint32_t actualR = (bgra != 0) ? (uint32_t)pixels[px * 4u + 2u] : (uint32_t)pixels[px * 4u];
+            const uint32_t actualG = (uint32_t)pixels[px * 4u + 1u];
+            const uint32_t actualB = (bgra != 0) ? (uint32_t)pixels[px * 4u] : (uint32_t)pixels[px * 4u + 2u];
+            const uint32_t actualA = (uint32_t)pixels[px * 4u + 3u];
+
+            if ((actualR > expectedR + XUD_TEST_READBACK_TOLERANCE) || (actualR + XUD_TEST_READBACK_TOLERANCE < expectedR)
+                || (actualG > expectedG + XUD_TEST_READBACK_TOLERANCE) || (actualG + XUD_TEST_READBACK_TOLERANCE < expectedG)
+                || (actualB > expectedB + XUD_TEST_READBACK_TOLERANCE) || (actualB + XUD_TEST_READBACK_TOLERANCE < expectedB)
+                || (actualA < (255u - XUD_TEST_READBACK_TOLERANCE))) {
+                if (wrong < 4u) {
+                    printf("FAIL readback pixel (%u,%u) got (%u,%u,%u,%u) want (%u,%u,%u)\n", x, y, actualR, actualG, actualB, actualA,
+                        expectedR, expectedG, expectedB);
+                }
+                wrong++;
+            }
+        }
+    }
+    xud_check(wrong == 0u, "gpu-texture/readback-every-pixel-is-its-texel",
+        "every pixel of the presented image is its sheet position's texel through the swapchain's encoding, so a texel travelled from the "
+        "upload to the screen");
+
+    /* The copy's half given back in the one order that is correct, and then the objects of the
+       frame in the ladder's own order: the mesh, the material that names the texture, the texture
+       itself, and the context that closes the table under all of them. */
+    (void)context->loader->deviceTable.vkUnmapMemory(context->device->device, readbackRange.memory);
+    (void)context->loader->deviceTable.vkDestroyBuffer(context->device->device, readback, NULL);
+    (void)xud_allocator_release(context->allocator, &readbackRange);
+    (void)context->loader->deviceTable.vkDestroyFence(context->device->device, fence, NULL);
+    (void)context->loader->deviceTable.vkFreeCommandBuffers(context->device->device, pool, 1u, &command);
+    (void)context->loader->deviceTable.vkDestroyCommandPool(context->device->device, pool, NULL);
+
+    xud_check(xud_close_mesh(context, quad) == XUD_OK, "gpu-texture/readback-quad-closed", "the quad is released");
+    xud_check(xud_close_material(context, material) == XUD_OK, "gpu-texture/readback-material-closed",
+        "and the material that names the sheet with it");
+    xud_check(xud_close_texture(context, texture) == XUD_OK, "gpu-texture/readback-texture-closed", "and the sheet itself");
+
+    result = xud_close_context(&context);
+    xud_check((result == XUD_OK) || (result == XUD_ALREADY), "gpu-texture/readback-context-closed",
+        "and the context closes with all of them given back");
+    xud_check(context == NULL, "gpu-texture/readback-context-cleared", "and the pointer is cleared with it");
+}
+
 void xud_test_texture(void) {
     xud_test_texture_pure();
     if (xud_gpu_tests_enabled()) {
         xud_test_texture_gpu();
+        xud_test_texture_readback_gpu();
     }
 }

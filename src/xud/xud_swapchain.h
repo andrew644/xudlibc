@@ -115,9 +115,11 @@ static_assert(sizeof(PFN_vkDestroySwapchainKHR) == sizeof(void*), "xud_swapchain
 /* There is no VK_IMAGE_USAGE_PRESENT_BIT anywhere in these headers (grepped across the whole
    /usr/include/vulkan/ tree: zero hits), so "a swapchain image can be presented to" is not
    a usage flag a surface might or might not advertise - presentation is vkQueuePresentKHR's
-   requirement, not an image property. The one usage bit this layer needs is the one it draws
-   into: VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT (0x10, vulkan_core.h:2812), which the surface
-   here advertises (probed supportedUsageFlags 0x8009f carries it). */
+   requirement, not an image property. The two usage bits this layer asks for are the one it
+   draws into, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT (0x10, vulkan_core.h:2812), and the readback
+   half, VK_IMAGE_USAGE_TRANSFER_SRC_BIT (0x1, vulkan_core.h:2806), which is what lets a
+   presented image be copied out to a buffer once it is re-acquired. The surface here
+   advertises both (probed supportedUsageFlags 0x8009f carries them). */
 
 /* The present-mode enum is not contiguous: 0,1,2,3 then 1000111000, 1000111001 and
    1000361000 (vulkan_core.h:8944-8951), so a present mode is a VALUE and an index into the
@@ -294,10 +296,13 @@ XudResult xud_swapchain_select_present_mode(VkPresentModeKHR* outMode, const VkP
 /// bad argument: GLFW's int bound and this surface's 16384x16384 are different gates).
 /// imageArrayLayers is 1, refused XUD_UNSUPPORTED when maxImageArrayLayers is 0 (a surface
 /// that takes no layer takes no swapchain) - more than one layer is a multi-view decision
-/// nothing above asks for. imageUsage is VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT intersected with
-/// supportedUsageFlags and refused XUD_UNSUPPORTED when the surface does not advertise it,
-/// because this library's one use of a swapchain is to draw into it and present it, and there
-/// is no VK_IMAGE_USAGE_PRESENT_BIT to intersect with (see the note above) - presentation is not
+/// nothing above asks for. imageUsage is VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, refused
+/// XUD_UNSUPPORTED when the surface does not advertise it, and it carries
+/// VK_IMAGE_USAGE_TRANSFER_SRC_BIT on top when the surface advertises that one - the readback
+/// bit that lets a presented image be copied out to a buffer once re-acquired, omitted rather
+/// than refused when the surface cannot copy its own images - because this library's one use of
+/// a swapchain is to draw into it, present it, and occasionally read it back, and there is no
+/// VK_IMAGE_USAGE_PRESENT_BIT to intersect with (see the note above): presentation is not
 /// an image property.
 /// imageSharingMode stays VK_SHARING_MODE_EXCLUSIVE (0, vulkan_core.h:2263): the other value of
 /// that enum, CONCURRENT, is the sharing mode for an image another process may also be writing

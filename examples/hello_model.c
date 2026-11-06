@@ -50,14 +50,14 @@
  *   buffers, so the frame's upload and the frame's binds are two different sets of bytes and the
  *   batch's geometry list is what keeps them apart.
  *
- *   What this example does NOT draw, and why it says so: no texture is sampled anywhere, so the
- *   .glb's images, samplers and textures are read by the document and then dropped - the gate
- *   refuses nothing for them, but the pipeline list has ONE fragment stage today (shaders/solid.frag,
- *   untextured solid plus Lambert) and set 1 is unbound, so the logo's own texture is not what a
- *   run shows. What a run shows is the model's own COLOR stream, which the model rung fills from
- *   the document's COLOR_0 when it has one and with opaque white when it does not - this file has
- *   none, so every primitive comes in at white times the Lambert term. The textured variant is an
- *   open ask in todo.md rather than a stub here.
+ *   What a run shows, and why the load rather than the texture is the point here: the document's
+ *   material names a baseColorTexture, so the load spends a TEXTURE slot for the image and names it
+ *   as the material's diffuseMap, which moves the primitive's rows onto the textured row of the
+ *   pipeline list and binds set 1 for them - the run's image is the document's base colour sampled
+ *   at each fragment's uv and tinted by the Lambert term, exactly what hello_textured_model.c
+ *   shows on the repo's greenman shield. The file this example reads is a MODEL rather than a
+ *   texture because the point here is the LOAD: one path in, one MODEL handle out, the meshes,
+ *   materials and texture behind it, and the gate's answer to the document it cannot read.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *

@@ -234,12 +234,20 @@ XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo
         return XUD_UNSUPPORTED;
     }
 
-    /* The one usage bit this layer needs, intersected with what the surface allows rather than
+    /* The two usage bits this layer asks for, intersected with what the surface allows rather than
        asserted: there is no VK_IMAGE_USAGE_PRESENT_BIT in these headers (see the note in the
-       header above), so presentation is not a flag to ask for and COLOR_ATTACHMENT is the only
-       bit this library's one use of a swapchain requires. */
+       header above), so presentation is not a flag to ask for, COLOR_ATTACHMENT is the only bit
+       this library's one use of a swapchain requires, and TRANSFER_SRC is the readback half - the
+       bit that lets a presented image be copied out to a buffer once it is re-acquired - which a
+       surface that cannot copy its own images does not advertise and which is omitted rather than
+       refused when it does not. */
+    VkImageUsageFlags usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
     if ((surfaceCaps->capabilities.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) {
         return XUD_UNSUPPORTED;
+    }
+    if ((surfaceCaps->capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == VK_IMAGE_USAGE_TRANSFER_SRC_BIT) {
+        usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     }
 
     /* The first composite-alpha bit the surface supports, in the order that means "the image is
@@ -267,7 +275,7 @@ XudResult xud_swapchain_fill_create_info(VkSwapchainCreateInfoKHR* outCreateInfo
         .imageColorSpace = format.colorSpace,
         .imageExtent = { .width = width, .height = height },
         .imageArrayLayers = 1u,
-        .imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+        .imageUsage = usage,
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .queueFamilyIndexCount = 0u,
         .pQueueFamilyIndices = NULL,

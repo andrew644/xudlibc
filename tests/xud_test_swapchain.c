@@ -222,7 +222,7 @@ static void xud_test_swapchain_pure(void) {
     caps.capabilities.supportedUsageFlags = VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     xud_check(xud_swapchain_fill_create_info(&info, &caps, fakeSurface, 320u, 240u, VK_NULL_HANDLE) == XUD_UNSUPPORTED,
         "swapchain/info-no-usage", "a surface that cannot be a colour attachment has no swapchain");
-    caps.capabilities.supportedUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    caps.capabilities.supportedUsageFlags = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     caps.capabilities.supportedCompositeAlpha = 0u;
     xud_check(xud_swapchain_fill_create_info(&info, &caps, fakeSurface, 320u, 240u, VK_NULL_HANDLE) == XUD_UNSUPPORTED,
         "swapchain/info-no-alpha", "a surface that advertises no composite alpha has no swapchain");
@@ -241,8 +241,8 @@ static void xud_test_swapchain_pure(void) {
     xud_check((info.imageExtent.width == 320u) && (info.imageExtent.height == 240u), "swapchain/info-extent",
         "the extent asked for, not the surface's currentExtent");
     xud_check(info.imageArrayLayers == 1u, "swapchain/info-layers", "one layer, always here");
-    xud_check(info.imageUsage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, "swapchain/info-usage",
-        "the one usage this library needs, and it was checked to be advertised");
+    xud_check(info.imageUsage == (VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT), "swapchain/info-usage",
+        "the two usages this library asks for: draw into it, and copy it out once re-acquired");
     xud_check(info.imageSharingMode == VK_SHARING_MODE_EXCLUSIVE, "swapchain/info-sharing",
         "EXCLUSIVE: CONCURRENT is for an image another process may also be writing to");
     xud_check((info.queueFamilyIndexCount == 0u) && (info.pQueueFamilyIndices == NULL), "swapchain/info-no-family",
@@ -534,8 +534,11 @@ static void xud_test_gpu_swapchain(void) {
     xud_check(swapchain->createInfo.oldSwapchain == VK_NULL_HANDLE, "gpu-swapchain/info-no-old",
         "the retired-handle field is cleared in the record, so no handle to a destroyed object is "
         "kept here");
-    xud_check(swapchain->createInfo.imageUsage == VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, "gpu-swapchain/info-usage",
-        "the one usage this library needs");
+    xud_check((swapchain->createInfo.imageUsage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) != 0u, "gpu-swapchain/info-usage",
+        "the one usage this library always needs is asked");
+    xud_check(((swapchain->surfaceCaps.capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0u)
+            == ((swapchain->createInfo.imageUsage & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) == 0u),
+        "gpu-swapchain/info-usage-transfer", "and the readback bit is asked exactly when the surface advertises it");
     xud_check(swapchain->createInfo.clipped == VK_TRUE, "gpu-swapchain/info-clipped",
         "clipped, because this surface reports no current extent at all");
     xud_check(swapchain->createInfo.minImageCount == swapchain->surfaceCaps.capabilities.minImageCount, "gpu-swapchain/info-count-is-caps",
