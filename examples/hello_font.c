@@ -3,10 +3,9 @@
  *   hello_font.c - hello world, told through a TrueType font
  *
  *   Owns : one font file read off disk, one context, one font loaded from that file's bytes, one
- *          string measured once and printed glyph by glyph, the pen layout that string's metrics
- *          describe drawn TWICE (once as one box per glyph by the caller's own walk, once as the
- *          string through the public text pair), and the teardown that gives the font back before
- *          it gives back the context. Nothing else: no atlas of its own, no bake of its own, no
+ *          string measured once and printed glyph by glyph, the baseline line and the string drawn
+ *          through the public text pair, and the teardown that gives the font back before it gives
+ *          back the context. Nothing else: no atlas of its own, no bake of its own, no
  *          codepoint table of its own, no window of its own.
  *
  *   Layer: examples. Public API only (xud.h) plus stdio for the lines it prints and stdlib for
@@ -18,20 +17,15 @@
  *          file-system read, and the loader rung that reads a model's files is a different rung's
  *          decision) - so the read below is the example's own, and it is the shortest honest one.
  *
- *   What this example draws now and still cannot show: the public text pair landed, so the string
- *   IS drawn through the library's own walk, with the real uvs the walk writes into the batch's UV
- *   stream, the textured variant of the pipeline list beside the solid one, and the set-1 slot the
- *   walk samples with resolved from this font's own atlas - the glyphs come out as the letterforms
- *   of the file's own coverage, tinted by the call's colour. What the frame still cannot show is
- *   that the two walks agree: the boxes the caller's own walk draws beside them are the same boxes
- *   in a different colour, so the two walks are visible in one frame and a reader can see which
- *   numbers each of them places: the pair's glyphs are scaled uniformly in the library's square
- *   clip space, the caller's boxes carry the window's aspect divide, and the difference between
- *   the two is the aspect and nothing else.
+ *   What this example draws: the public text pair draws the string through the library's own walk,
+ *   with the real uvs the walk writes into the batch's UV stream, the textured variant of the
+ *   pipeline list beside the solid one, and the set-1 slot the walk samples with resolved from this
+ *   font's own atlas - the glyphs come out as the letterforms of the file's own coverage, tinted by
+ *   the call's colour, and hang from the baseline line drawn beneath them.
  *
  *   The metrics printed below are the font file's own answers, not a table copied from a font
  *   editor: the numbers a run prints are what the bake wrote, and the same numbers are what the
- *   draw places its boxes by, which is what makes the printed table and the on-screen layout one
+ *   draw places the string by, which is what makes the printed table and the on-screen layout one
  *   statement rather than two hopes.
  *
  *   Copyright (c) 2026 xudlibc authors.
@@ -183,28 +177,18 @@ static XudResult xud_hello_font_report(
  * The pen layout, drawn
  *-----------------------------------------------------------------------------------------------*/
 
-/* One box per glyph, placed by the pen and sized by the glyph's atlas box: this is the walk a
-   textured draw would do, minus the two things it cannot do today (the quad that samples the
-   atlas, and the pipeline variant that reads it). The pen starts at the string's own left, which
-   is half the measured width back from the window's centre - the measure is what centres the
-   string rather than a guess at its length, and it is the SAME measure the report above printed,
-   so the centred layout and the printed width cannot disagree.
+/* The baseline line and the string drawn through the public text pair, centred on the window.
+   The pen starts at the string's own left, which is half the measured width back from the window's
+   centre - the measure is what centres the string rather than a guess at its length, and it is the
+   SAME measure the report above printed, so the centred layout and the printed width cannot
+   disagree.
 
    The two scales are the divide from the bake's pixels to clip units, and x carries the aspect
-   because clip space is square and a window is not: a glyph's box drawn at one scale on both
-   axes would be a box stretched 16:9 sideways on this window. The y sign is the font's own
-   convention read back from the rows - offsetY is the step to the box's TOP edge, negative above
-   the baseline in a space whose y grows downward, and clip y grows upward, so the top edge lands
-   at baseline minus the offset and the box hangs below it.
-
-   The public pair is drawn FIRST in this function, in its own colour, over the same string: the
-   walk the library does now rather than the one this file writes, with the real uvs it writes and
-   the textured variant it draws through. The two walks are in one frame on one string on one
-   baseline so the difference between them is visible rather than asserted, and the difference is
-   the aspect alone: the pair scales uniformly in the library's square clip space and this file's
-   boxes carry the window's aspect divide, so the pair's glyphs land wider than the boxes they are
-   meant to fill. The tracking the pair takes is in the same clip units as its em height, which is
-   why the spacing below is divided out of the bake's pixels before it is handed over.
+   because clip space is square and a window is not: a string laid out at one scale on both axes
+   would be stretched 16:9 sideways on this window. The baseline sits at a fixed clip y, and the
+   string hangs from it at the em height in clip y. The tracking the pair takes is in the same clip
+   units as its em height, which is why the spacing is divided out of the bake's pixels before it
+   is handed over.
 */
 static XudResult xud_hello_font_draw(
     XudContext* context, XudHandle font, const uint32_t* text, uint32_t textCount, float measuredPx, float spacing) {
@@ -213,73 +197,32 @@ static XudResult xud_hello_font_draw(
     const float scaleY = scale;
     const float startX = -(measuredPx * scaleX) / 2.0f;
     const float baseline = -0.35f;
-    /* The depth layering. The projection's camera looks down +z with its near plane at z ~ 0, so only
-       z > 0 renders and the SMALLER positive z is the CLOSER fragment - the LESS depth test lets it
-       replace a farther one. The glyphs must therefore sit at a smaller z than the boxes, not a
-       larger one: a box at z 0.0 in front of text at z +0.05 is the layering that hid the string,
-       and a text at z < 0 is behind the near plane and clipped to nothing. The glyphs take the
-       closer layer and the boxes plus the baseline take the farther one. */
+    /* The projection's near plane sits at z ~ 0, so only z > 0 renders and the smaller positive z is
+       the closer fragment under the LESS depth test. The string is the subject, so it takes the
+       closer layer and the baseline reference line takes the one just behind it. */
     const float textZ = 0.2f;
-    const float boxZ = 0.3f;
-    const float boxDepth = 0.05f;
+    const float baselineZ = 0.3f;
     XudResult result = XUD_OK;
 
-    /* The baseline itself, first and in a colour no glyph box will answer with: it is the one line
-       the pen never crosses, and it is what makes the boxes' y offsets legible as offsets from a
-       reference rather than as floating boxes.
+    /* The baseline itself: the one line the string hangs from, drawn in a colour no glyph answers
+       with so each glyph's offset from it reads as an offset from a reference.
     */
-    result = xud_draw_line_3d(context, (XudVector3) { .x = startX, .y = baseline, .z = boxZ },
-        (XudVector3) { .x = startX + measuredPx * scaleX, .y = baseline, .z = boxZ },
+    result = xud_draw_line_3d(context, (XudVector3) { .x = startX, .y = baseline, .z = baselineZ },
+        (XudVector3) { .x = startX + measuredPx * scaleX, .y = baseline, .z = baselineZ },
         (XudColor) { .r = 90u, .g = 90u, .b = 120u, .a = 255u });
     if (result != XUD_OK) {
         return result;
     }
 
-    /* The string through the public pair: the library's own walk, from the pen's start rather than
-       from the line's top-left, at the em height in clip y, with the real uvs it writes, the textured
-       variant it draws through, and the set-1 slot it samples with resolved from this font's own
-       atlas - so what lands is the file's own coverage tinted by the call's colour rather than a
-       rectangle per glyph box. The boxes beside it are the caller's own walk of the same string in
-       its own colour, so the two walks are in one frame on one string on one baseline.
+    /* The string through the public pair: the library's own walk, from the pen's start at the
+       string's left at the em height in clip y, with the real uvs it writes, the textured variant it
+       draws through, and the set-1 slot it samples with resolved from this font's own atlas - so what
+       lands is the file's own coverage tinted by the call's colour.
     */
     result = xud_draw_text_ex(context, font, text, textCount, (XudVector3) { .x = startX, .y = baseline, .z = textZ }, XUD_HELLO_DRAW_EM,
         (spacing * scaleY), (XudColor) { .r = 255u, .g = 120u, .b = 90u, .a = 255u });
     if (result != XUD_OK) {
         return result;
-    }
-
-    float pen = startX;
-
-    for (uint32_t step = 0u; step < textCount; step++) {
-        XudGlyphInfo info;
-        XudGlyphAtlasRec rec;
-
-        result = xud_get_glyph_info(&info, context, font, text[step]);
-        if (result != XUD_OK) {
-            return result;
-        }
-        result = xud_get_glyph_atlas_rec(&rec, context, font, text[step]);
-        if (result != XUD_OK) {
-            return result;
-        }
-
-        /* A codepoint with no outline - the space - has a box of zero width and still moves the pen:
-           that is the answer the API states rather than an absent row, and skipping the draw while
-           keeping the advance is what keeps the word break a word break. */
-        if ((rec.width > 0.0f) && (rec.height > 0.0f)) {
-            const float boxW = rec.width * scaleX;
-            const float boxH = rec.height * scaleY;
-            const float centreX = pen + (info.offsetX * scaleX) + (boxW / 2.0f);
-            const float centreY = baseline - (info.offsetY * scaleY) - (boxH / 2.0f);
-
-            result = xud_draw_cube(context, (XudVector3) { .x = centreX, .y = centreY, .z = boxZ }, boxW, boxH, boxDepth,
-                (XudColor) { .r = 240u, .g = 220u, .b = 120u, .a = 255u });
-            if (result != XUD_OK) {
-                return result;
-            }
-        }
-
-        pen += (info.advanceX + spacing) * scaleX;
     }
 
     return XUD_OK;
@@ -357,10 +300,10 @@ int main(void) {
 
         /* The layout is re-drawn every frame rather than once, because the batch is reset every frame
            and the frame's own draws are what a submission reads. A refused append is not the run's
-           end: the string's 12 boxes beside its 12 glyph quads are 336 vertices against the batch's
-           initial 64, so the first frames are SHORT and the boundary above grows the batch for the
-           next one - the same short-frame shape breakout_3d states, and the same reason the run keeps
-           going.
+           end: the batch is a shared arena a frame can find full, and the boundary above grows it for
+           the next frame rather than letting one short frame stop the run - the same short-frame
+           shape breakout_3d states. This string's quads fit the initial 64, so no frame here is
+           short and the counter below stays at zero.
         */
         step = xud_hello_font_draw(context, font, text, XUD_HELLO_TEXT_COUNT, measured, XUD_HELLO_SPACING);
         if (step == XUD_OUT_OF_MEMORY) {
