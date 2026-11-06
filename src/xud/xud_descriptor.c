@@ -172,6 +172,7 @@ static void xud_descriptor_retire(XudDescriptor* descriptor, const XudDevice* de
      */
     descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] = VK_NULL_HANDLE;
     descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] = VK_NULL_HANDLE;
+    descriptor->samplerSlotMask = 0u;
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -607,6 +608,139 @@ XudResult xud_descriptor_fill_sampler_write_info(XudDescriptor* descriptor) {
     descriptor->samplerWriteInfo.pImageInfo = descriptor->samplerRows;
     descriptor->samplerWriteInfo.pBufferInfo = NULL;
     descriptor->samplerWriteInfo.pTexelBufferView = NULL;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The free list of set 1's sampler array - the pure half and the two driver writes around it
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_descriptor_pick_free_slot(const XudDescriptor* descriptor, uint32_t* outSlot) {
+    uint32_t slot = 0u;
+
+    if ((descriptor == NULL) || (outSlot == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
+        if ((descriptor->samplerSlotMask & XUD_DESCRIPTOR_SLOT_MASK_BIT(slot)) == 0u) {
+            *outSlot = slot;
+            return XUD_OK;
+        }
+    }
+
+    return XUD_OUT_OF_RESOURCES;
+}
+
+XudResult xud_descriptor_fill_texture_slot_write(
+    XudDescriptor* descriptor, uint32_t slot, VkImageView view, VkSampler sampler, VkImageLayout imageLayout) {
+    if (descriptor == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (slot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
+        return XUD_INVALID_ARG;
+    }
+    if ((descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE) || (view == VK_NULL_HANDLE) || (sampler == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+
+    descriptor->textureSlotRow.imageView = view;
+    descriptor->textureSlotRow.sampler = sampler;
+    descriptor->textureSlotRow.imageLayout = imageLayout;
+
+    descriptor->textureSlotWriteInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptor->textureSlotWriteInfo.pNext = NULL;
+    descriptor->textureSlotWriteInfo.dstSet = descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL];
+    descriptor->textureSlotWriteInfo.dstBinding = XUD_DESCRIPTOR_BINDING;
+    descriptor->textureSlotWriteInfo.dstArrayElement = slot;
+    descriptor->textureSlotWriteInfo.descriptorCount = 1u;
+    descriptor->textureSlotWriteInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptor->textureSlotWriteInfo.pImageInfo = &descriptor->textureSlotRow;
+    descriptor->textureSlotWriteInfo.pBufferInfo = NULL;
+    descriptor->textureSlotWriteInfo.pTexelBufferView = NULL;
+
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_bind_texture_slot(XudDescriptor* descriptor, XudLoader* loader, const XudDevice* device, VkImageView view,
+    VkSampler sampler, VkImageLayout imageLayout, uint32_t* outSlot) {
+    uint32_t slot = 0u;
+
+    if ((descriptor == NULL) || (loader == NULL) || (device == NULL) || (outSlot == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (view == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (sampler == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (!loader->open) {
+        return XUD_UNSUPPORTED;
+    }
+    if (device->device == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+    if (descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (loader->deviceTable.vkUpdateDescriptorSets == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    if (xud_descriptor_pick_free_slot(descriptor, &slot) != XUD_OK) {
+        return XUD_OUT_OF_RESOURCES;
+    }
+    if (xud_descriptor_fill_texture_slot_write(descriptor, slot, view, sampler, imageLayout) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->textureSlotWriteInfo, 0u, NULL);
+    descriptor->samplerSlotMask |= XUD_DESCRIPTOR_SLOT_MASK_BIT(slot);
+    *outSlot = slot;
+
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_release_texture_slot(XudDescriptor* descriptor, XudLoader* loader, const XudDevice* device, uint32_t slot) {
+    if ((descriptor == NULL) || (loader == NULL) || (device == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (slot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
+        return XUD_INVALID_ARG;
+    }
+    if ((descriptor->samplerSlotMask & XUD_DESCRIPTOR_SLOT_MASK_BIT(slot)) == 0u) {
+        return XUD_ALREADY;
+    }
+    if (!loader->open) {
+        return XUD_UNSUPPORTED;
+    }
+    if (device->device == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE) || (descriptor->whiteImageView == VK_NULL_HANDLE)
+        || (descriptor->whiteSampler == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if (loader->deviceTable.vkUpdateDescriptorSets == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    if (xud_descriptor_fill_texture_slot_write(
+            descriptor, slot, descriptor->whiteImageView, descriptor->whiteSampler, XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT)
+        != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->textureSlotWriteInfo, 0u, NULL);
+    descriptor->samplerSlotMask &= ~XUD_DESCRIPTOR_SLOT_MASK_BIT(slot);
 
     return XUD_OK;
 }

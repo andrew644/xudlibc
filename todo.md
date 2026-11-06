@@ -1,5 +1,4 @@
 # TODO
-- Write a texture's imageView/sampler into a set 1 slot (free-list over the 16) instead of the white default alone
 - Rebind set 1 as a one-descriptor slice at `firstDescriptorIndex textureIndex` when a draw's texture changes
 - Carry `textureIndex` through the batch draw row, the record calls, and `xud_draw_mesh()`/`xud_draw_model()` into the push row
 - Decode glTF images to textures (needs stb_image included) and wire them into the model's material slots

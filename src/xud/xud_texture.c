@@ -1222,8 +1222,8 @@ XudResult xud_texture_close(XudHandleTable* table, XudHandle handle, XudLoader* 
  * The teardown rung above the handle table's own close - driver
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_texture_close_all(
-    XudHandleTable* table, XudLoader* loader, const XudDevice* device, XudAllocator* alloc, uint32_t* outClosed) {
+XudResult xud_texture_close_all(XudHandleTable* table, XudLoader* loader, const XudDevice* device, XudAllocator* alloc,
+    XudDescriptor* descriptor, uint32_t* outClosed) {
     void* record = NULL;
     XudResult first = XUD_OK;
     XudResult guard = XUD_OK;
@@ -1282,6 +1282,19 @@ XudResult xud_texture_close_all(
         if (xud_handle_record_set(table, XUD_HANDLE_KIND_TEXTURE, index, NULL) != XUD_OK) {
             return XUD_INVALID_ARG;
         }
+        if (((XudTextureRecord*)record)->samplerSlotLive != 0u) {
+            /* The slot of set 1's array goes back to the free list BEFORE the view and sampler the
+               entry names are destroyed below: a bound set whose entry still named a destroyed view
+               and sampler would be the state the release above exists to leave behind.
+            */
+            XudResult rung = XUD_OK;
+            if (descriptor != NULL) {
+                rung = xud_descriptor_release_texture_slot(descriptor, loader, device, ((XudTextureRecord*)record)->samplerSlot);
+                if ((rung != XUD_OK) && (first == XUD_OK)) {
+                    first = rung;
+                }
+            }
+        }
         xud_texture_retire_objects((XudTextureRecord*)record, device, loader, alloc);
         xud_texture_retire_staging((XudTextureRecord*)record, device, loader, alloc);
         free(record);
@@ -1296,28 +1309,73 @@ XudResult xud_texture_close_all(
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_create_texture(XudHandle* outHandle, XudContext* context, const XudTextureData* texture) {
+    XudResult result = XUD_OK;
+    const XudTextureRecord* record = NULL;
+
     if ((outHandle == NULL) || (context == NULL) || (texture == NULL)) {
         return XUD_INVALID_ARG;
     }
-    if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->allocator == NULL)) {
-        /* A context with no handle table, no loader, no device or no allocator is a context that nev
-           er completed bring-up: xud_init_context() hands back NULL for that case, so this is a cal
-           ler holding on rather than a state the library leaves behind - the same answer every other
-           public entry point gives for the same reason.
+    if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->allocator == NULL)
+        || (context->descriptor == NULL)) {
+        /* A context with no handle table, no loader, no device, no allocator or no descriptor is a co
+           ntext that never completed bring-up: xud_init_context() hands back NULL for that case, so th
+           is is a caller holding on rather than a state the library leaves behind - the same answer ev
+           ery other public entry point gives for the same reason.
         */
         return XUD_UNSUPPORTED;
     }
 
-    return xud_texture_open(
+    result = xud_texture_open(
         outHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps, context->allocator, texture);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    if (xud_texture_get(context->handleTable, *outHandle, &record) != XUD_OK) {
+        (void)xud_texture_close(context->handleTable, *outHandle, context->loader, context->device, context->allocator);
+        *outHandle = XUD_HANDLE_NONE;
+        return XUD_INVALID_ARG;
+    }
+
+    /* The slot of set 1's sampler array the record's view and sampler go into: the free list over the
+       16 entries of that array is the descriptor rung's, and the record's own fields are what make th
+       e slot the record's to give back at the close rather than a fact only the free list knows.
+     */
+    result = xud_descriptor_bind_texture_slot(context->descriptor, context->loader, context->device, record->view, record->sampler,
+        record->imageLayout, &((XudTextureRecord*)record)->samplerSlot);
+    if (result != XUD_OK) {
+        (void)xud_texture_close(context->handleTable, *outHandle, context->loader, context->device, context->allocator);
+        *outHandle = XUD_HANDLE_NONE;
+        return result;
+    }
+    ((XudTextureRecord*)record)->samplerSlotLive = 1u;
+
+    return XUD_OK;
 }
 
 XudResult xud_close_texture(XudContext* context, XudHandle handle) {
+    const XudTextureRecord* record = NULL;
+
     if (context == NULL) {
         return XUD_INVALID_ARG;
     }
-    if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->allocator == NULL)) {
+    if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->allocator == NULL)
+        || (context->descriptor == NULL)) {
         return XUD_UNSUPPORTED;
+    }
+
+    if (xud_texture_get(context->handleTable, handle, &record) == XUD_OK) {
+        if ((record != NULL) && (record->samplerSlotLive != 0u)) {
+            /* The slot of set 1's array is given back before xud_texture_close() destroys the view an
+               d sampler the entry names, and a refusal here is a close that does not run rather than a
+               n object retired over a descriptor still naming it.
+            */
+            XudResult slot
+                = xud_descriptor_release_texture_slot(context->descriptor, context->loader, context->device, record->samplerSlot);
+            if (slot != XUD_OK) {
+                return slot;
+            }
+        }
     }
 
     return xud_texture_close(context->handleTable, handle, context->loader, context->device, context->allocator);

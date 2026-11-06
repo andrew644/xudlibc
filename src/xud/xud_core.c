@@ -357,8 +357,9 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        : the layouts and the pipeline layout are created ONCE at init (the repo's rule), so a set la
        yout created per object would be a layout recreated per frame, and the sampler array's bound
        is a ceiling that cannot grow without recreating the pipeline. What is live after this rung i
-       s set 0 and its buffer; set 1's layout is declared and its set is not, because the texture st
-       ep is what allocates it from the same pool. A refusal here is a driver refusal (a nil row, a
+       s set 0 and its buffer, set 1 and its 16 entries - every one of them naming the white defaul
+       t until a texture created above takes a slot of the array off the rung's free list. A refusal
+        here is a driver refusal (a nil row, a
        refused create) or the caps gate above refusing a layout this machine's limits cannot have.
      */
     result
@@ -506,7 +507,8 @@ XudResult xud_close_context(XudContext** context) {
         rung = xud_font_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &fontRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;
-        rung = xud_texture_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &textureRecordsClosed);
+        rung = xud_texture_close_all(
+            victim->handleTable, victim->loader, victim->device, victim->allocator, victim->descriptor, &textureRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;
         rung = xud_mesh_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &meshRecordsClosed);

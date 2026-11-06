@@ -30,14 +30,13 @@
  *   descriptor - VkDescriptorImageInfo::imageView, not .image). All three are therefore this
  *   rung's to own, and the pair above them hands out one handle for all three.
  *
- *   What the record does NOT have, and why: no descriptor set and no place in one. The per-
- *   material sampler array of the design sketch (set 1, whose LAYOUT the descriptor rung declares
- *   and whose SET it does not allocate) is the material's set-1 half, and that half is a change
- *   to a committed rung above this one - xud_material_open() would have to take the pool and the
- *   set-1 layout, and the material area's headless checks would move behind a driver. That half
- *   is recorded open in todo.md beside this step rather than done here, which is why a texture's
- *   bytes exist and nothing samples them yet: the sampler and the view are reachable through thi
- *   s record, and the step that binds them into a set is the one that changes the material.
+ *   What the record does NOT have, and why: no descriptor SET of its own. The per-material sampler
+ *   array of the design sketch (set 1) is the descriptor rung's, and this record's half of it is the
+ *   slot of that array its view and sampler occupy - xud_create_texture() is what takes a slot of the
+ *   descriptor rung's free list for a record, and xud_close_texture() and xud_texture_close_all() are
+ *   what give it back before the view and sampler that entry names are destroyed. The step that makes
+ *   a draw sample that slot (the rebind of set 1 at the slot and the texture index through the push
+ *   row) is still open, recorded in todo.md beside this one.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
@@ -48,6 +47,7 @@
 #include "volk.h" /* Required for: VK_NO_PROTOTYPES - must precede <vulkan/vulkan.h>, see xud_loader.h */
 #include "xud.h" /* Required for: XudResult, XudHandle, XudTextureData, XUD_TEXTURE_* and XUD_HANDLE_KIND_TEXTURE - the public surface this rung is the half of */
 #include "xud_allocator.h" /* Required for: XudAllocator, XudMemoryRange, XUD_ALLOCATOR_BLOCK_MAX_SIZE - the block a texture's bytes live in */
+#include "xud_descriptor.h" /* Required for: XudDescriptor - set 1's sampler array this record's slot lives in, the parameter of the close-all rung */
 #include "xud_device.h" /* Required for: XudDevice, xud_device_wait_idle - the handle every row here is asked of, and the destroy guard */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
 #include "xud_loader.h" /* Required for: XudLoader, xud_loader_device_bound, xud_loader_is_open - the Volk rows every call here is made through */
@@ -97,6 +97,15 @@ static_assert(XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE == VK_SAMPLER_ADDRESS_MODE_CLAMP
 static_assert(XUD_TEXTURE_ADDRESS_COUNT == (XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE + 1u),
     "xud_texture.h: the three address tokens are contiguous from repeat up, so the count is one past the highest and a range check is one "
     "compare");
+
+/* The slot index of a texture that holds no entry of set 1's sampler array: a texture created below the
+ *  context-level pair (the font's atlas, a headless record) owns no slot, and this is the value its
+ *  record carries rather than a slot number that happened to be zero.
+ */
+#define XUD_TEXTURE_SAMPLER_SLOT_NONE 0xFFFFFFFFu
+
+static_assert(XUD_TEXTURE_SAMPLER_SLOT_NONE >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE,
+    "xud_texture.h: the sentinel is past the array's size, so a record's slot field either names a real entry or names nothing at all");
 
 /*-----------------------------------------------------------------------------------------------
  * The texel format, and the reason it is one format rather than an axis
@@ -363,6 +372,11 @@ typedef struct XudTextureRecord {
     VkSampler sampler; /* owned: the sampling state that pairs with it */
     VkImageLayout imageLayout; /* the layout the upload left the image in, which is the layout a descriptor must name */
 
+    uint32_t samplerSlot; /* the entry of set 1's sampler array that holds this record's view and sampler, XUD_TEXTURE_SAMPLER_SLOT_NONE
+                             when the record holds no entry of the array */
+    uint32_t samplerSlotLive; /* 1 while that entry names this record's view and sampler, 0 after the release rewrote the white default
+                                 back into it */
+
     VkImageCreateInfo imageInfo; /* what vkCreateImage was handed */
     VkImageViewCreateInfo viewInfo; /* what vkCreateImageView was handed */
     VkSamplerCreateInfo samplerInfo; /* what vkCreateSampler was handed */
@@ -601,11 +615,14 @@ XudResult xud_texture_close(XudHandleTable* table, XudHandle handle, XudLoader* 
 /// ud_close_context() is texture, mesh, material, table, texture first because a texture record owns an image, a
 ///  view, a sampler and a block and a mesh record owns five buffers and a block, and both have to be gone befor
 /// e the arrays that name them are. *outClosed counts the records retired, the mesh's and the material's own coun
-/// t and reason. XUD_INVALID_ARG on a NULL table, loader, device or allocator, or a handle-less device; XUD_OK wi
+/// t and reason, and a record that holds a slot of set 1's array gives that slot back to the descriptor's
+///  free list before the view and sampler that entry names are destroyed (a NULL descriptor is legal only for
+///  a walk that finds no slot-holding record, the state of a table whose textures were all created below the
+///  context-level pair). XUD_INVALID_ARG on a NULL table, loader, device or allocator, or a handle-less device; XUD_OK wi
 /// th 0 on a table with no TEXTURE array (nothing of this kind was ever created, which is a count of zero and not a
 /// n error); XUD_UNSUPPORTED on a closed loader, on a device that is not this loader's, or on a guard that cannot r
 /// un; the guard runs ONCE for the whole walk rather than once per texture, the mesh's reason.
 XudResult xud_texture_close_all(
-    XudHandleTable* table, XudLoader* loader, const XudDevice* device, XudAllocator* alloc, uint32_t* outClosed);
+    XudHandleTable* table, XudLoader* loader, const XudDevice* device, XudAllocator* alloc, XudDescriptor* descriptor, uint32_t* outClosed);
 
 #endif /* XUD_XUD_TEXTURE_H_ */

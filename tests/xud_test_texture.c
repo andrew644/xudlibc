@@ -37,7 +37,8 @@
 #include <string.h> /* Required for: memcmp and memset, the bytes the write is checked against */
 
 #include "xud.h" /* Required for: XudResult, XudContext, XudHandle, XudTextureData and the public texture pair */
-#include "xud_core.h" /* Required for: struct XudContext, whose handleTable/loader/device/allocator the GPU half reaches */
+#include "xud_core.h" /* Required for: struct XudContext, whose handleTable/loader/device/allocator/descriptor the GPU half reaches */
+#include "xud_descriptor.h" /* Required for: the free-list mask the GPU half reads back off the descriptor rung */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_alloc, xud_handle_table_live_count - the slot this record lives in */
 #include "xud_material.h" /* Required for: xud_create_material, the OTHER kind's handle a cross-kind close is refused on */
 #include "xud_physical.h" /* Required for: XudDeviceCaps, the synthetic caps the pure half's gate is driven by */
@@ -482,7 +483,7 @@ static void xud_test_texture_pure(void) {
     */
     xud_check(xud_texture_close(table, textureHandle, NULL, NULL, NULL) == XUD_INVALID_ARG, "texture/close-null-rungs",
         "a close with no loader, device or allocator is a bad argument");
-    xud_check(xud_texture_close_all(table, NULL, NULL, NULL, &closed) == XUD_INVALID_ARG, "texture/close-all-null-rungs",
+    xud_check(xud_texture_close_all(table, NULL, NULL, NULL, NULL, &closed) == XUD_INVALID_ARG, "texture/close-all-null-rungs",
         "and the teardown rung refuses the same way");
     xud_check(xud_handle_record_get(table, XUD_HANDLE_KIND_TEXTURE, textureHandle.index, &rawRecord) == XUD_OK,
         "texture/close-refusal-left-the-record",
@@ -598,6 +599,11 @@ static void xud_test_texture_gpu(void) {
     xud_check(record->imageLayout == XUD_TEXTURE_SAMPLED_LAYOUT, "gpu-texture/image-layout",
         "and the record says the image ended in the sampled layout rather than the upload one, which is what makes the descriptor step's "
         "layout a fact read off the record rather than a guess about what the upload left behind");
+    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 0u), "gpu-texture/record-owns-a-slot",
+        "and the record names the entry of set 1's sampler array its view and sampler go into - the first free one, which is slot 0 in a "
+        "fresh context");
+    xud_check(context->descriptor->samplerSlotMask == XUD_DESCRIPTOR_SLOT_MASK_BIT(0u), "gpu-texture/slot-in-the-free-list",
+        "and the descriptor rung's free list says the same: the create took a slot off the free list rather than the test assuming one");
     xud_check(
         (record->stagingBuffer == VK_NULL_HANDLE) && (record->stagingRange.memory == VK_NULL_HANDLE) && (record->stagingMappedLive == 0u),
         "gpu-texture/staging-retired",
@@ -635,6 +641,11 @@ static void xud_test_texture_gpu(void) {
         "and what this rung wrote into");
     xud_check(record->stagingBytes < firstStagingBytes, "gpu-texture/second-smaller",
         "and its staging is smaller than the 8x8's, so the block is sized from the chain rather than from a fixed sheet size");
+    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 1u), "gpu-texture/second-owns-the-next-slot",
+        "and the second create took the next free slot of set 1's array, so the free list hands out the entries rather than a fixed row "
+        "per texture");
+    xud_check(context->descriptor->samplerSlotMask == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u)),
+        "gpu-texture/two-slots-in-use", "and the free list says two entries are occupied, the two the two records name");
     xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK, "gpu-texture/live-two-query",
         "the live count answers");
     xud_check(live == 2u, "gpu-texture/live-two", "and two TEXTURE slots are live");
@@ -654,6 +665,9 @@ static void xud_test_texture_gpu(void) {
         "and both refusals destroyed nothing, so a refused release is a no-op rather than a half-release");
 
     xud_check(xud_close_texture(context, handle) == XUD_OK, "gpu-texture/close-ok", "the first texture is released");
+    xud_check(context->descriptor->samplerSlotMask == XUD_DESCRIPTOR_SLOT_MASK_BIT(1u), "gpu-texture/close-freed-the-slot",
+        "and the close gave the first texture's slot back to the free list before its view and sampler were destroyed, so the array's "
+        "entry no longer names a destroyed pair");
     xud_check(xud_texture_get(context->handleTable, handle, &record) == XUD_INVALID_ARG, "gpu-texture/close-freed-the-slot",
         "and the handle no longer names a live slot, so a texture kept past its close is refused rather than dangling");
     xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK,
@@ -664,10 +678,15 @@ static void xud_test_texture_gpu(void) {
        texture is still live in a slot at this point, so the rung has one record to destroy and the
        allocator's close afterwards has one block to free.
     */
-    xud_check(xud_texture_close_all(context->handleTable, context->loader, context->device, context->allocator, &closed) == XUD_OK,
+    xud_check(
+        xud_texture_close_all(context->handleTable, context->loader, context->device, context->allocator, context->descriptor, &closed)
+            == XUD_OK,
         "gpu-texture/close-all-explicit", "the rung runs and closes the one TEXTURE record a slot still names");
     xud_check(closed == 1u, "gpu-texture/close-all-count", "and the count it reports is the one record that was still reachable");
-    xud_check(xud_texture_close_all(context->handleTable, context->loader, context->device, context->allocator, &live) == XUD_OK,
+    xud_check(context->descriptor->samplerSlotMask == 0u, "gpu-texture/close-all-freed-its-slot",
+        "and the record's slot of set 1's array went back to the free list with it, so the walk leaves no entry naming a destroyed pair");
+    xud_check(xud_texture_close_all(context->handleTable, context->loader, context->device, context->allocator, context->descriptor, &live)
+            == XUD_OK,
         "gpu-texture/close-all-idempotent",
         "and running it again closes nothing, because every record pointer was cleared by the run above - the rung is idempotent rather "
         "than a double destroy");

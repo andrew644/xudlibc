@@ -531,6 +531,112 @@ static void xud_test_descriptor_pure(void) {
             "acquired, because an empty mask narrows the choice to nothing");
         xud_check(bits == 0u, "descriptor/host-visible-mask-empty", "and the mask really is empty");
     }
+
+    /* The free list of set 1's sampler array: the pick, the one-slot write and the two driver
+       calls' own headless refusals.
+     */
+    {
+        uint32_t slot = 99u;
+
+        xud_check(xud_descriptor_pick_free_slot(NULL, &slot) == XUD_INVALID_ARG, "descriptor/pick-free-null", "is refused");
+        xud_check(xud_descriptor_pick_free_slot(&d, NULL) == XUD_INVALID_ARG, "descriptor/pick-free-null-out",
+            "and an out-slot with nowhere to be written is refused");
+        xud_check(xud_descriptor_pick_free_slot(&d, &slot) == XUD_OK, "descriptor/pick-free-first", "an empty mask answers OK");
+        xud_check(slot == 0u, "descriptor/pick-free-is-zero", "on the lowest free bit, which is slot 0 while the mask is empty");
+
+        d.samplerSlotMask = XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u);
+        xud_check(xud_descriptor_pick_free_slot(&d, &slot) == XUD_OK, "descriptor/pick-free-after-two", "two taken slots still answer OK");
+        xud_check(slot == 2u, "descriptor/pick-free-is-two", "on the lowest FREE bit rather than the lowest bit");
+
+        {
+            uint32_t full = 0u;
+            slot = 99u;
+            for (row = 0u; row < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; row++) {
+                full |= XUD_DESCRIPTOR_SLOT_MASK_BIT(row);
+            }
+            d.samplerSlotMask = full;
+            xud_check(xud_descriptor_pick_free_slot(&d, &slot) == XUD_OUT_OF_RESOURCES, "descriptor/pick-free-full",
+                "and a mask with every bit set is the array's ceiling, which is a refusal rather than a slot that does not exist");
+            xud_check(slot == 99u, "descriptor/pick-free-full-touched-nothing", "and the out-slot was not written on the refusal");
+        }
+
+        /* The one-slot write, and the refusals it states before the one it assembles. */
+        d.samplerSlotMask = 0u;
+        xud_check(xud_descriptor_fill_texture_slot_write(
+                      NULL, 0u, (VkImageView)&fakeImageViewHandle, (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                == XUD_INVALID_ARG,
+            "descriptor/slot-write-null", "is refused");
+        xud_check(xud_descriptor_fill_texture_slot_write(
+                      &d, 0u, (VkImageView)&fakeImageViewHandle, (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                == XUD_INVALID_ARG,
+            "descriptor/slot-write-no-set",
+            "and a record whose set-1 handle is not live is refused, because the write would name a set "
+            "that is not there");
+        xud_check(xud_descriptor_fill_texture_slot_write(&d, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE, (VkImageView)&fakeImageViewHandle,
+                      (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                == XUD_INVALID_ARG,
+            "descriptor/slot-write-past-the-array", "and a slot at the array's size is an index into nothing");
+        d.sets[XUD_DESCRIPTOR_SET_MATERIAL] = (VkDescriptorSet)&fakeSetHandle;
+        xud_check(xud_descriptor_fill_texture_slot_write(
+                      &d, 0u, VK_NULL_HANDLE, (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                == XUD_INVALID_ARG,
+            "descriptor/slot-write-no-view", "and a write with no view names nothing, which is a COMBINED_IMAGE_SAMPLER that is not one");
+        xud_check(xud_descriptor_fill_texture_slot_write(
+                      &d, 3u, (VkImageView)&fakeImageViewHandle, (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
+                == XUD_OK,
+            "descriptor/slot-write-ok", "and the same write with the pair and a slot inside the array is assembled");
+        xud_check(d.textureSlotWriteInfo.sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, "descriptor/slot-write-stamped", "stamped");
+        xud_check((d.textureSlotWriteInfo.dstSet == d.sets[XUD_DESCRIPTOR_SET_MATERIAL])
+                && (d.textureSlotWriteInfo.dstBinding == XUD_DESCRIPTOR_BINDING) && (d.textureSlotWriteInfo.dstArrayElement == 3u),
+            "descriptor/slot-write-targets-the-slot",
+            "set 1, its one binding, and the slot the caller named rather than element 0 - the element is what differs from the "
+            "whole-array write, not the set or the binding");
+        xud_check((d.textureSlotWriteInfo.descriptorCount == 1u)
+                && (d.textureSlotWriteInfo.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
+            "descriptor/slot-write-one-element",
+            "one element of the array's own type, which is what keeps the other entries of the array untouched");
+        xud_check((d.textureSlotWriteInfo.pImageInfo == &d.textureSlotRow)
+                && (d.textureSlotRow.imageView == (VkImageView)&fakeImageViewHandle)
+                && (d.textureSlotRow.sampler == (VkSampler)&fakeSamplerHandle)
+                && (d.textureSlotRow.imageLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+            "descriptor/slot-write-row-is-the-record's",
+            "and the row lives inside the record, so the write read after the call still points at storage that outlived it");
+        xud_check((d.textureSlotWriteInfo.pBufferInfo == NULL) && (d.textureSlotWriteInfo.pTexelBufferView == NULL),
+            "descriptor/slot-write-other-arrays-null",
+            "and the other two info arrays are NULL for the reason the whole-array write states: exactly one of the three may be non-NULL "
+            "for a given type");
+
+        /* The two driver calls, headless: no loader at all, and a loader that is closed - the rung
+           refuses before it would call.
+         */
+        xud_check(xud_descriptor_bind_texture_slot(NULL, NULL, NULL, (VkImageView)&fakeImageViewHandle, (VkSampler)&fakeSamplerHandle,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, NULL)
+                == XUD_INVALID_ARG,
+            "descriptor/bind-null", "is refused");
+        xud_check(xud_descriptor_bind_texture_slot(&d, NULL, NULL, (VkImageView)&fakeImageViewHandle, (VkSampler)&fakeSamplerHandle,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &slot)
+                == XUD_INVALID_ARG,
+            "descriptor/bind-no-loader", "and a bind with no loader has no update row to make the write through");
+        {
+            XudLoader closedLoader;
+            XudDevice noDevice;
+            memset(&closedLoader, 0, sizeof(closedLoader));
+            memset(&noDevice, 0, sizeof(noDevice));
+            d.samplerSlotMask = XUD_DESCRIPTOR_SLOT_MASK_BIT(0u);
+            xud_check(xud_descriptor_bind_texture_slot(&d, &closedLoader, &noDevice, (VkImageView)&fakeImageViewHandle,
+                          (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &slot)
+                    == XUD_UNSUPPORTED,
+                "descriptor/bind-closed-loader", "and a closed loader is the same refusal the upload states one rung over");
+            xud_check(xud_descriptor_release_texture_slot(&d, &closedLoader, &noDevice, 0u) == XUD_UNSUPPORTED,
+                "descriptor/release-closed-loader", "and the release answers the same way, on a slot the mask says is taken");
+        }
+        d.samplerSlotMask = 0u;
+        xud_check(xud_descriptor_release_texture_slot(NULL, NULL, NULL, 0u) == XUD_INVALID_ARG, "descriptor/release-null", "is refused");
+        xud_check(xud_descriptor_release_texture_slot(&d, NULL, NULL, 0u) == XUD_INVALID_ARG, "descriptor/release-no-loader",
+            "and a release with no loader is a bad argument for the reason the bind above gives");
+        xud_check(xud_descriptor_release_texture_slot(&d, NULL, NULL, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) == XUD_INVALID_ARG,
+            "descriptor/release-past-the-array", "and a slot at the array's size is an index into nothing, on either driver call");
+    }
 }
 
 /*-----------------------------------------------------------------------------------------------
