@@ -499,7 +499,15 @@ XudResult xud_close_context(XudContext** context) {
        borrowed instance handle cleared, so nothing is called through a dying instance). Every rung
        is XUD_ALREADY on a field that was never filled, which is why a context rejected part-way
        through bring-up is closed by this same code path, and every one of them clears its out
-       handle before freeing, so a context torn down twice cannot double-free. */
+       handle before freeing, so a context torn down twice cannot double-free. The UI rung closes
+       BEFORE all of it: its atlas is a TEXTURE record in the handle table, so it has to be given back
+       through the context's own texture close before xud_texture_close_all() walks the table and
+       retires every record it holds, and a frame of it reads the input rung and writes the renderer's
+       batch, so it also dies before those two rungs do. The top of this function is the one slot where
+       every rung it touches is still alive, which is the slot the order allows. */
+    rung = xud_ui_close(victim);
+    if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
+        first = rung;
     if (victim->handleTable != NULL) {
         rung = xud_model_close_all(
             victim->handleTable, victim->loader, victim->device, victim->descriptor, victim->allocator, &modelRecordsClosed);

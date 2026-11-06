@@ -67,6 +67,7 @@ int main(void) {
     xud_test_model();
     xud_test_time();
     xud_test_font();
+    xud_test_ui();
     xud_test_audio();
     xud_test_core();
     xud_test_vendor();

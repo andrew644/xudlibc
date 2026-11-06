@@ -154,6 +154,8 @@ add_library(xud STATIC
     src/xud/xud_vendor_stb_truetype.c
     src/xud/xud_vendor_stb_image.c
     src/xud/xud_vendor_miniaudio.c
+    src/xud/xud_vendor_nuklear.c
+    src/xud/xud_ui.c
     src/xud/xud_core.c
     src/xud/xud_diagnostics.c
     src/xud/xud_loader.c
@@ -228,6 +230,7 @@ add_executable(xud_test
     tests/xud_test_texture.c
     tests/xud_test_time.c
     tests/xud_test_font.c
+    tests/xud_test_ui.c
     tests/xud_test_audio.c
     tests/xud_test_core.c
     tests/xud_test_vendor.c
@@ -270,6 +273,12 @@ add_executable(hello_audio
 )
 
 target_link_libraries(hello_audio PRIVATE xud)
+
+add_executable(hello_ui
+    examples/hello_ui.c
+)
+
+target_link_libraries(hello_ui PRIVATE xud)
 
 add_executable(breakout_3d
     examples/breakout_3d.c

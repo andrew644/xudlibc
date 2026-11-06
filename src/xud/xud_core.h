@@ -43,6 +43,7 @@
 #include "xud_sound.h" /* Required for: XudSound, the sound rung the context owns from the first play on - miniaudio's engine (its ma_device, its node graph and its mixer), spent lazily rather than at bring-up because an audio device is a driver resource a context that only ever draws never asks for */
 #include "xud_swapchain.h" /* Required for: XudSwapchain, the VkSwapchainKHR plus the images vkGetSwapchainImagesKHR handed it - the context owns one from the swapchain step on, and the teardown order below makes it die before the device whose queue it used */
 #include "xud_time.h" /* Required for: XudTime, the clock rung the context owns above the window it reads - GLFW's own timer read against this context's own epoch, so the elapsed is a per-context question and the frame pair's boundary is what fills the two mark rows */
+#include "xud_ui.h" /* Required for: XudUi, the ui rung the context owns from the first xud_ui_init() on - the nuklear context, its baked font atlas and the fold into the batch, spent lazily rather than at bring-up because the atlas is a TEXTURE a context that only ever draws never asks for */
 #include "xud_window.h" /* Required for: XudWindow, the GLFW window plus the VkSurfaceKHR it was handed - the context will own one, and the teardown order below is what makes the surface die before the window and the window before the instance */
 #include <stdint.h>
 
@@ -238,6 +239,8 @@ struct XudContext {
        as one that did.
     */
     XudSound* sound; /* miniaudio's engine, its device and its mixer, plus one node pair per AUDIOSTREAM slot */
+    XudUi*
+        ui; /* the nuklear immediate-mode context, its baked font atlas (opened as one TEXTURE) and the fold of its frames into the batch - spent lazily on the first xud_ui_init(), above the input it reads and the renderer whose batch it writes */
 };
 
 #endif /* XUD_XUD_CORE_H_ */

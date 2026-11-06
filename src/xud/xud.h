@@ -72,6 +72,8 @@ extern "C" {
 #include <stdbool.h> /* Required for: bool - the input queries' answers, which are states rather than codes */
 #include <stdint.h> /* Required for: uint32_t - window extents and handle fields */
 
+#include "xud_nuklear.h" /* Required for: the nuklear API the ui rung exposes - struct nk_context (what xud_ui_get_context() hands back and what the caller's nk_begin / nk_button_label / nk_end frame is written against). The one deliberate non-xud include in the public surface: the gui is a first-class rung, not an opaque handle. */
+
 /*-----------------------------------------------------------------------------------------------
  * Version
  *-----------------------------------------------------------------------------------------------*/
@@ -1501,6 +1503,44 @@ XudResult xud_get_mouse_wheel_move(float* outMove, XudContext* context);
 /// raylib's GetMouseWheelMoveV (raylib.h 1240), for a scroll that can move on either axis. XUD_INV
 /// ALID_ARG on a NULL out-param or a NULL context; XUD_UNSUPPORTED as above.
 XudResult xud_get_mouse_wheel_move_v(XudVector2* outMove, XudContext* context);
+
+/*-----------------------------------------------------------------------------------------------
+ * UI (nuklear) - the immediate-mode gui rung above the batch, the texture and the input
+ *
+ * The caller owns the frame's widgets between begin and draw, against the context xud_ui_get
+ * _context() hands back; the input is fed from the context's own input rung on the begin, and th
+ * e draw converts the frame and folds it into the batch the same way the font walk does, so it 
+ * draws through the existing TEXTURED pipeline. The ui is screen-space and assumes the identit
+ * y viewProj - a live camera warps it. The atlas is one TEXTURE, so the rung is spent lazily on 
+ * the first init, like the sound.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Opens the ui rung on the context: bakes the caller's font file (or the built-in default when
+/// the data is NULL) into one atlas image, opens that image as a TEXTURE and names it on every g
+/// lyph. XUD_INVALID_ARG on a NULL context or an already-open rung; XUD_UNSUPPORTED on a context
+/// that has not completed bring-up; XUD_OUT_OF_MEMORY if the atlas image or the staging will not
+/// fit. The font data is read into the atlas and may be freed by the caller on the way back.
+XudResult xud_ui_init(XudContext* context, const XudFontData* font);
+
+/// Closes the ui rung: gives the atlas's TEXTURE slot back, frees the nuklear context, the atlas
+/// and the staging. XUD_ALREADY on a rung that was never opened.
+XudResult xud_ui_close(XudContext* context);
+
+/// The nuklear context the caller's widgets are written against: the frame the caller runs is nk
+/// _begin() ... nk_end() against this, between xud_ui_begin() and xud_ui_draw(). NULL on a rung t
+/// hat was never opened or a NULL context.
+struct nk_context* xud_ui_get_context(XudContext* context);
+
+/// Feeds the context's input rung into the nuklear context - the keys, the mouse, the cursor an
+/// d the wheel the caller did not already feed - and opens the frame. XUD_UNSUPPORTED on a rung t
+/// hat was never opened.
+XudResult xud_ui_begin(XudContext* context);
+
+/// Closes the frame the caller's widgets opened, converts it to vertices and elements and folds
+/// them into the batch at the context's own extent, through the atlas's one TEXTURE slot. XUD_UNS
+///UPPORTED on a rung that was never opened.
+XudResult xud_ui_draw(XudContext* context);
+
 #ifdef __cplusplus
 }
 #endif
