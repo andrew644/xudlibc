@@ -166,8 +166,15 @@ static void xud_test_gpu_context(void) {
     if (context == NULL)
         return;
 
-    xud_check(context->width == 320u, "context/extent-width", "the extent asked for is the extent recorded");
-    xud_check(context->height == 240u, "context/extent-height", "and so is the other half of it");
+    xud_check(context->width > 0u, "context/extent-width", "the extent is live, not zeroed");
+    xud_check(context->height > 0u, "context/extent-height", "and so is the other half of it");
+    xud_check(context->width == context->swapchain->createInfo.imageExtent.width
+            && context->height == context->swapchain->createInfo.imageExtent.height,
+        "context/extent-matches-swapchain",
+        "the recorded extent is the swapchain's: a compositor that resizes the window before the first "
+        "present (a tiling layout) leaves the swapchain at the compositor's size, and the ui fold and "
+        "the camera's aspect divide by the recorded extent, so a record that kept the requested size "
+        "would draw at the old scale while input names the new one");
     xud_check(context->validate == XUD_VALIDATE, "context/validate-snapshot",
         "the context carries the XUD_VALIDATE build switch it was built with, as a snapshot");
 
@@ -294,6 +301,32 @@ static void xud_test_gpu_context(void) {
         xud_check(supports == true, "gpu-context/presentation-true",
             "this machine's window system can present to this device, which is why the ladder "
             "above completed");
+    }
+
+    /* The resize rung, last of the field checks because its recreation re-allocates the depth image
+       and therefore moves the allocator's block count the checks above read. The frame boundary is
+       where the recreation runs (the end renders the recreateWanted the acquire left), and the
+       recorded extent has to follow the swapchain the resize rebuilt - a record that stayed at the
+       resized-from size would scale the ui by the old extent while the input names the new one. The
+       compositor is free to answer a resize with a different size than the one asked (a tiling
+       layout re-tiles the window), so the check is the invariant against the swapchain's own extent
+       rather than against 160x120. */
+    {
+        int frame = 0;
+        for (frame = 0; frame < 6; frame++) {
+            if (xud_begin_drawing(context) != XUD_OK)
+                break;
+            if (xud_end_drawing(context) != XUD_OK)
+                break;
+            xud_check(context->width == context->swapchain->createInfo.imageExtent.width
+                    && context->height == context->swapchain->createInfo.imageExtent.height,
+                "context/extent-follows-resize",
+                "after every frame boundary the recorded extent is the extent the swapchain now renders "
+                "at, so the ui fold divides by the size the input names");
+            if (frame == 1) {
+                (void)xud_window_resize(context->window, 160u, 120u);
+            }
+        }
     }
 
     result = xud_close_context(&context);

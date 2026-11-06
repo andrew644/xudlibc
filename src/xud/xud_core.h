@@ -76,8 +76,8 @@
  */
 struct XudContext {
     /* Created and validated at repo skeleton step S1. */
-    uint32_t width; /* window extent, pixels, as requested                        */
-    uint32_t height; /* window extent, pixels, as requested                        */
+    uint32_t width; /* window extent, pixels: the swapchain's imageExtent, not the requested size */
+    uint32_t height; /* window extent, pixels: the swapchain's imageExtent, not the requested size */
     uint32_t validate; /* snapshot of XUD_VALIDATE, overridable by VK_INSTANCE_LAYERS */
 
     /* Owned from loader bring-up on: opened by xud_init_context(), closed by xud_close_context().

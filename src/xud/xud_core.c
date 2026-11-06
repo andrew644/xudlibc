@@ -328,6 +328,16 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         goto fail;
 
+    /* The extent the frame renders at, read off the swapchain that was just created rather than the
+       size the window was opened at: a compositor that resizes the window before the first present
+       (a tiling layout that fills the space it is given is the case that does) leaves the window's
+       framebuffer at the COMPOSITOR's size, and the swapchain's imageExtent is the size the frame
+       actually renders into. This record is what the ui's fold divides its clip mapping by, so a
+       record that kept the requested size would draw the ui at the old scale while input names the
+       new one - a window that cannot be hit. */
+    context->width = context->swapchain->createInfo.imageExtent.width;
+    context->height = context->swapchain->createInfo.imageExtent.height;
+
     /* The allocator, above the device and below the renderer: the one GPU-memory rung, and the one
        owner of every VkDeviceMemory this tree creates. It sits here because its whole input is alrea
        dy above it - the memory rows the physical layer recorded (VkPhysicalDeviceMemoryProperties is
@@ -757,6 +767,15 @@ XudResult xud_end_drawing(XudContext* context) {
        is left with the rungs it still has. */
     result = xud_renderer_resize(&context->renderer, context->loader, context->device, &context->physicalDevice->caps, context->allocator,
         context->physicalDevice, context->window, &context->swapchain);
+    if (result == XUD_OK) {
+        /* The recreation replaced the swapchain and therefore its extent, so the record the ui fold
+           divides its clip mapping by is re-read off the NEW swapchain rather than left at the one
+           the resized-from frame rendered at. XUD_ALREADY means no recreation ran - the flag was
+           empty or already satisfied - and the extent is the state present rather than a state to
+           re-record. */
+        context->width = context->swapchain->createInfo.imageExtent.width;
+        context->height = context->swapchain->createInfo.imageExtent.height;
+    }
     if ((result != XUD_OK) && (result != XUD_ALREADY)) {
         return result;
     }

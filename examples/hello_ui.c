@@ -93,12 +93,14 @@ static const XudHelloFace xud_hello_faces[6] = {
     { 0u, 1u, 5u, 4u, { 180u, 90u, 220u, 255u } },
 };
 
-/* The frame's one camera: the eye stands on +z looking at the cube's centre, and the two planes
-   bracket the cube's corner-to-corner reach (half a diagonal of 0.5 * sqrt(3) is under 1.0) with
-   room for the swing either face can take. */
+/* The frame's one camera: the eye stands on +z looking at the cube's centre. The cube's corner
+   reaches 0.5 * sqrt(3) = 0.866 world units out at every rotation, and the eye standing 4.0 down
+   -z puts that corner at clip x 2.414 * 0.866 / (4.0 - 0.866) = 0.67 at fovy 45 - inside the clip
+   volume at every yaw and pitch the two sliders can reach, with the near plane (0.1) staying 3.1
+   units clear of the nearest corner. */
 static XudCamera3D xud_hello_camera(void) {
     return (XudCamera3D) {
-        .position = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 2.6f },
+        .position = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 4.0f },
         .target = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f },
         .up = (XudVector3) { .x = 0.0f, .y = 1.0f, .z = 0.0f },
         .fovy = 45.0f,
