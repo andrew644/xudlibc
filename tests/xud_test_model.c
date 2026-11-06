@@ -81,7 +81,7 @@ static const char xudTestModelJson[]
       "{\"bufferView\":4,\"byteOffset\":0,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
       "\"images\":[{\"bufferView\":5,\"mimeType\":\"image/png\"}],"
       "\"textures\":[{\"sampler\":0,\"source\":0}],"
-      "\"samplers\":[{\"magFilter\":10240,\"minFilter\":10240,\"magWrap\":33071,\"minWrap\":33071}],"
+      "\"samplers\":[{\"magFilter\":9728,\"minFilter\":9987,\"wrapS\":10497,\"wrapT\":10497}],"
       "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2,\"COLOR_0\":3},"
       "\"indices\":4,\"material\":0}]}],"
       "\"materials\":[{\"name\":\"opaque\",\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}},"
@@ -700,6 +700,74 @@ static void xud_test_model_pure(void) {
         document = NULL;
     }
 
+    /* The sampler's fold onto the rung's tokens, the pure step between the resolver above and the
+       texture rung the open runs it against. The document's one sampler is the NEAREST magnification
+       over a LINEAR_MIPMAP_LINEAR minification with REPEAT on both wrap axes, and the refusals are
+       reached by editing the same parsed document. */
+    {
+        uint32_t filter = 0u;
+        uint32_t addressMode = 0u;
+
+        document = xud_test_model_document(glb, glbLength);
+        xud_check(document != NULL, "sampler-document", "the same document again, for the sampler fold below");
+        if (document == NULL) {
+            return;
+        }
+        xud_check(xud_model_sampler_tokens(document, NULL, NULL, &addressMode) == XUD_INVALID_ARG, "sampler-null-out-filter",
+            "an out-filter with nowhere to be written is refused");
+        xud_check(xud_model_sampler_tokens(document, NULL, &filter, NULL) == XUD_INVALID_ARG, "sampler-null-out-address",
+            "and so is an out-address with nowhere to be written");
+        xud_check(xud_model_sampler_tokens(NULL, NULL, &filter, &addressMode) == XUD_INVALID_ARG, "sampler-null-document",
+            "and so is a document with no samplers to fold");
+        xud_check(xud_model_sampler_tokens(document, NULL, &filter, &addressMode) == XUD_OK, "sampler-no-texture",
+            "a texture with no sampler answers rather than refuses");
+        xud_check((filter == XUD_TEXTURE_FILTER_LINEAR) && (addressMode == XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE), "sampler-no-texture-tokens",
+            "and it is the glTF default the texture without a sampler samples with");
+        document->textures[0].sampler = NULL;
+        xud_check(xud_model_sampler_tokens(document, &document->textures[0], &filter, &addressMode) == XUD_OK, "sampler-no-sampler",
+            "and so does a texture whose sampler the document left absent");
+        xud_check((filter == XUD_TEXTURE_FILTER_LINEAR) && (addressMode == XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE), "sampler-no-sampler-tokens",
+            "and it is the same default, so the sampler's absence is the document's default stated two ways");
+        document->textures[0].sampler = &document->samplers[0];
+        xud_check(xud_model_sampler_tokens(document, &document->textures[0], &filter, &addressMode) == XUD_OK, "sampler-ok",
+            "the document's own sampler answers");
+        xud_check((filter == XUD_TEXTURE_FILTER_NEAREST) && (addressMode == XUD_TEXTURE_ADDRESS_REPEAT), "sampler-tokens",
+            "and it folds to the NEAREST the magnifying filter spells and the REPEAT both wrap axes spell");
+        document->samplers[0].mag_filter = cgltf_filter_type_linear;
+        document->samplers[0].min_filter = cgltf_filter_type_nearest;
+        document->samplers[0].wrap_s = cgltf_wrap_mode_clamp_to_edge;
+        document->samplers[0].wrap_t = cgltf_wrap_mode_mirrored_repeat;
+        xud_check(xud_model_sampler_tokens(document, &document->textures[0], &filter, &addressMode) == XUD_OK, "sampler-disagree",
+            "a magnifying and a minifying filter that name different tokens answer rather than refuse");
+        xud_check((filter == XUD_TEXTURE_FILTER_LINEAR) && (addressMode == XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE), "sampler-disagree-tokens",
+            "and the axes the spec lists first win both disagreements - the magnifying token over the minifying one and the wrapS mode "
+            "over "
+            "the wrapT one, the fold's own rule");
+        document->samplers[0].mag_filter = cgltf_filter_type_nearest;
+        document->samplers[0].min_filter = cgltf_filter_type_nearest_mipmap_nearest;
+        xud_check(xud_model_sampler_tokens(document, &document->textures[0], &filter, &addressMode) == XUD_OK, "sampler-mipmap-min",
+            "a mipmap min-filter answers, the mip interpolation the texture rung's fixed LINEAR takes over");
+        xud_check(filter == XUD_TEXTURE_FILTER_NEAREST, "sampler-mipmap-min-token",
+            "and its base filter reaches the token through the magnifying axis");
+        document->samplers[0].min_filter = 1u;
+        xud_check(xud_model_sampler_tokens(document, &document->textures[0], &filter, &addressMode) == XUD_INVALID_ARG, "sampler-bad-min",
+            "a minFilter the spec does not give is a broken document");
+        document->samplers[0].min_filter = cgltf_filter_type_linear_mipmap_linear;
+        document->samplers[0].mag_filter = cgltf_filter_type_linear_mipmap_linear;
+        xud_check(xud_model_sampler_tokens(document, &document->textures[0], &filter, &addressMode) == XUD_INVALID_ARG, "sampler-bad-mag",
+            "and a mipmap value in the magnifying slot is one too, which is the value the slot's two do not include");
+        document->samplers[0].mag_filter = cgltf_filter_type_nearest;
+        document->samplers[0].wrap_s = 9999u;
+        xud_check(xud_model_sampler_tokens(document, &document->textures[0], &filter, &addressMode) == XUD_INVALID_ARG,
+            "sampler-bad-wrap-s", "and a wrapS the spec does not give is one as well");
+        document->samplers[0].wrap_s = cgltf_wrap_mode_repeat;
+        document->samplers[0].wrap_t = 9999u;
+        xud_check(xud_model_sampler_tokens(document, &document->textures[0], &filter, &addressMode) == XUD_INVALID_ARG,
+            "sampler-bad-wrap-t", "and so is a wrapT, which the fold validates even where it does not steer");
+        cgltf_free(document);
+        document = NULL;
+    }
+
     /* The record's slot, without a driver: the accessor's three refusals and the sentinel state. The
        record below is synthetic - the driver half's open is what allocates a real one - so this area
        frees it itself rather than leaving it for a rung that would need a device to run.
@@ -888,6 +956,14 @@ static void xud_test_model_gpu(void) {
         "and it is the 4x4 the decode answered, so the PNG's extent reached the image rather than being dropped at the load");
     xud_check(textureRecord != NULL && textureRecord->samplerSlotLive == 1u, "gpu-model/texture-sampler-slot",
         "and it holds an entry of set 1's sampler array, which is the row the textured material's draw binds the map through");
+    xud_check(textureRecord != NULL && textureRecord->samplerInfo.magFilter == XUD_TEXTURE_FILTER_NEAREST
+            && textureRecord->samplerInfo.minFilter == XUD_TEXTURE_FILTER_NEAREST
+            && textureRecord->samplerInfo.addressModeU == XUD_TEXTURE_ADDRESS_REPEAT
+            && textureRecord->samplerInfo.addressModeV == XUD_TEXTURE_ADDRESS_REPEAT,
+        "gpu-model/texture-sampler-stamped",
+        "and the sampler the document spelled reached the texture's own sampler - the NEAREST the magnifying filter asked for and the "
+        "REPEAT "
+        "both wrap axes asked for, folded at the load rather than the rung's default");
     {
         uint32_t textureIndex = 0u;
         xud_check(xud_material_resolve_texture(context->handleTable, materialRecord, &textureIndex) == XUD_OK,

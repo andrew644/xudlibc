@@ -426,6 +426,67 @@ XudResult xud_model_image_decode(
     return XUD_OK;
 }
 
+/* The sampler's half of the map: the glTF sampler a base-color texture names, folded onto the
+   texture rung's two tokens. The fold loses information this rung cannot hold - XudTextureData has
+   one filter for the two filter slots and one wrap mode for the two wrap axes - and the rule for
+   each loss is the axis the spec lists first: when the magnifying and the minifying filters name
+   different tokens the magnifying one wins (magnification is the half of sampling the drawn pixels
+   live at, LOD zero being where a model is viewed), and the mip interpolation of a mipmap
+   min-filter is the texture rung's fixed LINEAR, the half of it this rung keeps. wrapS and wrapT
+   the same way, wrapS winning. An enum value the spec does not give is a broken document rather
+   than a fallback to a default: the defaults are only the sampler-ABSENT ones, and a sampler that
+   spells an out-of-range value is a document this load must not guess at. */
+XudResult xud_model_sampler_tokens(const cgltf_data* data, const cgltf_texture* texture, uint32_t* outFilter, uint32_t* outAddressMode) {
+    const cgltf_sampler* sampler;
+
+    if (outFilter == NULL || outAddressMode == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (data == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    /* The glTF defaults a texture without a sampler samples with: LINEAR and CLAMP_TO_EDGE, and a
+       sampler whose key is absent answers the enum's undefined row for it, which is the same
+       default stated as a value. */
+    *outFilter = XUD_TEXTURE_FILTER_LINEAR;
+    *outAddressMode = XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE;
+    if ((texture == NULL) || (texture->sampler == NULL)) {
+        return XUD_OK;
+    }
+    sampler = texture->sampler;
+    if ((sampler->mag_filter == cgltf_filter_type_undefined) || (sampler->mag_filter == cgltf_filter_type_linear)) {
+        *outFilter = XUD_TEXTURE_FILTER_LINEAR;
+    } else if (sampler->mag_filter == cgltf_filter_type_nearest) {
+        *outFilter = XUD_TEXTURE_FILTER_NEAREST;
+    } else {
+        return XUD_INVALID_ARG; /* a magFilter outside the two the spec gives is a broken document */
+    }
+    if ((sampler->min_filter == cgltf_filter_type_undefined) || (sampler->min_filter == cgltf_filter_type_nearest)
+        || (sampler->min_filter == cgltf_filter_type_linear) || (sampler->min_filter == cgltf_filter_type_nearest_mipmap_nearest)
+        || (sampler->min_filter == cgltf_filter_type_linear_mipmap_nearest)
+        || (sampler->min_filter == cgltf_filter_type_nearest_mipmap_linear)
+        || (sampler->min_filter == cgltf_filter_type_linear_mipmap_linear)) {
+        /* Valid. The min-filter's base token does not steer the answer when it disagrees with the
+           magnifying one (see the note above), so this half is a validation rather than a mapping. */
+    } else {
+        return XUD_INVALID_ARG; /* a minFilter outside the six the spec gives is a broken document */
+    }
+    if ((sampler->wrap_s == 0) || (sampler->wrap_s == cgltf_wrap_mode_clamp_to_edge)) {
+        *outAddressMode = XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE;
+    } else if (sampler->wrap_s == cgltf_wrap_mode_repeat) {
+        *outAddressMode = XUD_TEXTURE_ADDRESS_REPEAT;
+    } else if (sampler->wrap_s == cgltf_wrap_mode_mirrored_repeat) {
+        *outAddressMode = XUD_TEXTURE_ADDRESS_MIRRORED_REPEAT;
+    } else {
+        return XUD_INVALID_ARG; /* a wrapS the spec does not give is a broken document */
+    }
+    if ((sampler->wrap_t != 0) && (sampler->wrap_t != cgltf_wrap_mode_clamp_to_edge) && (sampler->wrap_t != cgltf_wrap_mode_repeat)
+        && (sampler->wrap_t != cgltf_wrap_mode_mirrored_repeat)) {
+        return XUD_INVALID_ARG; /* a wrapT the spec does not give is a broken document */
+    }
+    return XUD_OK;
+}
+
 XudResult xud_model_check(const cgltf_data* data, uint32_t* outMeshCount, uint32_t* outMaterialCount) {
     uint32_t meshCount = 0u;
     uint32_t vertexCount = 0u;
@@ -460,9 +521,20 @@ XudResult xud_model_check(const cgltf_data* data, uint32_t* outMeshCount, uint32
     }
     for (m = 0u; m < (uint32_t)data->materials_count; m++) {
         uint32_t imageIndex = XUD_MODEL_NO_IMAGE;
+        uint32_t filter = 0u;
+        uint32_t addressMode = 0u;
         result = xud_model_image_for_material(data, m, &imageIndex);
         if (result != XUD_OK) {
             return result;
+        }
+        if (imageIndex != XUD_MODEL_NO_IMAGE) {
+            /* The map's sampler folded onto the rung's tokens: a document whose sampler spells an
+               out-of-range value is refused here rather than at the texture step of the open. */
+            result = xud_model_sampler_tokens(
+                data, data->materials[m].pbr_metallic_roughness.base_color_texture.texture, &filter, &addressMode);
+            if (result != XUD_OK) {
+                return result;
+            }
         }
     }
     for (m = 0u; m < (uint32_t)data->meshes_count; m++) {
@@ -840,7 +912,8 @@ static void xud_model_retire_texture(
    texture being usable rather than a step beside it. Every refusal leaves the slot free and the
    entry unbound, which is what the retire above retires twice over without a double free. */
 static XudResult xud_model_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device,
-    const XudDeviceCaps* caps, XudDescriptor* descriptor, XudAllocator* alloc, uint32_t width, uint32_t height, const uint8_t* rgba) {
+    const XudDeviceCaps* caps, XudDescriptor* descriptor, XudAllocator* alloc, uint32_t width, uint32_t height, const uint8_t* rgba,
+    uint32_t filter, uint32_t addressMode) {
     XudTextureRecord* record = NULL;
     XudTextureData data;
     XudResult result;
@@ -848,8 +921,8 @@ static XudResult xud_model_texture_open(XudHandle* outHandle, XudHandleTable* ta
     data.width = width;
     data.height = height;
     data.rgba = rgba;
-    data.filter = XUD_TEXTURE_FILTER_LINEAR;
-    data.addressMode = XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE;
+    data.filter = filter;
+    data.addressMode = addressMode;
     result = xud_texture_open(outHandle, table, loader, device, caps, alloc, &data);
     if (result != XUD_OK) {
         return result;
@@ -902,6 +975,8 @@ XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader*
     XudHandle meshHandle;
     XudHandle texture[XUD_MODEL_MAX_TEXTURES];
     uint32_t textureImage[XUD_MODEL_MAX_TEXTURES];
+    uint32_t textureFilter[XUD_MODEL_MAX_TEXTURES];
+    uint32_t textureAddress[XUD_MODEL_MAX_TEXTURES];
     void* stageBlock = NULL;
     uint32_t meshCount = 0u;
     uint32_t materialCount = 0u;
@@ -960,6 +1035,13 @@ XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader*
                 return XUD_UNSUPPORTED; /* more distinct images than set 1's sampler array can hold */
             }
             textureImage[textureCount] = imageIndex;
+            /* The sampler the material's texture names, folded onto the rung's tokens: two materials
+               naming one image share the sampler the first of them gave it, document order deciding. */
+            result = xud_model_sampler_tokens(data, data->materials[m].pbr_metallic_roughness.base_color_texture.texture,
+                &textureFilter[textureCount], &textureAddress[textureCount]);
+            if (result != XUD_OK) {
+                return result;
+            }
             textureCount++;
         }
     }
@@ -969,7 +1051,8 @@ XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader*
         uint8_t* rgba = NULL;
         result = xud_model_image_decode(data, textureImage[t], dir, &width, &height, &rgba);
         if (result == XUD_OK) {
-            result = xud_model_texture_open(&texture[t], table, loader, device, caps, descriptor, alloc, width, height, rgba);
+            result = xud_model_texture_open(
+                &texture[t], table, loader, device, caps, descriptor, alloc, width, height, rgba, textureFilter[t], textureAddress[t]);
         }
         stbi_image_free(rgba);
         if (result != XUD_OK) {

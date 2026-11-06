@@ -200,8 +200,9 @@ static_assert((sizeof(XudModelRecord) % 4u) == 0u, "xud_model.h: the record stay
 /// through xud_model_gate() and sums the counts, so the two out-counts are the two array sizes
 /// xud_model_open() will need. XUD_INVALID_ARG on a NULL document or out-count, on a document
 /// with no mesh or no primitive at all, on a primitive whose accessors disagree about the vertex
-/// count, on a primitive with no POSITION, on a count pair past this rung's own bounds, or on a
-/// primitive whose buffer bytes were never loaded; XUD_UNSUPPORTED when the asset block carries
+/// count, on a primitive with no POSITION, on a count pair past this rung's own bounds, on a
+/// primitive whose buffer bytes were never loaded, or on a base-color sampler that spells a filter
+/// or wrap value the glTF spec does not give; XUD_UNSUPPORTED when the asset block carries
 /// no version, when the version does not start with '2', or when any primitive names a feature
 /// this rung does not read. On XUD_OK *outMeshCount is the primitive total and *outMaterialCount
 /// is the document's material count plus one.
@@ -269,6 +270,18 @@ XudResult xud_model_result_from_cgltf(cgltf_result result);
 /// index at or past the document's count; XUD_OK with the index written in either shape, the
 /// no-map one being XUD_MODEL_NO_IMAGE.
 XudResult xud_model_image_for_material(const cgltf_data* data, uint32_t materialIndex, uint32_t* outImageIndex);
+
+/// Pure: the sampler a base-color texture names, folded onto the texture rung's two tokens - the
+/// XUD_TEXTURE_FILTER_* one and the XUD_TEXTURE_ADDRESS_* one a texture opened for the image
+/// carries. The fold loses the information this rung cannot hold (XudTextureData has one filter
+/// for Vulkan's two filter slots and one wrap mode for its two wrap axes) and the rule for each
+/// loss is the axis the spec lists first: when the magnifying and the minifying filters map to
+/// different tokens the magnifying one wins, the mip interpolation of a mipmap min-filter being the
+/// texture rung's fixed LINEAR, and wrapS wins over wrapT. A texture with no sampler, a sampler
+/// with a key absent and a sampler the document never names all answer the glTF defaults, LINEAR
+/// and CLAMP_TO_EDGE. XUD_INVALID_ARG on a NULL document or out-token, or on a filter or wrap
+/// value the glTF spec does not give; XUD_OK with both tokens written in.
+XudResult xud_model_sampler_tokens(const cgltf_data* data, const cgltf_texture* texture, uint32_t* outFilter, uint32_t* outAddressMode);
 
 /// Pure: decode one document image into a width*height array of RGBA bytes, four per texel. The
 /// bytes are stb_image's own allocation in the shape its load answers - the caller frees them
