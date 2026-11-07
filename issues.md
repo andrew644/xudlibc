@@ -8,7 +8,7 @@ costs the tests cannot see.
 
 ## Correctness
 
-### 1. Render and present are unsynchronized when the two role queues differ
+### 1. (RESOLVED) Render and present are unsynchronized when the two role queues differ
 
 `xud_device.c:416` resolves the two role queues from the same family at index 0
 (graphics) and index 1 (present), and the row asks for up to
@@ -26,6 +26,16 @@ The standard fix is a render-finished semaphore signalled by the graphics
 submit and waited on by a no-command submit to the present queue (or an assert
 at `xud_device_open` that the two handles are equal, which keeps the current
 single-flight model honest).
+
+**Resolved.** The render-finished semaphore is exactly the fix: `XudFrame` owns
+a `renderFinished` semaphore, the frame's graphics submit signals it, and a
+no-command submit on the present queue (`xud_frame_fill_present_wait`) waits it
+before the `vkQueuePresentKHR`, so the present is ordered behind its render by
+the queue's own FIFO even when the two role handles differ. On a family that
+exposes one queue the wait submit is a no-op. The frame close waits each role
+queue idle before destroying the semaphore, since the present-queue wait names
+it and has no fence of its own. See `xud_frame.c` (the 5b step) and
+`xud_frame.h` (`renderFinished`).
 
 ### 2. (RESOLVED) A minimized window makes `xud_end_drawing` fail every frame
 
@@ -111,16 +121,25 @@ These are probably the shape of the next steps rather than defects, but as the
 library stands, the raylib-shaped programs (sprites, textured 2D, posed models)
 cannot be written.
 
-### 7. A context can hold at most ~15 live textures
+### 7. (RESOLVED) A context can hold at most ~15 live textures
 
-`XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE` is 16 (`xud_descriptor.h:123`), slot 0 is
+`XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE` is 16 (`xud_descriptor.h`), slot 0 is
 the white default, and the set layout is created once per context (the pipeline
-layout freezes the array width). Font atlases, the UI atlas, and every model
+layout freezes the slot width). Font atlases, the UI atlas, and every model
 map share the same 15 slots, so a scene that loads a 16th distinct texture
 gets `XUD_OUT_OF_RESOURCES` out of `xud_create_texture`. raylib apps routinely
 hold far more; if this ceiling is intended it deserves a public constant in
 `xud.h` and a doc note, since the failure mode is a texture load refusal
 halfway through a game.
+
+**Resolved.** The ceiling is intended (a wider slot axis is a pipeline-layout
+recreate the "created once at init" rule forbids at runtime), and it is now
+public: `XUD_MAX_TEXTURES` (15) in `xud.h` documents the live-texture ceiling
+and its failure mode, `xud_create_texture`'s doc names it, and a
+`static_assert` in `xud_descriptor.h` ties the public constant to
+`XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - 1` so the two cannot drift apart. The
+number is unchanged; what changed is that a caller can now read it instead of
+discovering it as a refusal.
 
 ### 8. Smaller parity gaps
 
@@ -146,14 +165,21 @@ max(CPU frame, GPU frame) and it is a structural decision worth recording:
 moving to triple-buffering with per-frame semaphores is a rewrite of the frame
 rung, not a patch.
 
-### 10. The white default texture is re-cleared every frame
+### 10. (RESOLVED) The white default texture is re-cleared every frame
 
-`xud_descriptor_upload` (`xud_descriptor.c:884`) runs every frame, and inside
-it the constant 1x1 white image is transitioned to TRANSFER_DST, cleared with
-`vkCmdClearColorImage` (`xud_descriptor.c:940`) and transitioned back to
-SAMPLED — two barriers and a clear for an image whose bytes never change after
-creation. The fill belongs at bring-up (one command buffer, once) or the image
-could be created already in SAMPLED layout with the clear recorded at open.
+`xud_descriptor_upload` (`xud_descriptor.c`) ran every frame, and inside
+it the constant 1x1 white image was transitioned to TRANSFER_DST, cleared with
+`vkCmdClearColorImage` and transitioned back to SAMPLED — two barriers and a
+clear for an image whose bytes never change after creation. The fill belongs
+at bring-up (one command buffer, once) or the image could be created already
+in SAMPLED layout with the clear recorded at open.
+
+**Resolved.** The fill is now gated by a `whiteFilled` bit on the descriptor
+record: the first frame that uploads records the two barriers and the clear
+(the image starts in the SAMPLED layout the descriptor names, so it must move
+to TRANSFER_DST and back), and every frame after the first skips all three
+because the clear left the image in exactly the layout it ends in. The 1x1
+white default is written once, not once per frame.
 
 ### 11. Every texture close stalls the whole device
 
@@ -186,24 +212,40 @@ window the machine can present (many drivers allow 32768+) is refused as
 `XUD_INVALID_ARG` by the public entry. Either wire the caps value into the
 check or state the 16384 cap publicly.
 
-### 14. `solid_textured.frag` is `#version 450`, the other two shaders 460
+### 14. (RESOLVED) `solid_textured.frag` is `#version 450`, the other two shaders 460
 
 Cosmetic, and harmless at build time (glslang accepts both), but the three
 shaders are compiled and validated in the same CMake step and should agree.
 
-### 15. `xud_get_mouse_x`/`xud_get_mouse_y` truncate rather than round
+**Resolved.** `solid_textured.frag` is now `#version 460 core`, matching
+`solid.vert` and `solid.frag`; all three compile and validate in the same
+CMake step.
 
-`(int)input->cursorX` (`xud_input.c`) truncates toward zero, so a cursor at
-pixel 4.9 reports 4. raylib rounds. One `floor(x + 0.5)`-style fix each.
+### 15. (RESOLVED) `xud_get_mouse_x`/`xud_get_mouse_y` truncate rather than round
 
-### 16. A model with an out-of-range material index silently takes a wrong material
+`(int)input->cursorX` truncated toward zero, so a cursor at
+pixel 4.9 reported 4. raylib rounds. One `floor(x + 0.5)`-style fix each.
 
-`xud_model.c:1160-1165`: when a glTF primitive's material index is past
-`materials_count`, the load clamps it to `materialCount - 1` — the *last*
+**Resolved.** Both queries now land the cursor on the nearest pixel with
+`round()` rather than truncating: `xud_get_mouse_x`/`y` apply `round()` to the
+cursor before the integer conversion, so 4.9 reports 5 and -4.9 reports -5.
+
+### 16. (RESOLVED) A model with an out-of-range material index silently takes a wrong material
+
+`xud_model.c`: when a glTF primitive's material index is past
+`materials_count`, the load clamped it to `materialCount - 1` — the *last*
 successfully created material of that model — rather than refusing. A
-corrupt or hostile file therefore draws with an arbitrary material.
-`cgltf_validate` catches most of this upstream, but the fallback masks the
+corrupt or hostile file therefore drew with an arbitrary material.
+`cgltf_validate` catches most of this upstream, but the fallback masked the
 rest; refusing the file (the gate's style elsewhere) would be consistent.
+
+**Resolved.** Both the check and the open now refuse such a document rather than
+clamp: `xud_model_check` answers `XUD_INVALID_ARG` when a primitive's material
+pointer sits past the document's material array, and `xud_model_open` does the
+same at the point it would have clamped. The index is read as a pointer
+difference against the materials array's base (well-defined one element past
+its end) rather than through cgltf's own accessor, which asserts the very bound
+being checked.
 
 ### 17. A batch that hits its growth bound refuses forever
 
