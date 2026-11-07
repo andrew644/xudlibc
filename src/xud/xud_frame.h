@@ -151,17 +151,11 @@
           the unambiguous form of "set 0 only" rather than a bit pattern to reason about */
 
 #define XUD_FRAME_SET_COUNT                                                                                                                \
-    XUD_DESCRIPTOR_SET_COUNT /* vkCmdBindDescriptorSets' descriptorCount, which is a SET count starting                                    \
-          at firstSet: the two sets of this layout, both of which the descriptor rung allocated and                                        \
-          wrote at its bring-up. Every descriptor of the LAST set bound is bound with it, which is what                                    \
-          makes the sampler array's 16 entries live without naming them one by one, and firstDescriptorIndex                               \
-          is 0 because the per-frame bind leaves set 1 at the array's first slot - the slice a draw's texture                              \
-          names is the per-draw rebind of xud_frame_draw(), which binds this one set again at that draw's first                          \
-          DescriptorIndex rather than a different call shape */
-
-#define XUD_FRAME_MATERIAL_SET_COUNT                                                                                                       \
-    1u /* the descriptorCount of the per-draw slice rebind of set 1: a bind that moves ONE set names one set,                            \
-          and the one set it names is the material set, whose firstSet is its own row of the layout's set numbering */
+    1u /* vkCmdBindDescriptorSets' descriptorCount of the per-frame bind, which is a SET count starting                              \
+          at firstSet: only set 0, the per-frame block, is bound once per frame here. The slot sets (set 1) are bound                   \
+          per draw by xud_frame_draw() rather than in this call, because the set a draw samples depends on that draw's                 \
+          texture, and binding the right slot set per draw is what keeps every descriptor written before its set is                    \
+          bound - the slot a draw samples moves by a rebind, not by a host-side update of an already-bound set */
 
 #define XUD_FRAME_UNIFORM_READ_STAGES                                                                                                      \
     (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT                                                                                                   \
@@ -187,11 +181,9 @@ static_assert(XUD_FRAME_FIRST_BINDING == 0u, "the batch's four streams are bindi
 static_assert(XUD_FRAME_VERTEX_READ_ACCESS == VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, "the streams are read as vertex attributes");
 static_assert(XUD_FRAME_INDEX_TYPE == VK_INDEX_TYPE_UINT32, "the batch's indices are uint32_t entries");
 static_assert(XUD_FRAME_FIRST_SET == 0u, "set 0 is the per-frame set and it is the first set bound");
-static_assert(XUD_FRAME_MATERIAL_SET_COUNT == 1u,
-    "the slice rebind moves one set only, so its count is one rather than the two-set run the per-frame bind names");
-static_assert(XUD_FRAME_SET_COUNT == XUD_DESCRIPTOR_SET_COUNT,
-    "both sets of this layout are bound by the one call, which is what makes the textured pipeline row read a set that was allocated and "
-    "written rather than one that was only declared");
+static_assert(XUD_FRAME_SET_COUNT == 1u,
+    "the per-frame bind names set 0 alone, which is the one set whose contents do not depend on a draw's texture; the slot sets are "
+    "bound per draw for the reason stated beside XUD_FRAME_SET_COUNT");
 static_assert(XUD_FRAME_UNIFORM_READ_ACCESS == VK_ACCESS_UNIFORM_READ_BIT, "the block is read as a uniform buffer");
 static_assert(XUD_FRAME_WAIT_STAGE == VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, "the first stage that reads the image");
 static_assert(XUD_FRAME_NO_TIMEOUT == (~0ull), "the all-ones value is the no-timeout answer");
@@ -214,6 +206,14 @@ struct XudFrame {
                                   frame, and the reason that is legal is that the frame loop waits
                                   it before the next acquire - a second acquire while one is still
                                   unwaited would be two signals on a semaphore nobody waited */
+    VkSemaphore renderFinished; /* the submit-to-present boundary: the frame's submit signals it, and the present's
+                                    wait pair names it, so a present cannot run ahead of its render when the two
+                                    role queues are distinct VkQueue handles - two queues have no implicit ordering
+                                    between their submissions, and a bare vkQueuePresentKHR waits on nothing. On a
+                                    family that exposes one queue the pair is a no-op. Reused every frame for the
+                                    same reason the acquire semaphore is: the fence the loop waits at the end of the
+                                    frame is signalled only after the present finished, so the semaphore cannot be
+                                    signalled twice without a wait in between */
     VkFence* imageFences; /* the plan's "one VkFence per swapchain image", heap array, index-cor
                             respondent with the swapchain's image array - the fence that bounds a
                             frame is the fence of the image that frame wrote, which is what makes
@@ -323,17 +323,27 @@ XudResult xud_frame_fill_recording(
     VkCommandBufferBeginInfo* outBegin, VkViewport* outViewport, VkRect2D* outScissor, uint32_t width, uint32_t height);
 
 /// Pure: the submit row and the present row for one frame. The submit waits the acquire semaphore
-/// at the vertex stage and signals nothing itself (the fence is vkQueueSubmit's own argument, not a
-/// row of this struct); the present names the swapchain and leaves its wait-semaphore pair empty, b
-/// ecause the fence at the end of the frame is what bounds the presentation and a wait semaphore the
-/// re would be a second boundary for the same thing. There is NO host-side semaphore-wait row in th
-/// is contract: vkWaitSemaphores is a core-1.2 entry point, live at this library's 1.3 floor
+/// at the vertex stage and signals the render-finished semaphore itself, and the present waits that
+/// same semaphore: the pair is the submit-to-present boundary spelled as a queue-side semaphore so
+/// a present cannot run ahead of its render when the two role queues are distinct handles (two VkQue
+/// ue objects have no implicit ordering between their submissions, and a bare vkQueuePresentKHR wai
+/// ts on nothing) - on a machine where the family exposes one queue the pair is a no-op rather than
+/// a save. The fence is vkQueueSubmit's own argument and bounds the frame for the host; the semaphor
+/// e bounds the present for the queue. There is NO host-side semaphore-wait row in this contract:
+/// vkWaitSemaphores is a core-1.2 entry point, live at this library's 1.3 floor
 /// (XUD_INSTANCE_API_FLOOR) and still not called - the gate is this layer's own choice, not a
 /// fallback for a missing name. The core-1.0 form of the same boundary is the submit's pWaitSem
 /// aphores + pWaitDstStageMask pair, which lives on the queue rather than on the host. XUD_INVA
-/// LID_ARG on a NULL out-param or a handle-less command buffer / swapchain.
-XudResult xud_frame_fill_submit(
-    VkSubmitInfo* outSubmit, VkPresentInfoKHR* outPresent, VkCommandBuffer commandBuffer, VkSwapchainKHR swapchain);
+/// LID_ARG on a NULL out-param or a handle-less command buffer / swapchain / semaphore.
+XudResult xud_frame_fill_submit(VkSubmitInfo* outSubmit, VkPresentInfoKHR* outPresent, VkCommandBuffer commandBuffer,
+    VkSwapchainKHR swapchain, VkSemaphore renderFinished);
+
+/// Pure: the present queue's no-command wait submit for one frame. It waits the render-finished semaphore
+/// the frame's own submit signals and carries no command buffer, so its only job is to order the present
+/// queue behind the render - the submit-to-present boundary for a device whose two role queues are two
+/// distinct handles, where a bare vkQueuePresentKHR would wait on nothing. XUD_INVALID_ARG on a NULL
+/// out-param or a handle-less semaphore.
+XudResult xud_frame_fill_present_wait(VkSubmitInfo* outSubmit, VkSemaphore renderFinished);
 
 /// Pure: the push-constant row of ONE draw, from the batch's draw row. The model matrix is the iden
 /// tity for the same reason the block's viewProj is: a non-identity matrix is a transform the step a
@@ -405,10 +415,11 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
 /// omething rather than a block that was never written. The push row of the same layout is pushed BE
 /// SIDE every draw this loop records (xud_frame_fill_push_row builds it from the batch's draw row and
 /// the driver half pushes it against the layout's own recorded range) and, when the row's texture channel names a slot other than the one set 1 was left
-/// at - the per-frame bind leaves it at the array's first slot - the loop rebinds set 1 as a
-/// one-descriptor slice at that slot with a one-set call whose firstDescriptorIndex is the row's
-/// texture slot, the binding half of the textured column whose fragment stage declares one sampler
-/// rather than the array. so the vertex is placed by thi
+/// at, the loop rebinds set 1 to that slot's OWN descriptor set - one set per texture slot, each
+/// holding the one view-and-sampler pair the textured column's fragment stage samples. The rebind is
+/// a bind, not a write: every slot set was written before it is bound (white at open, a texture's own
+/// pair at its bind, white again at its release), so no update lands on a set this buffer has already
+/// recorded. so the vertex is placed by thi
 /// s frame's viewProj times this draw's model matrix - the per-draw channel and the per-frame set are
 /// both live, and what is still identity in both is the matrices themselves, because a non-identity m
 /// atrix is a transform the step above this one has to choose.

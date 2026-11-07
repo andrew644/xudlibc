@@ -113,6 +113,14 @@ extern "C" {
    query (maxImageExtent2D, recorded into XudDeviceCaps at step S5) is authoritative. */
 #define XUD_MAX_WINDOW_EXTENT 16384u
 
+/* The ceiling of live textures one context can hold: the material set's sampler array has 16
+   slots and slot 0 is the white default every untextured draw samples, so 15 of them are
+   textures'. The array's width is frozen into the pipeline layout, so the number is fixed per
+   context: a scene that loads a 16th distinct texture gets XUD_OUT_OF_RESOURCES out of
+   xud_create_texture, and font atlases, UI atlases and model maps all count against the same
+   ceiling. */
+#define XUD_MAX_TEXTURES 15u
+
 /*-----------------------------------------------------------------------------------------------
  * Error codes - the return type of every public function
  *-----------------------------------------------------------------------------------------------*/
@@ -869,7 +877,8 @@ XudResult xud_close_mesh(XudContext* context, XudHandle handle);
 /// on a context that never completed bring-up, on a loader whose rows this rung needs are not there,
 /// on a device that is not this loader's, on a device whose maxImageDimension2D is below either axis,
 /// or on a driver whose reported subresource layout does not match this rung's; XUD_OUT_OF_RESOURCES a
-/// t the handle layer's own slot bound or when the block cannot be carved; XUD_OUT_OF_MEMORY when the
+/// t the handle layer's own slot bound, at the context's XUD_MAX_TEXTURES ceiling of live textures, or
+/// when the block cannot be carved; XUD_OUT_OF_MEMORY when the
 /// record cannot be allocated; XUD_VULKAN_ERROR or XUD_LOST when the driver refuses for its own reas
 /// on.
 XudResult xud_create_texture(XudHandle* outHandle, XudContext* context, const XudTextureData* texture);
@@ -1256,7 +1265,13 @@ XudResult xud_get_timer_frequency(uint64_t* outTicksPerSecond, XudContext* conte
  * lib.h 1100: "By default EndDrawing() does this job: draws everything + SwapScreenBuffer() + mana
  * ge frame timing + PollInputEvents()"). Nothing here polls on demand, so a query between two polls
  * reads the same records rather than a fresh window state, and a press a caller cannot see yet is
- * a press in a frame that has not ended yet.
+ * a press in a frame that has not ended yet. The lag is one frame for the window's own events too:
+ * the window manager's close flag and resize events are read by the SAME poll, so
+ * xud_window_should_close() answers the close state as of the poll that ended the LAST frame, and
+ * a window closed or minimized mid-frame is seen on the next one. That is raylib's WindowShould
+ * Close's own lag for its exit key, and it is a property of the poll living at the frame boundary
+ * rather than a defect - the boundary is the one place two queries in one frame read the same
+ * state.
  *
  * What is NOT here, and why: raylib's gamepad block (GLFW's joystick/gamepad rung is a separate
  * subsystem - a device with its own lifetime, its own queries and its own mapping table, and noth
@@ -1464,14 +1479,15 @@ XudResult xud_is_mouse_button_released(bool* outReleased, XudContext* context, i
 XudResult xud_is_mouse_button_up(bool* outUp, XudContext* context, int button);
 
 /// The cursor's X, as this rung's offset and scale sit above the position the window reported at th
-/// e poll that opened this frame - raylib's GetMouseX (raylib.h 1232), and the same number xud_get_
-/// mouse_position() fills. XUD_INVALID_ARG on a NULL out-param or a NULL context; XUD_UNSUPPORTED a
-/// s above.
+/// e poll that opened this frame, landed on the pixel grid by rounding rather than truncating -
+/// raylib's GetMouseX (raylib.h 1232), and the same number xud_get_mouse_position() fills, before
+/// its integer landing. XUD_INVALID_ARG on a NULL out-param or a NULL context; XUD_UNSUPPORTED as
+/// above.
 XudResult xud_get_mouse_x(int* outX, XudContext* context);
 
 /// The cursor's Y, as this rung's offset and scale sit above the position the window reported at th
-/// e poll that opened this frame - raylib's GetMouseY (raylib.h 1233). XUD_INVALID_ARG as above; XU
-/// D_UNSUPPORTED as above.
+/// e poll that opened this frame, landed on the pixel grid by rounding rather than truncating -
+/// raylib's GetMouseY (raylib.h 1233). XUD_INVALID_ARG as above; XUD_UNSUPPORTED as above.
 XudResult xud_get_mouse_y(int* outY, XudContext* context);
 
 /// The cursor's position, as this rung's offset and scale sit above the position the window reporte

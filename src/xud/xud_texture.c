@@ -1193,6 +1193,13 @@ XudResult xud_texture_close(XudHandleTable* table, XudHandle handle, XudLoader* 
        because freeing the record would leak every handle the driver still holds; a LOST device is stil
        l torn down and still reported, the rule xud_device_close() follows, because skipping the free wo
        uld leak the block the driver still holds.
+       It is a device wait rather than a per-texture fence because the in-flight reader a live texture
+       can have is the FRAME loop's submit, and the frame loop owns that fence: the texture's own upload
+       fence was waited at creation, so nothing of this rung's is in flight at close - only a frame that
+       sampled the image is, and the single-flight loop waits its own fence before end-drawing returns,
+       which makes this wait answer immediately on the normal path. It is the guard for the path where
+       the previous frame failed partway, and a close loop's N waits are N no-ops rather than N stalls
+       for exactly that reason.
     */
     guard = xud_device_wait_idle(device, loader);
     if (guard == XUD_UNSUPPORTED) {
@@ -1337,9 +1344,9 @@ XudResult xud_create_texture(XudHandle* outHandle, XudContext* context, const Xu
         return XUD_INVALID_ARG;
     }
 
-    /* The slot of set 1's sampler array the record's view and sampler go into: the free list over the
-       16 entries of that array is the descriptor rung's, and the record's own fields are what make th
-       e slot the record's to give back at the close rather than a fact only the free list knows.
+    /* The slot the record's view and sampler go into: the free list over the slot sets, one per slot,
+       is the descriptor rung's, and the record's own fields are what make the slot the record's to give
+       back at the close rather than a fact only the free list knows.
      */
     result = xud_descriptor_bind_texture_slot(context->descriptor, context->loader, context->device, record->view, record->sampler,
         record->imageLayout, &((XudTextureRecord*)record)->samplerSlot);

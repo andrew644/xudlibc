@@ -123,13 +123,16 @@ static void xud_test_descriptor_pure(void) {
      */
     xud_check(xud_descriptor_fill_set_layouts(NULL) == XUD_INVALID_ARG, "descriptor/fill-layouts-null", "is refused");
     xud_check(xud_descriptor_fill_set_layouts(&d) == XUD_OK, "descriptor/fill-layouts-ok", "assembled");
-    xud_check(d.layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].sType == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-        "descriptor/layout-0-stamped", "stamped, the rule the physical layer states for a create-info");
+    xud_check((d.layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].sType == VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO)
+            && (d.layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].flags == 0u),
+        "descriptor/layout-0-stamped",
+        "stamped with no layout flags: with one set per slot nothing is ever updated after its set is bound, so the update-after-bind "
+        "bit the mid-recording write once needed is no longer one");
     xud_check(
         (d.layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].pNext == NULL) && (d.layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].flags == 0u),
         "descriptor/layout-1-chain-clear",
-        "nothing is chained into either layout: the binding-flags chain that would make a PARTIALLY"
-        "_BOUND array legal is not in these headers at all");
+        "nothing is chained into either layout and no flags are set: every slot set is written before it is bound and the frame rebinds "
+        "the slot it samples rather than rewriting a bound one");
     xud_check((d.layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].bindingCount == XUD_DESCRIPTOR_BINDINGS_PER_SET)
             && (d.layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].bindingCount == XUD_DESCRIPTOR_BINDINGS_PER_SET),
         "descriptor/one-binding-each", "one binding per set, both counts paired with a real array");
@@ -148,12 +151,10 @@ static void xud_test_descriptor_pure(void) {
         "both stages read the per-frame block, which is the design "
         "sketch's VP matrix read as a stage pair");
     xud_check(d.bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-        "descriptor/set-1-is-a-sampler-array", "set 1 is the material's sampler array");
-    xud_check(d.bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].descriptorCount == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE,
-        "descriptor/set-1-array-size",
-        "the layout's ceiling rather than a today-count: a layout is created once at init, so the "
-        "array's size cannot grow later without recreating the pipeline layout and every pipeline "
-        "above it");
+        "descriptor/set-1-is-a-sampler", "set 1 is the one sampler of a slot set");
+    xud_check(d.bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].descriptorCount == 1u, "descriptor/set-1-count-one",
+        "one descriptor per slot set: each slot owns its own set holding one view-and-sampler pair, which is the per-slot-set design that "
+        "replaces the 16-deep array");
     xud_check(d.bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].stageFlags == XUD_DESCRIPTOR_SAMPLER_STAGES, "descriptor/set-1-stage-flags",
         "the fragment stage only, which is what makes the two sets "
         "' stage pairs differ and not one pair copied");
@@ -191,9 +192,9 @@ static void xud_test_descriptor_pure(void) {
     xud_check((d.poolInfo.pNext == NULL) && (d.poolInfo.flags == XUD_DESCRIPTOR_POOL_FLAGS), "descriptor/pool-flags",
         "the one core pool flag, and nothing chained: the UPDATE_AFTER_BIND and HOST_ONLY bits are "
         "extension-gated and this library enables no descriptor-pool extension");
-    xud_check(d.poolInfo.maxSets == XUD_DESCRIPTOR_SET_COUNT, "descriptor/pool-max-sets",
-        "sized for both sets rather than the one allocated today, so the texture step needs no seco"
-        "nd pool and no pool recreated at runtime");
+    xud_check(d.poolInfo.maxSets == XUD_DESCRIPTOR_SLOT_SET_COUNT, "descriptor/pool-max-sets",
+        "the per-frame set plus one set per slot, rather than the two layouts: the pool is sized for every slot set the texture step "
+        "will use so that step needs no second pool and no pool recreated at runtime");
     xud_check((d.poolInfo.poolSizeCount == XUD_DESCRIPTOR_POOL_SIZE_COUNT) && (d.poolInfo.pPoolSizes == d.poolSizes),
         "descriptor/pool-two-rows", "one row per descriptor TYPE, pointing at the record's own array");
     xud_check((d.poolSizes[0u].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) && (d.poolSizes[0u].descriptorCount == 1u),
@@ -210,8 +211,9 @@ static void xud_test_descriptor_pure(void) {
      */
     xud_check(xud_descriptor_fill_set_allocate_info(NULL, XUD_DESCRIPTOR_SET_PER_FRAME) == XUD_INVALID_ARG, "descriptor/fill-alloc-null",
         "is refused");
-    xud_check(xud_descriptor_fill_set_allocate_info(&d, XUD_DESCRIPTOR_SET_COUNT) == XUD_INVALID_ARG, "descriptor/fill-alloc-bad-index",
-        "a set index past this layout's own set count is refused rather than read off the end of the array");
+    xud_check(xud_descriptor_fill_set_allocate_info(&d, XUD_DESCRIPTOR_SLOT_SET_COUNT) == XUD_INVALID_ARG,
+        "descriptor/fill-alloc-bad-index",
+        "a set index past this rung's own allocated-set count is refused rather than read off the end of the array");
     xud_check(xud_descriptor_fill_set_allocate_info(&d, XUD_DESCRIPTOR_SET_PER_FRAME) == XUD_INVALID_ARG, "descriptor/fill-alloc-no-pool",
         "a record whose pool was never created is a bad state of this rung, not a bad argument from "
         "a caller");
@@ -383,44 +385,45 @@ static void xud_test_descriptor_pure(void) {
         "descriptor/white-barriers-share-the-range",
         "both barriers name the range the view names, so a barrier cannot be about an image the view does not look at");
 
-    /* The write that bound set 1's sampler array.
+    /* The writes that put the white pair into every slot set.
      */
-    xud_check(xud_descriptor_fill_sampler_write_info(NULL) == XUD_INVALID_ARG, "descriptor/fill-sampler-write-null", "is refused");
-    xud_check(xud_descriptor_fill_sampler_write_info(&d) == XUD_INVALID_ARG, "descriptor/fill-sampler-write-no-default",
-        "a set allocated against a sampler layout and no white view behind it is a write that names nothing, refused as a bad state of "
-        "this rung");
-    d.whiteImage = (VkImage)&fakeImageHandle;
-    d.whiteImageView = (VkImageView)&fakeImageViewHandle;
-    d.whiteSampler = (VkSampler)&fakeSamplerHandle;
-    d.sets[XUD_DESCRIPTOR_SET_MATERIAL] = (VkDescriptorSet)&fakeSetHandle;
-    xud_check(xud_descriptor_fill_sampler_write_info(&d) == XUD_OK, "descriptor/fill-sampler-write-ok", "assembled");
-    xud_check(d.samplerWriteInfo.sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, "descriptor/sampler-write-stamped", "stamped");
-    xud_check(d.samplerWriteInfo.dstSet == d.sets[XUD_DESCRIPTOR_SET_MATERIAL], "descriptor/sampler-write-targets-set-1",
-        "set 1, the sampler array's set, which is the set the pipeline layout numbers 1 rather than a second layout that happens to match");
-    xud_check((d.samplerWriteInfo.dstBinding == XUD_DESCRIPTOR_BINDING) && (d.samplerWriteInfo.dstArrayElement == 0u),
-        "descriptor/sampler-write-binding",
-        "the one binding of that set, from element 0, which is the same numbering the layout's own binding row declares");
-    xud_check((d.samplerWriteInfo.descriptorCount == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)
-            && (d.samplerWriteInfo.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
-        "descriptor/sampler-write-array",
-        "every entry of the array and the type the layout declared for that binding, which is the rule that makes a write and a layout one "
-        "agreement rather than two rows that happen to match");
-    xud_check(d.samplerWriteInfo.pImageInfo == d.samplerRows, "descriptor/sampler-write-rows-are-the-records",
-        "the image infos live inside the record, so the write read after the call still points at storage that outlived it");
-    xud_check((d.samplerWriteInfo.pBufferInfo == NULL) && (d.samplerWriteInfo.pTexelBufferView == NULL),
-        "descriptor/sampler-write-other-arrays-null",
-        "the other two info arrays are NULL, which is what a COMBINED_IMAGE_SAMPLER write requires: exactly one of the three may be "
-        "non-NULL for a given descriptorType");
+    xud_check(xud_descriptor_fill_slot_write_infos(NULL) == XUD_INVALID_ARG, "descriptor/fill-slot-writes-null", "is refused");
     {
         uint32_t slot = 0u;
         for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
+            d.sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(slot)] = (VkDescriptorSet)&fakeSetHandle;
+        }
+    }
+    xud_check(xud_descriptor_fill_slot_write_infos(&d) == XUD_INVALID_ARG, "descriptor/fill-slot-writes-no-default",
+        "slot sets with no white view behind them are writes that name nothing, refused as a bad state of this rung");
+    d.whiteImage = (VkImage)&fakeImageHandle;
+    d.whiteImageView = (VkImageView)&fakeImageViewHandle;
+    d.whiteSampler = (VkSampler)&fakeSamplerHandle;
+    xud_check(xud_descriptor_fill_slot_write_infos(&d) == XUD_OK, "descriptor/fill-slot-writes-ok", "assembled");
+    {
+        uint32_t slot = 0u;
+        for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
+            xud_check(d.slotWriteInfos[slot].sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, "descriptor/slot-write-stamped", "stamped");
+            xud_check(d.slotWriteInfos[slot].dstSet == d.sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(slot)], "descriptor/slot-write-targets-its-set",
+                "the slot's own set, which is the set the pipeline layout numbers 1+slot rather than a layout that happens to match");
+            xud_check((d.slotWriteInfos[slot].dstBinding == XUD_DESCRIPTOR_BINDING) && (d.slotWriteInfos[slot].dstArrayElement == 0u),
+                "descriptor/slot-write-binding",
+                "the one binding of that set, element 0, the same numbering the layout's own binding row declares");
+            xud_check((d.slotWriteInfos[slot].descriptorCount == 1u)
+                    && (d.slotWriteInfos[slot].descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
+                "descriptor/slot-write-single-sampler",
+                "one descriptor, the type the layout declared: each slot set holds one view-and-sampler pair");
+            xud_check(d.slotWriteInfos[slot].pImageInfo == &d.samplerRows[slot], "descriptor/slot-write-row-is-the-record",
+                "the image info lives inside the record, so the write read after the call still points at storage that outlived it");
+            xud_check((d.slotWriteInfos[slot].pBufferInfo == NULL) && (d.slotWriteInfos[slot].pTexelBufferView == NULL),
+                "descriptor/slot-write-other-arrays-null",
+                "the other two info arrays are NULL, which is what a COMBINED_IMAGE_SAMPLER write requires");
             xud_check((d.samplerRows[slot].imageView == d.whiteImageView) && (d.samplerRows[slot].sampler == d.whiteSampler),
-                "descriptor/sampler-write-every-slot-names-the-default",
-                "every slot of the array names the same view and the same sampler, which is the point of the default: the array is a slot "
-                "axis and the texture step is what puts different views into different rows of it");
-            xud_check(d.samplerRows[slot].imageLayout == XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT, "descriptor/sampler-write-slot-layout",
-                "the layout the transition barrier above leaves the image in, which is what makes the descriptor's idea of the layout and "
-                "the barrier's one one agreement");
+                "descriptor/slot-write-every-slot-names-the-default",
+                "every slot set names the same view and the same sampler at bring-up, which is the point of the default");
+            xud_check(d.samplerRows[slot].imageLayout == XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT, "descriptor/slot-write-slot-layout",
+                "the layout the transition barrier leaves the image in, which is what makes the descriptor's idea of the layout and the "
+                "barrier's one one agreement");
         }
     }
 
@@ -560,8 +563,14 @@ static void xud_test_descriptor_pure(void) {
             xud_check(slot == 99u, "descriptor/pick-free-full-touched-nothing", "and the out-slot was not written on the refusal");
         }
 
-        /* The one-slot write, and the refusals it states before the one it assembles. */
+        /* The one-set write, and the refusals it states before the one it assembles. */
         d.samplerSlotMask = 0u;
+        {
+            uint32_t slot = 0u;
+            for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
+                d.sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(slot)] = VK_NULL_HANDLE;
+            }
+        }
         xud_check(xud_descriptor_fill_texture_slot_write(
                       NULL, 0u, (VkImageView)&fakeImageViewHandle, (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 == XUD_INVALID_ARG,
@@ -570,13 +579,17 @@ static void xud_test_descriptor_pure(void) {
                       &d, 0u, (VkImageView)&fakeImageViewHandle, (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 == XUD_INVALID_ARG,
             "descriptor/slot-write-no-set",
-            "and a record whose set-1 handle is not live is refused, because the write would name a set "
-            "that is not there");
+            "and a record whose slot-0 set is not live is refused, because the write would name a set that is not there");
         xud_check(xud_descriptor_fill_texture_slot_write(&d, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE, (VkImageView)&fakeImageViewHandle,
                       (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 == XUD_INVALID_ARG,
-            "descriptor/slot-write-past-the-array", "and a slot at the array's size is an index into nothing");
-        d.sets[XUD_DESCRIPTOR_SET_MATERIAL] = (VkDescriptorSet)&fakeSetHandle;
+            "descriptor/slot-write-past-the-array", "and a slot at the slot axis's size is an index into nothing");
+        {
+            uint32_t slot = 0u;
+            for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
+                d.sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(slot)] = (VkDescriptorSet)&fakeSetHandle;
+            }
+        }
         xud_check(xud_descriptor_fill_texture_slot_write(
                       &d, 0u, VK_NULL_HANDLE, (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 == XUD_INVALID_ARG,
@@ -584,17 +597,16 @@ static void xud_test_descriptor_pure(void) {
         xud_check(xud_descriptor_fill_texture_slot_write(
                       &d, 3u, (VkImageView)&fakeImageViewHandle, (VkSampler)&fakeSamplerHandle, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL)
                 == XUD_OK,
-            "descriptor/slot-write-ok", "and the same write with the pair and a slot inside the array is assembled");
+            "descriptor/slot-write-ok", "and the same write with the pair and a slot inside the axis is assembled");
         xud_check(d.textureSlotWriteInfo.sType == VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, "descriptor/slot-write-stamped", "stamped");
-        xud_check((d.textureSlotWriteInfo.dstSet == d.sets[XUD_DESCRIPTOR_SET_MATERIAL])
-                && (d.textureSlotWriteInfo.dstBinding == XUD_DESCRIPTOR_BINDING) && (d.textureSlotWriteInfo.dstArrayElement == 3u),
+        xud_check((d.textureSlotWriteInfo.dstSet == d.sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(3u)])
+                && (d.textureSlotWriteInfo.dstBinding == XUD_DESCRIPTOR_BINDING) && (d.textureSlotWriteInfo.dstArrayElement == 0u),
             "descriptor/slot-write-targets-the-slot",
-            "set 1, its one binding, and the slot the caller named rather than element 0 - the element is what differs from the "
-            "whole-array write, not the set or the binding");
+            "the slot's own set, its one binding, element 0 - the set is what differs from one slot's write to another, not the element");
         xud_check((d.textureSlotWriteInfo.descriptorCount == 1u)
                 && (d.textureSlotWriteInfo.descriptorType == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER),
-            "descriptor/slot-write-one-element",
-            "one element of the array's own type, which is what keeps the other entries of the array untouched");
+            "descriptor/slot-write-one-descriptor",
+            "one descriptor of the layout's own type, which is what keeps every other slot set untouched");
         xud_check((d.textureSlotWriteInfo.pImageInfo == &d.textureSlotRow)
                 && (d.textureSlotRow.imageView == (VkImageView)&fakeImageViewHandle)
                 && (d.textureSlotRow.sampler == (VkSampler)&fakeSamplerHandle)
@@ -603,8 +615,7 @@ static void xud_test_descriptor_pure(void) {
             "and the row lives inside the record, so the write read after the call still points at storage that outlived it");
         xud_check((d.textureSlotWriteInfo.pBufferInfo == NULL) && (d.textureSlotWriteInfo.pTexelBufferView == NULL),
             "descriptor/slot-write-other-arrays-null",
-            "and the other two info arrays are NULL for the reason the whole-array write states: exactly one of the three may be non-NULL "
-            "for a given type");
+            "and the other two info arrays are NULL: exactly one of the three may be non-NULL for a given type");
 
         /* The two driver calls, headless: no loader at all, and a loader that is closed - the rung
            refuses before it would call.
@@ -635,7 +646,7 @@ static void xud_test_descriptor_pure(void) {
         xud_check(xud_descriptor_release_texture_slot(&d, NULL, NULL, 0u) == XUD_INVALID_ARG, "descriptor/release-no-loader",
             "and a release with no loader is a bad argument for the reason the bind above gives");
         xud_check(xud_descriptor_release_texture_slot(&d, NULL, NULL, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) == XUD_INVALID_ARG,
-            "descriptor/release-past-the-array", "and a slot at the array's size is an index into nothing, on either driver call");
+            "descriptor/release-past-the-array", "and a slot at the slot axis's size is an index into nothing, on either driver call");
     }
 }
 

@@ -1,4 +1,4 @@
-#version 450 core
+#version 460 core
 
 /* solid_textured.frag - the textured column of the pipeline list's variant axis, the third column
    of the same axis the opaque and transparent columns are the first two of.
@@ -16,17 +16,23 @@
    itself and its alpha is the glyph's coverage, which is why the multiply below keeps alpha
    (unlike solid.frag, which keeps the vertex alpha and replaces the rgb with a lit shade).
 
-   The sampler is declared as ONE sampler, not as an array, and the slot is chosen by the frame
-   loop's vkCmdBindDescriptorSets firstDescriptorIndex rather than by an index in this stage. That
-   is the whole shape of this stage and it is deliberate: a non-constant index into a descriptor
-   array is the SPIR-V SampledImageArrayNonUniformIndexing capability, which is the core feature
+   The sampler is declared as ONE sampler, and the slot is chosen by the frame loop binding set 1
+   to the slot set that holds that draw's texture - one descriptor set per texture slot, each set
+   holding one view-and-sampler pair - rather than by an index in this stage. That is the whole
+   shape of this stage and it is deliberate: a non-constant index into a descriptor array is the
+   SPIR-V SampledImageArrayNonUniformIndexing capability, which is the core feature
    shaderSampledImageArrayNonUniformIndexing, which xud_physical.c's wanted-feature list
    DELIBERATELY does not ask for (the "shader*DynamicIndexing quartet" paragraph there). Asking
-   for it would be asking for a feature the library has no other use for; binding a slice of the
-   set instead needs no feature at all and costs one argument on a call the frame loop already
-   makes. The layout's binding is still the 16-deep array of XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE in
-   xud_descriptor.h, and a shader that declares one descriptor at a binding the layout declares
-   N-wide is legal for any N >= 1, which is the direction that VUID reads.
+   for it would be asking for a feature the library has no other use for; and the alternative that
+   needs no feature at all - binding a slice of one set - is not a shape the bind call has, because
+   vkCmdBindDescriptorSets names sets and their count, with no argument that says which element of
+   an array binding the set starts at. So the design is many sets of one sampler each rather than
+   one set of a 16-deep array: the pipeline layout's set 1 binding is one descriptor (xud_descrip
+   tor.h), XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE slot sets are allocated against that one layout, and
+   the frame binds the set of the slot a draw samples, one bind per texture change rather than per
+   draw. A stage that declares one sampler at a binding whose layout is one descriptor wide is the
+   exact match, and every slot set is written before it is bound, so no update ever lands on a set
+   the command buffer has already recorded.
 
    The two input locations name the vertex stage's outputs: location 0 is outUv and location 1 is
    outColor in shaders/solid.vert, and a frag input whose location names nothing the vertex stage
@@ -40,7 +46,4 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 1, binding = 0) uniform sampler2D xudSampler;
 
-void main()
-{
-    outColor = inColor * texture(xudSampler, inUv);
-}
+void main() { outColor = inColor * texture(xudSampler, inUv); }

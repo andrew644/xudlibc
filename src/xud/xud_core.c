@@ -367,8 +367,9 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        : the layouts and the pipeline layout are created ONCE at init (the repo's rule), so a set la
        yout created per object would be a layout recreated per frame, and the sampler array's bound
        is a ceiling that cannot grow without recreating the pipeline. What is live after this rung i
-       s set 0 and its buffer, set 1 and its 16 entries - every one of them naming the white defaul
-       t until a texture created above takes a slot of the array off the rung's free list. A refusal
+       s set 0 and its buffer, and the slot sets, one per texture slot, each holding one sampler -
+       every one of them naming the white default until a texture created above takes a slot off th
+       e rung's free list. A refusal
         here is a driver refusal (a nil row, a
        refused create) or the caps gate above refusing a layout this machine's limits cannot have.
      */

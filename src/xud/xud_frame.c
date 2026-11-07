@@ -22,12 +22,25 @@
  *          an acquire semaphore waited BY THE SUBMIT at the vertex stage - vkWaitSemaphores is a core-1.2
  *          entry point, live at this library's 1.3 floor and still not called: the submit-side gate is
  *          this layer's own choice, not a fallback for a missing name, and the repo's rule that a name
- *          not there is reported, not worked around. ONE fence per swapchain image, handed to vkQueueSub
+ *          not there is reported, not worked around. A SECOND semaphore is the render-finished one: the
+ *          frame's submit signals it and a no-command submit on the present queue waits it, which is the
+ *          submit-to-present boundary for a device whose two role queues are two distinct handles - two
+ *          queues have no implicit ordering between their submissions, and a bare vkQueuePresentKHR waits
+ *          on nothing. ONE fence per swapchain image, handed to vkQueueSub
  *          mit as its fence argument and waited and reset at the end of the frame that wrote it, and no
  *          VK_KHR_vulkan_memory_model anywhere.
  *          The fence array is per IMAGE rather than per frame, and that is the point of the plan's wording:
  *          what has to be true before an image is written again is that the presentation of THAT image
  *          finished.
+ *
+ *          The loop is single-flight BY DECISION, and this note is where that decision is recorded
+ *          (issues.md #9): step 7's fence wait runs to completion before xud_frame_draw returns, so the
+ *          CPU cannot start frame N+1 while the GPU is still drawing frame N, and throughput is capped at
+ *          max(CPU frame, GPU frame) rather than their overlap. That is the price the fence being one per
+ *          image, the acquire/submit/present triple carrying no frame array, and a completed frame leaving
+ *          the device idle when it returns, all buy. Moving to triple-buffering with per-frame semaphores
+ *          is a rewrite of this rung, not a patch, and until that rewrite this wait is a recorded ceiling
+ *          rather than a defect to fix.
  *
  *          The acquire and the present are the only two calls here whose VkResult answers about the swap
  *          chain rather than about the call: VK_SUBOPTIMAL_KHR and VK_ERROR_OUT_OF_DATE_KHR are a frame
@@ -184,8 +197,8 @@ XudResult xud_frame_fill_recording(
     return XUD_OK;
 }
 
-XudResult xud_frame_fill_submit(
-    VkSubmitInfo* outSubmit, VkPresentInfoKHR* outPresent, VkCommandBuffer commandBuffer, VkSwapchainKHR swapchain) {
+XudResult xud_frame_fill_submit(VkSubmitInfo* outSubmit, VkPresentInfoKHR* outPresent, VkCommandBuffer commandBuffer,
+    VkSwapchainKHR swapchain, VkSemaphore renderFinished) {
     if ((outSubmit == NULL) || (outPresent == NULL)) {
         return XUD_INVALID_ARG;
     }
@@ -193,6 +206,9 @@ XudResult xud_frame_fill_submit(
         return XUD_INVALID_ARG;
     }
     if (swapchain == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (renderFinished == VK_NULL_HANDLE) {
         return XUD_INVALID_ARG;
     }
 
@@ -204,17 +220,16 @@ XudResult xud_frame_fill_submit(
     outSubmit->pWaitDstStageMask = NULL; /* filled by the driver half, which owns the stage row */
     outSubmit->commandBufferCount = XUD_FRAME_COMMAND_BUFFER_COUNT;
     outSubmit->pCommandBuffers = NULL; /* filled by the driver half, which owns the buffer array */
-    outSubmit->signalSemaphoreCount = 0u;
-    outSubmit->pSignalSemaphores = NULL; /* nothing is signalled by the submit itself: the fence is vkQ
-                                           ueueSubmit's own argument, and a signal semaphore here would b
-                                           e a second, redundant channel for the same boundary */
+    outSubmit->signalSemaphoreCount = 1u;
+    outSubmit->pSignalSemaphores = NULL; /* filled by the driver half, which owns the semaphore storage: the pure half
+                                           would store the address of a parameter that dies with the call */
 
     outPresent->sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     outPresent->pNext = NULL;
     outPresent->waitSemaphoreCount = 0u;
-    outPresent->pWaitSemaphores = NULL; /* the presentation needs no further signal here: the fence at t
-                                          he end of the frame is what bounds it, and a wait semaphore on t
-                                          he present would be a second way to say the same thing */
+    outPresent->pWaitSemaphores = NULL; /* the presentation itself waits on nothing: on the present queue it
+                                          is ordered behind the no-command wait submit, and the render-finished
+                                          semaphore lives there rather than on this row */
     outPresent->swapchainCount = 1u;
     outPresent->pSwapchains = NULL; /* filled by the driver half, which owns the swapchain handle */
     outPresent->pImageIndices = NULL; /* filled by the driver half, which owns the index */
@@ -222,6 +237,26 @@ XudResult xud_frame_fill_submit(
                                    ked for: the rung's own return code is the report, and a pResults arr
                                    ay would be a second channel for the same answer that a caller above w
                                    ould have to read */
+
+    return XUD_OK;
+}
+
+XudResult xud_frame_fill_present_wait(VkSubmitInfo* outSubmit, VkSemaphore renderFinished) {
+    if ((outSubmit == NULL) || (renderFinished == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+
+    outSubmit->sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    outSubmit->pNext = NULL;
+    outSubmit->waitSemaphoreCount = 1u;
+    outSubmit->pWaitSemaphores = NULL; /* filled by the driver half, which owns the semaphore storage: the pure half
+                                         would store the address of a parameter that dies with the call */
+    outSubmit->pWaitDstStageMask = NULL; /* filled by the driver half; there is no command of this submit
+                                            to wait a stage for, and the row exists because the count demands it */
+    outSubmit->commandBufferCount = 0u;
+    outSubmit->pCommandBuffers = NULL; /* the no-command submit: it exists to order the queue, not to run */
+    outSubmit->signalSemaphoreCount = 0u;
+    outSubmit->pSignalSemaphores = NULL;
 
     return XUD_OK;
 }
@@ -265,7 +300,7 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
        sampler array - the white default the descriptor rung wrote at its bring-up - and the push
        row's member is an index a read could use, so the sentinel that indexes nothing is mapped to
        the slot every no-map draw samples through. A real slot passes through unchanged: it is the
-       number the frame loop's slice rebind binds set 1 at beside this draw.
+       number the frame loop's slot-set rebind names beside this draw.
     */
     outRow->textureIndex = (drawRow->textureIndex == XUD_BATCH_NO_TEXTURE) ? 0u : drawRow->textureIndex;
 
@@ -445,6 +480,21 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
         return xud_result_from_vk(vk);
     }
 
+    vk = loader->deviceTable.vkCreateSemaphore(device->device, &frame->semaphoreInfo, NULL, &frame->renderFinished);
+    if (vk != VK_SUCCESS) {
+        (void)loader->deviceTable.vkDestroySemaphore(device->device, frame->imageAcquired, NULL);
+        frame->imageAcquired = VK_NULL_HANDLE;
+        loader->deviceTable.vkFreeCommandBuffers(
+            device->device, frame->commandPool, XUD_FRAME_COMMAND_BUFFER_COUNT, frame->commandBufferRows);
+        (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
+        frame->commandPool = VK_NULL_HANDLE;
+        frame->commandBuffer = VK_NULL_HANDLE;
+        free(frame->imageLayouts);
+        free(frame->imageFences);
+        free(frame);
+        return xud_result_from_vk(vk);
+    }
+
     for (index = 0u; index < swapchain->imageCount; index++) {
         vk = loader->deviceTable.vkCreateFence(device->device, &frame->fenceInfo, NULL, &frame->imageFences[index]);
         if (vk != VK_SUCCESS) {
@@ -454,6 +504,8 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
             }
             (void)loader->deviceTable.vkDestroySemaphore(device->device, frame->imageAcquired, NULL);
             frame->imageAcquired = VK_NULL_HANDLE;
+            (void)loader->deviceTable.vkDestroySemaphore(device->device, frame->renderFinished, NULL);
+            frame->renderFinished = VK_NULL_HANDLE;
             loader->deviceTable.vkFreeCommandBuffers(
                 device->device, frame->commandPool, XUD_FRAME_COMMAND_BUFFER_COUNT, frame->commandBufferRows);
             (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
@@ -499,6 +551,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     VkImageMemoryBarrier imageBarriers[XUD_RENDERPASS_ATTACHMENT_COUNT];
     VkSubmitInfo submit;
     VkPresentInfoKHR present;
+    VkSubmitInfo presentWaitSubmit;
     uint32_t imageIndex = 0u;
     uint32_t acquireRecreateWanted = 0u;
     uint32_t presentRecreateWanted = 0u;
@@ -512,7 +565,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     uint32_t draw = 0u;
     uint32_t pipelineRow = 0u;
     uint32_t boundGeometry = XUD_BATCH_GEOMETRY_NONE;
-    uint32_t boundTexture = 0u;
+    uint32_t boundTexture = XUD_BATCH_NO_TEXTURE;
     XudPushRow pushRow;
 
     if ((frame == NULL) || (loader == NULL) || (device == NULL) || (swapchain == NULL) || (pipeline == NULL) || (pass == NULL)
@@ -604,10 +657,19 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         return XUD_INVALID_ARG;
     }
 
-    result = xud_frame_fill_submit(&submit, &present, frame->commandBuffer, swapchain->swapchain);
+    result = xud_frame_fill_submit(&submit, &present, frame->commandBuffer, swapchain->swapchain, frame->renderFinished);
     if (result != XUD_OK) {
         return result;
     }
+    result = xud_frame_fill_present_wait(&presentWaitSubmit, frame->renderFinished);
+    if (result != XUD_OK) {
+        return result;
+    }
+    presentWaitSubmit.pWaitDstStageMask = frame->waitStages;
+    submit.pSignalSemaphores = &frame->renderFinished; /* the storage the signal row names lives in the frame, not in a
+                                                          parameter the fill died with */
+    presentWaitSubmit.pWaitSemaphores = &frame->renderFinished; /* and the wait row names the same storage: the two halves of
+                                                                   the boundary cannot name different semaphores */
 
     /* --- 1. acquire. The acquire semaphore is the signal that an image is available; the fence argumen
        t here is VK_NULL_HANDLE because the fence this rung uses bounds the DRAW, not the acquire, and pa
@@ -959,35 +1021,24 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     /* Set 0 is bound HERE, once per frame, against the pipeline's OWN layout - the layout the pipeline
        was created with is the layout the set was allocated against, so naming pipeline->layout rather
        than a layout of this rung's is what makes the two agree rather than two records that happen to
-       match. One set, firstSet 0: set 1 is the texture step's to allocate and bind, and the pool above
-       is sized for it so that step needs no second pool. The bind is recorded OUTSIDE the render pass,
-       beside the other two binds, which is where state-setting belongs; the draw inside the pass reads
-       this state. The call is void and cannot fail, and the row is this frame's own, read during the c
-       all.
+       match. One set, firstSet 0: the slot sets (set 1) are bound per draw below rather than once here,
+       because the set a draw samples depends on that draw's texture, and binding the right one per draw
+       is what keeps every descriptor written before its set is bound. The bind is recorded OUTSIDE the
+       render pass, beside the other binds, which is where state-setting belongs; the draw inside the pass
+       reads this state. The call is void and cannot fail, and the row is this frame's own, read during the
+       call.
     */
-    /* Set 0 and set 1 are bound HERE, once per frame, against the pipeline's OWN layout - the layout
-       the pipeline was created with is the layout the set was allocated against, so naming pipeline->
-       layout rather than a layout of this rung's is what makes the two agree rather than two records
-       that happen to match. The count is a SET count starting at firstSet, so the array is the two s
-       ets of this layout in set order and every descriptor of the LAST one is bound with it: the sam
-       pler array's 16 entries are live without naming them one by one, and firstDescriptorIndex is
-       NULL, which is the spec's zero form: the per-frame bind leaves set 1 at the array's first slot
-       and the per-draw rebind below moves it to the slot a row's texture names. One call rather than
-       two because the two sets are one contiguous run of the layout's set numbering and the bind's own
-       arguments say so.
-     */
     {
-        const VkDescriptorSet setRows[XUD_FRAME_SET_COUNT]
-            = { descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME], descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] };
+        const VkDescriptorSet setRows[XUD_FRAME_SET_COUNT] = { descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] };
         loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
             XUD_FRAME_FIRST_SET, XUD_FRAME_SET_COUNT, setRows, 0u, NULL);
     }
 
-    /* The slice of set 1 the draws below will see, as this bind leaves it: the pFirstDescriptorIndex the
-       call above named is NULL, which is the spec's "an array of zeros" form, so the textured frag's one
-       sampler starts the frame at slot 0 of the array - the white default - and boundTexture is 0 for
-       exactly that reason rather than for any reason of its own. A row whose texture names a different
-       slot is what moves it, one rebind per change rather than per draw, the same shape the geometry
+    /* boundTexture is the no-texture sentinel rather than a slot number for a reason of its own: the
+       first row of this frame must bind a slot set even when its texture happens to match whatever a
+       last frame bound, because this frame's slot-set bind is recorded after the clear-and-barrier pro-
+       logue and no earlier bind of set 1 is in force. The sentinel is what makes that first row always
+       bind, one slot-set bind per texture change rather than per draw, the same shape the geometry
        rebind above the pass keeps for the batch's buffers.
     */
 
@@ -1060,23 +1111,22 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         if (xud_frame_fill_push_row(&pushRow, &drawRow) != XUD_OK) {
             break;
         }
-        /* The texture channel of the same per-draw row, on the BINDING side rather than the shader's: the
-           textured frag declares ONE sampler at set 1's binding and picks its slot with this bind's
-           firstDescriptorIndex rather than an index in the stage, the shape shaders/solid_textured.frag
-           states for the reason a non-constant array index would need the non-uniform-indexing feature
-           this library does not ask for. A row that names a slot past the array's size ends the list,
-           the same rule the topology and variant guards at the top of this loop apply to their two
-           axes, read at the third number a draw row carries. The rebind is a ONE-set bind rather than
-           the two-set run above the pass: only set 1 moved, so naming set 0 again would be restating a
-           fact the driver already holds, and the slice is the row's own texture slot with the array's
-           first slot where the per-frame bind left it. */
+        /* The texture channel of the same per-draw row, on the BIND side rather than the write side: each
+           slot owns its own descriptor set whose single sampler names that slot's view and sampler, and
+           the textured frag samples the one sampler of the set the row's slot holds. The frame therefore
+           binds the slot set the row samples, one bind per texture change of the frame rather than per
+           draw, and a bind is command-buffer state so the last bind before a draw is the one that draw
+           uses - the same shape the pipeline rebind above keeps. The set was written before it is bound
+           (at open for the white default, at bind and release for a texture's own pair), so no update
+           ever lands on a set this buffer has already recorded. A row that names no map binds slot 0's
+           set, the white default's own. */
         if (pushRow.textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
             break;
         }
         if (pushRow.textureIndex != boundTexture) {
-            const uint32_t slice = pushRow.textureIndex;
+            const VkDescriptorSet slotSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(pushRow.textureIndex)];
             loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
-                XUD_DESCRIPTOR_SET_MATERIAL, XUD_FRAME_MATERIAL_SET_COUNT, &descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL], 0u, &slice);
+                XUD_DESCRIPTOR_SET_MATERIAL, 1u, &slotSet, 0u, NULL);
             boundTexture = pushRow.textureIndex;
         }
         loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
@@ -1119,9 +1169,25 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     frame->imageLayouts[imageIndex] = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout;
     frame->depthLayout = pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].finalLayout;
 
-    /* --- 6. present on the present queue. Both role queues are the same handle on this machine (the devic
-       e layer's note), and the rule is still written as two lookups rather than one, because the two roles
-       are a library decision and not a fact about this driver. --- */
+    /* --- 5b. the present queue's no-command wait submit, BEFORE the present itself. This is the render
+       -finished boundary spelled as a queue-side submit rather than as the present's own wait pair, and
+       the reason the shape is a submit is the queue it runs on: on a device whose family exposes more
+       than one queue, the two role handles differ, two VkQueue objects have no implicit ordering between
+       their submissions, and a bare vkQueuePresentKHR waits on nothing - so the present could run ahead
+       of the render it presents. A no-command submit that waits the semaphore the frame's submit just
+       signalled puts the boundary on the present queue where the present itself is, and the queue's own
+       FIFO then orders the present behind it. On a family with one queue the submit is a no-op round
+       trip rather than a save, which is the price of the rule being written for both shapes. --- */
+    vk = loader->deviceTable.vkQueueSubmit(presentQueue.queue, XUD_FRAME_SUBMIT_COUNT, &presentWaitSubmit, VK_NULL_HANDLE);
+    result = xud_result_from_vk(vk);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* --- 6. present on the present queue, ordered behind the wait submit above by the queue's own FIFO.
+       The two role queues are two lookups rather than one because the two roles are a library decision
+       and not a fact about this driver: the handles may agree on one machine and differ on another, and
+       the wait submit above is what keeps the second shape correct. --- */
     present.pSwapchains = &swapchain->swapchain;
     present.pImageIndices = &imageIndex;
     /* The present's answer goes through the same second funnel the acquire's did, for the same reas
@@ -1214,6 +1280,18 @@ XudResult xud_frame_close(XudFrame** ioFrame, const XudDevice* device, XudLoader
         victim->lastFrameFence = VK_NULL_HANDLE;
     }
 
+    /* A semaphore still named by a queue's submission cannot be destroyed either, and the last frame's
+       wait submit is exactly such a naming: the fence above proves the GRAPHICS queue is past its signal
+       of render-finished, but the PRESENT queue's no-command wait of that same semaphore is a queue-side
+       op with no fence of its own, and may still be sitting in the queue when close lands. A wait-idle
+       on each role queue is the boundary that makes the destroy below name nothing; on a family with one
+       queue the two lookups agree and the second idle is a no-op. */
+    if (loader->deviceTable.vkQueueWaitIdle == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+    (void)loader->deviceTable.vkQueueWaitIdle(device->graphicsQueue.queue);
+    (void)loader->deviceTable.vkQueueWaitIdle(device->presentQueue.queue);
+
     if (victim->commandBuffer != VK_NULL_HANDLE) {
         if (loader->deviceTable.vkFreeCommandBuffers == NULL) {
             return XUD_UNSUPPORTED;
@@ -1228,6 +1306,13 @@ XudResult xud_frame_close(XudFrame** ioFrame, const XudDevice* device, XudLoader
         }
         loader->deviceTable.vkDestroySemaphore(device->device, victim->imageAcquired, NULL);
         victim->imageAcquired = VK_NULL_HANDLE;
+    }
+    if (victim->renderFinished != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroySemaphore == NULL) {
+            return XUD_UNSUPPORTED;
+        }
+        loader->deviceTable.vkDestroySemaphore(device->device, victim->renderFinished, NULL);
+        victim->renderFinished = VK_NULL_HANDLE;
     }
     for (index = victim->imageFenceCount; index > 0u; index--) {
         if (victim->imageFences[index - 1u] == VK_NULL_HANDLE) {

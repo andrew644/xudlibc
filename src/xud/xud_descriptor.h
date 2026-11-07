@@ -84,14 +84,19 @@
  *   r than a choice about it.
  *-----------------------------------------------------------------------------------------------*/
 
-/* The two sets of the design sketch's layout, and which row of the array each is. The order is
-   load-bearing: VkPipelineLayoutCreateInfo's pSetLayouts array IS the set numbering (the first
+/* The two SET LAYOUTS of the pipeline, and which row of pSetLayouts each is. The pipeline layout
+   names exactly these two, in array order, and that array IS the set numbering (the first
    setLayoutCount elements are the sets numbered 0..count-1), so set 0 is row 0 and set 1 is row
-   1 by construction, and a swapped pair is a swapped layout, not a rename.
+   1 by construction, and a swapped pair is a swapped layout, not a rename. Set 0 is the per-frame
+   uniform block; set 1 is the sampler, ONE combined image sampler whose contents are the
+   active texture slot's view and sampler. There is one layout for set 1 but many SETS allocated
+   against it - one per texture slot below - and the frame binds whichever of them holds the slot
+   a draw samples, which is what keeps every descriptor written before its set is bound rather
+   than rewritten mid-recording (the gate the comment below states).
 */
 #define XUD_DESCRIPTOR_SET_COUNT 2u
-#define XUD_DESCRIPTOR_SET_PER_FRAME 0u /* set 0: the per-frame block, one uniform buffer */
-#define XUD_DESCRIPTOR_SET_MATERIAL 1u /* set 1: the per-material sampler array */
+#define XUD_DESCRIPTOR_SET_PER_FRAME 0u /* layout 0 / set 0: the per-frame block, one uniform buffer */
+#define XUD_DESCRIPTOR_SET_MATERIAL 1u /* layout 1: the sampler; the sets allocated against it are the per-slot sets below */
 
 static_assert(XUD_DESCRIPTOR_SET_PER_FRAME < XUD_DESCRIPTOR_SET_MATERIAL,
     "the two set rows are in set-number order, which is what makes pSetLayouts row 0 the set numbered 0");
@@ -120,33 +125,57 @@ static_assert(
  *  dly pool of one material's textures with room to spare; the caps gate below is what refuses a
  *  device that advertises less.
  */
+/* The number of texture slots, which is the number of per-slot sets allocated against layout 1.
+   Each slot owns its OWN descriptor set whose single sampler names that slot's view and sampler -
+   white by default, a texture's own pair once xud_descriptor_bind_texture_slot() puts one there.
+   The frame binds the set of the slot a draw samples rather than rewriting a shared array mid-
+   recording, which is the whole reason the design is per-slot sets rather than one array: vkCmd
+   BindDescriptorSets cannot point a bound set at a different element, and updating a set a
+   command buffer has already bound is exactly the write-after-bind the header states is refused
+   (its per-binding flag needs the pNext chain the repo does not take). 16 is the ceiling on
+   live textures for the same reason it always was - growing it is a layout and pipeline-layout
+   recreate, which the "created once at init" rule forbids at runtime.
+ */
 #define XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE 16u
 
-static_assert(XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE > 0u,
-    "a sampler array of zero descriptors is a binding that names nothing, which is a layout that cannot be written to");
-static_assert(XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE <= 1024u,
-    "the array is one binding's descriptorCount, and an implementation need only guarantee 64 for the per-stage sampler total - a bigger "
-    "request is a different decision, not a bigger constant");
+static_assert(
+    XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE > 0u, "a slot axis of zero slots allocates no sampler sets, which is a layout 1 no draw can bind");
+static_assert(XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE <= 32u,
+    "the free list is one uint32_t of bits, so a slot axis past 32 would need two masks rather than a wider constant");
+static_assert(XUD_MAX_TEXTURES == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - 1u,
+    "the public ceiling of live textures is the slot axis minus slot 0, the white default's own - the two constants must not drift "
+    "apart, because the free list enforces this rung's number while a caller reads xud.h's");
 
-/* The free list of the array above: one bit per slot, bit i set while a texture's own view and sampler occupy slot i and clear while
- *  the slot still names the white default. The mask is the only state of which slot the next bind takes - xud_descriptor_bind_textur
- *  e_slot() takes the lowest free bit, which is what makes a fixed sequence of creates and closes a fixed sequence of slot numbers, the
- *  repo's determinism rule read at the slot axis.
+/* The number of descriptor sets this rung allocates: the one per-frame set of layout 0 plus one
+   set per slot of layout 1. The pool's maxSets is this number and the sets array below is sized
+   by it, while the set LAYOUTS stay at XUD_DESCRIPTOR_SET_COUNT - many sets, two layouts.
+*/
+#define XUD_DESCRIPTOR_SLOT_SET_COUNT (1u + XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)
+
+static_assert(XUD_DESCRIPTOR_SLOT_SET_COUNT >= 2u, "the allocated sets are the per-frame set plus at least one slot set");
+
+/* The set number a slot's own set carries: slot s is set XUD_DESCRIPTOR_SET_MATERIAL + s, so slot
+   0 is set 1 and the last slot is set XUD_DESCRIPTOR_SLOT_SET_COUNT - 1. Set 0 stays the per-frame
+   set and is never a slot.
+*/
+#define XUD_DESCRIPTOR_SLOT_SET_INDEX(slot) (XUD_DESCRIPTOR_SET_MATERIAL + (slot))
+
+/* The free list of the slot axis: one bit per slot, bit i set while a texture's own view and sampler occupy slot i and clear while
+ *  the slot's set still names the white default. The mask is the only state of which slot the next bind takes - xud_descriptor_b
+ *  ind_texture_slot() takes the lowest free bit, which is what makes a fixed sequence of creates and closes a fixed sequence of sl
+ *  ot numbers, the repo's determinism rule read at the slot axis.
  */
 #define XUD_DESCRIPTOR_SLOT_MASK_BIT(slot) (1u << (slot))
 
-static_assert(XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE <= 32u,
-    "the free list is one uint32_t of bits, so a slot axis past 32 would need two masks rather than a wider constant");
-
 /* The pool's rows: one per descriptor TYPE the sets allocated from it will be updated with. Both
-   are declared today and BOTH sets are allocated today, which is why the sampler row is the array's
-   size rather than 1: the one binding of set 1 is XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE descriptors and
-   all of them are written by this rung's own sampler write.
+   are declared today and every allocated set is written today: the per-frame set takes the one
+   uniform buffer, and the XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE slot sets take one combined image
+   sampler apiece, which is why the sampler row is the slot count rather than 1.
 */
 #define XUD_DESCRIPTOR_POOL_SIZE_COUNT 2u
 
 static_assert(XUD_DESCRIPTOR_POOL_SIZE_COUNT == XUD_DESCRIPTOR_SET_COUNT,
-    "one pool row per set of this layout, which is what makes the pool sized for both sets and not only for the one allocated today");
+    "one pool row per descriptor TYPE of this layout, which is what makes the pool sized for both types and not only for one");
 
 /*-----------------------------------------------------------------------------------------------
  * The two byte layouts this rung defines
@@ -277,14 +306,14 @@ static_assert((XUD_DESCRIPTOR_BUFFER_USAGE & VK_BUFFER_USAGE_TRANSFER_DST_BIT) =
     "implementation-dependent");
 
 /*-----------------------------------------------------------------------------------------------
- * The one image this rung owns: the white default every entry of set 1's sampler array names
+ * The one image this rung owns: the white default every slot set's sampler names by default
  *
  *   Why the default has to exist at all is a rule about the SET rather than about the shader: every
- *   descriptor of a bound set has to have been written, so an allocated 16-deep sampler array is on
- *   ly legal with all 16 entries naming a real VkImageView and a real VkSampler. The rung above can
- *   not defer that - it is a fact about the set this rung allocated, not a decision about what a te
- *   xture looks like - so this rung owns one image, one view and one sampler and every entry of the
- *   array names them. What the default's VALUE is follows from what the textured frag does with it:
+ *   descriptor of a bound set has to have been written, so an allocated slot set is only legal once
+ *   its one sampler names a real VkImageView and a real VkSampler. The rung above cannot defer that -
+ *   it is a fact about the sets this rung allocated, not a decision about what a texture looks like -
+ *   so this rung owns one image, one view and one sampler and every slot set names them until a textu
+ *   re's bind replaces them. What the default's VALUE is follows from what the textured frag does with it:
  *   that stage multiplies the vertex colour by the texel, so white is the identity of the multiply a
  *   nd a textured draw before any texture exists draws the vertex colour rather than a black rectan
  *   gle or garbage. The extent is 1x1 because a default is sampled by every fragment of every draw
@@ -375,18 +404,20 @@ static_assert(XUD_DESCRIPTOR_UPLOAD_REGION_COUNT * XUD_DESCRIPTOR_UNIFORM_BLOCK_
  * The pool's flags
  *-----------------------------------------------------------------------------------------------*/
 
-/* VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT (0x1, core 1.0 - the only core pool flag; the
- *  UPDATE_AFTER_BIND and HOST_ONLY bits are extension-gated and this library enables no descripto
- *  r-pool extension). The bit makes vkFreeDescriptorSets legal, which is what lets a rung above re
- *  tire one set - a material's set 1 - without destroying the pool and every set in it. The set al
- *  located today is never freed: it is per-frame UPDATED, and an update is vkUpdateDescriptorSets,
- *  which needs no pool bit at all. The bit is therefore a policy of the pool rather than a call th
- *  is rung makes, and the reason it is on is the reason the texture step's set has to be freeable.
+/* VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT (0x1, core 1.0 - the only pool flag this rung
+ *  takes; the UPDATE_AFTER_BIND and HOST_ONLY bits are not used). The bit makes vkFreeDescriptorSet
+ *  s legal, which is what lets a rung above retire one set without destroying the pool and every se
+ *  t in it. The sets allocated today are never in fact freed: a slot set is per-texture UPDATED an
+ *  d an update is vkUpdateDescriptorSets, which needs no pool bit at all, and the per-frame set is
+ *  updated every frame the same way. The bit is therefore a policy of the pool rather than a call
+ *  this rung makes. UPDATE_AFTER_BIND is deliberately off: with one set per slot the frame Binds t
+ *  he slot's set rather than rewriting an already-bound one, so no update ever lands on a set a co
+ *  mmand buffer has recorded, and the bit the mid-recording write once needed is no longer one.
  */
 #define XUD_DESCRIPTOR_POOL_FLAGS VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT
 
 static_assert(XUD_DESCRIPTOR_POOL_FLAGS == VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
-    "the one core-1.0 pool flag, written as the constant rather than as 0x1");
+    "the free bit for the texture step's set, written as the bit rather than as a number");
 
 /*-----------------------------------------------------------------------------------------------
  * The one descriptor record of this rung, and every row it was assembled from
@@ -413,10 +444,11 @@ struct XudDescriptor {
     VkDescriptorPoolSize poolSizes[XUD_DESCRIPTOR_POOL_SIZE_COUNT]; /* the rows the create-info above points at */
 
     /* --- the sets allocated from it --- */
-    VkDescriptorSet sets[XUD_DESCRIPTOR_SET_COUNT]; /* BOTH live from xud_descriptor_open() on: set 0 is the per-frame
-                                                       one and set 1 is the sampler array, and the pair is what the one
-                                                       vkCmdBindDescriptorSets the frame loop makes names */
-    VkDescriptorSetAllocateInfo setAllocateInfo[XUD_DESCRIPTOR_SET_COUNT]; /* what vkAllocateDescriptorSets
+    VkDescriptorSet sets[XUD_DESCRIPTOR_SLOT_SET_COUNT]; /* every one live from xud_descriptor_open() on: set 0 is the per-frame
+                                                       set and sets 1..N are the per-slot sampler sets, one per texture
+                                                       slot, all allocated against layout 1. The frame binds set 0 once and
+                                                       binds the slot set a draw samples per draw */
+    VkDescriptorSetAllocateInfo setAllocateInfo[XUD_DESCRIPTOR_SLOT_SET_COUNT]; /* what vkAllocateDescriptorSets
                                              was handed, one row per set - the array is the set numbering,
                                              the same reason pSetLayouts' array is */
 
@@ -432,19 +464,29 @@ struct XudDescriptor {
     VkWriteDescriptorSet writeInfo; /* what vkUpdateDescriptorSets was handed for set 0 */
     VkDescriptorBufferInfo bufferRow; /* the row the write above points at: (buffer, offset, range) */
 
-    /* --- the write that bound set 1's sampler array, and the one image every entry of it names --- */
-    VkWriteDescriptorSet samplerWriteInfo; /* what vkUpdateDescriptorSets was handed for set 1 */
-    VkDescriptorImageInfo samplerRows[XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE]; /* the rows the write above
-                                             points at: one (imageView, sampler) pair per entry of the
-                                             array. Every row names the SAME view and sampler at bring-
-                                             up, which is the point of the default below - the array is
-                                             a slot axis and the slot write below is what puts a textur
-                                             e's own view and sampler into its row of it */
+    /* --- the writes that bound the slot sets, and the white pair every one of them names by default --- */
+    VkWriteDescriptorSet slotWriteInfos[XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE]; /* one write per slot set: what
+                                             vkUpdateDescriptorSets was handed to put the white pair into each
+                                             slot set at bring-up, and the shape every bind and release reuses with a
+                                             different dstSet and row */
+    VkDescriptorImageInfo samplerRows[XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE]; /* the white row each slot set names at bring-
+                                             up: one (imageView, sampler) pair per slot set, every one naming the SAME
+                                             white view and sampler, which is the point of the default below - a slot
+                                             set is only legal once its descriptor names a real view and sampler, and
+                                             the slot write below is what puts a texture's own pair into its set */
     uint32_t samplerSlotMask; /* the free list of the array above, one bit per slot: set while a texture's own view and sampler occupy
-                                  the slot, clear while it still names the white default */
+                                  the slot, clear while it still names the white default. Slot 0's bit is set at open and never
+                                  cleared, because slot 0 is the white default's own and a texture that took it would be sampled by
+                                  every untextured draw */
     VkDescriptorImageInfo textureSlotRow; /* the row the single-slot write below points at: a texture's view and sampler on a bind, the
                                              white pair on a release */
-    VkWriteDescriptorSet textureSlotWriteInfo; /* what vkUpdateDescriptorSets was handed for the one-slot write into the array above */
+    VkDescriptorImageInfo slotViews[XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE]; /* the view and sampler each slot's set
+                                   holds, kept when its slot is bound and cleared when it is released. Slot 0 is
+                                   never kept - it is the white default's own, and the white pair is what the
+                                   frame's set names when a row names no map */
+    VkWriteDescriptorSet textureSlotWriteInfo; /* what vkUpdateDescriptorSets was handed for the one-set write a bind and a
+                                             release make: dstSet is the slot's own set and the one row names its view
+                                             and sampler, the white pair on a release */
     VkImage whiteImage; /* owned: the 1x1 white default every entry of set 1 samples. It is this rung's
                                            rather than the texture rung's because it is what makes an
                                            ALLOCATED set legal at all: a bound set whose descriptors were
@@ -458,17 +500,21 @@ struct XudDescriptor {
     XudMemoryRange whiteRange; /* BORROWED: the allocator owns the block this sits in, the same rule a
                                    s uniformRange's */
     VkDeviceSize whiteBindOffset; /* the offset inside that block vkBindImageMemory was handed */
-    VkClearColorValue whiteClearColor; /* what vkCmdClearColorImage was handed each frame: opaque white,
-                                           which is the identity of the textured frag's multiply */
+    VkClearColorValue whiteClearColor; /* what vkCmdClearColorImage was handed on the one frame that fills
+                                           the image: opaque white, which is the identity of the textured frag's
+                                           multiply */
     VkImageSubresourceRange whiteSubresourceRange; /* the one subresource of a one-level 1x1 image, and
                                            the range the clear and the two transitions above name */
     VkImageMemoryBarrier whiteToUpload; /* the transition the clear needs: the image's layout into
                                            TRANSFER_DST, the one layout a clear may write */
     VkImageMemoryBarrier whiteToSampled; /* the transition the clear leaves behind: TRANSFER_DST into
-                                           SHADER_READ_ONLY, the one layout a sampled descriptor may
-                                           read. It is also the layout the NEXT frame's transition star
-                                           ts from, which is what makes the sequence the same three co
-                                           mmands every frame after the first */
+                                           SHADER_READ_ONLY, the one layout a sampled descriptor may read. The
+                                           fill runs once, on the first frame, and leaves the image in exactly
+                                           this layout, so a frame after the first records nothing for it */
+    uint8_t whiteFilled; /* the one bit that decides whether the frame above records the fill's three
+                           commands at all: set on the first frame to record them, and every frame after
+                           the first skips them rather than re-clearing a 1x1 image that nothing else
+                           writes */
 
     /* --- the host-side copy of set 0's block --- */
     XudFrameUniformRow uniformBlock; /* the bytes the GPU buffer is meant to hold. xud_descriptor_write_block() copies them into the arena
@@ -539,15 +585,16 @@ XudResult xud_descriptor_fill_set_layouts(XudDescriptor* descriptor);
 /// ize; XUD_OK otherwise.
 XudResult xud_descriptor_fill_push_range(const XudDeviceCaps* caps, VkPushConstantRange* outRange);
 
-/// Pure: the VkDescriptorPoolCreateInfo and the two VkDescriptorPoolSize rows it points at. maxSet
-/// s is XUD_DESCRIPTOR_SET_COUNT, which is the rule that a pool's maxSets must be at least the numb
-/// er of sets allocated from it read as a capacity rather than a today-count: the pool is sized for
-/// the set the texture step will allocate so that step needs no second pool. poolSizes is one row pe
-/// r descriptor TYPE (not per set) - one UNIFORM_BUFFER and XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE COMBI
-/// NED_IMAGE_SAMPLER - because the rule the create-info states asks for one entry per type a set al
-/// located from this pool will be updated with, and the counts are the ceiling of how many of each
-/// type the pool's sets may hold in total. flags is XUD_DESCRIPTOR_POOL_FLAGS for the reason state
-/// d beside that constant. XUD_INVALID_ARG on a NULL descriptor.
+/// Pure: the VkDescriptorPoolCreateInfo and the two VkDescriptorPoolSize rows it points at. maxSets
+/// is XUD_DESCRIPTOR_SLOT_SET_COUNT, the per-frame set plus one set per slot, which is the rule that a
+/// pool's maxSets must be at least the number of sets allocated from it read as a capacity rather than
+/// a today-count: the pool is sized for every slot set the texture step will use so that step needs no
+/// second pool. poolSizes is one row per descriptor TYPE (not per set) - one UNIFORM_BUFFER and XUD_DE
+/// SCRIPTOR_SAMPLER_ARRAY_SIZE COMBINED_IMAGE_SAMPLER, one per slot set - because the rule the create-
+/// info states asks for one entry per type a set allocated from this pool will be updated with, and th
+/// e counts are the ceiling of how many of each type the pool's sets may hold in total. flags is XUD_DE
+/// SCRIPTOR_POOL_FLAGS for the reason stated beside that constant. XUD_INVALID_ARG on a NULL descripto
+/// r.
 XudResult xud_descriptor_fill_pool_info(XudDescriptor* descriptor);
 
 /// Pure: the VkDescriptorSetAllocateInfo that allocates one row of THIS rung's sets - descriptorPo
@@ -606,17 +653,15 @@ XudResult xud_descriptor_fill_white_infos(XudDescriptor* descriptor);
 ///  LID_ARG on a NULL descriptor.
 XudResult xud_descriptor_fill_white_transitions(XudDescriptor* descriptor);
 
-/// Pure: the VkWriteDescriptorSet that binds set 1's sampler array into it - dstSet the set-1 row of
-///  the record, dstBinding XUD_DESCRIPTOR_BINDING, dstArrayElement 0, descriptorCount XUD_DESCRIPTO
-/// R_SAMPLER_ARRAY_SIZE, descriptorType COMBINED_IMAGE_SAMPLER, pImageInfo the rung's own samplerRow
-/// s array and pBufferInfo and pTexelBufferView NULL (the type makes which of the three pointers may
-///  be non-NULL, and a write that named two would be a write whose type and rows disagree). Every ro
-///  w of that array names the same white view and the same white sampler today, which is what makes
-///  the write legal at all: a bound set whose descriptors were never written is a violation, so an
-///  allocated sampler array is only legal once every entry of it names a real view and a real sampl
-///  er. XUD_INVALID_ARG on a NULL descriptor or one whose set-1 handle, white view or white sampler
-///  is not live.
-XudResult xud_descriptor_fill_sampler_write_info(XudDescriptor* descriptor);
+/// Pure: the XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE writes that put the white pair into every slot set -
+///  one write per slot, dstSet the slot's own set, dstBinding XUD_DESCRIPTOR_BINDING, dstArrayElement 0,
+///  descriptorCount 1, descriptorType COMBINED_IMAGE_SAMPLER, pImageInfo the slot's row of the rung's own
+///  samplerRows and pBufferInfo and pTexelBufferView NULL. Every row names the same white view and the
+///  same white sampler today, which is what makes the write legal at all: a bound set whose descriptors
+///  were never written is a violation, so an allocated slot set is only legal once its descriptor names a
+///  real view and a real sampler. XUD_INVALID_ARG on a NULL descriptor or one whose slot sets, white view
+///  or white sampler are not live.
+XudResult xud_descriptor_fill_slot_write_infos(XudDescriptor* descriptor);
 
 /// Pure: the free list's own rule - the lowest-numbered slot of set 1's sampler array whose bit of the
 /// mask is clear, which is what makes the slot a caller draws against a fact rather than a choice. XUD_OUT
@@ -624,36 +669,37 @@ XudResult xud_descriptor_fill_sampler_write_info(XudDescriptor* descriptor);
 /// ated beside XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE); XUD_INVALID_ARG on a NULL descriptor or out-slot.
 XudResult xud_descriptor_pick_free_slot(const XudDescriptor* descriptor, uint32_t* outSlot);
 
-/// Pure: the one-slot write of set 1's sampler array - dstSet the set-1 row of the record, dstBinding XU
-/// D_DESCRIPTOR_BINDING, dstArrayElement the slot the caller names, descriptorCount 1, descriptorType CO
-/// MBINED_IMAGE_SAMPLER and pImageInfo the rung's own textureSlotRow, whose (imageView, sampler, imageLa
-/// yout) triple is the caller's rows. The single element rather than the whole array is what keeps the
-/// other 15 entries untouched, and a write that named two would be a write whose type and rows disagree i
-/// n the same way the whole-array write refuses it. XUD_INVALID_ARG on a NULL descriptor, on a slot pas
-/// t the array's size, on a NULL view or sampler, or on a record whose set-1 handle is not live.
+/// Pure: the one-set write a bind and a release make - dstSet the slot's own set, dstBinding XUD_DES
+/// CRIPTOR_BINDING, dstArrayElement 0, descriptorCount 1, descriptorType COMBINED_IMAGE_SAMPLER and
+/// pImageInfo the rung's own textureSlotRow, whose (imageView, sampler, imageLayout) triple is the
+/// caller's rows. A single set rather than an array element is what keeps every other slot set
+/// untouched, and a write that named two would be a write whose type and rows disagree in the same
+/// way the whole-set write refuses it. XUD_INVALID_ARG on a NULL descriptor, on a slot past the slot
+/// axis's size, on a NULL view or sampler, or on a record whose slot set is not live.
 XudResult xud_descriptor_fill_texture_slot_write(
     XudDescriptor* descriptor, uint32_t slot, VkImageView view, VkSampler sampler, VkImageLayout imageLayout);
 
-/// Driver: take the next free slot of set 1's sampler array and write the texture's own view and sampl
-/// er into it - the free-list half of the texture's binding, replacing the white default at that one
-/// element rather than at every one. The imageLayout is the layout the texture's upload left its image i
-/// n, read off the texture record one rung over, and it is the layout the descriptor must name for the
-/// sampling to be legal. XUD_INVALID_ARG on a NULL descriptor/loader/device or out-slot, on a NULL vie
-/// w or sampler, or on a record whose set-1 handle is not live; XUD_UNSUPPORTED on a closed loader, on a
+/// Driver: take the next free slot of the slot axis and write the texture's own view and sampler into
+/// that slot's set - the free-list half of the texture's binding, replacing the white default in that
+/// one set rather than in every one. The imageLayout is the layout the texture's upload left its image
+/// in, read off the texture record one rung over, and it is the layout the descriptor must name for the
+/// sampling to be legal. XUD_INVALID_ARG on a NULL descriptor/loader/device or out-slot, on a NULL view
+///  or sampler, or on a record whose slot set is not live; XUD_UNSUPPORTED on a closed loader, on a
 ///  loader whose device rows are not this device's, or on a nil update row; XUD_OUT_OF_RESOURCES when ev
-/// ery slot of the array is taken; XUD_OK only with *outSlot naming the slot that now holds the pair.
+/// ery slot is taken; XUD_OK only with *outSlot naming the slot whose set now holds the pair.
 XudResult xud_descriptor_bind_texture_slot(XudDescriptor* descriptor, XudLoader* loader, const XudDevice* device, VkImageView view,
     VkSampler sampler, VkImageLayout imageLayout, uint32_t* outSlot);
 
-/// Driver: give one slot of set 1's sampler array back to the free list - the white default is written
-///  into that one element and the slot's bit of the mask cleared, so a bound set whose entry still name
-/// s a destroyed view and sampler is a state this rung leaves behind rather than one it makes. The rewr
-/// ite rather than a bare clear is what makes the clear honest: the descriptor at that element keeps exi
-/// sting after the release, and the one pair it may name is the white default this rung owns for its whol
-/// e life. XUD_INVALID_ARG on a NULL descriptor/loader/device or on a slot past the array's size; XUD_UN
-/// SUPPORTED on a closed loader, on a loader whose device rows are not this device's, or on a nil update
-///  row; XUD_INVALID_ARG on a record whose set-1 handle or white pair is not live; XUD_ALREADY when the sl
-/// ot's bit of the mask is already clear; XUD_OK once the slot names the white default again.
+/// Driver: give one slot's set back to the free list - the white default is written into that one set
+///  and the slot's bit of the mask cleared, so a bound set whose descriptor still names a destroyed view
+///  and sampler is a state this rung leaves behind rather than one it makes. The rewrite rather than a
+///  bare clear is what makes the clear honest: the descriptor in that set keeps existing after the
+///  release, and the one pair it may name is the white default this rung owns for its whole life. Every
+///  slot owns its own set, so the release touches only that set and no other slot's. XUD_INVALID_ARG on a
+///  NULL descriptor/loader/device or on a slot past the slot axis's size; XUD_UNSUPPORTED on a closed
+///  loader, on a loader whose device rows are not this device's, or on a nil update row; XUD_INVALID_AR
+///  G on a record whose slot set or white pair is not live; XUD_ALREADY when the slot's bit of the mask
+///  is already clear; XUD_OK once the slot's set names the white default again.
 XudResult xud_descriptor_release_texture_slot(XudDescriptor* descriptor, XudLoader* loader, const XudDevice* device, uint32_t slot);
 
 /// Pure: the host-side bytes of set 0's block - the identity VP matrix and zeros everywhere else. T

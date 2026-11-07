@@ -44,6 +44,8 @@ static void xud_test_frame_pure(void) {
     const VkCommandPool poolHandle = (VkCommandPool)0x1000u;
     const VkCommandBuffer bufferHandle = (VkCommandBuffer)0x2000u;
     const VkSwapchainKHR swapchainHandle = (VkSwapchainKHR)0x3000u;
+    const VkSemaphore renderFinishedHandle = (VkSemaphore)0x4000u;
+    VkSubmitInfo presentWait = (VkSubmitInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
 
     xud_check(xud_frame_fill_pool_info(NULL, 0u) == XUD_INVALID_ARG, "frame/pool-null-out", "refused");
     xud_check(xud_frame_fill_pool_info(&pool, XUD_PHYSICAL_NO_QUEUE_FAMILY) == XUD_INVALID_ARG, "frame/pool-no-family",
@@ -102,15 +104,19 @@ static void xud_test_frame_pure(void) {
         "the scissor is the full extent, so nothing outside the image is written - a scissor bigge"
         "r than the image is what the spec forbids, not allows");
 
-    xud_check(xud_frame_fill_submit(NULL, &present, bufferHandle, swapchainHandle) == XUD_INVALID_ARG, "frame/submit-null-out", "refused");
-    xud_check(xud_frame_fill_submit(&submit, NULL, bufferHandle, swapchainHandle) == XUD_INVALID_ARG, "frame/present-null-out",
-        "and so is the present row that cannot be written");
-    xud_check(xud_frame_fill_submit(&submit, &present, VK_NULL_HANDLE, swapchainHandle) == XUD_INVALID_ARG, "frame/submit-no-buffer",
-        "a submit with nothing to execute is refused");
-    xud_check(xud_frame_fill_submit(&submit, &present, bufferHandle, VK_NULL_HANDLE) == XUD_INVALID_ARG, "frame/present-no-swapchain",
-        "and so is a present of no swapchain");
-    xud_check(
-        xud_frame_fill_submit(&submit, &present, bufferHandle, swapchainHandle) == XUD_OK, "frame/submit-ok", "the two rows are assembled");
+    xud_check(xud_frame_fill_submit(NULL, &present, bufferHandle, swapchainHandle, renderFinishedHandle) == XUD_INVALID_ARG,
+        "frame/submit-null-out", "refused");
+    xud_check(xud_frame_fill_submit(&submit, NULL, bufferHandle, swapchainHandle, renderFinishedHandle) == XUD_INVALID_ARG,
+        "frame/present-null-out", "and so is the present row that cannot be written");
+    xud_check(xud_frame_fill_submit(&submit, &present, VK_NULL_HANDLE, swapchainHandle, renderFinishedHandle) == XUD_INVALID_ARG,
+        "frame/submit-no-buffer", "a submit with nothing to execute is refused");
+    xud_check(xud_frame_fill_submit(&submit, &present, bufferHandle, VK_NULL_HANDLE, renderFinishedHandle) == XUD_INVALID_ARG,
+        "frame/present-no-swapchain", "and so is a present of no swapchain");
+    xud_check(xud_frame_fill_submit(&submit, &present, bufferHandle, swapchainHandle, VK_NULL_HANDLE) == XUD_INVALID_ARG,
+        "frame/submit-no-render-finished",
+        "and so is a signal of no semaphore, because a signal row with no handle to point at is a row that would signal nothing");
+    xud_check(xud_frame_fill_submit(&submit, &present, bufferHandle, swapchainHandle, renderFinishedHandle) == XUD_OK, "frame/submit-ok",
+        "the two rows are assembled");
     xud_check((submit.sType == VK_STRUCTURE_TYPE_SUBMIT_INFO) && (present.sType == VK_STRUCTURE_TYPE_PRESENT_INFO_KHR),
         "frame/submit-two-stamped", "both rows are stamped, and the two stamps are two different constants, so no caller can confuse them");
     xud_check((submit.pNext == NULL) && (present.pNext == NULL), "frame/submit-chains-clear", "and both chains stay empty");
@@ -124,13 +130,18 @@ static void xud_test_frame_pure(void) {
     xud_check((submit.commandBufferCount == XUD_FRAME_COMMAND_BUFFER_COUNT) && (submit.pCommandBuffers == NULL), "frame/submit-command-row",
         "one buffer, and the row itself is the driver half's, because the buffer is what the drive"
         "r allocated");
-    xud_check((submit.signalSemaphoreCount == 0u) && (submit.pSignalSemaphores == NULL), "frame/submit-no-signal",
-        "no signal semaphore, because the fence is what says a frame finished, and a second mecha"
-        "nism for the same boundary would be two owners of one fact");
+    xud_check(submit.signalSemaphoreCount == 1u, "frame/submit-signal-count",
+        "one signal, which is the render-finished semaphore: the submit-to-present boundary spelled "
+        "as a queue-side semaphore, so a present cannot run ahead of its render on a device whose two "
+        "role queues are two distinct handles");
+    xud_check((submit.pSignalSemaphores == NULL), "frame/submit-signal-row-null",
+        "the row beside that count is left empty by the pure half, which has no semaphore storage to "
+        "point at; the driver half points it at the frame's own semaphore, which is the storage that "
+        "outlives the call");
     xud_check(present.swapchainCount == 1u, "frame/present-swapchain-count", "one swapchain presented");
     xud_check((present.waitSemaphoreCount == 0u) && (present.pWaitSemaphores == NULL), "frame/present-no-wait",
-        "the presentation waits nothing: the fence at the end of the frame is what bounds it, and a "
-        "wait semaphore here would be a second channel for the same boundary");
+        "the presentation itself waits on nothing: on the present queue it is ordered behind the no-"
+        "command wait submit, and the render-finished semaphore lives there rather than on this row");
     xud_check((present.pSwapchains == NULL) && (present.pImageIndices == NULL), "frame/present-rows-null",
         "the swapchain row and the image-index row are both the driver half's: the index is what vkA"
         "cquireNextImageKHR WRITES, so the pure half has no index to point at, which is what makes "
@@ -139,6 +150,27 @@ static void xud_test_frame_pure(void) {
         "the per-swapchain VkResult out-array is refused here rather than asked for: the rung's own "
         "return code is the report, and a pResults array would be a second channel for the same ans"
         "wer that a caller above would have to read");
+
+    xud_check(xud_frame_fill_present_wait(NULL, renderFinishedHandle) == XUD_INVALID_ARG, "frame/present-wait-null-out", "refused");
+    xud_check(xud_frame_fill_present_wait(&presentWait, VK_NULL_HANDLE) == XUD_INVALID_ARG, "frame/present-wait-no-semaphore",
+        "and so is a wait of no semaphore, because a wait row with no handle would wait on nothing");
+    xud_check(xud_frame_fill_present_wait(&presentWait, renderFinishedHandle) == XUD_OK, "frame/present-wait-ok",
+        "the no-command wait submit is assembled");
+    xud_check(presentWait.sType == VK_STRUCTURE_TYPE_SUBMIT_INFO, "frame/present-wait-stamped", "stamped as a submit");
+    xud_check(presentWait.pNext == NULL, "frame/present-wait-chain-clear", "and its chain stays empty");
+    xud_check(presentWait.waitSemaphoreCount == 1u, "frame/present-wait-count", "one wait, which is the render-finished boundary itself");
+    xud_check(presentWait.pWaitSemaphores == NULL, "frame/present-wait-row-null",
+        "the row beside that count is left empty by the pure half, which has no semaphore storage to "
+        "point at; the driver half points it at the frame's own semaphore, the same storage the submit's "
+        "signal row names, so the two halves of the boundary cannot name different semaphores");
+    xud_check(presentWait.pWaitDstStageMask == NULL, "frame/present-wait-stages-null",
+        "the stage row is the driver half's: there is no command of this submit to wait a stage for, "
+        "and the row exists because the count demands it");
+    xud_check((presentWait.commandBufferCount == 0u) && (presentWait.pCommandBuffers == NULL), "frame/present-wait-no-command",
+        "no command buffer: the submit exists to order the present queue behind the render, not to "
+        "run anything");
+    xud_check((presentWait.signalSemaphoreCount == 0u) && (presentWait.pSignalSemaphores == NULL), "frame/present-wait-no-signal",
+        "and it signals nothing: it is the consumer of the boundary, not a producer of one");
 
     /* The push row of one draw, in both material shapes: the batch's sentinel and a real slot,
        because the sentinel mapping is the branch this rung owns and the only one a synthetic row
