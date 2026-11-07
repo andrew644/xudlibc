@@ -27,7 +27,7 @@
 #include "xud_core.h" /* Required for: struct XudContext, whose input field the public calls reach */
 #include "xud_window.h" /* Required for: XudWindow, the window whose GLFWwindow* the poll reads */
 #include <GLFW/glfw3.h> /* Required for: glfwPollEvents, glfwGetKey, glfwGetMouseButton, glfwGetCursorPos, glfwSetCursorPos, glfwGetKeyName, glfwGet/SetWindowUserPointer, glfwSetChar/ScrollCallback, glfwGetError - the whole of GLFW's input surface, and the only place in src/xud besides the window layer that calls GLFW at all (src/xud/xud_time.c is the other, and it calls GLFW's timer and nothing else) */
-#include <math.h> /* Required for: isfinite, the scale the setter refuses */
+#include <math.h> /* Required for: isfinite, the scale the setter refuses, and round, the half the pixel queries land the cursor on */
 #include <stdlib.h> /* Required for: calloc, free */
 
 /*-----------------------------------------------------------------------------------------------
@@ -647,7 +647,7 @@ XudResult xud_get_mouse_x(int* outX, XudContext* context) {
         return result;
     }
 
-    *outX = (int)input->cursorX;
+    *outX = (int)round(input->cursorX);
     return XUD_OK;
 }
 
@@ -666,7 +666,7 @@ XudResult xud_get_mouse_y(int* outY, XudContext* context) {
         return result;
     }
 
-    *outY = (int)input->cursorY;
+    *outY = (int)round(input->cursorY);
     return XUD_OK;
 }
 

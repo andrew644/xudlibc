@@ -261,7 +261,9 @@ static void xud_test_input_pure(void) {
     xud_check(xud_get_mouse_x(&token, context) == XUD_OK, "input/mouse-x-query-ok", "raylib's GetMouseX");
     xud_check(token == -87, "input/mouse-x-int", "the pixel grid a caller places a shape on");
     xud_check(xud_get_mouse_y(&token, context) == XUD_OK, "input/mouse-y-query-ok", "raylib's GetMouseY");
-    xud_check(token == 12, "input/mouse-y-int", "truncated, not rounded - the rung's cursor is a double");
+    xud_check(token == 13, "input/mouse-y-int",
+        "12.5 rounds to 13 rather than truncating to 12 - the cursor is a double and the pixel "
+        "grid is what a caller places a shape on");
 
     /* The wheel: the callbacks accumulate, the advance settles, and a caller reads the frame's whole
        movement rather than its last one.
