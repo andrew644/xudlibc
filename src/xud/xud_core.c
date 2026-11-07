@@ -807,14 +807,17 @@ XudResult xud_end_drawing(XudContext* context) {
        was usable and the presentation happened - and this is the rung that replaces the swapchain
        before the NEXT acquire, at the window's FRAMEBUFFER extent rather than at its requested one.
        The resize is not this rung's to refuse: a rebuild that failed is reported, and the renderer
-       is left with the rungs it still has. */
+       is left with the rungs it still has. A window with no presentable extent (minimized: GLFW
+       reports a 0/0 framebuffer) is answered down there as a skip, not a bad argument, which is what
+       keeps a frame loop left running over a minimized window seeing XUD_OK rather than an error
+       loop. */
     result = xud_renderer_resize(&context->renderer, context->loader, context->device, &context->physicalDevice->caps, context->allocator,
         context->physicalDevice, context->window, &context->swapchain);
     if (result == XUD_OK) {
         /* The recreation replaced the swapchain and therefore its extent, so the record the ui fold
            divides its clip mapping by is re-read off the NEW swapchain rather than left at the one
            the resized-from frame rendered at. XUD_ALREADY means no recreation ran - the flag was
-           empty or already satisfied - and the extent is the state present rather than a state to
+           empty, already satisfied, or the window had no presentable extent to recreate at - and the extent is the state present rather than a state to
            re-record. */
         context->width = context->swapchain->createInfo.imageExtent.width;
         context->height = context->swapchain->createInfo.imageExtent.height;

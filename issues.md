@@ -1,4 +1,4 @@
-# Issues
+#Issues
 
 Findings from a full read of `src/xud/` (and the shaders), checked against the
 validation-layer-clean build and the GPU test run (4898 checks, 0 failures on the
@@ -27,7 +27,7 @@ submit and waited on by a no-command submit to the present queue (or an assert
 at `xud_device_open` that the two handles are equal, which keeps the current
 single-flight model honest).
 
-### 2. A minimized window makes `xud_end_drawing` fail every frame
+### 2. (RESOLVED) A minimized window makes `xud_end_drawing` fail every frame
 
 Wayland minimize reports a 0x0 framebuffer. `xud_window_framebuffer_size`
 (`xud_window.c:265`) refuses that as `XUD_INVALID_ARG`, `xud_renderer_resize`
@@ -38,6 +38,17 @@ express "window has no presentable extent" — the app sees a bad-argument error
 loop out of a call it made correctly. A minimal window should probably present
 nothing (or hold the last frame) rather than error, and the resize rung should
 treat 0x0 as "skip this frame" rather than "invalid argument".
+
+**Resolved.** 0/0 is now the answer it always was: a state, not an error.
+`xud_window_framebuffer_size()` returns it as `XUD_OK` (only a *negative*
+extent is still refused), and the resize step decides through the new pure
+rung `xud_renderer_recreate_needed()` — a 0/0 framebuffer (or a swapchain
+already at the framebuffer's extent) clears the recreate ask and answers
+`XUD_ALREADY` with no rung touched, so the swapchain holds the last frame
+until the window has an extent back, and `xud_end_drawing()` answers `XUD_OK`
+for every frame a frame loop spends with its window minimized. A restore to a
+size the swapchain does not have re-sets the ask through the out-of-date code
+the next acquire answers with.
 
 ### 3. The UI is not screen-fixed under a 3D camera, and its quads write depth
 

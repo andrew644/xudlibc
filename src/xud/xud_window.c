@@ -256,13 +256,16 @@ XudResult xud_window_framebuffer_size(uint32_t* outWidth, uint32_t* outHeight, c
     }
 
     /* glfwGetFramebufferSize zeroes both out-params before it dispatches (window.c 715-727), so a
-       platform that answers nothing leaves 0/0 behind rather than garbage. */
+       platform that answers nothing leaves 0/0 behind rather than garbage, and a Wayland compositor
+       minimizes a window into exactly that same 0/0. The two are the same state for the caller -
+       the resize step one rung up, which decides what a window with no presentable extent means -
+       so 0/0 is an ANSWER rather than a refusal here. What is still not an answer is a negative
+       extent: no backend reports one, so a negative int is a bad read rather than a window state,
+       and it is refused before the widening cast that cannot hold it. GLFW reports the extent in
+       ints, and the layer's own XUD_WINDOW_MAX_EXTENT is INT_MAX (asserted in the header above),
+       so a non-negative int is inside it by construction and no widening cast can wrap. */
     glfwGetFramebufferSize(window->glfwWindow, &width, &height);
-
-    /* GLFW reports the extent in ints, and a non-positive one is not a window. The layer's own
-       XUD_WINDOW_MAX_EXTENT is INT_MAX (asserted in the header above), so a positive int is inside
-       it by construction and no widening cast can wrap. */
-    if ((width <= 0) || (height <= 0)) {
+    if ((width < 0) || (height < 0)) {
         return XUD_INVALID_ARG;
     }
 

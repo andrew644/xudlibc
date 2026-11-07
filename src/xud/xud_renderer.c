@@ -313,6 +313,17 @@ XudResult xud_renderer_draw(
 /// dependency direction the file-top note states: the frame's fences are what a presentation agai
 /// nst the OLD images may still be waiting on, and the framebuffer rows' views are what name the
 /// swapchain images the recreate below is about to retire, so both have to die BEFORE it.
+/// See xud_renderer.h. The two answers a recreate ask does not need a rebuild for: the window has
+/// no presentable extent at all (minimized - there is nothing to build a swapchain at), or the
+/// swapchain is already at the extent the window's framebuffer is (the ask has been satisfied,
+/// and rebuilding at the extent a swapchain already has would retire working images for nothing).
+bool xud_renderer_recreate_needed(uint32_t fbWidth, uint32_t fbHeight, uint32_t swapchainWidth, uint32_t swapchainHeight) {
+    if ((fbWidth == 0u) || (fbHeight == 0u)) {
+        return false;
+    }
+    return ((fbWidth != swapchainWidth) || (fbHeight != swapchainHeight));
+}
+
 XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
     XudAllocator* alloc, const XudPhysicalDevice* physicalDevice, const XudWindow* window, XudSwapchain** ioSwapchain) {
     XudRenderer* renderer = NULL;
@@ -366,9 +377,14 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
     if (result != XUD_OK) {
         return result;
     }
-    if ((width == swapchain->createInfo.imageExtent.width) && (height == swapchain->createInfo.imageExtent.height)) {
-        /* The ask has already been satisfied - the flag is cleared so one ask cannot turn into a lo
-           op, and nothing is recreated because the state asked for is the state present. */
+    if (!xud_renderer_recreate_needed(width, height, swapchain->createInfo.imageExtent.width, swapchain->createInfo.imageExtent.height)) {
+        /* Either the ask has already been satisfied - the swapchain is at the extent the window's
+           framebuffer is, so the state asked for is the state present - or the window has no
+           presentable extent at all, the 0/0 a Wayland compositor reports for a minimized window.
+           Both are a skip rather than a refusal: there is nothing to build, so the flag is cleared
+           (one ask cannot turn into a loop) and no rung is touched - the swapchain keeps the frame
+           it already has, and a restore to a size the swapchain does not have re-sets the ask
+           through the out-of-date code the next acquire answers with. */
         renderer->frame->recreateWanted = 0u;
         return XUD_ALREADY;
     }

@@ -184,6 +184,19 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
 XudResult xud_renderer_draw(
     XudRenderer* renderer, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain, uint32_t* outImageIndex);
 
+/// Pure: whether the recreate ask the frame loop left behind needs a rebuild. (fbWidth) / (fbHe
+/// ight) is the window's framebuffer extent as xud_window_framebuffer_size() read it, (swapchain
+/// Width) / (swapchainHeight) the extent the swapchain in hand renders at. True only when the two
+/// differ AND the window has an extent to build at: a 0/0 framebuffer is a window with no
+/// presentable extent (the answer a Wayland compositor gives a minimized window), and the answer
+/// to that is to hold the frame the swapchain already has, not a rebuild at an extent no swapchain
+/// can be built at - a swapchain's extent has a floor of 1 (VUID-VkSwapchainCreateInfoKHR-imageEx
+/// tent-01789), so a rebuild here would be one that has to fail, or one silently clamped to a size
+/// the window does not have. The restore is the half that puts the ask back: a window restored to
+/// a size the swapchain does not have is a surface whose extent moved again, which is what the
+/// out-of-date code the next acquire answers with re-sets the flag through.
+bool xud_renderer_recreate_needed(uint32_t fbWidth, uint32_t fbHeight, uint32_t swapchainWidth, uint32_t swapchainHeight);
+
 /// Driver: the resize step - the one rung in this tree that acts on the recreate ask the frame
 /// loop above leaves behind. renderer->frame->recreateWanted IS the ask (xud_vulkan.h's swapchain-
 /// boundary funnel is the only thing that sets it), and the ask is acted on at the NEXT acquire,
@@ -209,7 +222,12 @@ XudResult xud_renderer_draw(
 /// draw that answered VK_SUCCESS leaves this rung to be called and to answer that the extent has not
 /// moved) or when the ask has already been satisfied (the swapchain is already at the extent the
 /// window's framebuffer is, in which case the flag is cleared too, so one ask cannot turn into a
-/// loop). XUD_INVALID_ARG on a NULL renderer/pointer, a NULL loader/device/caps/allocator/physical
+/// loop), and in both of those the flag is cleared with no rung touched. A framebuffer with no
+/// extent (0/0 - the answer a Wayland compositor gives a minimized window) is the same answer with
+/// no rebuild: the flag is cleared, no rung is touched, and the swapchain keeps presenting the
+/// frame it already has until the window has an extent back, which is what keeps a frame loop left
+/// running with its window minimized seeing XUD_OK out of xud_end_drawing() rather than a bad-
+/// argument loop. XUD_INVALID_ARG on a NULL renderer/pointer, a NULL loader/device/caps/allocator/physical
 /// device/window/swapchain pointer or slot, a slot holding NULL, or a renderer missing any rung this
 /// rebuilds; XUD_UNSUPPORTED when the loader is closed, its rows are not this device's, the fence
 /// and framebuffer arrays no longer match the swapchain in hand, or a rung's guard cannot run. A

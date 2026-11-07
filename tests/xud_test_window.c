@@ -224,8 +224,9 @@ static void xud_test_window_pure(void) {
     xud_check(
         xud_window_framebuffer_size(&count, &count, NULL) == XUD_INVALID_ARG, "window/fb-size-null-window", "and so is no window at all");
     xud_check(xud_window_framebuffer_size(&count, &count, synthetic) == XUD_INVALID_ARG, "window/fb-size-no-glfw-handle",
-        "a window with no GLFW window behind it has no framebuffer extent to answer, which is what"
-        "makes the 0/0 a platform leaves behind a refusal rather than a zero-extent swapchain");
+        "a window with no GLFW window behind it has no framebuffer extent to answer - the refusal a "
+        "window this layer does not own gets, while a live window the compositor minimized answers "
+        "0/0 as a state rather than as this");
 }
 
 /*-----------------------------------------------------------------------------------------------

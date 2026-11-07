@@ -210,10 +210,13 @@ XudResult xud_window_resize(XudWindow* window, uint32_t width, uint32_t height);
 ///   xud_vulkan.h's swapchain-boundary funnel exists for. xud_swapchain_open() takes the
 ///   window's REQUESTED extent today, which is why the resize step below reads this one.
 ///   glfwGetFramebufferSize returns void and zeroes both out-params BEFORE it dispatches
-///   (window.c 715-727), so a platform that answers nothing leaves 0/0 behind, and the bound
-///   below turns that into a refusal rather than a zero-extent swapchain. XUD_INVALID_ARG on a
-///   NULL out-parameter, a NULL window or one this layer does not own, or a non-positive
-///   extent; XUD_OK with both extents written.
+///   (window.c 715-727), and a Wayland compositor minimizes a window into exactly that same 0/0,
+///   so 0/0 is a live answer rather than a refusal: it is the "window has no presentable extent"
+///   state, and it is returned as XUD_OK for the caller to decide what it means (the resize step
+///   one rung up skips the rebuild and holds the frame the swapchain already has). What is still a
+///   refusal is a NEGATIVE extent, which no backend reports. XUD_INVALID_ARG on a NULL out-
+///   parameter, a NULL window or one this layer does not own, or a negative extent; XUD_OK with
+///   both extents written (0/0 included).
 XudResult xud_window_framebuffer_size(uint32_t* outWidth, uint32_t* outHeight, const XudWindow* window);
 
 /// Driver (GLFW): does the window system want this window closed - glfwWindowShouldClose. The flag

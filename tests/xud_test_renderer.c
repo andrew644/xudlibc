@@ -67,6 +67,25 @@ static void xud_test_renderer_pure(void) {
     XudSwapchain* swapHolder = &swap;
     XudSwapchain* swapSlot = NULL;
 
+    /* The recreate decision, the half of the resize step that needs no window at all: the two
+       answers a rebuild may not start for are the window having no presentable extent (the 0/0 a
+       Wayland compositor reports for a minimized window) and the swapchain already being at the
+       framebuffer's extent. */
+    xud_check(xud_renderer_recreate_needed(0u, 0u, 320u, 240u) == false, "renderer/recreate-nothing-to-build",
+        "a 0/0 framebuffer is a window with no presentable extent, and there is no extent to build a"
+        " swapchain at, so the ask is a skip rather than a rebuild");
+    xud_check(xud_renderer_recreate_needed(0u, 120u, 320u, 240u) == false, "renderer/recreate-zero-width",
+        "and so is a width of 0 with a height the window still has - a swapchain's extent needs both");
+    xud_check(
+        xud_renderer_recreate_needed(120u, 0u, 320u, 240u) == false, "renderer/recreate-zero-height", "and so is the other axis at 0");
+    xud_check(xud_renderer_recreate_needed(320u, 240u, 320u, 240u) == false, "renderer/recreate-already-there",
+        "a swapchain at the framebuffer's extent is the state the ask wanted - a rebuild would retire"
+        " working images for nothing");
+    xud_check(xud_renderer_recreate_needed(400u, 300u, 320u, 240u) == true, "renderer/recreate-moved", "an extent that moved is a rebuild");
+    xud_check(xud_renderer_recreate_needed(321u, 240u, 320u, 240u) == true, "renderer/recreate-one-pixel",
+        "and so is one pixel of it - a swapchain at any other extent is one the compositor calls out"
+        " of date on every acquire");
+
     memset(&batch, 0, sizeof batch);
     memset(&pipeline, 0, sizeof pipeline);
     memset(&descriptor, 0, sizeof descriptor);
@@ -284,6 +303,23 @@ static void xud_test_renderer_resize_gpu(void) {
         "gpu-resize/second-call-already",
         "a second call answers that nothing was asked for, so one ask cannot turn into a loop of re"
         "builds");
+
+    /* The ask-satisfied half of the decision, run against a live window: the flag is set again with
+       the swapchain already at the window's framebuffer extent, so the step skips and clears the
+       ask without touching a rung - the same answer the 0/0 (minimized) half gives, with the
+       difference that here a rebuild that ran would have been visible as a new swapchain. */
+    context->renderer->frame->recreateWanted = 1u;
+    xud_check(xud_renderer_resize(&context->renderer, context->loader, context->device, &context->physicalDevice->caps, context->allocator,
+                  context->physicalDevice, context->window, &context->swapchain)
+            == XUD_ALREADY,
+        "gpu-resize/ask-satisfied-skip", "an ask the swapchain already satisfies is a skip, not a rebuild");
+    xud_check(context->renderer->frame->recreateWanted == 0u, "gpu-resize/satisfied-skip-clears-ask",
+        "and the skip cleared the ask, so the next frame does not ask again");
+    xud_check(
+        (context->swapchain->createInfo.imageExtent.width == fbWidth) && (context->swapchain->createInfo.imageExtent.height == fbHeight),
+        "gpu-resize/satisfied-skip-touched-nothing",
+        "and the swapchain is still the one the rebuild above made - a rebuild that ran would have "
+        "retired it for an identical one");
 
     if (context->validate != 0u) {
         xud_check(context->diagnostics->errorMessages == 0u, "gpu-resize/validation-clean",
