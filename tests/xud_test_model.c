@@ -357,6 +357,17 @@ static void xud_test_model_pure(void) {
     xud_check(xud_model_check(document, NULL, &materialCount) == XUD_INVALID_ARG, "check-null-out-count",
         "an out-count with nowhere to be written is refused");
 
+    document->meshes[0].primitives[0].material = &document->materials[document->materials_count];
+    xud_check(xud_model_check(document, &meshCount, &materialCount) == XUD_INVALID_ARG, "check-material-index-past",
+        "a primitive that names a material past the document's count is refused, not drawn with an"
+        " arbitrary material the open would otherwise clamp onto");
+    cgltf_free(document);
+    document = xud_test_model_document(glb, glbLength);
+    xud_check(document != NULL, "document-reparsed-material", "the same document again, for the next refusal");
+    if (document == NULL) {
+        return;
+    }
+
     /* The gate of one primitive, and the refusals reached by editing the parsed document. */
     xud_check(xud_model_gate(document, 0u, 0u, &vertexCount, &indexCount, &stageBytes) == XUD_OK, "gate-ok",
         "the fixed primitive passes its own gate");

@@ -543,6 +543,20 @@ XudResult xud_model_check(const cgltf_data* data, uint32_t* outMeshCount, uint32
             if (result != XUD_OK) {
                 return result;
             }
+            if (data->meshes[m].primitives[p].material != NULL) {
+                /* A primitive that names a material past the document's count is a document that
+                   names something it does not have: the gate's style is to refuse it, not to draw
+                   it with an arbitrary material the open would otherwise clamp onto. The index is the
+                   pointer difference rather than cgltf's own accessor because the accessor asserts
+                   the bound it is being asked to check, and a difference against the array's base is
+                   well-defined one element past its end - which is exactly the state a hostile file
+                   leaves behind.
+                */
+                if ((data->materials_count == 0u)
+                    || ((cgltf_size)(data->meshes[m].primitives[p].material - data->materials) >= (cgltf_size)data->materials_count)) {
+                    return XUD_INVALID_ARG;
+                }
+            }
             meshCount++;
         }
     }
@@ -1156,9 +1170,18 @@ XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader*
             }
             record->mesh[flat] = meshHandle;
             if (data->meshes[m].primitives[p].material != NULL) {
-                cgltf_size materialIndex = cgltf_material_index(data, data->meshes[m].primitives[p].material);
-                if (materialIndex >= (cgltf_size)data->materials_count) {
-                    materialIndex = (cgltf_size)(materialCount - 1u);
+                /* The pointer difference rather than cgltf's own accessor, for the reason the check
+                   states: the accessor asserts the bound, and a difference against the array's base
+                   is well-defined one element past its end.
+                */
+                cgltf_size materialIndex = (cgltf_size)(data->meshes[m].primitives[p].material - data->materials);
+                if ((data->materials_count == 0u) || (materialIndex >= (cgltf_size)data->materials_count)) {
+                    /* xud_model_check() above has already refused such a document, and a document
+                       cgltf parsed does not hand back an index past its array - if it does, the
+                       document names a material that does not exist, and the gate's style is to
+                       refuse rather than draw with an arbitrary material. */
+                    result = XUD_INVALID_ARG;
+                    goto fail;
                 }
                 record->meshMaterial[flat] = record->material[materialIndex];
             } else {
