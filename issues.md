@@ -96,12 +96,22 @@ process of its own, same as raylib). `xud_set_exit_key`/`xud_get_exit_key` and
 `XudInput.exitKey` are removed. See `xud.h` (window section) and
 `examples/breakout_3d.c`'s frame loop.
 
-### 5. No background / clear colour control
+### 5. (RESOLVED) No background / clear colour control
 
 The clear colour is hard-coded to (0.02, 0.02, 0.05) in `xud_renderpass.h:83-86`
 and baked into the render pass's clear values. There is no
 `ClearBackground`/`SetClearColor` equivalent in `xud.h`, so every app shares the
 library's blue-grey and cannot change it without touching the pass.
+
+**Resolved.** The colour is now the renderer's state rather than a pass constant:
+the public `xud_clear_background()` (raylib's `ClearBackground`) stores the
+caller's `XudColor` in the renderer, and the renderer's draw entry writes it into
+the render pass's clear value - the colour row alone, through the new pure rung
+`xud_renderpass_set_clear_color()` - before the frame loop begins the pass it
+records, so a call in frame N changes frame N's own clear. A frame drawn before
+any call is cleared with the old default: the `XUD_RENDERPASS_CLEAR_COLOR_*`
+macros are now the pass's default, quantized to the byte grid at renderer open.
+See `xud.h` (drawing section) and `xud_core.c`'s note above the setter.
 
 ### 6. No 2D drawing surface and no per-draw transforms
 

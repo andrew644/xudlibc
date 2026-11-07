@@ -76,10 +76,13 @@
           carries and a framebuffer's second attachment row points at */
 #define XUD_RENDERPASS_FIRST_SUBPASS 0u /* the subpass the one dependency row targets */
 
-/* The clear colour, in the sRGB non-linear space the swapchain's chosen format is in (the
-   format selection rule in xud_swapchain.c only ever picks an SRGB_NONLINEAR row when one
-   exists, see that file's note). A dark background rather than black so a run that drew
-   nothing is distinguishable from a run that drew a black triangle. */
+/* The DEFAULT clear colour, in the sRGB non-linear space the swapchain's chosen format is in
+   (the format selection rule in xud_swapchain.c only ever picks an SRGB_NONLINEAR row when one
+   exists, see that file's note). A dark background rather than black so a run that drew nothing
+   is distinguishable from a run that drew a black triangle. The renderer's draw entry
+   overwrites the colour half of the clear value with the caller's background (the public
+   xud_clear_background(), quantized to the 8-bit grid it is declared in) every frame it runs,
+   and the depth half of the clear value below stays this pass's own constant. */
 #define XUD_RENDERPASS_CLEAR_COLOR_R 0.02f
 #define XUD_RENDERPASS_CLEAR_COLOR_G 0.02f
 #define XUD_RENDERPASS_CLEAR_COLOR_B 0.05f
@@ -257,6 +260,18 @@ struct XudFramebufferArray {
 /// PPORTED on VK_FORMAT_UNDEFINED (a swapchain that has no chosen format has no attachment d
 /// escription either).
 XudResult xud_renderpass_fill_state(XudRenderPass* pass, VkFormat format);
+
+/// Pure: the colour half of the clear value, replaced rather than the whole row. The pass's
+/// clear values are the frame loop's to read (it hands pass->clearValues to vkCmdBeginRenderPass
+/// every frame, see xud_frame.c's note beside the begin), so a background the caller asked for
+/// is a write to this row rather than a new pass or a frame-local array, and the write goes to
+/// the colour row alone: the depth row is the pass's own constant, and a background is a colour,
+/// not a depth. The four floats are the sRGB code values the swapchain's chosen format is in
+/// (the note on the default row above), one per channel in R,G,B,A order, and each one in
+/// [0,1]: the only writer in this tree converts an 8-bit byte to its value-over-255 before it
+/// calls, so a value outside the range is a caller bug the rung does not defend against.
+/// XUD_INVALID_ARG on a NULL pass.
+XudResult xud_renderpass_set_clear_color(XudRenderPass* pass, float r, float g, float b, float a);
 
 /// Pure: the VkRenderPassCreateInfo the pass will be created with, assembled from the rows
 /// above. Refuses XUD_UNSUPPORTED when any row of the struct in hand is not stamped - the

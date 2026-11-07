@@ -10,7 +10,8 @@
  *          life-cycle pair, the drawing API above it (xud_begin_drawing() / xud_draw_triangle_3d()
  *          / xud_draw_cube() / xud_draw_sphere() / xud_draw_line_3d() / xud_draw_point_3d() /
  *          xud_draw_cube_wires() / xud_draw_sphere_wires() / xud_begin_camera_3d() / xud_end_
- *          camera_3d() / xud_end_drawing()), the object API above the handle layer (the three crea
+ *          camera_3d() / xud_clear_background() / xud_end_drawing()), the object API above the
+ *          handle layer (the three crea
  *          te/close pairs xud_create_material() / xud_close_material() / xud_create_texture() / xud_
  *          close_texture() / xud_upload_mesh() / xud_close_mesh() and the scoped-state pair xud_be
  *          gin_material() / xud_end_material()), the value types a caller passes down (XudVector2 /
@@ -791,6 +792,19 @@ XudResult xud_end_material(XudContext* context);
 /// ws are not this device's; the frame's own codes otherwise, and a frame that refused leaves th
 /// e batch alone.
 XudResult xud_end_drawing(XudContext* context);
+
+/// Set the background the frames this context draws are cleared to: raylib's ClearBackground
+/// (raylib.h 1047, "Clear background (framebuffer) to color") at this library's currency - a call
+/// with the caller's colour and a frame whose clear is the answer, rather than a clear that
+/// happens at the call. The colour is stored in the renderer that owns the frame loop, AS GIVEN
+/// (the same value-not-pointer rule the camera's record follows one section over), and the
+/// renderer's draw entry writes it into the render pass's clear value before the frame loop begins
+/// the pass it records - which is what makes a call in frame N change frame N's own clear rather
+/// than the frame after: the recording runs at xud_end_drawing(), after every draw call the frame
+/// made. A frame drawn before any call is cleared with the default the render pass's note gives,
+/// so a context that never calls here draws the background it always has. XUD_INVALID_ARG on a
+/// NULL context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_clear_background(XudContext* context, XudColor color);
 
 /*-----------------------------------------------------------------------------------------------
  * The object API - the materials a context owns, and the handles that name them

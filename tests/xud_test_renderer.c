@@ -12,6 +12,9 @@
  *   ent is the half that decides a rebuild may not start - the ask, the count that no longer matches
  *   the swapchain in hand, and the extent that cannot be read - and the half that needs the driver i
  *   s the rebuild itself, run end to end against a completed context below.
+ *   This area also owns the background: the byte the renderer holds at open (the render pass's own
+ *   default, quantized to the 8-bit grid), the public xud_clear_background() that replaces it, and
+ *   the write into the pass's clear value the frame opening makes before it records.
  *   Layer: tests. Sees xud_renderer.h (the rung under test), xud_window.h (the extent the ask is an
  *   swered against), xud_core.h (the owner a completed bring-up runs against) and the rungs the rebu
  *   ild touches.
@@ -66,6 +69,9 @@ static void xud_test_renderer_pure(void) {
     XudRenderer* bareSlot = &bare;
     XudSwapchain* swapHolder = &swap;
     XudSwapchain* swapSlot = NULL;
+    XudContext shell;
+    XudColor red = (XudColor) { 200u, 30u, 10u, 255u };
+    XudColor blue = (XudColor) { 10u, 20u, 250u, 128u };
 
     /* The recreate decision, the half of the resize step that needs no window at all: the two
        answers a rebuild may not start for are the window having no presentable extent (the 0/0 a
@@ -101,6 +107,7 @@ static void xud_test_renderer_pure(void) {
     memset(&window, 0, sizeof window);
     memset(&bare, 0, sizeof bare);
     memset(&whole, 0, sizeof whole);
+    memset(&shell, 0, sizeof shell);
 
     /* A renderer whose five rungs are all present, against a loader whose rows are all nil: the
        rebuild's guards have to fire before any of those nil rows is reached, which is the whole
@@ -171,6 +178,29 @@ static void xud_test_renderer_pure(void) {
         "the ask was answered by a window that has no framebuffer extent to give, which is a bad arg"
         "ument rather than a rebuild at an extent of 0 - and it is the last guard before the rebuild "
         "starts, so nothing has been torn down by the time it answers");
+
+    /* --- the background's public half, headless: the storage is the renderer's, so a shell
+         context with a zeroed renderer is the one that has no owner to store in, and `whole` is
+         the one that does --- */
+    xud_check(xud_clear_background(NULL, red) == XUD_INVALID_ARG, "renderer/background-null-context",
+        "no context is a bad argument, the same answer the frame pair above gives");
+    xud_check(xud_clear_background(&shell, red) == XUD_UNSUPPORTED, "renderer/background-no-renderer",
+        "a context with no renderer never completed bring-up, and there is no owner to store the "
+        "colour in");
+    shell.renderer = &whole;
+    xud_check(xud_clear_background(&shell, red) == XUD_OK, "renderer/background-stored", "a live renderer takes the colour");
+    xud_check(
+        (whole.background.r == red.r) && (whole.background.g == red.g) && (whole.background.b == red.b) && (whole.background.a == red.a),
+        "renderer/background-as-given",
+        "the value is the renderer's own record, copied AS GIVEN rather than converted: the "
+        "byte-to-float half is the draw entry's, at the frame it applies to");
+    xud_check(xud_clear_background(&shell, blue) == XUD_OK, "renderer/background-replaced", "and a second call replaces the whole record");
+    xud_check((whole.background.r == blue.r) && (whole.background.g == blue.g) && (whole.background.b == blue.b)
+            && (whole.background.a == blue.a),
+        "renderer/background-second-landed",
+        "all four channels moved, so the background set in frame N is the one frame N+1's clear "
+        "uses - the raylib order for ClearBackground, which changes the background from the next "
+        "BeginDrawing on");
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -333,9 +363,86 @@ static void xud_test_renderer_resize_gpu(void) {
     xud_check(context == NULL, "gpu-resize/context-null", "and cleared");
 }
 
+/*-----------------------------------------------------------------------------------------------
+ * The background against the driver: the byte the open gave the renderer, the public setter over
+ * a completed context, and the write into the pass's clear value the frame opening makes before
+ * it records - read back from the pass rather than from the constant, the rule the render-pass
+ * area applies to its own depth clear.
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_background_gpu(void) {
+    XudContext* context = NULL;
+    XudResult result = XUD_OK;
+    XudColor red = (XudColor) { 255u, 0u, 0u, 255u };
+    XudColor green = (XudColor) { 0u, 255u, 0u, 255u };
+
+    result = xud_init_context(&context, XUD_TEST_RESIZE_OPEN_EXTENT, XUD_TEST_RESIZE_OPEN_EXTENT);
+    xud_check(result == XUD_OK, "gpu-background/context", "a context at the small extent, the resize area's own");
+    if (context == NULL) {
+        return;
+    }
+
+    /* The default, at open: the byte quantization of the render pass's own default clear colour,
+       the same expression xud_renderer_open() uses, so the check is against the rule rather than
+       a copy of it */
+    xud_check((context->renderer->background.r == (uint8_t)(XUD_RENDERPASS_CLEAR_COLOR_R * 255.0f + 0.5f))
+            && (context->renderer->background.g == (uint8_t)(XUD_RENDERPASS_CLEAR_COLOR_G * 255.0f + 0.5f))
+            && (context->renderer->background.b == (uint8_t)(XUD_RENDERPASS_CLEAR_COLOR_B * 255.0f + 0.5f))
+            && (context->renderer->background.a == (uint8_t)(XUD_RENDERPASS_CLEAR_COLOR_A * 255.0f + 0.5f)),
+        "gpu-background/default-at-open",
+        "the first frame a context draws is cleared with the render pass's own default, quantized "
+        "to the byte grid the public XudColor lives on - not with whatever a zeroed struct would "
+        "be, a transparent black the surface's OPAQUE composite answer cannot take");
+
+    xud_check(xud_clear_background(context, red) == XUD_OK, "gpu-background/set-ok", "the public setter over a completed context");
+    xud_check((context->renderer->background.r == red.r) && (context->renderer->background.g == red.g)
+            && (context->renderer->background.b == red.b) && (context->renderer->background.a == red.a),
+        "gpu-background/stored", "AS GIVEN, in the renderer that owns the frame loop");
+
+    /* A frame: the draw entry writes the stored background into the pass before it records, and the
+       pass's row is what the frame loop hands the driver as pClearValues */
+    xud_check(xud_begin_drawing(context) == XUD_OK, "gpu-background/begin-1", "one frame under the new background");
+    xud_check(xud_end_drawing(context) == XUD_OK, "gpu-background/end-1", "and its close");
+    xud_check((context->renderer->renderPass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[0] == 1.0f)
+            && (context->renderer->renderPass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[1] == 0.0f)
+            && (context->renderer->renderPass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[2] == 0.0f)
+            && (context->renderer->renderPass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[3] == 1.0f),
+        "gpu-background/clear-value-after-frame",
+        "the pass's clear value is the colour the caller asked for, read back from the pass: the "
+        "frame the driver just cleared used this row, because passBegin's pClearValues IS the "
+        "pass's own row rather than a frame-local copy");
+    xud_check(context->renderer->renderPass->clearValues[XUD_RENDERPASS_DEPTH_ATTACHMENT].depthStencil.depth == XUD_RENDERPASS_CLEAR_DEPTH,
+        "gpu-background/depth-half-untouched",
+        "and the depth half of the clear is the pass's own constant, which a background does not "
+        "touch");
+
+    /* A second colour follows the first: the write runs at every frame opening, so the background
+       a frame's clear uses is the one live at the frame's own opening */
+    xud_check(xud_clear_background(context, green) == XUD_OK, "gpu-background/set-2", "a second background in the same context");
+    xud_check(xud_begin_drawing(context) == XUD_OK, "gpu-background/begin-2", "and a frame under it");
+    xud_check(xud_end_drawing(context) == XUD_OK, "gpu-background/end-2", "and its close");
+    xud_check((context->renderer->renderPass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[0] == 0.0f)
+            && (context->renderer->renderPass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[1] == 1.0f)
+            && (context->renderer->renderPass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[2] == 0.0f)
+            && (context->renderer->renderPass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[3] == 1.0f),
+        "gpu-background/second-colour-follows",
+        "the next frame's clear is the next colour: a background set between two frames is the one "
+        "the frame after it clears with, the order raylib's ClearBackground has");
+
+    if (context->validate != 0u) {
+        xud_check(context->diagnostics->errorMessages == 0u, "gpu-background/validation-clean",
+            "and the two frames are validation-clean, not just crash-free");
+    }
+
+    result = xud_close_context(&context);
+    xud_check(result == XUD_OK, "gpu-background/close-clean", "and the context tears down clean");
+    xud_check(context == NULL, "gpu-background/context-null", "and cleared");
+}
+
 void xud_test_renderer(void) {
     xud_test_renderer_pure();
     if (xud_gpu_tests_enabled()) {
         xud_test_renderer_resize_gpu();
+        xud_test_background_gpu();
     }
 }

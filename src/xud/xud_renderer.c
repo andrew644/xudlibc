@@ -173,6 +173,18 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
         return XUD_OUT_OF_MEMORY;
     }
 
+    /* The default background, quantized to the byte grid the public XudColor lives on: the
+       render pass's own default clear colour, each channel times 255 and rounded to the nearest
+       byte, so the first frame a context draws is cleared with the colour the render pass's note
+       has always described rather than with whatever the zero byte would be (a transparent black,
+       which the surface's OPAQUE composite answer needs a 1 alpha for). The byte's
+       value-over-255 and the pass's float differ by less than half a code value per channel - the
+       quantization the public 8-bit surface makes of any colour it is handed. */
+    renderer->background.r = (uint8_t)(XUD_RENDERPASS_CLEAR_COLOR_R * 255.0f + 0.5f);
+    renderer->background.g = (uint8_t)(XUD_RENDERPASS_CLEAR_COLOR_G * 255.0f + 0.5f);
+    renderer->background.b = (uint8_t)(XUD_RENDERPASS_CLEAR_COLOR_B * 255.0f + 0.5f);
+    renderer->background.a = (uint8_t)(XUD_RENDERPASS_CLEAR_COLOR_A * 255.0f + 0.5f);
+
     /* 1. the render pass. It is first because the core-1.4 binding makes the pass an argument of
        the pipeline's create (see the note at the call below) and the framebuffer's create-info na
        mes it too, so both of those need it in hand. Every teardown rung of every one of the four
@@ -299,6 +311,22 @@ XudResult xud_renderer_draw(
        a draw against rows that are not this swapchain's, which xud_frame_draw() refuses below. */
     if (renderer->framebufferCount != renderer->framebuffers->count) {
         return XUD_UNSUPPORTED;
+    }
+
+    /* The background, written into the pass's clear value BEFORE the frame loop begins the render
+       pass: passBegin's pClearValues is the pass's own row (see xud_frame.c's note beside the
+       begin), so the value this frame's clear uses is whatever the row holds when the recording
+       runs, and a write after it would be a background the NEXT frame's clear used rather than
+       this one's. The byte is converted to its value-over-255 here rather than in the rung the
+       row lives in, because the renderer owns the byte the caller handed and the render pass owns
+       the float4 the driver reads - the same division the camera's give and apply make between
+       the record the caller named and the block this rung writes. */
+    if (xud_renderpass_set_clear_color(renderer->renderPass, (float)renderer->background.r / 255.0f, (float)renderer->background.g / 255.0f,
+            (float)renderer->background.b / 255.0f, (float)renderer->background.a / 255.0f)
+        != XUD_OK) {
+        /* The pass was checked live above, so this is the layer's own record in a state the rung
+           refuses rather than a caller argument - reported, not drawn around. */
+        return XUD_INVALID_ARG;
     }
 
     return xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,

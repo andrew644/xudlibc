@@ -139,6 +139,15 @@ struct XudRenderer {
                                 begun in one frame is drawn with in the next rather than leaked into
                                 it, and xud_batch_reset() has already moved the batch back to the
                                 default when this rung did not ask for a material. */
+    XudColor background; /* the background the caller last asked for, AS GIVEN - the public
+                             xud_clear_background() writes it and the draw entry above applies it
+                             to the render pass's clear value at every frame opening, the same
+                             shape the camera's record and flag give the block's matrix except
+                             without a wanted half: a camera is a scope the caller opens and
+                             closes, a background is a state that stays, so it is re-applied
+                             whether or not the caller asked for one in this frame. The value is
+                             the render pass's own default, quantized to the byte grid this
+                             struct lives on, when the renderer opens (see xud_renderer.c's open). */
 };
 
 /*-----------------------------------------------------------------------------------------------

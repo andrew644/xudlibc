@@ -246,6 +246,27 @@ XudResult xud_renderpass_fill_state(XudRenderPass* pass, VkFormat format) {
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The clear colour - the colour half of the clear value, replaced at runtime
+ *-----------------------------------------------------------------------------------------------*/
+
+/// See xud_renderpass.h.
+XudResult xud_renderpass_set_clear_color(XudRenderPass* pass, float r, float g, float b, float a) {
+    if (pass == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The colour row alone, in R,G,B,A order: the depth row is the pass's own constant, and a
+       background is a colour rather than a depth, so the write stops at this row's four
+       channels and never reaches the other half of the union. */
+    pass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[0] = r;
+    pass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[1] = g;
+    pass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[2] = b;
+    pass->clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[3] = a;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The render-pass create-info - pure, assembled from the rows above
  *-----------------------------------------------------------------------------------------------*/
 

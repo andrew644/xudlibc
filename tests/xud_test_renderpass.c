@@ -248,6 +248,24 @@ static void xud_test_renderpass_pure(void) {
         "the stencil half of the depth row is zero, and D32_SFLOAT has no stencil aspect at all, so"
         " the half that is read is the depth one");
 
+    /* --- the runtime setter: the colour half replaced, the depth half left alone --- */
+    xud_check(xud_renderpass_set_clear_color(NULL, 1.0f, 0.0f, 0.0f, 1.0f) == XUD_INVALID_ARG, "renderpass/set-clear-null-pass",
+        "a setter with no pass to write into is refused");
+    xud_check(xud_renderpass_set_clear_color(&pass, 1.0f, 0.5f, 0.0f, 1.0f) == XUD_OK, "renderpass/set-clear-ok",
+        "and a live pass takes the new colour");
+    xud_check((pass.clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[0] == 1.0f)
+            && (pass.clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[1] == 0.5f)
+            && (pass.clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[2] == 0.0f)
+            && (pass.clearValues[XUD_RENDERPASS_COLOR_ATTACHMENT].color.float32[3] == 1.0f),
+        "renderpass/set-clear-landed",
+        "the four channels, in R,G,B,A order, are the values the setter was handed - the same "
+        "index rule the frame loop's pClearValues is read by, so a channel the caller meant for "
+        "green is not one the driver clears with in blue");
+    xud_check(pass.clearValues[XUD_RENDERPASS_DEPTH_ATTACHMENT].depthStencil.depth == XUD_RENDERPASS_CLEAR_DEPTH,
+        "renderpass/set-clear-left-depth",
+        "the depth half of the clear is the pass's own constant still: a background is a colour, "
+        "not a depth, so the write stops at the colour row's four channels");
+
     /* --- the depth image's own create-info: the first VkImage in this tree --- */
     xud_check(xud_renderpass_fill_depth_info(NULL, 320u, 240u) == XUD_INVALID_ARG, "renderpass/depth-info-null-out", "refused");
     xud_check(xud_renderpass_fill_depth_info(&imageInfo, 0u, 240u) == XUD_INVALID_ARG, "renderpass/depth-info-zero-extent",

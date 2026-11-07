@@ -889,3 +889,33 @@ XudResult xud_end_camera_3d(XudContext* context) {
 
     return XUD_OK;
 }
+
+/*-----------------------------------------------------------------------------------------------
+ * The public background setter, above the context
+ *
+ * raylib's ClearBackground (reference/raylib/src/raylib.h 1047) is read the way the camera pair
+ * above it is read: the colour is the caller's, and the ONE place it can be stored is the renderer
+ * that owns the frame loop, so the validation happens at the call that asks and the storage
+ * happens in the owner that holds it. A background is a value in the renderer rather than a pointer
+ * to a caller's record, for the reason the camera's note gives: a caller's local colour going out of
+ * scope at the end of a frame cannot leave the next frame reading a dead record. There is no wanted
+ * flag beside it, and the absence is a difference from the camera rather than an oversight: a camera
+ * is a scope the caller opens and closes, a background is a state that stays, so the renderer
+ * re-applies it at every frame opening whether or not the caller asked for one in this frame.
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_clear_background(XudContext* context, XudColor color) {
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->renderer == NULL) {
+        /* The same answer the frame pair above gives for the same reason: a context with no
+           renderer is a context that never completed bring-up, and there is no owner here to
+           store the colour in. Reported, not ignored. */
+        return XUD_UNSUPPORTED;
+    }
+
+    context->renderer->background = color;
+
+    return XUD_OK;
+}
