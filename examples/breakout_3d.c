@@ -49,8 +49,9 @@
  *
  *     - The input wrapper LANDED (the input rung, src/xud/xud_input.h/.c, and the public input API
  *       in xud.h), so the example reads the library's input API and not GLFW's key state: xud_brea
- *       kout_read_input() asks the context's own rung whether the exit key is held and whether the
- *       paddle's keys are held, through xud_get_exit_key() and xud_is_key_down(). It creates no win
+ *       kout_read_input() asks the context's own rung whether ESC is held and whether the paddle's
+ *       keys are held, through xud_is_key_down(), and the run's loop checks xud_window_should_clos
+ *       e() the way raylib's apps check WindowShouldClose(). It creates no win
  *       dow of its own (a second GLFW window would be a second surface competing for the same sessi
  *       on, and the game would be played on a window nothing draws to) and it reaches no window at
  *       all - the state it reads is the rung's, and the poll that makes that state current is xud_en
@@ -551,13 +552,12 @@ static void xud_breakout_rearm_field(XudBreakoutBrick* bricks) {
    as first read on answers pressed ONCE, at the first of those frames, and down at that one and at
    every one below it - so a test on pressed alone would let a held Escape keep the run going on the
    frames between two presses, and the paddle would stop moving the moment the window system starte
-   d repeating the key. The exit key is read from the rung rather than written here, so the run end
-   s on whatever key the library records (ESC to start with, raylib's own default) rather than on on
-   e this example decided.
+   d repeating the key. The key the run ends on is this example's own decision rather than the lib
+   rary's - xud.h records no exit key, so ESC is checked here with the same query the paddle's key
+   s are.
 */
 static XudBreakoutInput xud_breakout_read_input(XudContext* context) {
     XudBreakoutInput input = (XudBreakoutInput) { .escapeWanted = 0u, .paddleDirection = 0 };
-    int exitKey = 0;
     bool held = false;
     bool left = false;
     bool right = false;
@@ -566,10 +566,10 @@ static XudBreakoutInput xud_breakout_read_input(XudContext* context) {
         return input;
     }
 
-    if (xud_get_exit_key(&exitKey, context) != XUD_OK) {
+    if (xud_is_key_down(&held, context, XUD_KEY_ESCAPE) != XUD_OK) {
         return input;
     }
-    if ((exitKey != 0) && (xud_is_key_down(&held, context, exitKey) == XUD_OK) && (held == true)) {
+    if (held == true) {
         input.escapeWanted = 1u;
     }
 
@@ -817,6 +817,7 @@ int main(void) {
     uint32_t cleared = 0u;
     uint32_t rounds = 1u;
     uint32_t escapeWanted = 0u;
+    uint32_t windowClosed = 0u;
     uint32_t timedOut = 0u;
     uint32_t settling = 0u; /* the run's short frames: see the note beside the scene call below */
     XudResult result = xud_init_context(&context, XUD_BREAKOUT_WINDOW_WIDTH, XUD_BREAKOUT_WINDOW_HEIGHT);
@@ -857,14 +858,14 @@ int main(void) {
 
     /* The hand: the context's own input rung, read every frame. A context that owns no rung is a
        context that never completed bring-up, and the queries answer that rather than answering "no
-       keys" - the probe below is the public way to see it (xud_get_exit_key() is the cheapest of th
-       e queries, and a rung that is not there is the only reason it refuses), so a run in front of n
+       keys" - the probe below is the public way to see it (a rung that is not there is the only re
+       ason the query refuses), so a run in front of n
        obody is a run the terminal says so about rather than a run that silently stops taking input.
     */
     {
-        int exitKeyProbe = 0;
+        bool probeHeld = false;
 
-        if (xud_get_exit_key(&exitKeyProbe, context) != XUD_OK) {
+        if (xud_is_key_down(&probeHeld, context, XUD_KEY_ESCAPE) != XUD_OK) {
             printf("breakout_3d: the context owns no input rung, so the paddle cannot be moved\n");
         }
     }
@@ -900,6 +901,13 @@ int main(void) {
         uint32_t alive = 0u;
         uint32_t hit = XUD_BREAKOUT_NO_BRICK;
         uint32_t stepped = 0u;
+        bool closing = false;
+
+        if (xud_window_should_close(&closing, context) == XUD_OK && (closing == true)) {
+            printf("frame %u: the window was closed, and the run stops here\n", frame);
+            windowClosed = 1u;
+            break;
+        }
 
         if (input.escapeWanted != 0u) {
             printf("frame %u: escape is held, and the run stops here\n", frame);
@@ -1033,7 +1041,9 @@ int main(void) {
         rounds, cleared, misses, settling,
         (escapeWanted != 0u)
             ? "escape"
-            : ((timedOut != 0u) ? "the fallback time cap" : ((clockLost != 0u) ? "the clock refusing" : "a draw call refusing")));
+            : ((windowClosed != 0u) ? "the window closing"
+                                    : ((timedOut != 0u) ? "the fallback time cap"
+                                                        : ((clockLost != 0u) ? "the clock refusing" : "a draw call refusing"))));
 
     const XudResult closed = xud_close_context(&context);
     printf("xud_close_context -> %s\n", xud_result_name(closed));

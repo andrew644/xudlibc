@@ -120,12 +120,11 @@ XudResult xud_input_open(XudInput** outInput, XudWindow* window) {
         return XUD_OUT_OF_MEMORY;
     }
 
-    /* The zero state calloc gives is the rung's opening state for every row EXCEPT these two: rayli
-       b's SetExitKey says ESC is the default (raylib.h 1210), and a scale of zero would be a divi
-       sion the position queries do behind the setter's back, so the opening scale is the identity.
+    /* The zero state calloc gives is the rung's opening state for every row EXCEPT this one: a sca
+       le of zero would be a division the position queries do behind the setter's back, so the open
+       ing scale is the identity.
     */
     input->window = window;
-    input->exitKey = XUD_KEY_ESCAPE;
     input->scaleX = 1.0;
     input->scaleY = 1.0;
 
@@ -538,42 +537,6 @@ XudResult xud_get_key_name(const char** outName, XudContext* context, int key) {
        s why NULL is the answer rather than a refusal.
     */
     *outName = glfwGetKeyName(key, 0);
-    return XUD_OK;
-}
-
-/// See xud.h.
-XudResult xud_set_exit_key(XudContext* context, int key) {
-    XudInput* input = NULL;
-    XudResult result = XUD_INVALID_ARG;
-
-    result = xud_input_reach(&input, context);
-    if (result != XUD_OK) {
-        return result;
-    }
-    if ((key != XUD_KEY_NULL) && ((key < XUD_INPUT_KEY_FIRST) || (key > XUD_INPUT_KEY_LAST))) {
-        return XUD_INVALID_ARG;
-    }
-
-    input->exitKey = key;
-    return XUD_OK;
-}
-
-/// See xud.h.
-XudResult xud_get_exit_key(int* outKey, XudContext* context) {
-    XudInput* input = NULL;
-    XudResult result = XUD_INVALID_ARG;
-
-    if (outKey == NULL) {
-        return XUD_INVALID_ARG;
-    }
-    *outKey = 0;
-
-    result = xud_input_reach(&input, context);
-    if (result != XUD_OK) {
-        return result;
-    }
-
-    *outKey = (int)input->exitKey;
     return XUD_OK;
 }
 

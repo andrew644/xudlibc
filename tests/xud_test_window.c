@@ -41,6 +41,7 @@ static void xud_test_window_pure(void) {
     const char* names[XUD_INSTANCE_EXTRA_MAX] = { NULL };
     uint32_t count = 0u;
     bool supports = false;
+    bool closeWanted = true;
 
     memset(&loader, 0, sizeof(loader));
     loader.open = true;
@@ -107,6 +108,18 @@ static void xud_test_window_pure(void) {
     xud_check(xud_window_check_instance_support(&supports, synthetic, &instance) == XUD_OK, "window/support-enabled-ok",
         "the same check with the name enabled");
     xud_check(supports == true, "window/support-enabled-true", "the name being enabled is what flips it");
+
+    /* check_close: the guards, every one of them before a GLFW call. The window here has no GLFW
+         window yet - the fake handle the presentation checks below need is assigned after this -
+         so the call has no event loop to have been asked to close, and the refusal is the same one
+         xud_window_resize() and xud_window_framebuffer_size() give it. */
+    xud_check(xud_window_check_close(NULL, synthetic) == XUD_INVALID_ARG, "window/check-close-null-out",
+        "an out-param that cannot be written is a bad argument");
+    xud_check(
+        xud_window_check_close(&closeWanted, NULL) == XUD_INVALID_ARG, "window/check-close-null-window", "and so is no window at all");
+    xud_check(xud_window_check_close(&closeWanted, synthetic) == XUD_INVALID_ARG, "window/check-close-no-glfw-handle",
+        "a window that never got a GLFW window has no close event to have arrived");
+    xud_check(closeWanted == true, "window/check-close-refusal-untouched", "a refusal leaves the out-param as it found it");
 
     /* presentation_support: every guard, and the refused call leaves the answer alone. The fiel
        d guards are reached one at a time, with the guards above them already satisfied. */
@@ -236,6 +249,7 @@ static void xud_test_gpu_window(void) {
     uint32_t fbMovedWidth = 0u;
     uint32_t fbMovedHeight = 0u;
     bool supports = false;
+    bool closeWanted = true;
     XudResult result;
 
     result = xud_loader_open(&loader);
@@ -255,6 +269,18 @@ static void xud_test_gpu_window(void) {
         (window->width == 320u) && (window->height == 240u), "gpu-window/extent-recorded", "the extent asked for is the extent recorded");
     xud_check(window->surface == VK_NULL_HANDLE, "gpu-window/surface-null-at-open", "opening a window creates no surface");
     xud_check(window->surfaceInstance == VK_NULL_HANDLE, "gpu-window/surface-instance-null", "and records no instance for one");
+
+    /* The window system's own close flag: false on a fresh window, and GLFW's own setter is what fl
+       ips it - the deterministic stand-in for a window manager's close button that no test can as
+       k a real compositor to press. */
+    xud_check(xud_window_check_close(&closeWanted, window) == XUD_OK, "gpu-window/check-close-ok", "the query runs on a live window");
+    xud_check(closeWanted == false, "gpu-window/check-close-fresh", "a fresh window has not been asked to close");
+    glfwSetWindowShouldClose(window->glfwWindow, GLFW_TRUE);
+    xud_check(xud_window_check_close(&closeWanted, window) == XUD_OK, "gpu-window/check-close-set-ok", "and it still runs after the flip");
+    xud_check(closeWanted == true, "gpu-window/check-close-true", "the window system's own answer is what the query reads");
+    glfwSetWindowShouldClose(window->glfwWindow, GLFW_FALSE);
+    xud_check(xud_window_check_close(&closeWanted, window) == XUD_OK, "gpu-window/check-close-unset-ok", "and the flip back is read too");
+    xud_check(closeWanted == false, "gpu-window/check-close-unset", "so the rest of this area runs on a window nobody asked to close");
 
     /* The FRAMEBUFFER's extent, which is what a swapchain for this window has to be created at, an
        d the programmatic resize. GLFW's Wayland half scales wl.width / wl.height into wl.fbWidth /

@@ -355,6 +355,19 @@ XudResult xud_window_surface_close(XudWindow* window, XudLoader* loader) {
     return XUD_OK;
 }
 
+/// See xud_window.h. GLFW's own close flag, read while the window is alive - the window layer's
+/// close is what destroys that window, and a read after it would be a read of a window that is gone.
+/// The flag is read only, never cleared: GLFW's own glfwSetWindowShouldClose is the only writer of
+/// it besides the close event, and this tree is not in the business of answering a window's close
+/// on the window's behalf.
+XudResult xud_window_check_close(bool* outShouldClose, const XudWindow* window) {
+    if ((outShouldClose == NULL) || (window == NULL) || (window->glfwWindow == NULL))
+        return XUD_INVALID_ARG;
+
+    *outShouldClose = (glfwWindowShouldClose(window->glfwWindow) == GLFW_TRUE);
+    return XUD_OK;
+}
+
 /// See xud_window.h. A window that never got a GLFW window frees without a GLFW call - the handle
 /// less-teardown rule the instance and device layers apply to a struct whose handle is VK_NULL_HAND
 /// LE, and what makes a synthetic XudWindow in a test headless-testable.

@@ -5,7 +5,7 @@
  *
  *   Owns : the transition table (pressed / pressed-repeat / down / released / up for a key and for
  * a button), the two queues and their drains, the cursor's transform and delta, the wheel's accumu
- * lator, the exit-key record, the scale and offset setters' refusals, the key-name and cursor-place
+ * lator, the scale and offset setters' refusals, the key-name and cursor-place
  * guards, the rung's own open/close guards - plus the GPU half that polls a real window this con
  * text opened and reads the same records back. Layer: tests. Sees xud_input.h (the rung) and xud.h
  * (the public calls and the tokens), and xud_window.h for the GLFW payload slot the GPU half checks.
@@ -82,10 +82,9 @@ static void xud_test_input_pure(void) {
     }
     input->scaleX = 1.0;
     input->scaleY = 1.0;
-    input->exitKey = XUD_KEY_ESCAPE;
 
     /* The opening state, read through the public queries above a synthetic shell: nothing held, noth
-       ing queued, the exit key the rung opens with. The shell borrows the rung - neither owns the oth
+       ing queued. The shell borrows the rung - neither owns the oth
        er here, and both are freed at the end of this half.
     */
     context = calloc(1, sizeof(XudContext));
@@ -98,8 +97,6 @@ static void xud_test_input_pure(void) {
 
     xud_check(xud_is_key_down(&flag, context, XUD_KEY_A) == XUD_OK, "input/query-ok-headless", "a query reads records, no window needed");
     xud_check(flag == false, "input/opening-state-up", "a fresh rung holds nothing");
-    xud_check(xud_get_exit_key(&token, context) == XUD_OK, "input/exit-key-readable", "the default is readable, not only conventional");
-    xud_check(token == XUD_KEY_ESCAPE, "input/exit-key-default-escape", "raylib's SetExitKey says ESC to start with");
     xud_check(xud_get_key_pressed(&token, context) == XUD_OK, "input/queue-drain-empty-ok", "an empty queue answers 0, not a refusal");
     xud_check(token == 0, "input/queue-empty-reads-zero", "raylib's GetKeyPressed returns 0 when the queue is empty");
     xud_check(xud_get_char_pressed(&token, context) == XUD_OK, "input/char-queue-empty-ok", "same, for the codepoints");
@@ -126,11 +123,6 @@ static void xud_test_input_pure(void) {
     xud_check(xud_set_mouse_scale(context, 0.0f, 1.0f) == XUD_INVALID_ARG, "input/zero-scale-refused", "the position queries divide by it");
     xud_check(xud_set_mouse_scale(context, (float)NAN, 1.0f) == XUD_INVALID_ARG, "input/nan-scale-refused",
         "and a non-finite one is refused too");
-    xud_check(xud_set_exit_key(context, XUD_KEY_NULL) == XUD_OK, "input/no-exit-key-allowed", "raylib's SetExitKey takes 0 for none");
-    xud_check(xud_get_exit_key(&token, context) == XUD_OK, "input/no-exit-key-reads-back", "and reads back");
-    xud_check(token == 0, "input/no-exit-key-is-zero", "none is none");
-    xud_check(xud_set_exit_key(context, XUD_KEY_NULL - 1) == XUD_INVALID_ARG, "input/bad-exit-key-refused",
-        "a token that is not a key and not none");
 
     /* The two calls that need a window this synthetic rung does not have: the refusal is the guard,
        and it is XUD_UNSUPPORTED rather than a bad argument because nothing about the request was
@@ -330,7 +322,7 @@ static void xud_test_input_pure(void) {
  * The context is the only way this half reaches a real GLFW window, and it is the only thing that
  * opens one: xud_init_context() opens the input rung as part of bring-up, so the rung this half rea
  * ds is the context's own rather than one this half built. The checks are the records read back aft
- * er one real poll - the payload slot, the exit key, a key nobody pressed, the cursor inside the ex
+ * er one real poll - the payload slot, the window's close answer, a key nobody pressed, the cursor inside the ex
  * tent, the name the layout resolves - and the two answers this backend gives that no headless run
  * can: the cursor placement GLFW's Wayland half refuses, and the payload slot a second rung cannot
  * take a second time.
@@ -368,8 +360,9 @@ static void xud_test_input_gpu(void) {
     xud_check(xud_input_poll(context->input) == XUD_OK, "input/gpu-poll-ok", "one poll of a real window");
     xud_check(xud_is_key_down(&flag, context, XUD_KEY_A) == XUD_OK, "input/gpu-query-ok", "the public query read the real records");
     xud_check(flag == false, "input/gpu-no-stray-press", "nobody pressed A on this session, and the rung says so rather than guessing");
-    xud_check(xud_get_exit_key(&token, context) == XUD_OK, "input/gpu-exit-key", "the default survived bring-up");
-    xud_check(token == XUD_KEY_ESCAPE, "input/gpu-exit-key-escape", "ESC, raylib's default");
+    xud_check(xud_window_should_close(&flag, context) == XUD_OK, "input/gpu-should-close",
+        "the window's close query runs on the context's window");
+    xud_check(flag == false, "input/gpu-not-asked-to-close", "a fresh window has not been asked to close, and the query says so");
     xud_check(xud_get_key_name(&name, context, XUD_KEY_A) == XUD_OK, "input/gpu-keyname-ok", "the query ran on a live window");
     xud_check(name != NULL, "input/gpu-keyname-a-resolved", "the layout resolves a name for KEY_A on this session");
     xud_check(xud_get_mouse_x(&token, context) == XUD_OK, "input/gpu-mouse-x-ok", "the cursor position read back");

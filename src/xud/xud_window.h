@@ -216,6 +216,15 @@ XudResult xud_window_resize(XudWindow* window, uint32_t width, uint32_t height);
 ///   extent; XUD_OK with both extents written.
 XudResult xud_window_framebuffer_size(uint32_t* outWidth, uint32_t* outHeight, const XudWindow* window);
 
+/// Driver (GLFW): does the window system want this window closed - glfwWindowShouldClose. The flag
+/// this reads is set by GLFW's own close event (the window manager's close button, delivered by the
+/// platform backend's event loop), and that loop runs only when the input rung's one glfwPollEvents()
+/// per frame runs - so the answer is as of the poll that opened the current frame, the same rule the
+/// input queries follow. The query never asks the window to close and never closes it: it answers,
+/// and the caller decides. XUD_INVALID_ARG on a NULL out-param or a NULL window, or on a window
+/// that never got a GLFW window - no window, no event loop, no answer to read.
+XudResult xud_window_check_close(bool* outShouldClose, const XudWindow* window);
+
 /// Driver (GLFW): does the window system GLFW picked present to the physical device in hand,
 /// through the queue family the physical layer chose (caps.queueFamilyIndex, the one family the
 /// graphics rule picked)? This is glfwGetPhysicalDevicePresentationSupport, and it is the wind-

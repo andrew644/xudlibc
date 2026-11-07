@@ -16,7 +16,7 @@
  *          gin_material() / xud_end_material()), the value types a caller passes down (XudVector2 /
  *          XudVector3 / XudColor / XudMaterial / XudTextureData / XudMeshData), the input API above the input rung (raylib's keyboard and
  * mouse half - xud_ is_key_pressed() / xud_is_key_pressed_repeat() / xud_is_key_down() / xud_is_key_relea sed() / xud_is_key_up() /
- * xud_get_key_pressed() / xud_get_char_pressed() / xud_get_key _name() / xud_set_exit_key() / xud_get_exit_key() and the mouse block below
+ * xud_get_key_pressed() / xud_get_char_pressed() / xud_get_key _name() and the mouse block below
  * it), the clock API above the clock rung (raylib's GetTime/GetFrameTime half - xud_get_time() / xud_get_frame_time() /
  * xud_get_timer_value() / xud_get_timer_frequency()), the font API above the font rung (raylib's LoadFontEx/MeasureTextEx/GetGlyphInfo half
  * - xud_load_font() / xud_close_font() / xud_measure_text() / xud_get_glyph_index() / xud_get_glyph_info() / xud_get_glyph_atlas_rec() / xud_get_font_atlas_dim()
@@ -554,6 +554,18 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
 /// as a refusal), XUD_ALREADY if *context was already NULL, XUD_INVALID_ARG if context itself is
 /// NULL. Always sets *context to NULL when it is not NULL.
 XudResult xud_close_context(XudContext** context);
+
+/// Whether the window system has asked for this window to be closed - raylib's WindowShouldClose
+/// (raylib.h 990) without its key half: raylib's query also ends the app on the key SetExitKey
+/// records, and this library records no such key, so the query answers the other half only - the
+/// window manager's close button, delivered by the window system to the window's event loop, which
+/// the poll at the end of the frame is what runs. The key that ends a run is the caller's own
+/// decision: the caller checks its key with xud_is_key_down() and quits with xud_close_context()
+/// itself, which stands for raylib's CloseWindow in this tree - the library never exits a process
+/// of its own. XUD_INVALID_ARG on a NULL out-should-close or a NULL context; XUD_UNSUPPORTED on a
+/// context that never completed bring-up; XUD_OK with the window system's answer, false on a window
+/// that was never asked to close.
+XudResult xud_window_should_close(bool* outShouldClose, XudContext* context);
 
 /*-----------------------------------------------------------------------------------------------
  * The drawing API - the frame pair and the shapes a frame is made of
@@ -1220,7 +1232,7 @@ XudResult xud_get_timer_frequency(uint64_t* outTicksPerSecond, XudContext* conte
  * The input API - raylib's keyboard and mouse half, above the input rung
  *
  * This is raylib's input surface (reference/raylib/raylib.h 1202-1241: IsKeyPressed, IsKeyPressed
- * Repeat, IsKeyDown, IsKeyReleased, IsKeyUp, GetKeyPressed, GetCharPressed, GetKeyName, SetExitKey
+ * Repeat, IsKeyDown, IsKeyReleased, IsKeyUp, GetKeyPressed, GetCharPressed, GetKeyName
  * and the mouse block below it) above the input rung: the state machine is xud_input.h's and the
  * window it reads is the context's, so a caller names a key or a button and never a GLFWwindow*.
  * The tokens below are raylib's own enum values (raylib.h 587-720) mirrored as macros because they
@@ -1421,19 +1433,6 @@ XudResult xud_get_char_pressed(int* outChar, XudContext* context);
 /// e frame that ends at it. XUD_INVALID_ARG on a NULL out-param, a NULL context or a key outside GL
 /// F W's queryable range; XUD_UNSUPPORTED as above.
 XudResult xud_get_key_name(const char** outName, XudContext* context, int key);
-
-/// Record the key that ends a run - raylib's SetExitKey (raylib.h 1210), ESC to start with, XUD_KEY
-/// _NULL for none. This rung RECORDS it and the library never exits a process of its own: the cal
-/// ler asks for it with xud_get_exit_key() and acts, which is what keeps a window that is closed b
-/// y a key press a decision the caller made rather than one made inside the library. XUD_INVALID_AR
-/// G on a NULL context or on a key that is neither XUD_KEY_NULL nor inside GLFW's queryable range;
-/// XUD_UNSUPPORTED as above.
-XudResult xud_set_exit_key(XudContext* context, int key);
-
-/// The key that ends a run, as this rung records it - the query beside the setter above, so the def
-/// ault is readable rather than only knowable by convention. XUD_INVALID_ARG on a NULL out-param or
-/// a NULL context; XUD_UNSUPPORTED as above.
-XudResult xud_get_exit_key(int* outKey, XudContext* context);
 
 /// True if the mouse button transitioned from not held to held at the poll that opened this frame -
 /// raylib's IsMouseButtonPressed (raylib.h 1228). XUD_INVALID_ARG on a NULL out-param, a NULL conte

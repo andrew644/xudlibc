@@ -8,8 +8,7 @@
  *          rung's 0 / 1 / 2), the frame-to-frame transitions raylib's IsKeyPressed/IsKeyDown/IsKe
  *          yUp family reads out of a pair of those rows, the key and char queues GLFW's key and ch
  *          ar callbacks fill, the scroll GLFW's scroll callback accumulates between polls, the cu
- *          rsor position plus raylib's offset and scale above it, and the exit key raylib's SetEx
- *          itKey records - plus the rungs that bring it up (xud_input_open(), which registers GLF
+ *          rsor position plus raylib's offset and scale above it - plus the rungs that bring it up (xud_input_open(), which registers GLF
  *          W's char and scroll callbacks on the window) and down (xud_input_close()), and the one
  *          pure half the whole rung's correctness lives in: xud_input_advance(), which moves the
  *          state machine one frame given a snapshot of what the window answers.
@@ -184,12 +183,6 @@ typedef struct XudInput {
     int32_t charQueue[XUD_INPUT_CHAR_QUEUE_MAX];
     uint32_t charQueueCount;
     uint32_t charTruncated;
-
-    /* raylib's SetExitKey: the key that ends a run, ESC to start with. This rung records it; the
-       caller asks for it and acts - the library never exits a process of its own. XUD_KEY_NULL (0)
-       means no exit key.
-    */
-    int32_t exitKey;
 
     /* The cursor, as the last poll read it and as the caller's offset and scale above it read it.
        The raw pair is what GLFW answered; the delta is that pair read against the poll below it,

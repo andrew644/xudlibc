@@ -603,6 +603,31 @@ XudResult xud_close_context(XudContext** context) {
     return first;
 }
 
+/// See xud.h. The context's window is the one the query runs against: the context guard, then the
+/// window layer's own read of GLFW's close flag - and nothing else, because the key half of raylib's
+/// WindowShouldClose is the caller's rather than the library's.
+XudResult xud_window_should_close(bool* outShouldClose, XudContext* context) {
+    XudResult result = XUD_INVALID_ARG;
+
+    if (outShouldClose == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->window == NULL) {
+        /* A context with no window is a context that never completed bring-up: xud_init_context()
+           hands back NULL for that case, so this is a caller holding on rather than a state the
+           library leaves behind. Reported, not ignored - XUD_UNSUPPORTED is the code the public
+           surface already uses for "this context cannot answer".
+        */
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_window_check_close(outShouldClose, context->window);
+    return result;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The public frame pair, above the context
  *

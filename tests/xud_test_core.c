@@ -106,11 +106,20 @@ static void xud_test_init_bringup_boundary(void) {
 
 static void xud_test_close(void) {
     XudContext* context = NULL;
+    bool shouldClose = true;
 
     xud_check(xud_close_context(NULL) == XUD_INVALID_ARG, "close/null-out-param", "a null out-param must be rejected, not dereferenced");
     xud_check(xud_close_context(&context) == XUD_ALREADY, "close/already-closed",
         "closing a NULL context is XUD_ALREADY, not a crash and not XUD_OK");
     xud_check(context == NULL, "close/leaves-null", "closing a NULL context keeps it NULL");
+
+    /* The window's close query, the headless half: both guards run before the window is reached, and
+       a refusal leaves the out-param as it found it. */
+    xud_check(
+        xud_window_should_close(NULL, NULL) == XUD_INVALID_ARG, "should-close/null-out", "an out-param that cannot be written is refused");
+    xud_check(shouldClose == true, "should-close/refusal-untouched", "and the refusal left it alone");
+    xud_check(xud_window_should_close(&shouldClose, NULL) == XUD_INVALID_ARG, "should-close/null-context", "and so is no context at all");
+    xud_check(shouldClose == true, "should-close/null-context-untouched", "still as it found it");
 }
 
 /* Every rejected init must free what it allocated. Rejected extents only here, and that is a
