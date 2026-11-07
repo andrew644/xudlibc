@@ -290,6 +290,7 @@ int main(void) {
     uint32_t frame = 0u;
     uint32_t shortFrames = 0u;
     double now = 0.0;
+    bool shouldClose = false;
 
     for (frame = 0u; frame < XUD_HELLO_FRAME_CAP; frame++) {
         step = xud_begin_drawing(context);
@@ -317,6 +318,16 @@ int main(void) {
         step = xud_end_drawing(context);
         if (step != XUD_OK) {
             printf("hello_font: frame %u xud_end_drawing -> %s\n", frame, xud_result_name(step));
+            break;
+        }
+
+        /* The window's own answer to the close button, read after the boundary that just polled the
+           window's events: raylib's WindowShouldClose shape, the window-manager half only. */
+        if (xud_window_should_close(&shouldClose, context) != XUD_OK) {
+            printf("hello_font: frame %u xud_window_should_close -> %s\n", frame, xud_result_name(step));
+            break;
+        }
+        if (shouldClose) {
             break;
         }
 

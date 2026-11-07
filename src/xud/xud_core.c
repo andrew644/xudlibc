@@ -628,6 +628,24 @@ XudResult xud_window_should_close(bool* outShouldClose, XudContext* context) {
     return result;
 }
 
+/// See xud.h. The context's window is the one moved: the context guard, then the window layer's
+/// own move of the GLFW window - the swapchain's catch-up is the frame boundary's existing resize
+/// step, which is why nothing below the window rung is touched here.
+XudResult xud_set_window_size(XudContext* context, uint32_t width, uint32_t height) {
+    XudResult result = XUD_INVALID_ARG;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->window == NULL) {
+        /* A context with no window is a context that never completed bring-up: the same answer
+           and the same reason the query above gives it, and there is no window here to move. */
+        return XUD_UNSUPPORTED;
+    }
+    result = xud_window_resize(context->window, width, height);
+    return result;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The public frame pair, above the context
  *

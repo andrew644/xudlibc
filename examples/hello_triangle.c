@@ -52,6 +52,7 @@ int main(void) {
     const XudVector3 v1 = (XudVector3) { .x = 0.8f, .y = -0.8f, .z = 0.0f };
     const XudVector3 v2 = (XudVector3) { .x = 0.0f, .y = 0.8f, .z = 0.0f };
     const XudColor red = (XudColor) { .r = 230u, .g = 40u, .b = 40u, .a = 255u };
+    bool shouldClose = false;
 
     for (uint32_t frame = 0u; (frame < XUD_HELLO_FRAMES) && (step == XUD_OK); frame++) {
         step = xud_begin_drawing(context);
@@ -61,8 +62,17 @@ int main(void) {
         if (step == XUD_OK) {
             step = xud_end_drawing(context);
         }
+        /* The window's own answer to the close button, read after the boundary that just polled the
+           window's events - raylib's WindowShouldClose shape, the window-manager half only, and a
+           button pressed ends the run the same way a refused frame would. */
+        if (step == XUD_OK) {
+            step = xud_window_should_close(&shouldClose, context);
+        }
         if (step != XUD_OK) {
             printf("frame %u -> %s\n", frame, xud_result_name(step));
+        }
+        if (shouldClose) {
+            break;
         }
     }
 

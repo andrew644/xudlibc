@@ -197,6 +197,7 @@ int main(void) {
     uint32_t frame = 0u;
     uint32_t refused = 0u;
     double now = 0.0;
+    bool shouldClose = false;
     XudResult step = xud_init_context(&context, XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT);
 
     printf("hello_textured_model: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT,
@@ -252,6 +253,16 @@ int main(void) {
         step = xud_end_drawing(context);
         if (step != XUD_OK) {
             printf("hello_textured_model: frame %u xud_end_drawing -> %s\n", frame, xud_result_name(step));
+            break;
+        }
+
+        /* The window's own answer to the close button, read after the boundary that just polled the
+           window's events: raylib's WindowShouldClose shape, the window-manager half only. */
+        if (xud_window_should_close(&shouldClose, context) != XUD_OK) {
+            printf("hello_textured_model: frame %u xud_window_should_close -> %s\n", frame, xud_result_name(step));
+            break;
+        }
+        if (shouldClose) {
             break;
         }
 

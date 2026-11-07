@@ -567,6 +567,17 @@ XudResult xud_close_context(XudContext** context);
 /// that was never asked to close.
 XudResult xud_window_should_close(bool* outShouldClose, XudContext* context);
 
+/// Move the window to the requested size - raylib's SetWindowSize (raylib.h 1015). The request
+/// goes to GLFW and the compositor is free to answer a different size than the one asked (a tiling
+/// layout re-tiles the window): the swapchain follows the window's framebuffer size at the next
+/// xud_end_drawing() boundary, the same boundary that already rebuilds a resized-from swapchain
+/// after a drag resize, so this call moves the window and the drawing catches up on its own. The
+/// context's recorded extent follows the swapchain when that rebuild runs, which is what the ui
+/// fold and the camera's aspect divide by. XUD_OK when GLFW took the new extent, XUD_ALREADY when
+/// the window already has it, XUD_INVALID_ARG on a NULL context or a size outside [1,
+/// XUD_MAX_WINDOW_EXTENT] per axis, XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_set_window_size(XudContext* context, uint32_t width, uint32_t height);
+
 /*-----------------------------------------------------------------------------------------------
  * The drawing API - the frame pair and the shapes a frame is made of
  *

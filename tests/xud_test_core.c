@@ -120,6 +120,11 @@ static void xud_test_close(void) {
     xud_check(shouldClose == true, "should-close/refusal-untouched", "and the refusal left it alone");
     xud_check(xud_window_should_close(&shouldClose, NULL) == XUD_INVALID_ARG, "should-close/null-context", "and so is no context at all");
     xud_check(shouldClose == true, "should-close/null-context-untouched", "still as it found it");
+
+    /* The window's move, the headless half: the only guard that runs without a context is the
+       context's own, before the window rung is reached. */
+    xud_check(xud_set_window_size(NULL, 640u, 480u) == XUD_INVALID_ARG, "set-size/null-context",
+        "a NULL context is a bad argument, before any window is moved");
 }
 
 /* Every rejected init must free what it allocated. Rejected extents only here, and that is a
@@ -333,7 +338,10 @@ static void xud_test_gpu_context(void) {
                 "after every frame boundary the recorded extent is the extent the swapchain now renders "
                 "at, so the ui fold divides by the size the input names");
             if (frame == 1) {
-                (void)xud_window_resize(context->window, 160u, 120u);
+                (void)xud_set_window_size(context, 160u, 120u);
+                xud_check(xud_set_window_size(context, 160u, 120u) == XUD_ALREADY, "context/set-size-identity",
+                    "a second request at the extent the window record already has is a no-op, "
+                    "not a refusal");
             }
         }
     }

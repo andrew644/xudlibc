@@ -58,13 +58,22 @@ draw screen-space, depth-bypassing UI, which is what the module promises.
 
 ## API gaps against the raylib reference
 
-### 4. There is no way to close the window, and the exit key is dead state
+### 4. (RESOLVED) There is no way to close the window, and the exit key is dead state
 
 `xud_set_exit_key` stores `input->exitKey` (`xud_input.c:557`) and nothing in
 the tree ever reads it — no `IsWindowShouldClose`-equivalent query exists, and
 no `glfwSetWindowCloseCallback` is registered, so the window-manager close
 button does nothing either. An app built on the public API cannot exit cleanly
 by user request. This is the single largest functional gap in the input module.
+
+**Resolved.** The exit key is gone and the quit copies raylib's own shape:
+`xud_window_should_close()` is the `WindowShouldClose`-equivalent (its window-manager
+half only, through `xud_window_check_close()` above `glfwWindowShouldClose`), the
+caller checks its own key with `xud_is_key_down()` and quits with
+`xud_close_context()` (the `CloseWindow` stand-in — the library never exits a
+process of its own, same as raylib). `xud_set_exit_key`/`xud_get_exit_key` and
+`XudInput.exitKey` are removed. See `xud.h` (window section) and
+`examples/breakout_3d.c`'s frame loop.
 
 ### 5. No background / clear colour control
 
