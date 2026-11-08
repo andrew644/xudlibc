@@ -3,13 +3,14 @@
  *   xud_shapes.c - the shapes rung and the public draw call above it
  *
  *   Owns : xud_shapes_append_triangle(), xud_shapes_append_cube(), xud_shapes_append_sphere(),
- *          xud_shapes_append_circle(), xud_shapes_append_line(), xud_shapes_append_cube_wires(),
+ *          xud_shapes_append_circle(), xud_shapes_append_ellipse(),
+ *          xud_shapes_append_line(), xud_shapes_append_cube_wires(),
  *          xud_shapes_append_sphere_wires() and xud_shapes_append_glyph_quad(), the geometry the
- *          public draw calls name, the fourteen public calls above them (xud_draw_triangle_3d(),
+ *          public draw calls name, the fifteen public calls above them (xud_draw_triangle_3d(),
  *          xud_draw_cube(), xud_draw_sphere(), xud_draw_line_3d(), xud_draw_point_3d(),
  *          xud_draw_cube_wires(), xud_draw_sphere_wires(), xud_draw_rectangle(), xud_draw_line(),
  *          xud_draw_pixel(), xud_draw_rectangle_lines(), xud_draw_triangle(),
- *          xud_draw_triangle_lines() and xud_draw_circle()) and the one guard those
+ *          xud_draw_triangle_lines(), xud_draw_circle() and xud_draw_ellipse()) and the one guard those
  *          public calls share. Nothing else - no driver call, no loader row, no Vulkan or GLFW
  *          symbol the linker could see. The trigonometry the sphere reads is <math.h>'s, which is
  *          host arithmetic on the caller's floats rather than a driver row, and it is the only
@@ -738,6 +739,138 @@ XudResult xud_shapes_append_circle(
 
         result = xud_shapes_pixel_to_clip(
             extentWidth, extentHeight, centerX + (cosf(angle) * radius), centerY + (sinf(angle) * radius), &clipX, &clipY);
+        if (result != XUD_OK) {
+            return result;
+        }
+        pos[0] = clipX;
+        pos[1] = clipY;
+        pos[2] = 0.0f;
+        result = xud_batch_append_vertex(batch, pos, uv, rgba, normal);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    /* The indices name the fan: each of the 36 triangles is the centre (the first vertex this call
+       appended) and a pair of neighbouring rim points, the last wrapping back to the first to close
+       the ring. */
+    for (rim = 0u; rim < XUD_SHAPES_CIRCLE_SEGMENTS; rim++) {
+        result = xud_batch_append_index(batch, first);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + 1u + rim);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + 1u + ((rim + 1u) % XUD_SHAPES_CIRCLE_SEGMENTS));
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+/*---------------------------------------------------------------------------------------------------
+ * The ellipse: the centre and the 36 rim points of the circle's fan, walked with two radii, then
+ * the 108 indices that name the fan
+ *---------------------------------------------------------------------------------------------------*/
+
+XudResult xud_shapes_append_ellipse(XudBatch* batch, uint32_t extentWidth, uint32_t extentHeight, float centerX, float centerY,
+    float radiusX, float radiusY, XudColor color) {
+    float pos[3];
+    float uv[2];
+    float normal[3];
+    uint8_t rgba[4];
+    float clipX = 0.0f;
+    float clipY = 0.0f;
+    float step = 0.0f;
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t first = 0u;
+    uint32_t rim = 0u;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The radius tests are the sphere's own: written "not greater" rather than "less or equal" so
+       a NaN radius is refused by the same comparison rather than appended as NaN positions, and a
+       fan with no radius on an axis has no rim to walk on it. */
+    if (!(radiusX > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+    if (!(radiusY > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* Both bounds, in the same atomic shape as the circle's, which this fan is: the constants are
+       the circle's own, the reason being in xud_shapes.h's ellipse section. */
+    if ((vertexCount + XUD_SHAPES_CIRCLE_VERTEX_COUNT) > vertexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_CIRCLE_VERTEX_COUNT, indexCount + XUD_SHAPES_CIRCLE_INDEX_COUNT);
+        return XUD_OUT_OF_MEMORY;
+    }
+    if ((indexCount + XUD_SHAPES_CIRCLE_INDEX_COUNT) > batch->indexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_CIRCLE_VERTEX_COUNT, indexCount + XUD_SHAPES_CIRCLE_INDEX_COUNT);
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    /* The topology this shape's indices are assembled as, moved before a byte is written, in the
+       same shape as the other filled appends. */
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_TRIANGLES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The two constant attribute rows, once, for the reasons stated beside each constant in
+       xud_shapes.h: the uv names no texel a caller named, and the normal is the flat +Z a
+       screen-facing shape faces along. */
+    uv[0] = XUD_SHAPES_UV_S;
+    uv[1] = XUD_SHAPES_UV_T;
+    normal[0] = XUD_SHAPES_FLAT_NORMAL_X;
+    normal[1] = XUD_SHAPES_FLAT_NORMAL_Y;
+    normal[2] = XUD_SHAPES_FLAT_NORMAL_Z;
+    rgba[0] = color.r;
+    rgba[1] = color.g;
+    rgba[2] = color.b;
+    rgba[3] = color.a;
+
+    first = vertexCount;
+
+    /* The centre first, the vertex the 36 triangles all share, mapped through the same pixel to
+       clip the rim points take below. */
+    result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, centerX, centerY, &clipX, &clipY);
+    if (result != XUD_OK) {
+        return result;
+    }
+    pos[0] = clipX;
+    pos[1] = clipY;
+    pos[2] = 0.0f;
+    result = xud_batch_append_vertex(batch, pos, uv, rgba, normal);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The rim, in the order the angles walk it: the same walk the circle's takes, with the X
+       offset the caller's radiusX and the Y offset the caller's radiusY rather than one radius
+       for both, and each point mapped to clip at the extent's own division: an ellipse in pixels
+       is a sheared ellipse in clip under the extent's non-uniform scale, which is why the mapping
+       is per point rather than the centre mapped once and the radii scaled. */
+    step = ((2.0f * XUD_SHAPES_SPHERE_PI) / (float)XUD_SHAPES_CIRCLE_SEGMENTS);
+    for (rim = 0u; rim < XUD_SHAPES_CIRCLE_SEGMENTS; rim++) {
+        const float angle = ((float)rim) * step;
+
+        result = xud_shapes_pixel_to_clip(
+            extentWidth, extentHeight, centerX + (cosf(angle) * radiusX), centerY + (sinf(angle) * radiusY), &clipX, &clipY);
         if (result != XUD_OK) {
             return result;
         }
@@ -1844,6 +1977,49 @@ XudResult xud_draw_circle(XudContext* context, int32_t centerX, int32_t centerY,
         return result;
     }
     result = xud_shapes_append_circle(batch, context->width, context->height, (float)centerX, (float)centerY, radius, color);
+    if (result != XUD_OK) {
+        (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+        return result;
+    }
+    result = xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+
+    return result;
+}
+/* The ellipse: the caller's centre and the two radii in the framebuffer's pixel space, the 36-segment
+   fan the circle's section walks with the X offset radiusX and the Y offset radiusY, drawn through
+   the pipeline list's UI column the way the circle above does: the state swap moves the batch to the
+   UI row for the fan and back when it is done, so the ellipse flushes as one row of its own and the
+   shapes appended beside it draw with the state the call found. The radii are not checked here: the
+   append owns the refusals the way the sphere's public call leaves its radius to its append, and a
+   refused fan restores the state the call found before it answers. */
+XudResult xud_draw_ellipse(XudContext* context, int32_t centerX, int32_t centerY, float radiusX, float radiusY, XudColor color) {
+    XudBatch* batch = NULL;
+    uint32_t oldVariant = 0u;
+    uint32_t oldMaterial = 0u;
+    uint32_t oldTexture = 0u;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The extent the fan's 37 points divide by is the framebuffer's own, for the same reason the
+       rectangle above refuses a zero one: a divide by it is an inf in a float stream rather than
+       a draw, and it is refused before any state is moved. */
+    if ((context->width == 0u) || (context->height == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_UI, XUD_BATCH_NO_TEXTURE);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_shapes_append_ellipse(batch, context->width, context->height, (float)centerX, (float)centerY, radiusX, radiusY, color);
     if (result != XUD_OK) {
         (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
         return result;

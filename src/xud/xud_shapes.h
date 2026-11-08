@@ -195,6 +195,20 @@ static_assert((XUD_SHAPES_CIRCLE_VERTEX_COUNT == 37u) && (XUD_SHAPES_CIRCLE_INDE
 static_assert(XUD_SHAPES_CIRCLE_INDEX_COUNT > XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES),
     "xud_shapes.h: a full circle's 108 indices are over the 96 slots the initial capacity sizes, which is why a circle "
     "does not fit the batch a context opens at and draws in the capacity the sphere's ask grew it to");
+/*---------------------------------------------------------------------------------------------------
+ * The ellipse: the circle's fan with the radius walked along the X axis and the Y axis apart
+ *---------------------------------------------------------------------------------------------------*/
+
+/* The ellipse of raylib's DrawEllipse (reference/raylib/raylib.h 1315, "Draw ellipse", whose
+   arguments are (centerX, centerY, radiusH, radiusV, color)): raylib's own DrawEllipseV walks the
+   same 36-segment fan the circle above walks (rshapes.c 2573), with the X offset the caller's
+   horizontal radius and the Y offset its vertical. The fan's geometry is therefore the circle's
+   own constants and not a second set: the same 36 rim points at the same 10 degrees apart, the
+   same 37 vertices, the same 108 indices, and the same bound over the initial capacity the
+   circle's assert states - the only difference from the circle is the walk's radii, one per axis
+   rather than one for both, and the refusal that goes with it: both radii take the circle's
+   strictly positive test, a radius of zero on either axis leaves the fan with no rim to walk on
+   that axis, and 37 coincident points are refused rather than appended. */
 
 /*-----------------------------------------------------------------------------------------------
  * The sphere: rings latitude divisions, slices longitudes, and two single-vertex poles
@@ -530,6 +544,32 @@ XudResult xud_shapes_append_sphere_wires(XudBatch* batch, XudVector3 center, flo
 /// when all 37 vertex appends and all 108 index appends completed.
 XudResult xud_shapes_append_circle(
     XudBatch* batch, uint32_t extentWidth, uint32_t extentHeight, float centerX, float centerY, float radius, XudColor color);
+/// Pure: append one filled ellipse - the caller's centre and the caller's two radii in the
+/// framebuffer's pixel space (y down from the top-left), read as raylib's DrawEllipse reads them -
+/// as the fan the circle's section states with the X offset radiusX and the Y offset radiusY: the
+/// centre plus the 36 rim points and the 108 indices that name them, under the batch's TRIANGLES
+/// topology, which the append moves the batch to before a byte is written. The fan's constants are
+/// the circle's own, the reason being in its section above. The rim is computed in pixel space at
+/// the caller's centre and radii and every one of the 37 points is mapped through
+/// xud_shapes_pixel_to_clip() at the caller's extent before it becomes a vertex: an ellipse in
+/// pixels is a sheared ellipse in clip under the extent's non-uniform scale, which is why the
+/// points are mapped one at a time rather than the centre mapped once and the radii scaled. The
+/// normal is the flat +Z constant above and the uv is the zero constant, the reasons being the
+/// circle's.
+///
+/// The append is ATOMIC in the same shape as the circle's, and the index bound is the one that
+/// trips first for the same reason: the fan spends three indices per rim vertex, which is 2/3 over
+/// the 3n/2 the batch sizes its index headroom at.
+///
+/// XUD_INVALID_ARG on a NULL batch, on a zero extent (the same argument xud_shapes_pixel_to_clip
+/// refuses), or on a radius that is not strictly positive (a fan with no radius on an axis has no
+/// rim to walk on it, and the test is written "not greater" so a NaN radius is refused by the
+/// same comparison the sphere's is); XUD_OUT_OF_MEMORY when the 37 vertices or the 108 indices do
+/// not fit the batch's capacities; XUD_UNSUPPORTED when the batch has no arena mapped to write
+/// into (the same answer xud_batch_append_vertex gives for the same reason, one rung up); XUD_OK
+/// only when all 37 vertex appends and all 108 index appends completed.
+XudResult xud_shapes_append_ellipse(XudBatch* batch, uint32_t extentWidth, uint32_t extentHeight, float centerX, float centerY,
+    float radiusX, float radiusY, XudColor color);
 
 /// Pure: append one glyph quad - the caller's box and the caller's box of texture coordinates,
 /// paired corner to corner as the note above states - as 4 vertices and the 6 indices that name

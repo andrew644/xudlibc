@@ -2869,6 +2869,213 @@ static void xud_test_shapes_pure(void) {
         xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/circle-invariant-after-refusal",
             "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
     }
+    /*--- the ellipse's refusals: the two radii the circle's one test takes apart ---*/
+
+    {
+        XudRenderer fakeRenderer;
+        uint32_t ellipseVariant = 0u;
+        uint32_t ellipseMaterial = 0u;
+        uint32_t ellipseTexture = 0u;
+
+        memset(&fakeRenderer, 0, sizeof(fakeRenderer));
+        fakeRenderer.batch = &b;
+
+        memset(&shell, 0, sizeof(shell));
+        shell.renderer = &fakeRenderer;
+        shell.width = 128u;
+        shell.height = 128u;
+
+        xud_check(
+            xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "shapes/ellipse-layout", "the fresh batch at the initial capacity");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/ellipse-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        result = xud_draw_ellipse(&shell, 64, 64, 0.0f, 24.0f, color);
+        xud_check(result == XUD_INVALID_ARG, "shapes/ellipse-zero-radius-x-refused",
+            "a radiusX that is not positive has no rim to walk the X axis with, and the refusal is the test's own, made before a byte "
+            "is written");
+        result = xud_draw_ellipse(&shell, 64, 64, 48.0f, 0.0f, color);
+        xud_check(result == XUD_INVALID_ARG, "shapes/ellipse-zero-radius-y-refused",
+            "and the same test on radiusY, the other half of the pair: a fan with no rim on an axis is 37 coincident points, which "
+            "is refused rather than appended");
+        result = xud_draw_ellipse(&shell, 64, 64, 48.0f, 24.0f, color);
+        xud_check(result == XUD_OUT_OF_MEMORY, "shapes/ellipse-refused-at-the-initial-capacity",
+            "and a fan that asks for a fit at the initial capacity is refused the way the circle's is - the constants are the "
+            "circle's own, the 108 indices over the 96 the initial capacity sizes");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/ellipse-stats-after-refusals", "and the counters answer after the refusals");
+        xud_check((vertexCount == 0u) && (indexCount == 0u) && (drawCount == 0u), "shapes/ellipse-refusals-wrote-nothing",
+            "the refused fans wrote no vertex, no index and no row, so the batch is as the reset left it");
+        result = xud_batch_state_get(&b, &ellipseVariant, &ellipseMaterial, &ellipseTexture);
+        xud_check(result == XUD_OK, "shapes/ellipse-state-after-refusals", "and the state answers after the refusals");
+        xud_check((ellipseVariant == XUD_BATCH_VARIANT_OPAQUE) && (ellipseMaterial == XUD_BATCH_NO_MATERIAL)
+                && (ellipseTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/ellipse-refusals-restored-the-state",
+            "the state the call found is the state it left: each refusal moved to the UI column for its fan and moved back, so a 3D "
+            "shape appended beside the refusals still draws on the row it found");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/ellipse-invariant-after-refusals",
+            "and the batch's invariant still holds over the refusals, so nothing half-written is in it");
+    }
+
+    /*--- the ellipse's fan, byte for byte, at the capacity the GPU half grows to ---*/
+
+    {
+        XudRenderer fakeRenderer;
+        uint32_t ellipseVariant = 0u;
+        uint32_t ellipseMaterial = 0u;
+        uint32_t ellipseTexture = 0u;
+        uint32_t rim = 0u;
+
+        memset(&fakeRenderer, 0, sizeof(fakeRenderer));
+        fakeRenderer.batch = &b;
+
+        memset(&shell, 0, sizeof(shell));
+        shell.renderer = &fakeRenderer;
+        shell.width = 128u;
+        shell.height = 128u;
+
+        xud_check(xud_batch_layout(&b, (XUD_BATCH_INITIAL_VERTICES * 2u)) == XUD_OK, "shapes/ellipse-grown-layout",
+            "a batch at the doubled capacity lays out - 128 vertices and, at 3n/2, the 192 index slots the fan's 108 fit inside");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/ellipse-grown-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        /* Non-circular on purpose: radiusX 48 and radiusY 24, so a walk that used one radius for
+           both axes - the circle's - would land the rim wrong on the Y axis and the byte check
+           below would fail. */
+        result = xud_draw_ellipse(&shell, 64, 64, 48.0f, 24.0f, color);
+        xud_check(result == XUD_OK, "shapes/ellipse-draw-ok", "the fan appends through a context the pure half built itself");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/ellipse-stats-after-draw", "and the counters answer after it");
+        xud_check((vertexCount == XUD_SHAPES_CIRCLE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT),
+            "shapes/ellipse-costs-the-fan",
+            "37 vertices and 108 indices, the circle's own fan: the centre and the 36 rim points, and the 36 triangles that name "
+            "them");
+        xud_check(drawCount == 1u, "shapes/ellipse-recorded-one-row",
+            "and exactly one row: the whole fan shares the state's triangle run rather than 36 rows of its own");
+        xud_check((b.draws[0u].variant == XUD_BATCH_VARIANT_UI) && (b.draws[0u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES)
+                && (b.draws[0u].textureIndex == XUD_BATCH_NO_TEXTURE) && (b.draws[0u].materialIndex == XUD_BATCH_NO_MATERIAL),
+            "shapes/ellipse-row-is-the-untextured-ui-triangle-row",
+            "and the row is the UI variant's triangle row with no texture and no material - the column the pipeline list gives the "
+            "2D surface, the one that neither tests nor writes the depth");
+        xud_check((b.draws[0u].firstIndex == 0u) && (b.draws[0u].indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT),
+            "shapes/ellipse-row-names-the-fan", "and it names the fan's 108 indices from the batch's start");
+        result = xud_batch_state_get(&b, &ellipseVariant, &ellipseMaterial, &ellipseTexture);
+        xud_check(result == XUD_OK, "shapes/ellipse-state-after-draw", "and the state answers after the draw");
+        xud_check((ellipseVariant == XUD_BATCH_VARIANT_OPAQUE) && (ellipseMaterial == XUD_BATCH_NO_MATERIAL)
+                && (ellipseTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/ellipse-restored-the-state",
+            "the state the call found is the state it left: a shape appended beside the ellipse draws with the state the ellipse "
+            "found");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/ellipse-invariant", "and the batch's invariant still holds");
+
+        /* The bytes, not only the counts. The claim under test is the walk of the rim with the two
+           radii apart: each point the centre offset by radiusX on the X axis and radiusY on the Y
+           axis in the angle's direction, mapped per point at the framebuffer's own extent. */
+        {
+            const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+            float pos[XUD_SHAPES_CIRCLE_VERTEX_COUNT][3];
+            float uvRow[XUD_SHAPES_CIRCLE_VERTEX_COUNT][2];
+            float nrm[XUD_SHAPES_CIRCLE_VERTEX_COUNT][3];
+            uint32_t idx[XUD_SHAPES_CIRCLE_INDEX_COUNT];
+            uint32_t zeroUv = 0u;
+            uint32_t flatNormals = 0u;
+            uint32_t callerColour = 0u;
+            uint32_t rimMatched = 0u;
+            uint32_t fanMatched = 0u;
+            const float ellipseStep = ((2.0f * XUD_SHAPES_SPHERE_PI) / (float)XUD_SHAPES_CIRCLE_SEGMENTS);
+
+            for (rim = 0u; rim < XUD_SHAPES_CIRCLE_VERTEX_COUNT; rim++) {
+                memcpy(&pos[rim][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (rim * XUD_BATCH_STREAM_POS_SIZE),
+                    XUD_BATCH_STREAM_POS_SIZE);
+                memcpy(&uvRow[rim][0], arena + b.streamOffset[XUD_BATCH_STREAM_UV] + (rim * XUD_BATCH_STREAM_UV_SIZE),
+                    XUD_BATCH_STREAM_UV_SIZE);
+                memcpy(&nrm[rim][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (rim * XUD_BATCH_STREAM_NORMAL_SIZE),
+                    XUD_BATCH_STREAM_NORMAL_SIZE);
+
+                if ((uvRow[rim][0] == XUD_SHAPES_UV_S) && (uvRow[rim][1] == XUD_SHAPES_UV_T)) {
+                    zeroUv++;
+                }
+                if ((nrm[rim][0] == XUD_SHAPES_FLAT_NORMAL_X) && (nrm[rim][1] == XUD_SHAPES_FLAT_NORMAL_Y)
+                    && (nrm[rim][2] == XUD_SHAPES_FLAT_NORMAL_Z)) {
+                    flatNormals++;
+                }
+                if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + (rim * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                        XUD_BATCH_STREAM_COLOR_SIZE)
+                    == 0) {
+                    callerColour++;
+                }
+            }
+
+            /* The centre, the vertex the 36 triangles all share: the dyadic pair (64, 64) over the
+               128 extent is exact at the origin. The rim in the angles' order: the step is 2 PI over
+               the 36 segments, each point the centre offset by radiusX on X and radiusY on Y in the
+               angle's direction and mapped per point, the way the mapper above states, and the first
+               rim point is the other exact value the pair gives, (112, 64) over 128 at (0.75, 0). */
+            xud_check((pos[0u][0] == 0.0f) && (pos[0u][1] == 0.0f) && (pos[0u][2] == 0.0f),
+                "shapes/ellipse-centre-is-the-framebuffers-centre",
+                "the first vertex is the caller's centre mapped at the framebuffer's own extent, the dyadic pair exact at the origin");
+            for (rim = 0u; rim < XUD_SHAPES_CIRCLE_SEGMENTS; rim++) {
+                const float angle = ((float)rim) * ellipseStep;
+                const float rimX = ((float)64) + (cosf(angle) * ((float)48));
+                const float rimY = ((float)64) + (sinf(angle) * ((float)24));
+                const float expectedX = ((2.0f * rimX) / 128.0f) - 1.0f;
+                const float expectedY = 1.0f - ((2.0f * rimY) / 128.0f);
+
+                if ((pos[1u + rim][0] == expectedX) && (pos[1u + rim][1] == expectedY) && (pos[1u + rim][2] == 0.0f)) {
+                    rimMatched++;
+                }
+            }
+            xud_check(rimMatched == XUD_SHAPES_CIRCLE_SEGMENTS, "shapes/ellipse-rim-is-the-angles-walked-with-two-radii",
+                "all 36 rim points are the centre offset by radiusX on the X axis and radiusY on the Y axis in the angles' "
+                "directions, each mapped at the framebuffer's own extent");
+            xud_check((pos[1u][0] == 0.75f) && (pos[1u][1] == 0.0f), "shapes/ellipse-first-rim-point-is-exact",
+                "and the first rim point is the dyadic value the pair states, exact at (0.75, 0) at the angle's start");
+            xud_check(zeroUv == XUD_SHAPES_CIRCLE_VERTEX_COUNT, "shapes/ellipse-uv-is-the-shape-constant",
+                "and the uv is the no-surface constant at all 37 vertices: the untextured UI row samples the slot-0 white texture at "
+                "it, and the ellipse's colour is the stream's, not the texture's");
+            xud_check(flatNormals == XUD_SHAPES_CIRCLE_VERTEX_COUNT, "shapes/ellipse-normals-are-flat",
+                "and the 37 normals are the flat +Z the screen-facing shape carries, the same constant the other appends stamp");
+            xud_check(callerColour == XUD_SHAPES_CIRCLE_VERTEX_COUNT, "shapes/ellipse-colour-landed-thirty-seven-times",
+                "and the caller's colour is at all 37 vertices, because the batch's colour stream is per-vertex and the fan takes "
+                "the ellipse's one colour");
+
+            memcpy(idx, arena + b.indexOffset, XUD_BATCH_INDEX_SIZE * XUD_SHAPES_CIRCLE_INDEX_COUNT);
+            for (rim = 0u; rim < XUD_SHAPES_CIRCLE_SEGMENTS; rim++) {
+                if ((idx[3u * rim] == 0u) && (idx[3u * rim + 1u] == (1u + rim))
+                    && (idx[3u * rim + 2u] == (1u + ((rim + 1u) % XUD_SHAPES_CIRCLE_SEGMENTS)))) {
+                    fanMatched++;
+                }
+            }
+            xud_check(fanMatched == XUD_SHAPES_CIRCLE_SEGMENTS, "shapes/ellipse-indices-name-the-fan",
+                "and the 108 indices name the fan the walk states: each triangle the shared centre and a pair of neighbouring rim "
+                "points, the last wrapping back to the first to close the ring");
+        }
+
+        /* The refusal with the fan already in: a second ellipse does not fit beside its own twin -
+           the 74 vertices are inside the 128 but the 216 indices are over the 192, so the bound
+           that trips is the index one, the same bound that refused the fan at the initial capacity
+           above. */
+        result = xud_draw_ellipse(&shell, 64, 64, 48.0f, 24.0f, color);
+        xud_check(result == XUD_OUT_OF_MEMORY, "shapes/ellipse-second-refused",
+            "a second ellipse's 216 indices are 24 over the 192 slots the doubled capacity sizes, so it is refused with the batch's "
+            "own code");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/ellipse-stats-after-refusal", "and the counters answer after the refusal");
+        xud_check((vertexCount == XUD_SHAPES_CIRCLE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT) && (drawCount == 1u),
+            "shapes/ellipse-refusal-wrote-nothing",
+            "the refused ellipse wrote no vertex, no index and no row, so the batch still holds exactly one fan and its one row");
+        result = xud_batch_state_get(&b, &ellipseVariant, &ellipseMaterial, &ellipseTexture);
+        xud_check(result == XUD_OK, "shapes/ellipse-state-after-second-refusal", "and the state answers after the refusal");
+        xud_check((ellipseVariant == XUD_BATCH_VARIANT_OPAQUE) && (ellipseMaterial == XUD_BATCH_NO_MATERIAL)
+                && (ellipseTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/ellipse-refusal-restored-the-state",
+            "the refusal restored the state it swapped: the append failed after the move to the UI column, and the move back ran "
+            "anyway, so a 3D shape appended beside the refusal still draws on the row it found");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/ellipse-invariant-after-refusal",
+            "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
+    }
 
     /* The rows the split above allocated are this area's to release: the batch is a stack record
        here rather than one xud_batch_open allocated, and the batch area frees its own rows the
@@ -3310,6 +3517,40 @@ static void xud_test_shapes_gpu(void) {
     result = xud_end_drawing(context);
     xud_check(result == XUD_OK, "gpu-shapes/end-in-the-circle-frame",
         "and the circle's frame closes through the same buffers the recreate installed");
+    /*--- the ellipse's frame: the circle's own fan, walked with two radii ---*/
+
+    {
+        xud_check(xud_begin_drawing(context) == XUD_OK, "gpu-shapes/ellipse-frame-begins",
+            "the frame begins through the same buffers the circle's frame ended on");
+        result = xud_draw_ellipse(context, 32, 32, 24.0f, 16.0f, white);
+        xud_check(result == XUD_OK, "gpu-shapes/ellipse-in-the-fresh-frame",
+            "the fan appends into the grown batch - the circle's own 37 vertices and 108 indices");
+        xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "gpu-shapes/ellipse-stats", "and the counters answer after it");
+        xud_check((vertexCount == XUD_SHAPES_CIRCLE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT),
+            "gpu-shapes/ellipse-costs-the-fan", "37 vertices and 108 indices, the fan the header states, with nothing else in the frame");
+        xud_check(capacity == (XUD_BATCH_INITIAL_VERTICES * 2u), "gpu-shapes/ellipse-frame-asked-no-grow",
+            "and the capacity is the grown one, not a third grow the ellipse asked for");
+        xud_check(xud_batch_growth_asked(context->renderer->batch, &asked) == XUD_OK, "gpu-shapes/ellipse-growth-question",
+            "and the growth question still answers");
+        xud_check(asked == 0u, "gpu-shapes/ellipse-left-no-ask",
+            "and the ellipse left no ask behind, so the frame boundary sees nothing to grow");
+        xud_check(drawCount == 1u, "gpu-shapes/ellipse-is-a-row-of-its-own",
+            "and it is one row: the fan shares its state's triangle run rather than 36 rows of its own");
+        xud_check((context->renderer->batch->draws[0u].variant == XUD_BATCH_VARIANT_UI)
+                && (context->renderer->batch->draws[0u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES),
+            "gpu-shapes/ellipse-row-is-the-untextured-ui-triangle-row",
+            "and the row is the UI variant's triangle row - the depth-off row a screen-space fill draws through, the row the 2D "
+            "surface above drew its own through");
+        xud_check((context->renderer->batch->draws[0u].firstIndex == 0u)
+                && (context->renderer->batch->draws[0u].indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT),
+            "gpu-shapes/ellipse-row-names-the-fan",
+            "and it names the fan's 108 indices from the frame's own start, the whole argument pair the frame loop hands "
+            "vkCmdDrawIndexed for the 2D ellipse draw");
+        result = xud_end_drawing(context);
+        xud_check(result == XUD_OK, "gpu-shapes/end-in-the-ellipse-frame",
+            "and the ellipse's frame closes through the same buffers the recreate installed");
+    }
 
     if (context->validate != 0u) {
         xud_check(context->diagnostics->errorMessages == 0u, "gpu-shapes/validation-clean",
