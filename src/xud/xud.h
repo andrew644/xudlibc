@@ -1392,6 +1392,27 @@ XudResult xud_set_audio_pitch(XudContext* context, XudHandle handle, float pitch
 /// completed bring-up.
 XudResult xud_get_audio_pitch(float* outPitch, XudContext* context, XudHandle handle);
 
+/// Set the position a stream plays at: raylib's SetAudioStreamPan (raylib.h 1750, "-1.0 left,
+/// 0.0 center, 1.0 right"), -1.0 the full left and 1.0 the full right with 0.0 the centre. The
+/// value is kept in the stream's record, for the reason the volume setter states - a setter that
+/// runs before the stream's first play parks where the node the first play builds takes it from,
+/// and a setter on a stream that is playing right now takes effect on the node from the next
+/// frame the engine's own thread pulls. The position pans mono and stereo blocks alike: the
+/// engine's panner runs after the row's spatialization, which the row's sound was built without.
+/// A position outside the range is a refusal rather than a clamp: the record's own row is the
+/// state a later xud_get_audio_pan() answers, and a clamped one would answer a value the caller
+/// never asked for. XUD_INVALID_ARG on a NULL context, on a position outside [-1.0, 1.0], or on a
+/// handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a
+/// context that never completed bring-up.
+XudResult xud_set_audio_pan(XudContext* context, XudHandle handle, float pan);
+
+/// The position the pan setter last asked - the record's own row, the default 0.0 included: the
+/// state a setter parked before the stream's first play answers back, and the state a play that
+/// ran without one left behind. XUD_INVALID_ARG on a NULL out-pan or context, or on a handle that
+/// does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never
+/// completed bring-up.
+XudResult xud_get_audio_pan(float* outPan, XudContext* context, XudHandle handle);
+
 /*-----------------------------------------------------------------------------------------------
  * The clock API - raylib's time half, above the clock rung
  *

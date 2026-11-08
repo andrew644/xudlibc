@@ -290,13 +290,14 @@ XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle strea
             return xud_sound_result_from_ma(maResult);
         }
 
-        /* The record's level and rate, taken on the row the caller set them on: a setter that ran
+        /* The record's level, rate and position, taken on the row the caller set them on: a setter that
            before this play stored the values where the record keeps them, and this is the moment
            they reach a node that can take them - a row that never is built plays the record's
            values, not the engine's defaults.
         */
         ma_sound_set_volume(&row->sound, record->volume);
         ma_sound_set_pitch(&row->sound, record->pitch);
+        ma_sound_set_pan(&row->sound, record->pan);
 
         sound->rows[stream.index] = row;
         sound->liveRows++;
@@ -425,6 +426,28 @@ XudResult xud_sound_set_row_pitch(XudSound* sound, XudHandle stream, float pitch
     row = sound->rows[stream.index];
     if (row != NULL) {
         ma_sound_set_pitch(&row->sound, pitch);
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_sound_set_row_pan(XudSound* sound, XudHandle stream, float pan) {
+    XudSoundRow* row = NULL;
+
+    if ((sound == NULL) || (pan < -1.0f) || (pan > 1.0f)) {
+        /* The range the public surface states, refused here rather than clamped: ma_panner_set_pan()
+           would take an outside value and clamp it, leaving the record and the row naming different
+           positions, which is the same state the volume setter refuses above its peak.
+        */
+        return XUD_INVALID_ARG;
+    }
+
+    if ((sound->rows == NULL) || (stream.index >= sound->rowCount)) {
+        return XUD_OK;
+    }
+    row = sound->rows[stream.index];
+    if (row != NULL) {
+        ma_sound_set_pan(&row->sound, pan);
     }
 
     return XUD_OK;
@@ -723,5 +746,62 @@ XudResult xud_get_audio_pitch(float* outPitch, XudContext* context, XudHandle ha
     }
 
     *outPitch = record->pitch;
+    return XUD_OK;
+}
+
+XudResult xud_set_audio_pan(XudContext* context, XudHandle handle, float pan) {
+    const XudAudioStreamRecord* record = NULL;
+    XudAudioStreamRecord* io = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_audio_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if ((pan < -1.0f) || (pan > 1.0f)) {
+        /* The range the public surface states, refused here rather than clamped: the record's own
+           row is the state a later xud_get_audio_pan() answers, and a clamped one would answer a
+           value the caller never asked for.
+        */
+        return XUD_INVALID_ARG;
+    }
+
+    io = (XudAudioStreamRecord*)record;
+    io->pan = pan;
+    if (context->sound != NULL) {
+        result = xud_sound_set_row_pan(context->sound, handle, pan);
+        if (result != XUD_OK) {
+            io->pan = 0.0f;
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_get_audio_pan(float* outPan, XudContext* context, XudHandle handle) {
+    const XudAudioStreamRecord* record = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if ((outPan == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_audio_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outPan = record->pan;
     return XUD_OK;
 }

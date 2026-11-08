@@ -956,8 +956,8 @@ static void xud_test_audio_play(void) {
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The volume/pitch pair, against a shell: the defaults, the round-trip, and the refusals that leave
- * the record untouched
+ * The volume/pitch/pan triple, against a shell: the defaults, the round-trip, and the refusals that
+ * leave the record untouched
  *-----------------------------------------------------------------------------------------------*/
 
 static void xud_test_audio_params(void) {
@@ -970,6 +970,7 @@ static void xud_test_audio_params(void) {
     XudAudioData audio;
     float volume = 0.0f;
     float pitch = 0.0f;
+    float pan = 0.0f;
 
     memset(&shell, 0, sizeof(shell));
     memset(&empty, 0, sizeof(empty));
@@ -995,6 +996,10 @@ static void xud_test_audio_params(void) {
     xud_check(xud_set_audio_volume(&empty, handle, 0.5f) == XUD_UNSUPPORTED, "params-set-no-rungs-below",
         "and a context that owns no handle table is refused as UNSUPPORTED rather than as a bad handle, the same split the load above "
         "gives");
+    xud_check(xud_set_audio_pan(NULL, handle, 0.5f) == XUD_INVALID_ARG, "params-pan-null-context",
+        "a position with no context to own it is refused");
+    xud_check(xud_get_audio_pan(NULL, &shell, handle) == XUD_INVALID_ARG, "params-pan-null-out",
+        "and a position with nowhere to be written is refused beside it");
 
     xud_check(xud_get_audio_volume(&volume, &shell, handle) == XUD_OK, "params-default-volume-answers",
         "the default answers through a shell, which is the state this rung owns rather than the engine's clock");
@@ -1004,6 +1009,10 @@ static void xud_test_audio_params(void) {
         xud_get_audio_pitch(&pitch, &shell, handle) == XUD_OK, "params-default-pitch-answers", "and the rate's question answers beside it");
     xud_check(pitch == 1.0f, "params-default-pitch",
         "and it is one, so a stream that has never been given a rate plays at the tempo it was decoded at");
+    xud_check(xud_get_audio_pan(&pan, &shell, handle) == XUD_OK, "params-default-pan-answers",
+        "and the position's question answers beside the rate");
+    xud_check(pan == 0.0f, "params-default-pan",
+        "and it is the centre, so a stream that has never been given a position plays centred rather than at a position the rung chose");
 
     xud_check(xud_set_audio_volume(&shell, handle, -0.1f) == XUD_INVALID_ARG, "params-volume-below-silence",
         "a level below the silence is refused rather than clamped, which is the record answering a value the caller never asked for");
@@ -1014,6 +1023,10 @@ static void xud_test_audio_params(void) {
         "a rate of zero is refused rather than a no-op, the one the engine would take and leave the row at the rate it had");
     xud_check(
         xud_set_audio_pitch(&shell, handle, -1.0f) == XUD_INVALID_ARG, "params-pitch-negative", "and a negative rate is refused beside it");
+    xud_check(xud_set_audio_pan(&shell, handle, -1.1f) == XUD_INVALID_ARG, "params-pan-beyond-left",
+        "a position beyond the full left is refused rather than clamped, the engine's own panner being the one that would clamp it");
+    xud_check(xud_set_audio_pan(&shell, handle, 1.1f) == XUD_INVALID_ARG, "params-pan-beyond-right",
+        "and a position beyond the full right is refused beside it, the range the public surface states being the one the setter holds");
 
     xud_check(xud_get_audio_volume(&volume, &shell, handle) == XUD_OK, "params-volume-after-refusals",
         "and the level's question answers after the refusals");
@@ -1022,6 +1035,9 @@ static void xud_test_audio_params(void) {
     xud_check(xud_get_audio_pitch(&pitch, &shell, handle) == XUD_OK, "params-pitch-after-refusals",
         "and the rate's question answers the same way");
     xud_check(pitch == 1.0f, "params-pitch-untouched", "and still answers one, beside the level");
+    xud_check(xud_get_audio_pan(&pan, &shell, handle) == XUD_OK, "params-pan-after-refusals",
+        "and the position's question answers the same way, after the refusals");
+    xud_check(pan == 0.0f, "params-pan-untouched", "and still answers the centre, beside the rate");
 
     xud_check(xud_set_audio_volume(&shell, handle, 0.25f) == XUD_OK, "params-set-volume",
         "a level inside the range is asked, and the record keeps it where a first play will take it from");
@@ -1033,6 +1049,10 @@ static void xud_test_audio_params(void) {
         "a rate inside its range is asked, and the record keeps it the same way");
     xud_check(xud_get_audio_pitch(&pitch, &shell, handle) == XUD_OK, "params-get-pitch", "and the question answers beside it");
     xud_check(pitch == 1.5f, "params-pitch-roundtrip", "and answers the value the setter asked for, beside the level");
+    xud_check(xud_set_audio_pan(&shell, handle, -0.5f) == XUD_OK, "params-set-pan",
+        "a position inside the range is asked, and the record keeps it where a first play will take it from, beside the rate");
+    xud_check(xud_get_audio_pan(&pan, &shell, handle) == XUD_OK, "params-get-pan", "and the question answers beside the set");
+    xud_check(pan == -0.5f, "params-pan-roundtrip", "and answers the value the setter asked for, beside the rate's read-back");
 
     stale = handle;
     xud_check(xud_close_audio(&shell, handle) == XUD_OK, "params-close",
@@ -1046,6 +1066,10 @@ static void xud_test_audio_params(void) {
     foreign.kind = XUD_HANDLE_KIND_MESH;
     xud_check(xud_set_audio_volume(&shell, foreign, 0.5f) == XUD_INVALID_ARG, "params-foreign-kind",
         "and a handle of another kind is refused rather than a record written at that other kind's slot index");
+    xud_check(xud_set_audio_pan(&shell, stale, 0.5f) == XUD_INVALID_ARG, "params-stale-pan",
+        "and the position's setter gives the same answer for the same handle, beside the rate's");
+    xud_check(xud_set_audio_pan(&shell, foreign, 0.5f) == XUD_INVALID_ARG, "params-pan-foreign-kind",
+        "and a handle of another kind is refused the same way, beside the level's");
 
     xud_check(xud_handle_table_close(&shell.handleTable) == XUD_OK, "params-table-close",
         "and the shell's table closes, so the half leaves no slot and no block behind - and no audio device was ever spent to find any of "
@@ -1110,6 +1134,7 @@ static void xud_test_audio_device(void) {
     bool playing = false;
     float volume = 0.0f;
     float pitch = 0.0f;
+    float pan = 0.0f;
     uint32_t closed = 0u;
     double endedAt = 0.0;
 
@@ -1180,6 +1205,13 @@ static void xud_test_audio_device(void) {
         "a level outside the range is refused with the row live too, so the refusal is the setter's own rather than the row's absence");
     xud_check(xud_set_audio_pitch(context, handle, 0.0f) == XUD_INVALID_ARG, "device-pitch-refused-with-row",
         "and a non-positive rate is refused the same way, beside the level");
+    xud_check(xud_set_audio_pan(context, handle, -0.5f) == XUD_OK, "device-set-pan",
+        "a position is asked the same way with the row live, which is the write the row's panner takes rather than only the record keeping "
+        "it");
+    xud_check(xud_get_audio_pan(&pan, context, handle) == XUD_OK, "device-get-pan", "and the position's question answers beside it");
+    xud_check(pan == -0.5f, "device-pan-roundtrip", "and answers the value the setter asked for, beside the rate");
+    xud_check(xud_set_audio_pan(context, handle, 1.1f) == XUD_INVALID_ARG, "device-pan-refused-with-row",
+        "and a position beyond the range is refused with the row live too, beside the level's");
 
     xud_check(xud_stop_audio(context, handle) == XUD_OK, "device-stop", "the stop tells the mixer, and the node stays attached");
     xud_check(xud_stop_audio(context, handle) == XUD_ALREADY, "device-stop-twice",

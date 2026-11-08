@@ -299,6 +299,7 @@ XudResult xud_audio_open(XudHandle* outHandle, XudHandleTable* table, const XudA
     record->frameCount = frameCount;
     record->volume = 1.0f;
     record->pitch = 1.0f;
+    record->pan = 0.0f;
 
     /* The PCM half of the bound pair, and the direction it runs in: the block already exists by the
        time this comparison can be made, because the frame count is unknown until the read ends, so

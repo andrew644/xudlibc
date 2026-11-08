@@ -130,6 +130,9 @@ typedef struct XudAudioStreamRecord {
     float pitch; /* the rate the public setter last asked, 1.0 the block's own tempo: 1.0 (what
                    xud_audio_open writes) is the decode rate the block was read at, and a value a
                    row is not live for yet is the one the row takes when it is built */
+    float pan; /* the position the public setter last asked, -1.0 the full left to 1.0 the full
+                 right: 0.0 (what xud_audio_open writes) is the block played centred, and a value a
+                 row is not live for yet is the one the row takes when it is built */
 } XudAudioStreamRecord;
 
 /*-----------------------------------------------------------------------------------------------

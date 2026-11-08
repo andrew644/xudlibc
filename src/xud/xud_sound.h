@@ -222,6 +222,16 @@ XudResult xud_sound_set_row_volume(XudSound* sound, XudHandle stream, float volu
 /// when the row was told or had none.
 XudResult xud_sound_set_row_pitch(XudSound* sound, XudHandle stream, float pitch);
 
+/// Driver: one row's position, written on the node the row owns - ma_sound_set_pan, the panner
+/// every engine node carries, which the row's sound runs after its spatialization for the reason
+/// miniaudio's own panner note states: panning happens after spatialization so that a mono sound
+/// pans too. A slot with no node is the state the call asks for already being the state it has,
+/// for the reason the volume half states: the record's value is the one a row takes when it is
+/// built. XUD_INVALID_ARG on a NULL sound rung or on a position outside the range the public
+/// surface states (-1.0 the full left to 1.0 the full right); XUD_OK when the row was told or
+/// had none.
+XudResult xud_sound_set_row_pan(XudSound* sound, XudHandle stream, float pan);
+
 /// Driver: one row's node destroyed and its bufferRef reference given back, which is what the audio
 /// rung's close runs BEFORE it frees the record the row reads: a node left attached over a block the
 /// record is about to free is a mixer reading freed memory, so a row that is playing refuses rather
