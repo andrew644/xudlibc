@@ -43,12 +43,14 @@
 /* XUD_BLEND_* are xud.h's tokens and XUD_BATCH_VARIANT_* are the batch's axis; the record
    carries the second, so a material created with the first has to draw through the row the
    second names. xud_material.h asserts the pairs equal; this is the count half, stated where
-   the public value type is actually read. */
+   the public value type is actually read. The count mirrors the blend-mode prefix of the axis,
+   OPAQUE through TEXTURED: the axis's UI column is a rendering mode, not a blend mode a material
+   can name. */
 static_assert(XUD_BLEND_OPAQUE == XUD_BATCH_VARIANT_OPAQUE, "xud_material.c: the public opaque token must name the batch's opaque variant");
 static_assert(XUD_BLEND_TRANSPARENT == XUD_BATCH_VARIANT_TRANSPARENT,
     "xud_material.c: the public transparent token must name the batch's transparent variant");
-static_assert(
-    XUD_BLEND_COUNT == XUD_BATCH_VARIANT_COUNT, "xud_material.c: the two axes must stay the same length, so growing one grows the other");
+static_assert(XUD_BLEND_COUNT == (XUD_BATCH_VARIANT_TEXTURED + 1u),
+    "xud_material.c: the blend tokens mirror the blend-mode prefix of the batch axis, so growing the prefix grows both");
 
 /*-----------------------------------------------------------------------------------------------
  * The record's two members, decided before the record exists

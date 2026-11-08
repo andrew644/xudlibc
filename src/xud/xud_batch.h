@@ -189,16 +189,16 @@ static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_
  * The topology, the pipeline variant and the material slot a draw row names
  *-----------------------------------------------------------------------------------------------*/
 
-/* The two variants of the plan's opaque/transparent pair, as the DRAW ROW's index into them
-   rather than as a pipeline handle: a draw row that carried a VkPipeline would be a row whose
-   pipeline had gone stale the moment the pipeline rung recreated one, and the row's whole point
-   is that it is a record. BOTH rows exist today - the pipeline rung owns a pipeline per row of
+/* The four columns of the variant axis, as the DRAW ROW's index into them rather than as a
+   pipeline handle: a draw row that carried a VkPipeline would be a row whose pipeline had gone
+   stale the moment the pipeline rung recreated one, and the row's whole point is that it is a
+   record. EVERY column has its pipeline row today - the pipeline rung owns a pipeline per row of
    this list under one layout (todo.md's D1, 2026-10-26: raylib's blending is an enum-indexed
-   list of modes, so the list is the shape and growing it is a row, not a rename) - and the
-   frame loop binds the row this index names, so naming a variant here is naming a pipeline
-   choice. OPAQUE is the DEFAULT because the transparent row is only correct against a caller
-   that drew back-to-front (todo.md's D2: raylib's painter's-algorithm semantics, the library
-   never sorts and no sort key is added to this row). */
+   list of modes, so the list is the shape and growing it is a row, not a rename) - and the frame
+   loop binds the row this index names, so naming a variant here is naming a pipeline choice.
+   OPAQUE is the DEFAULT because the transparent row is only correct against a caller that drew
+   back-to-front (todo.md's D2: raylib's painter's-algorithm semantics, the library never sorts
+   and no sort key is added to this row). */
 #define XUD_BATCH_VARIANT_OPAQUE 0u
 #define XUD_BATCH_VARIANT_TRANSPARENT 1u
 #define XUD_BATCH_VARIANT_TEXTURED                                                                                                         \
@@ -208,7 +208,20 @@ flag on the draw row because the variant axis IS the pipeline list's variant axi
 is where the frag module that reads set 1 lives - a flag would be a second axis the list would                                             \
 have to be the cross product of, and the textured row is alpha-blended, which is what a glyph                                              \
 atlas needs against a cleared background */
-#define XUD_BATCH_VARIANT_COUNT 3u
+#define XUD_BATCH_VARIANT_UI                                                                                                               \
+    3u /* the fourth column of the variant axis: the row a screen-space draw is flushed on - the
+nuklear frame the ui rung folds in and the 2D surface a later step draws on. Its pipeline row is
+the axis's only one with depth test and depth write BOTH off, and its vertex stage skips the
+per-frame viewProj and draws the row's position as clip space already (xud_ui_map_vertex's
+mapping assumes the identity matrices and a camera must not move the overlay), so a draw on this
+row sticks to the screen and leaves the depth attachment alone: 3D geometry appended after it in
+the same frame is not occluded where the overlay's quads were. It is a COLUMN of the same axis
+for the same reason the textured column is - the depth state is pipeline state, so the bypass
+lives on a pipeline row rather than a flag the frame loop would have to special-case. It is NOT
+one of xud.h's XUD_BLEND_* tokens: the blend tokens mirror the blend-mode prefix OPAQUE through
+TEXTURED, and a depth-off screen-space row is a rendering mode, not a blend mode a material can
+name */
+#define XUD_BATCH_VARIANT_COUNT 4u
 
 /* The two topologies a draw row can name, as the row's index into the pipeline list's topology
    axis rather than as a VkPrimitiveTopology: a row that carried a pipeline handle would be a row
@@ -237,7 +250,7 @@ atlas needs against a cleared background */
 
 #define XUD_BATCH_NO_MATERIAL 0xFFFFFFFFu /* "no material slot yet", the same sentinel shape xud_handle.h uses for an unfilled slot */
 
-static_assert(XUD_BATCH_VARIANT_COUNT == (XUD_BATCH_VARIANT_TEXTURED + 1u), "the variant axis is contiguous from opaque up");
+static_assert(XUD_BATCH_VARIANT_COUNT == (XUD_BATCH_VARIANT_UI + 1u), "the variant axis is contiguous from opaque up");
 static_assert(XUD_BATCH_TOPOLOGY_COUNT == (XUD_BATCH_TOPOLOGY_LINES + 1u), "the two topologies are contiguous from triangles up");
 static_assert(XUD_BATCH_NO_MATERIAL > 0u, "the sentinel is not a material slot any live row can name");
 

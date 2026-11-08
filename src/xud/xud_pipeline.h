@@ -8,20 +8,21 @@
  *   thing that keeps them alive, so all four die together and in one order: pipeline,
  *   layout, modules. "Explicit pipelines, created once at init, a small fixed set of
  *   variants, never created per draw" (the repo's rule) is what this rung is: today the set is
- *   the batch's **six-row** list - the plan's opaque/transparent/textured triple at each of the
- *   two topologies the batch's draw rows name - and the variants the rest of the plan asks for
- *   (glyph) land beside them in this same file as rows of that list, never as a
+ *   the batch's **eight-row** list - the plan's opaque/transparent/textured/ui quadruple at each
+ *   of the two topologies the batch's draw rows name - and the variants the rest of the plan asks
+ *   for land beside them in this same file as rows of that list, never as a
  *   pipeline-per-draw path anywhere above it.
  *
- *   What this rung does NOT have, and why: no fourth blend variant (the variant axis of the list
- *   below is the batch's, `XUD_BATCH_VARIANT_COUNT` wide, and its three columns are the plan's
- *   opaque/transparent/textured triple - raylib's `BlendMode` has nine modes and we want none of
- *   the other six yet, so growing that axis stays a column in the list, not a member in a struct,
- *   when a step wants one) and no per-draw pipeline (the third column is a COLUMN, so it is one
- *   more row of the same list under the same one layout, and the only thing that differs between
- *   the columns' pipelines is which frag module their stage rows name plus the blend row - the
- *   sets, the bindings and the push range are identical across the whole list, which is what lets
- *   one layout serve all six rows and every vkCmdBindDescriptorSets name one layout).
+ *   What this rung does NOT have, and why: no further blend variant (the variant axis of the
+ *   list below is the batch's, `XUD_BATCH_VARIANT_COUNT` wide, and its four columns are the
+ *   plan's opaque/transparent/textured/ui quadruple - raylib's `BlendMode` has nine modes and
+ *   we want none of the other seven yet, so growing that axis stays a column in the list, not a
+ *   member in a struct, when a step wants one) and no per-draw pipeline (the last columns are
+ *   COLUMNS, so they are more rows of the same list under the same one layout, and the only
+ *   things that differ between the columns' pipelines are which frag module their stage rows
+ *   name, the blend row and the depth row - the sets, the bindings and the push range are
+ *   identical across the whole list, which is what lets one layout serve all eight rows and
+ *   every vkCmdBindDescriptorSets name one layout).
  *
  *   What it DOES have now is the vertex input. The batch rung below it owns the four SoA streams
  *   and the one index buffer, and xud_pipeline_fill_vertex_input overwrites the zero row that
@@ -126,7 +127,8 @@ struct XudPipeline {
                                 destroys it after this rung's teardown has retired the
                                 pipeline that names it */
     XudShader* vertexShader; /* owned: the module the vertex stage was built from, one for the
-                            whole list - the six rows differ in frag state, never in vertex state */
+                            whole list - the eight rows differ in frag, blend and depth state,
+                            never in vertex state */
     XudShader* fragmentShader[XUD_PIPELINE_FRAG_MODULE_COUNT]; /* owned, one per FRAG MODULE rather
                             than one per row of the list: the variant axis names which module a row's
                             fragment stage is built from, so the opaque and transparent columns share
@@ -152,7 +154,14 @@ struct XudPipeline {
     VkPipelineViewportStateCreateInfo viewportState;
     VkPipelineRasterizationStateCreateInfo rasterizer;
     VkPipelineMultisampleStateCreateInfo multisample;
-    VkPipelineDepthStencilStateCreateInfo depthStencil;
+    VkPipelineDepthStencilStateCreateInfo depthStencil[XUD_BATCH_VARIANT_COUNT]; /* one row per
+                            variant column rather than one row for the whole rung: depth test and
+                            depth write are PIPELINE state, and the UI column is the list's only
+                            depth-off row (its screen-space draws must neither test against nor
+                            write the pass's depth attachment), so a shared row would either give
+                            the UI column a test it must not have or give the other three a write
+                            they must keep. The row a create-info points at is the one the draw
+                            row's variant indexes, like the blend rows beside it */
     VkPipelineColorBlendStateCreateInfo blending[XUD_BATCH_VARIANT_COUNT];
     VkPipelineColorBlendAttachmentState blendAttachment[XUD_BATCH_VARIANT_COUNT];
     VkPipelineDynamicStateCreateInfo dynamicState;
@@ -213,8 +222,9 @@ static_assert(XUD_PIPELINE_STAGE_COUNT == (XUD_PIPELINE_FRAGMENT_STAGE + 1u), "t
 static_assert(
     XUD_PIPELINE_FRAG_MODULE_COUNT == (XUD_PIPELINE_FRAG_TEXTURED + 1u), "the frag-module axis is contiguous from the solid module up");
 static_assert(XUD_PIPELINE_FRAG_MODULE_COUNT <= XUD_BATCH_VARIANT_COUNT,
-    "fewer frag modules than variants, which is the point of the mapping axis: two of the three columns"
-    " share one module and a module-per-variant shape would be the same bytes compiled twice");
+    "fewer frag modules than variants, which is the point of the mapping axis: the opaque and"
+    " transparent columns share the solid module, the textured and ui columns share the one that reads"
+    " set 1, and a module-per-variant shape would be the same bytes compiled twice");
 static_assert(XUD_BATCH_VARIANT_COUNT >= 2u, "the variant axis has both the opaque and the transparent column");
 static_assert(sizeof(((XudPipeline*)0)->pipeline) / sizeof(VkPipeline) == XUD_PIPELINE_ROW_COUNT,
     "one pipeline per row of the (topology x variant) list, which is what makes the batch's draw row"
@@ -224,11 +234,13 @@ static_assert(sizeof(((XudPipeline*)0)->inputAssembly) / sizeof(VkPipelineInputA
     " than a decoration on one row");
 static_assert(sizeof(((XudPipeline*)0)->blendAttachment) / sizeof(VkPipelineColorBlendAttachmentState) == XUD_BATCH_VARIANT_COUNT,
     "one blend attachment per variant column, which is what makes the create-info's pAttachments the variant's own");
+static_assert(sizeof(((XudPipeline*)0)->depthStencil) / sizeof(VkPipelineDepthStencilStateCreateInfo) == XUD_BATCH_VARIANT_COUNT,
+    "one depth row per variant column, which is what makes the UI column's depth-off state the column's own rather than the list's");
 static_assert(sizeof(((XudPipeline*)0)->createInfo) / sizeof(VkGraphicsPipelineCreateInfo) == XUD_PIPELINE_ROW_COUNT,
     "one create-info per row of the list, the record of what each create call was handed");
 static_assert(XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE) == 0u,
     "the triangles/opaque pair is the list's first row, the one every draw used before this step");
-static_assert(XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_TEXTURED) == (XUD_PIPELINE_ROW_COUNT - 1u),
+static_assert(XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_UI) == (XUD_PIPELINE_ROW_COUNT - 1u),
     "the pair the list's two axes span at their far ends is its last row, which is what makes the"
     " pair a bijection onto the list rather than a partial map");
 static_assert(VK_SHADER_STAGE_VERTEX_BIT != VK_SHADER_STAGE_FRAGMENT_BIT,

@@ -20,9 +20,13 @@
 // beside every draw it records, so the vertex is placed by frame-viewProj * the draw's own model. The
 // block's member order and widths are the C layout of XudPushRow read against std140: mat4 at 0 (64
 // B), uint at 64, 68, 72 and 76 - 80 B, byte-for-byte the struct in xud_descriptor.h and the assert
-// beside XUD_DESCRIPTOR_PUSH_SIZE is the same number from the other side. Only modelMatrix is read:
-// a stage need not touch every member of a block its layout declares, and the material/texture/flags
-// members are the channel the material, texture and variant steps above will fill.
+// beside XUD_DESCRIPTOR_PUSH_SIZE is the same number from the other side. The materialIndex and
+// textureIndex members are unread: set 1's array is chosen by the frame loop's rebind beside the
+// draw, not by a read in this stage. The flags member IS read now: it carries the batch's variant
+// the draw was flushed under, and the UI column (XUD_BATCH_VARIANT_UI, xud_batch.h) is the one whose
+// position is clip space already - the ui rung's mapper emits it there and the column's pipeline row
+// turns depth test and write off - so this stage must skip the per-frame viewProj for that draw
+// rather than let the caller's 3D camera move the screen-fixed overlay.
 
 layout(binding = 0, std140) uniform XudFrameBlock {
     mat4 viewProj;    // 0  - the VP matrix, column-major, the same 64 B the push row carries
@@ -38,7 +42,7 @@ layout(push_constant) uniform XudPushRow {
     mat4 modelMatrix;    // 0  - the draw's own model matrix, column-major
     uint materialIndex;  // 64 - which material slot this draw uses (unread today)
     uint textureIndex;   // 68 - which entry of set 1's sampler array (unread today, set 1 unbound)
-    uint flags;          // 72 - the variant this draw was flushed under (unread today)
+    uint flags;          // 72 - the variant this draw was flushed under (the UI column skips viewProj)
     uint reserved;       // 76 - keeps the row 16-aligned with no hole
 } xudPush;
 
@@ -56,7 +60,17 @@ void main(void)
     /* Vulkan's clip space is Y-DOWN, the NDC the viewProj and the identity-space draws author
        is Y-UP: flip the Y once, here, at the last point before the rasteriser. Culling is
        disabled (xud_pipeline.h's XUD_PIPELINE_CULL_MODE) so the flip costs no winding change. */
-    vec4 clipPos = xudFrame.viewProj * xudPush.modelMatrix * vec4(inPos, 1.0f);
+    /* XUD_BATCH_VARIANT_UI (xud_batch.h), restated here: the shader and the C axis are two
+       languages, so the one number the branch keys on is spelled in both and a rename of the
+       column must touch both. A draw flushed on the UI column carries a position that is clip
+       space already (the ui rung's mapper emits it in the y-up NDC the identity matrices
+       expect), so placing it through the frame's viewProj would move and scale the overlay with
+       the caller's 3D camera - raylib's GUI is always screen-fixed, and this skip is what makes
+       that true here. The model matrix still applies: identity for a plain screen quad, and the
+       channel a screen-space transform of a later step can hand in without a second pipeline. */
+    const uint xudPushFlagVariantUI = 3u;
+    vec4 localPos = xudPush.modelMatrix * vec4(inPos, 1.0f);
+    vec4 clipPos = (xudPush.flags == xudPushFlagVariantUI) ? localPos : (xudFrame.viewProj * localPos);
     gl_Position = vec4(clipPos.x, -clipPos.y, clipPos.z, clipPos.w);
     outUv = inUv;
     outColor = inColor;

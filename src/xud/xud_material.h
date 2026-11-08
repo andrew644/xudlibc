@@ -87,17 +87,20 @@
 /* The mirror is the whole point of these asserts: xud.h's XUD_BLEND_* are the tokens a caller
    writes, XUD_BATCH_VARIANT_* are the rows of the pipeline list the frame loop binds, and the
    material record carries the second and not the first. A mirror rather than a translation
-   table, because the two axes have exactly the same members today - and the assert is what
-   makes "exactly the same" a compile-time fact rather than a comment someone trusts. Growing
-   the axis (a third variant, a second blend factor pair) moves both counts and the assert
-   refuses a half-moved mirror. */
+   table, because the two axes have exactly the same members for the prefix they cover - and the
+   assert is what makes "exactly the same" a compile-time fact rather than a comment someone
+   trusts. The prefix is OPAQUE through TEXTURED: the batch axis's UI column is a rendering mode
+   (a screen-space, depth-off pipeline row), not a blend mode, so no public blend token names it
+   and the count mirrors the prefix's end rather than the axis's. Growing the prefix (a new blend
+   mode) moves both counts and the assert refuses a half-moved mirror. */
 static_assert(XUD_BLEND_OPAQUE == XUD_BATCH_VARIANT_OPAQUE,
     "xud_material.h: the public opaque token must name the batch's opaque variant, or a material created with one draws through the other");
 static_assert(XUD_BLEND_TRANSPARENT == XUD_BATCH_VARIANT_TRANSPARENT,
     "xud_material.h: the public transparent token must name the batch's transparent variant, or a material created with one draws through "
     "the other");
-static_assert(XUD_BLEND_COUNT == XUD_BATCH_VARIANT_COUNT,
-    "xud_material.h: the two axes must stay the same length, so growing one grows the other and a half-grown mirror is a compile error");
+static_assert(XUD_BLEND_COUNT == (XUD_BATCH_VARIANT_TEXTURED + 1u),
+    "xud_material.h: the blend tokens mirror the blend-mode prefix of the batch axis, from opaque through textured, and a half-moved"
+    " mirror is a compile error");
 
 /*-----------------------------------------------------------------------------------------------
  * What a MATERIAL-kind slot records

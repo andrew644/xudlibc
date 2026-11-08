@@ -60,7 +60,7 @@ for every frame a frame loop spends with its window minimized. A restore to a
 size the swapchain does not have re-sets the ask through the out-of-date code
 the next acquire answers with.
 
-### 3. The UI is not screen-fixed under a 3D camera, and its quads write depth
+### 3. (RESOLVED) The UI is not screen-fixed under a 3D camera, and its quads write depth
 
 `xud_ui.c` maps glyph pixels into clip space on the assumption of identity
 matrices (the mapper's own comment: "the y-up clip space the identity matrices
@@ -77,6 +77,22 @@ geometry appended in the same frame *after* the UI is occluded where the glyphs
 were. Drawing the UI last (raylib's order) works, but the API gives no way to
 draw screen-space, depth-bypassing UI, which is what the module promises.
 
+**Resolved.** The variant axis grew a fourth column, `XUD_BATCH_VARIANT_UI`
+(`xud_batch.h`), and its pipeline row is the axis's only one with
+`depthTestEnable = VK_FALSE` and `depthWriteEnable = VK_FALSE` — the depth
+state is now one row per variant column rather than one row for the whole
+list (`xud_pipeline.h`/`xud_pipeline.c`). Screen-fixed is the vertex
+stage's job: the push row's `flags` member (already written by the frame
+loop, already 80 B) carries the draw's variant, and `solid.vert` skips the
+per-frame viewProj when the flags name the UI column, whose position is clip
+space already (`xud_ui_map_vertex`'s `z = 0.0` and the stage's `w = 1.0`).
+The ui rung's fold (`xud_ui_append_draw_list`) now sets the topology to
+triangles and moves the batch to the UI column for the frame it appends —
+blending stays on, with the same factors as the textured column, because a
+glyph over 3D content still needs an alpha over a background that is not
+the clear colour. No third pipeline: the one vertex stage branches on the
+flags instead, which is the same fact the pipeline row's depth state states
+from the other side.
 ## API gaps against the raylib reference
 
 ### 4. (RESOLVED) There is no way to close the window, and the exit key is dead state

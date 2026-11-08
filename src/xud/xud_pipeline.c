@@ -74,10 +74,12 @@ static_assert((XUD_SHADER_SPIRV_HEADER_WORDS * sizeof(uint32_t)) <= sizeof(xudSo
    mapping is one more column of the same table shape the blend tables below are - the row of the
    list is a pair of batch indices and which frag module it names is a fact about the column, not a
    branch in the create loop. The opaque and transparent columns share the solid module because the
-   two differ only in blend state; the textured column names the one that reads set 1, which is the
-   only reason a second frag module exists at all. Growing the variant axis is a row here. */
+   two differ only in blend state; the textured and ui columns name the one that reads set 1, which
+   is the only reason a second frag module exists at all - the ui column samples the atlas through
+   the same set-1 slot the textured column uses, so the two share the module rather than compiling
+   the same bytes a third time. Growing the variant axis is a row here. */
 static const uint32_t xudPipelineFragModule[XUD_BATCH_VARIANT_COUNT]
-    = { XUD_PIPELINE_FRAG_SOLID, XUD_PIPELINE_FRAG_SOLID, XUD_PIPELINE_FRAG_TEXTURED };
+    = { XUD_PIPELINE_FRAG_SOLID, XUD_PIPELINE_FRAG_SOLID, XUD_PIPELINE_FRAG_TEXTURED, XUD_PIPELINE_FRAG_TEXTURED };
 
 /* The words of each entry of the frag axis, in the axis's own order, beside the mapping table above
    so "which column names which module" and "what bytes that module is built from" are two rows of
@@ -132,12 +134,15 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
        and not a member in a struct). The opaque row is the identity of an overwrite (ONE/ZERO);
        the transparent row is raylib's DEFAULT mode BLEND_ALPHA (raylib.h 918, "= 0" and commented
        "(default)"), whose Vulkan form is the rlgl.h 2127 pair glBlendFunc(GL_SRC_ALPHA,
-       GL_ONE_MINUS_SRC_ALPHA) + glBlendEquation(GL_FUNC_ADD). */
-    static const VkBool32 blendEnable[XUD_BATCH_VARIANT_COUNT] = { VK_FALSE, VK_TRUE, VK_TRUE };
+       GL_ONE_MINUS_SRC_ALPHA) + glBlendEquation(GL_FUNC_ADD). The textured and ui rows reuse that
+       same pair: a glyph atlas against a cleared background and a screen-space quad are both
+       straight alpha-over, so the factor tables carry one transparent entry twice rather than two
+       different ones. */
+    static const VkBool32 blendEnable[XUD_BATCH_VARIANT_COUNT] = { VK_FALSE, VK_TRUE, VK_TRUE, VK_TRUE };
     static const VkBlendFactor blendSrc[XUD_BATCH_VARIANT_COUNT]
-        = { VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA };
-    static const VkBlendFactor blendDst[XUD_BATCH_VARIANT_COUNT]
-        = { VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA };
+        = { VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_SRC_ALPHA };
+    static const VkBlendFactor blendDst[XUD_BATCH_VARIANT_COUNT] = { VK_BLEND_FACTOR_ZERO, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+        VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA };
     /* The list's OTHER axis: one input-assembly row per topology the batch's draw rows name, in the
        batch's topology order. Same table shape as the blend tables above for the same reason - the
        row of the list is a pair of batch indices, so growing either axis is a row in a table here
@@ -220,39 +225,56 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     pipeline->multisample.alphaToCoverageEnable = VK_FALSE;
     pipeline->multisample.alphaToOneEnable = VK_FALSE;
 
-    /* --- depth stencil: depth test and depth write BOTH ON, LESS recorded, no depth bounds, no
-       stencil at all. The ON pair is the opaque variant of the plan's opaque/transparent pair, and i
-       t is only honest now because the render pass under this pipeline HAS a depth attachment (xud_r
-       endpass.c creates the VkImage and the allocator owns its memory) - the spec makes the depth co
-       ntents of a subpass with no depth attachment implementation-dependent, which is why the same t
-       wo flags were VK_FALSE for the first-triangle step. With the attachment present and cleared to
-       XUD_RENDERPASS_CLEAR_DEPTH by the pass, LESS plus a write is the rule that makes a nearer frag
-       ment replace a farther one, which is what a depth buffer is for. depthCompareOp is the rule th
-       e test uses, and XUD_PIPELINE_DEPTH_COMPARE_OP is LESS, the one form the clear-to-1.0 convention
-       needs: a nearer fragment has the SMALLER depth, so it passes against the larger one already in
-       the buffer. Stencil does not exist in this library, so both stencil rows are written as the di
-       sabled set rather than left at calloc's zero, and the depth-bounds pair is written as the full
-       [0,1] range rather than left at zero for the same reason. --- */
-    pipeline->depthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
-    pipeline->depthStencil.pNext = NULL;
-    pipeline->depthStencil.depthTestEnable = VK_TRUE;
-    pipeline->depthStencil.depthWriteEnable = VK_TRUE;
-    pipeline->depthStencil.depthCompareOp = XUD_PIPELINE_DEPTH_COMPARE_OP;
-    pipeline->depthStencil.depthBoundsTestEnable = VK_FALSE;
-    pipeline->depthStencil.stencilTestEnable = VK_FALSE;
-    pipeline->depthStencil.front.compareOp = VK_COMPARE_OP_ALWAYS;
-    pipeline->depthStencil.front.passOp = VK_STENCIL_OP_KEEP;
-    pipeline->depthStencil.front.failOp = VK_STENCIL_OP_KEEP;
-    pipeline->depthStencil.front.depthFailOp = VK_STENCIL_OP_KEEP;
-    pipeline->depthStencil.front.compareMask = 0u;
-    pipeline->depthStencil.front.writeMask = 0u;
-    pipeline->depthStencil.front.reference = 0u;
-    pipeline->depthStencil.back = pipeline->depthStencil.front;
-    pipeline->depthStencil.maxDepthBounds = 1.0f;
-    pipeline->depthStencil.minDepthBounds = 0.0f;
+    /* --- depth stencil: one row per variant column, in the batch's variant order. THREE of the
+       four are depth test and depth write BOTH ON with LESS recorded, no depth bounds and no
+       stencil at all; the UI column is the axis's only row with the pair BOTH off. The ON pair is
+       what the opaque variant of the plan's opaque/transparent pair carries, and it is only honest
+       now because the render pass under this pipeline HAS a depth attachment (xud_renderpass.c
+       creates the VkImage and the allocator owns its memory) - the spec makes the depth contents
+       of a subpass with no depth attachment implementation-dependent, which is why the same two
+       flags were VK_FALSE for the first-triangle step. With the attachment present and cleared to
+       XUD_RENDERPASS_CLEAR_DEPTH by the pass, LESS plus a write is the rule that makes a nearer
+       fragment replace a farther one, which is what a depth buffer is for. depthCompareOp is the
+       rule the test uses, and XUD_PIPELINE_DEPTH_COMPARE_OP is LESS, the one form the clear-to-1.0
+       convention needs: a nearer fragment has the SMALLER depth, so it passes against the larger
+       one already in the buffer. The UI column's off pair is the screen-space half of issues.md
+       #3: a quad that landed at depth 0.0 - the nearest the LESS compare admits - and WROTE that
+       depth back would occlude every 3D fragment appended after it in the same frame where the
+       glyph was, and the test would fail on a pixel that should show the 3D shape. The test and
+       the write are both pipeline state, so the bypass lives on the column's own row here rather
+       than a flag the frame loop would special-case; the vertex stage's skip of the viewProj for
+       the same column (solid.vert's XUD_PUSH_FLAG_VARIANT_UI branch) is the other half of the
+       screen-fixed promise. Stencil does not exist in this library, so both stencil rows are
+       written as the disabled set rather than left at calloc's zero, and the depth-bounds pair is
+       written as the full [0,1] range rather than left at zero for the same reason. --- */
+    {
+        static const VkBool32 depthTestEnable[XUD_BATCH_VARIANT_COUNT] = { VK_TRUE, VK_TRUE, VK_TRUE, VK_FALSE };
+        static const VkBool32 depthWriteEnable[XUD_BATCH_VARIANT_COUNT] = { VK_TRUE, VK_TRUE, VK_TRUE, VK_FALSE };
+        uint32_t depthVariant = 0u;
 
-    /* --- blend: the TWO variants of the plan's opaque/transparent pair, one row of each, in the
-       batch's variant order. blendEnable is the variant, and the two factor pairs are written even
+        for (depthVariant = 0u; depthVariant < XUD_BATCH_VARIANT_COUNT; depthVariant++) {
+            pipeline->depthStencil[depthVariant].sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+            pipeline->depthStencil[depthVariant].pNext = NULL;
+            pipeline->depthStencil[depthVariant].depthTestEnable = depthTestEnable[depthVariant];
+            pipeline->depthStencil[depthVariant].depthWriteEnable = depthWriteEnable[depthVariant];
+            pipeline->depthStencil[depthVariant].depthCompareOp = XUD_PIPELINE_DEPTH_COMPARE_OP;
+            pipeline->depthStencil[depthVariant].depthBoundsTestEnable = VK_FALSE;
+            pipeline->depthStencil[depthVariant].stencilTestEnable = VK_FALSE;
+            pipeline->depthStencil[depthVariant].front.compareOp = VK_COMPARE_OP_ALWAYS;
+            pipeline->depthStencil[depthVariant].front.passOp = VK_STENCIL_OP_KEEP;
+            pipeline->depthStencil[depthVariant].front.failOp = VK_STENCIL_OP_KEEP;
+            pipeline->depthStencil[depthVariant].front.depthFailOp = VK_STENCIL_OP_KEEP;
+            pipeline->depthStencil[depthVariant].front.compareMask = 0u;
+            pipeline->depthStencil[depthVariant].front.writeMask = 0u;
+            pipeline->depthStencil[depthVariant].front.reference = 0u;
+            pipeline->depthStencil[depthVariant].back = pipeline->depthStencil[depthVariant].front;
+            pipeline->depthStencil[depthVariant].maxDepthBounds = 1.0f;
+            pipeline->depthStencil[depthVariant].minDepthBounds = 0.0f;
+        }
+    }
+
+    /* --- blend: one row per variant column, in the batch's variant order. blendEnable is the
+       variant, and the two factor pairs are written even
        where blending is off because the row must say a complete blend - these headers spell the row
        as the core-1.0 form (srcColorBlendFactor / dstColorBlendFactor / colorBlendOp and the same
        three for the alpha half; grepped: srcAlpha, colorBlendFactor and useAlphaBlend do not exist
@@ -264,11 +286,12 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
        attachmentCount-00646 is about the colour half - the depth half is named by the depth-stencil
        row above. The factors are the table above, indexed by the variant, which is what makes the
        batch's variant index and this row the same number (todo.md's D1, 2026-10-26); the alpha
-       half stays ONE/ZERO under BOTH rows because the swapchain's alpha is composited against
+       half stays ONE/ZERO under EVERY row because the swapchain's alpha is composited against
        nothing here and writing 1.0 rather than 0.0 is what a later compositor wants. Depth writes
-       stay ON under the transparent row - that is what raylib does under BLEND_ALPHA, and the
-       overlap artifacts that go with keeping them are raylib's own; turning them off is a later
-       knob, not this row. --- */
+       stay ON under the transparent and textured rows - that is what raylib does under BLEND_ALPHA,
+       and the overlap artifacts that go with keeping them are raylib's own; turning them off is a
+       later knob, not this row. Only the ui column carries the OFF pair, on its own depth row
+       above. --- */
     for (variant = 0u; variant < XUD_BATCH_VARIANT_COUNT; variant++) {
         pipeline->blendAttachment[variant].blendEnable = blendEnable[variant];
         pipeline->blendAttachment[variant].srcColorBlendFactor = blendSrc[variant];
@@ -402,13 +425,24 @@ XudResult xud_pipeline_fill_create_info(
 
     /* Every row must be stamped: the assembly below is only ever a step from xud_pipeline_fill_
        state(), so a struct whose rows were never filled is a bad state of this layer's own
-       record, not a bad argument from a caller. */
+       record, not a bad argument from a caller. The depth rows are one per variant column, so the
+       whole array is stamped rather than the one this (topology, variant) pair names - the pair
+       selects which row the create-info points at, but a single unstamped row among the four is
+       the same bad state no matter which column the pair happens to name. */
+    {
+        uint32_t stampedVariant = 0u;
+
+        for (stampedVariant = 0u; stampedVariant < XUD_BATCH_VARIANT_COUNT; stampedVariant++) {
+            if (pipeline->depthStencil[stampedVariant].sType != VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO) {
+                return XUD_UNSUPPORTED;
+            }
+        }
+    }
     if ((pipeline->vertexInput.sType != VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO)
         || (pipeline->inputAssembly[topology].sType != VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO)
         || (pipeline->viewportState.sType != VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO)
         || (pipeline->rasterizer.sType != VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO)
         || (pipeline->multisample.sType != VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO)
-        || (pipeline->depthStencil.sType != VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO)
         || (pipeline->blending[variant].sType != VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
         || (pipeline->dynamicState.sType != VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO)) {
         return XUD_UNSUPPORTED;
@@ -425,7 +459,7 @@ XudResult xud_pipeline_fill_create_info(
     outCreateInfo->pViewportState = &pipeline->viewportState;
     outCreateInfo->pRasterizationState = &pipeline->rasterizer;
     outCreateInfo->pMultisampleState = &pipeline->multisample;
-    outCreateInfo->pDepthStencilState = &pipeline->depthStencil;
+    outCreateInfo->pDepthStencilState = &pipeline->depthStencil[variant];
     outCreateInfo->pColorBlendState = &pipeline->blending[variant];
     outCreateInfo->pDynamicState = &pipeline->dynamicState;
     outCreateInfo->layout = pipeline->layout;

@@ -307,10 +307,10 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
     /* The variant the draw was flushed under, in the per-draw channel rather than a channel of this r
        ung's: the pipeline variant is chosen by BINDING a different pipeline, and this is the same fa
        ct seen from the shader's side, which is what lets a stage branch on the variant without a thi
-       rd pipeline. The vertex stage reads only the model matrix today, so this member is recorded an
-       d unread - the row is the channel, and a stage need not read every member of a block its layou
-       t declares.
-    */
+       rd pipeline. The vertex stage reads it now: solid.vert skips the per-frame viewProj when the v
+       ariant is XUD_BATCH_VARIANT_UI, the screen-space column whose position is clip space already,
+       so the channel is what makes the overlay screen-fixed rather than a flag this rung would have
+       to special-case beside each push. */
     outRow->flags = drawRow->variant;
     outRow->reserved = 0u;
 

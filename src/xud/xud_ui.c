@@ -111,14 +111,24 @@ XudResult xud_ui_append_draw_list(XudBatch* batch, const XudUiVertex* vertices, 
         return XUD_OK;
     }
 
-    /* The state move, before a byte is written: the whole frame draws through the textured row of
+    /* The state move, before a byte is written: the whole frame draws through the UI column of
        the atlas's one slot, and the state the caller found is restored at the end, which closes
-       the run into one draw row of that row. */
+       the run into one draw row of that column. The column rather than the textured row is the
+       screen-fixed half of the pair: its pipeline row is depth test and write off, and the vertex
+       stage skips the per-frame viewProj for the draws it flushes, so the overlay sticks to the
+       screen under a 3D camera and its quads stop writing the depth 0.0 that occluded 3D
+       geometry appended after them in the same frame (issues.md #3). The textured column the
+       frame drew on before this step keeps both depth flags on, and a caller's 3D draws keep
+       them too. */
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_TRIANGLES);
+    if (result != XUD_OK) {
+        return result;
+    }
     result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
     if (result != XUD_OK) {
         return result;
     }
-    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_TEXTURED, atlasSlot);
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_UI, atlasSlot);
     if (result != XUD_OK) {
         return result;
     }

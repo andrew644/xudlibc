@@ -42,8 +42,9 @@ static void xud_test_pipeline_pure(void) {
     VkPipelineLayoutCreateInfo layout = (VkPipelineLayoutCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkGraphicsPipelineCreateInfo out = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkGraphicsPipelineCreateInfo transparentInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
-    VkGraphicsPipelineCreateInfo lineInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     VkGraphicsPipelineCreateInfo texturedInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkGraphicsPipelineCreateInfo lineInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
+    VkGraphicsPipelineCreateInfo uiInfo = (VkGraphicsPipelineCreateInfo) { .sType = VK_STRUCTURE_TYPE_MAX_ENUM };
     XudDescriptor desc = (XudDescriptor) { 0 };
     uint32_t stageRow = 0u;
     uint32_t stageVariant = 0u;
@@ -152,25 +153,42 @@ static void xud_test_pipeline_pure(void) {
         "pipeline/no-msaa",
         "no MSAA at all, which is the gate the framebuffer's sample-count limits would open and "
         "this rung does not take");
-    xud_check((pipeline.depthStencil.depthTestEnable == VK_TRUE) && (pipeline.depthStencil.depthWriteEnable == VK_TRUE),
+    xud_check((pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].depthTestEnable == VK_TRUE)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].depthWriteEnable == VK_TRUE),
         "pipeline/depth-pair-on",
-        "the ON pair, and it is honest now because the render pass under this pipeline HAS a depth"
+        "the ON pair at the opaque row, and it is honest now because the render pass under this pipeline HAS a depth"
         " attachment (xud_renderpass.c's own depth row, its own VkImage): a depth test against no de"
         "pth buffer is implementation-dependent, which is the same trap the no-vertex-input check na"
-        "mes for the other half of the same note. This is the OPAQUE variant of the plan's opaque/tran"
-        "sparent pair - blend off above, depth write here - and the transparent variant (blend on, de"
-        "pth test, sorted) is the batch step's, because sorting is a property of the batch and not of"
-        " a pipeline");
-    xud_check(pipeline.depthStencil.depthCompareOp == XUD_PIPELINE_DEPTH_COMPARE_OP, "pipeline/depth-compare-op",
-        "LESS, and it is the rule the enabled test above actually uses now: the pass clears the buffe"
-        "r to XUD_RENDERPASS_CLEAR_DEPTH 1.0, the far value of this very rule, so the first fragment"
-        " of a frame always wins against a defined buffer rather than against whatever the allocato"
-        "r handed back");
-    xud_check(pipeline.depthStencil.stencilTestEnable == VK_FALSE, "pipeline/no-stencil-test",
-        "no stencil anywhere in this library, and both stencil rows are written as the disabled se"
-        "t rather than left at zero");
-    xud_check((pipeline.depthStencil.minDepthBounds == 0.0f) && (pipeline.depthStencil.maxDepthBounds == 1.0f),
-        "pipeline/depth-bounds-full", "the full range, which is what a disabled depth-bounds test has to say beside it");
+        "mes for the other half of the same note. This is the OPAQUE variant of the list - blend off"
+        " above, depth write here - and the transparent variant (blend on, depth test, sorted) is the"
+        " batch step's, because sorting is a property of the batch and not of a pipeline");
+    xud_check((pipeline.depthStencil[XUD_BATCH_VARIANT_TRANSPARENT].depthTestEnable == VK_TRUE)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_TRANSPARENT].depthWriteEnable == VK_TRUE)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_TEXTURED].depthTestEnable == VK_TRUE)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_TEXTURED].depthWriteEnable == VK_TRUE),
+        "pipeline/depth-pair-on-blended-rows",
+        "the SAME ON pair at the transparent and textured rows, so depth stays on under a blended draw rather than off: "
+        "what turns off is the write, and the write at those rows stays on because the swapchain is what the"
+        " overlap artifacts go with are raylib's own; turning it off there would be a later knob, not this row");
+    xud_check((pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].depthCompareOp == XUD_PIPELINE_DEPTH_COMPARE_OP)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].stencilTestEnable == VK_FALSE)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].minDepthBounds == 0.0f)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].maxDepthBounds == 1.0f),
+        "pipeline/depth-row-values",
+        "at the opaque row: LESS, and it is the rule the enabled test above actually uses now: the pass"
+        " clears the buffer to XUD_RENDERPASS_CLEAR_DEPTH 1.0, the far value of this very rule, so the firs"
+        "t fragment of a frame always wins against a defined buffer rather than against whatever the a"
+        "llocator handed back; no stencil anywhere in this library, and both stencil rows are written as t"
+        "he disabled set; and the full depth bounds, which is what a disabled depth-bounds test has to say"
+        " beside it");
+    xud_check((pipeline.depthStencil[XUD_BATCH_VARIANT_UI].depthTestEnable == VK_FALSE)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_UI].depthWriteEnable == VK_FALSE),
+        "pipeline/depth-pair-off-ui",
+        "the OFF pair at the UI row only: a screen-space overlay reads no depth (it draws over whatever 3D is"
+        " under it) and writes none (its quads used to write the depth 0.0 that occluded 3D geometry appended"
+        " after them in the same frame - issues.md #3); a depth test against a pass that HAS a depth attachment"
+        " is the defined way to say both things, which is why the pass keeps its attachment rather than this"
+        " rung branching on the variant");
     xud_check(pipeline.blendAttachment[XUD_BATCH_VARIANT_OPAQUE].blendEnable == VK_FALSE, "pipeline/attachment-blend-disabled",
         "blend disabled at the OPAQUE row of the variant list, which is the plan's opaque half and"
         " the row the batch's default variant indexes today");
@@ -357,7 +375,8 @@ static void xud_test_pipeline_pure(void) {
     xud_check((out.pVertexInputState == &pipeline.vertexInput)
             && (out.pInputAssemblyState == &pipeline.inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES])
             && (out.pViewportState == &pipeline.viewportState) && (out.pRasterizationState == &pipeline.rasterizer)
-            && (out.pMultisampleState == &pipeline.multisample) && (out.pDepthStencilState == &pipeline.depthStencil)
+            && (out.pMultisampleState == &pipeline.multisample)
+            && (out.pDepthStencilState == &pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE])
             && (out.pColorBlendState == &pipeline.blending[XUD_BATCH_VARIANT_OPAQUE]) && (out.pDynamicState == &pipeline.dynamicState),
         "pipeline/create-rows-in-record",
         "every state pointer names the record's own row, so the record and the create-info the "
@@ -393,8 +412,9 @@ static void xud_test_pipeline_pure(void) {
     xud_check(transparentInfo.pStages[XUD_PIPELINE_FRAGMENT_STAGE].module == out.pStages[XUD_PIPELINE_FRAGMENT_STAGE].module,
         "pipeline/create-one-shader-module",
         "and the same fragment MODULE, so the variant is a blend-state choice across the two untextured "
-        "columns; the stage ARRAYS are two rows of the record's own array rather than one, because the "
-        "frag module is pipeline state and the third column of the variant axis names a different one");
+        "columns; the stage ARRAYS are four pairs of the record's own array rather than one, because the "
+        "frag module is pipeline state and the variant axis names a different one on the textured and ui "
+        "columns");
 
     /* The same assembly at the OTHER axis of the list, which is what makes the topology argument a
        choice rather than a decoration: the line row is the same record read at a different row, and
@@ -454,14 +474,51 @@ static void xud_test_pipeline_pure(void) {
         "and the textured row's fragment stage names the textured module, which is the whole reason a "
         "second fragment module exists at all: it is the module that reads set 1");
     xud_check(texturedInfo.pStages[XUD_PIPELINE_VERTEX_STAGE].module == vertModule, "pipeline/create-textured-vertex-module-shared",
-        "but the SAME vertex module, so the six rows of the list are two modules of vertex state and "
+        "but the SAME vertex module, so the eight rows of the list are two modules of vertex state and "
         "two of fragment state rather than six pairs of bytes");
     xud_check(texturedInfo.pStages != out.pStages, "pipeline/create-stage-array-per-row",
         "and the two rows' stage pairs are two rows of the record's own array, which is what makes the "
         "frag module a per-row fact rather than one pair shared by the whole list");
     xud_check(texturedInfo.layout == out.layout, "pipeline/create-textured-one-layout",
-        "and the same layout, which is what lets one layout serve all six rows: the third column adds "
+        "and the same layout, which is what lets one layout serve all eight rows: the third column adds "
         "a frag module and a blend column, never a second interface");
+
+    /* The FOURTH column of the variant axis, the screen-space one: the UI row is the same record read
+       at a fourth row, and the one row it differs in, past the blend half, is the DEPTH half - the
+       column whose pipeline row turns the depth test and the write off. The fragment module is the
+       textured one, which is what makes an atlas glyph a letter rather than a rectangle. */
+    xud_check(xud_pipeline_fill_create_info(&pipeline, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_UI, &uiInfo) == XUD_OK,
+        "pipeline/create-ui-ok", "the ui row's create-info assembles too, so the variant axis's fourth column is a row of the same list");
+    xud_check(uiInfo.pDepthStencilState == &pipeline.depthStencil[XUD_BATCH_VARIANT_UI], "pipeline/create-depth-row-ui",
+        "and its depth pointer is the UI row's, the OFF pair, so the variant argument picks the depth "
+        "state the create call is handed exactly as it picks the blend row");
+    xud_check(uiInfo.pDepthStencilState != out.pDepthStencilState, "pipeline/create-depth-rows-differ",
+        "the two create-infos differ in the depth row, which is the whole of what the ui variant is at this rung");
+    xud_check(uiInfo.pColorBlendState == &pipeline.blending[XUD_BATCH_VARIANT_UI], "pipeline/create-blend-row-ui",
+        "and its blend pointer is the UI row's, blended, so a glyph over 3D content is a letter rather than a "
+        "rectangle of the atlas");
+    xud_check(pipeline.blendAttachment[XUD_BATCH_VARIANT_UI].blendEnable == VK_TRUE, "pipeline/attachment-blend-enabled-ui",
+        "blend ENABLED at the ui row, the same reason as the textured row: an alpha over a background that "
+        "is not the clear colour");
+    xud_check((pipeline.blendAttachment[XUD_BATCH_VARIANT_UI].srcColorBlendFactor == VK_BLEND_FACTOR_SRC_ALPHA)
+            && (pipeline.blendAttachment[XUD_BATCH_VARIANT_UI].dstColorBlendFactor == VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA),
+        "pipeline/blend-factors-ui",
+        "the same SRC_ALPHA/ONE_MINUS_SRC_ALPHA pair the textured row carries, because the factors are a "
+        "column of the table rather than a second equation");
+    xud_check(xud_pipeline_fill_shader_stages(pipeline.shaderStages[XUD_PIPELINE_ROW(XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_UI)],
+                  vertModule, fragTexturedModule)
+            == XUD_OK,
+        "pipeline/stages-ui-row-filled",
+        "the fourth column's pair is filled from the textured module, which is what the create loop in "
+        "xud_pipeline_open does for every row of the list");
+    xud_check(uiInfo.pStages[XUD_PIPELINE_FRAGMENT_STAGE].module == fragTexturedModule, "pipeline/create-ui-frag-module",
+        "and the ui row's fragment stage names the textured module, so the list is two modules of vertex state "
+        "and two of fragment state across its eight rows");
+    xud_check((uiInfo.pStages[XUD_PIPELINE_VERTEX_STAGE].module == out.pStages[XUD_PIPELINE_VERTEX_STAGE].module)
+            && (uiInfo.layout == out.layout),
+        "pipeline/create-ui-one-interface",
+        "and the same vertex module and layout, which is what keeps the list one interface: the column adds "
+        "a depth row and a blend column, never a second one");
 }
 
 void xud_test_pipeline(void) { xud_test_pipeline_pure(); }
