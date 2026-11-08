@@ -1307,12 +1307,12 @@ XudResult xud_get_audio_info(XudAudioInfo* outInfo, XudContext* context, XudHand
 XudResult xud_get_audio_length(float* outSeconds, XudContext* context, XudHandle handle);
 
 /*-----------------------------------------------------------------------------------------------
- * The audio playback API - raylib's PlayAudio/StopAudio half, above the sound rung
+ * The audio playback API - raylib's PlayAudio/StopAudio/PauseAudioStream/ResumeAudioStream half, above the sound rung
  *
- * This is raylib's other audio half (reference/raylib/raylib.h: PlayAudio, StopAudio) above the
+ * This is raylib's other audio half (reference/raylib/raylib.h: PlayAudio, StopAudio, PauseAudioStream, ResumeAudioStream) above the
  * sound rung: miniaudio's engine - its ma_device, its node graph and its mixer - with one node pa
  * ir per AUDIOSTREAM slot attached to that graph, reading the block the audio rung below already
- * decoded. The pair here is keyed by the stream rather than by a sound index a caller has to reme
+ * decoded. The four here are keyed by the stream rather than by a sound index a caller has to reme
  * mber, which is the one place this surface diverges from raylib's: PlayAudio answers an index and
  * StopAudio(stream, sound) takes it back, and in this repo the thing a caller holds is a handle wi
  * th a generation in it, so the stream's handle is the identity of its row and a stream played twi
@@ -1327,12 +1327,12 @@ XudResult xud_get_audio_length(float* outSeconds, XudContext* context, XudHandle
 /// AUDIOSTREAM handle"), except that the row is the stream's rather than a fresh sound per call. The
 /// node is spent on the first play of the slot and reused after that, and it reads the block the aud
 /// io rung owns by reference rather than by copy. A play on a row that had reached the end restarts a
-/// t frame 0; a play on a row stopped mid-way resumes where it stopped, which is miniaudio's own note
-/// that a stopped sound is not rewound. XUD_INVALID_ARG on a NULL context or on a handle that does no
-/// t name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never completed b
-/// ring-up, on a stream whose block has no frames to read, or when no audio backend this vendored min
-/// iaudio can drive is present; XUD_ALREADY when the row is already playing; XUD_OUT_OF_MEMORY when th
-/// e row or the node cannot be spent.
+/// t frame 0; a play on a row stopped or held mid-way resumes where it stopped or the hold left it,
+/// which is miniaudio's own note that a stopped sound is not rewound. XUD_INVALID_ARG on a NULL
+/// context or on a handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED
+/// on a context that never completed bring-up, on a stream whose block has no frames to read, or when
+/// no audio backend this vendored miniaudio can drive is present; XUD_ALREADY when the row is already
+/// playing; XUD_OUT_OF_MEMORY when the row or the node cannot be spent.
 XudResult xud_play_audio(XudContext* context, XudHandle stream);
 
 /// Stop one stream's node: raylib's StopAudio (raylib.h 508, "stop playing audio stream"), with th
@@ -1342,6 +1342,27 @@ XudResult xud_play_audio(XudContext* context, XudHandle stream);
 /// e AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up; XUD_
 /// ALREADY when the slot never had a node or its node is already stopped.
 XudResult xud_stop_audio(XudContext* context, XudHandle stream);
+
+/// Hold one stream's node where it is: raylib's PauseAudioStream (raylib.h 745) with the stream's
+/// handle as the row's identity rather than a sound index. The stop the hold makes leaves the cursor
+/// where the node left it, so the resume below takes it from there rather than from frame 0, and the
+/// row itself says held rather than stopped, which is the difference from the stop above: the node
+/// stays attached either way and the next play takes the cursor from where it left it either way, but
+/// only the held row answers the resume. XUD_INVALID_ARG on a NULL context or on a handle that does
+/// not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never completed
+/// bring-up; XUD_ALREADY when the slot never had a node, its node is not reading, or the row is already
+/// held.
+XudResult xud_pause_audio(XudContext* context, XudHandle stream);
+
+/// Release one held stream's node: raylib's ResumeAudioStream (raylib.h 746) with the stream's handle
+/// as the row's identity rather than a sound index. The node stays attached, so the resume costs a
+/// state change on it, and the cursor takes from where the pause left it, so the frames that were
+/// never read are the ones still to come. A row that was stopped rather than held is the play call's
+/// own business, so it answers ALREADY here and the row stays where it is. XUD_INVALID_ARG on a NULL
+/// context or on a handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED
+/// on a context that never completed bring-up; XUD_ALREADY when the slot never had a node, its node is
+/// stopped, or the row is already playing.
+XudResult xud_resume_audio(XudContext* context, XudHandle stream);
 
 /// Is the mixer reading this stream right now: the one question a row answers, read off this rung's o
 /// wn bookkeeping after settling it against the stream's node, rather than off miniaudio's clock, so th

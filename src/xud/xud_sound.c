@@ -1,12 +1,13 @@
 /***********************************************************************************************
  *   xud_sound.c - the sound rung: miniaudio's engine above the audio rung's one host block, the
- *                 one node pair behind one AUDIOSTREAM slot, and the play/stop pair and the one
- *                 question xud.h declares above it
+ *                 one node pair behind one AUDIOSTREAM slot, and the play/stop/pause/resume pair
+ *                 and the one question xud.h declares above it
  *
- *   Owns : the seven rungs xud_sound.h declares (xud_sound_result_from_ma(), xud_sound_open(),
- *          xud_sound_play(), xud_sound_stop(), xud_sound_is_playing(), xud_sound_detach(), xud_
- *          sound_close()) and the three public calls xud.h declares above them (xud_play_audio(),
- *          xud_stop_audio(), xud_is_audio_playing()). The split is the point of the file: the
+ *   Owns : the nine rungs xud_sound.h declares (xud_sound_result_from_ma(), xud_sound_open(),
+ *          xud_sound_play(), xud_sound_stop(), xud_sound_pause(), xud_sound_resume(), xud_sound_
+ *          is_playing(), xud_sound_detach(), xud_sound_close()) and the five public calls xud.h
+ *          declares above them (xud_play_audio(), xud_stop_audio(), xud_pause_audio(), xud_resume_
+ *          audio(), xud_is_audio_playing()). The split is the point of the file: the
  *          audio rung below owns the frames and owns nothing that moves, and this rung owns the
  *          one thing that does move - a node attached to a graph, a device with a thread behind
  *          it and a mixer above both.
@@ -318,7 +319,7 @@ XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle strea
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The stop half, the one question and the release
+ * The stop/pause/resume half, the one question and the release
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_sound_stop(XudSound* sound, XudHandleTable* table, XudHandle stream) {
@@ -356,6 +357,90 @@ XudResult xud_sound_stop(XudSound* sound, XudHandleTable* table, XudHandle strea
 
     ma_sound_stop(&row->sound);
     row->state = XUD_SOUND_ROW_STATE_STOPPED;
+
+    return XUD_OK;
+}
+
+XudResult xud_sound_pause(XudSound* sound, XudHandleTable* table, XudHandle stream) {
+    const XudAudioStreamRecord* record = NULL;
+    XudSoundRow* row = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if ((sound == NULL) || (table == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_audio_get(table, stream, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    if ((sound->rows == NULL) || (stream.index >= sound->rowCount)) {
+        return XUD_ALREADY;
+    }
+    row = sound->rows[stream.index];
+    if (row == NULL) {
+        /* A slot that never had a node is the state this call asks for already being the state it
+           has: nothing the mixer is reading that a hold could hold.
+        */
+        return XUD_ALREADY;
+    }
+    xud_sound_row_settle(row);
+    if (row->state != XUD_SOUND_ROW_STATE_PLAYING) {
+        /* A row that is stopped, or one that reached its end so the settle above moved the state
+           for it, and a row already held, are the same answer: the state this call asks for is
+           already the state it has, which is the reason a pause run twice is not a pause that
+           refused the second time.
+        */
+        return XUD_ALREADY;
+    }
+
+    ma_sound_stop(&row->sound);
+    row->state = XUD_SOUND_ROW_STATE_PAUSED;
+
+    return XUD_OK;
+}
+
+XudResult xud_sound_resume(XudSound* sound, XudHandleTable* table, XudHandle stream) {
+    const XudAudioStreamRecord* record = NULL;
+    XudSoundRow* row = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+    ma_result maResult = MA_ERROR;
+
+    if ((sound == NULL) || (table == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_audio_get(table, stream, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    if ((sound->rows == NULL) || (stream.index >= sound->rowCount)) {
+        return XUD_ALREADY;
+    }
+    row = sound->rows[stream.index];
+    if (row == NULL) {
+        /* A slot that never had a node is not paused, which is the state this call asks for
+           already being the state it has.
+        */
+        return XUD_ALREADY;
+    }
+    xud_sound_row_settle(row);
+    if (row->state != XUD_SOUND_ROW_STATE_PAUSED) {
+        /* A stopped row - and a row that reached its end, which the settle above moved - is the
+           play half's own business, and a row already playing is the state this call asks for
+           already being the state it has: the same answer either way, which is the reason a resume
+           run twice is not a resume that refused the second time.
+        */
+        return XUD_ALREADY;
+    }
+
+    maResult = ma_sound_start(&row->sound);
+    if (maResult != MA_SUCCESS) {
+        return xud_sound_result_from_ma(maResult);
+    }
+    row->state = XUD_SOUND_ROW_STATE_PLAYING;
 
     return XUD_OK;
 }
@@ -610,6 +695,62 @@ XudResult xud_stop_audio(XudContext* context, XudHandle stream) {
     }
 
     return xud_sound_stop(context->sound, context->handleTable, stream);
+}
+
+XudResult xud_pause_audio(XudContext* context, XudHandle stream) {
+    const XudAudioStreamRecord* record = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The handle validated even on a context that never opened the rung, for the reason the stop
+       above gives: a stale handle refuses as a bad argument rather than as "already held".
+    */
+    result = xud_audio_get(context->handleTable, stream, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->sound == NULL) {
+        /* A context that never spent an audio device never spent a node either, which is the
+           state this call asks for already being the state it has.
+        */
+        return XUD_ALREADY;
+    }
+
+    return xud_sound_pause(context->sound, context->handleTable, stream);
+}
+
+XudResult xud_resume_audio(XudContext* context, XudHandle stream) {
+    const XudAudioStreamRecord* record = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The handle validated even on a context that never opened the rung, for the reason the stop
+       above gives: a stale handle refuses as a bad argument rather than as "not paused".
+    */
+    result = xud_audio_get(context->handleTable, stream, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->sound == NULL) {
+        /* A context that never spent an audio device has no held row either, which is the state
+           this call asks for already being the state it has.
+        */
+        return XUD_ALREADY;
+    }
+
+    return xud_sound_resume(context->sound, context->handleTable, stream);
 }
 
 XudResult xud_is_audio_playing(bool* outPlaying, XudContext* context, XudHandle stream) {

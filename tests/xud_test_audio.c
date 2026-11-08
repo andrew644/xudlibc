@@ -884,7 +884,7 @@ static void xud_test_audio_gpu(void) {
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The play/stop pair, against a shell: the pair's validation, and the one thing that is answerable
+ * The play/stop/pause/resume four, against a shell: the four's validation, and the one thing that is answerable
  * without an audio backend
  *-----------------------------------------------------------------------------------------------*/
 
@@ -944,6 +944,26 @@ static void xud_test_audio_play(void) {
     xud_check(xud_stop_audio(&shell, stale) == XUD_INVALID_ARG, "play-stop-stale",
         "and the stop validates the handle even on a context whose sound rung was never spent, which is what makes a stale handle's refus"
         "al a bad argument rather than an ALREADY that would have read the slot");
+
+    xud_check(xud_pause_audio(NULL, handle) == XUD_INVALID_ARG, "pause-null-context",
+        "a hold with no context to own it is refused, the same split the play above gives");
+    xud_check(xud_pause_audio(&empty, handle) == XUD_UNSUPPORTED, "pause-no-rungs-below",
+        "and a context that owns no handle table is refused as UNSUPPORTED rather than as a bad handle, the same split the load above "
+        "gives");
+    xud_check(xud_pause_audio(&shell, stale) == XUD_INVALID_ARG, "pause-stale",
+        "and a handle kept past the release that freed its slot is refused as a bad argument, which is the pair's validation running "
+        "BEFORE the sound rung is spent - the one order that makes this answerable at all on a machine with no audio backend");
+    xud_check(xud_pause_audio(&shell, foreign) == XUD_INVALID_ARG, "pause-foreign-kind",
+        "and a handle of another kind is refused rather than a row spent at that other kind's slot index");
+    xud_check(xud_pause_audio(&shell, handle) == XUD_ALREADY, "pause-never-played",
+        "a hold on a stream that never had a node answers ALREADY rather than a refusal, which is the state this call asks for already "
+        "being the state it has");
+    xud_check(xud_resume_audio(&shell, handle) == XUD_ALREADY, "resume-never-paused",
+        "and a release of a stream that was never held answers the same, so the pair's two answers are the same state read twice rather "
+        "than two different questions");
+    xud_check(xud_resume_audio(&shell, stale) == XUD_INVALID_ARG, "resume-stale",
+        "and the release validates the handle even on a context whose sound rung was never spent, which is what makes a stale handle's "
+        "refusal a bad argument rather than an ALREADY that would have read the slot");
 
     xud_check(xud_close_audio(&shell, handle) == XUD_OK, "play-close-never-played",
         "the public close releases a stream that was never played, which is the detach above it answering OK on a slot with no row behind i"
@@ -1078,7 +1098,7 @@ static void xud_test_audio_params(void) {
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The play/stop pair, against a real context: the rung spent, and the row's three states
+ * The play/stop/pause/resume four, against a real context: the rung spent, and the row's four states
  *-----------------------------------------------------------------------------------------------*/
 
 #define XUD_TEST_AUDIO_END_POLL_LIMIT                                                                                                      \
@@ -1281,6 +1301,83 @@ static void xud_test_audio_device(void) {
         "rate rather than the take's is the one the window catches, in both directions");
     xud_check(
         xud_close_audio(context, handle) == XUD_OK, "device-duration-close", "and the close answers OK over a row that reached its end");
+
+    /* Pause and resume, on the two-second take: the hold is the one state the natural end above cannot set, so the take is the
+       stream the hold is watched on, and the clock is the one thing that can say the resume took the cursor from the hold rather
+       than from frame 0. */
+    audio.fileData = xudTestAudioFile[XUD_TEST_AUDIO_OGG_INDEX];
+    audio.fileBytes = xudTestAudioBytes[XUD_TEST_AUDIO_OGG_INDEX];
+    xud_check(xud_load_audio(&handle, context, &audio) == XUD_OK, "device-pause-loaded",
+        "the two-second take is decoded again, in a slot of its own, which is the stream the hold is watched on rather than a state "
+        "the wait below merely watched move");
+    played = xud_play_audio(context, handle);
+    xud_check(played == XUD_OK, "device-pause-play", "the play spends the same rung for the take");
+    xud_check(xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-pause-question", "the question answers beside the play");
+    xud_check(playing == true, "device-pause-playing", "and answers true, which is the state the hold below has to take");
+
+    /* The wait for the hold to have a middle of the stream to hold: a fixed tick until the clock is half the take's length, so the
+       resume below has a cursor in the block rather than at frame 0 or at the end. */
+    {
+        static const struct timespec tick = { 0, 10000000 }; /* one tick, ten milliseconds */
+        double elapsed = 0.0;
+        while ((elapsed < 0.5) && (playing == true)) {
+            nanosleep(&tick, NULL);
+            if (xud_is_audio_playing(&playing, context, handle) != XUD_OK) {
+                playing = false;
+            }
+            elapsed += 0.01;
+        }
+    }
+    xud_check(playing == true, "device-pause-still-playing",
+        "the take is still reading at the half-second mark, so the hold below is a hold on the middle of the stream rather than on "
+        "its end");
+
+    xud_check(xud_pause_audio(context, handle) == XUD_OK, "device-pause",
+        "the hold answers OK on a reading row: the node stays attached and the cursor stays where the node left it");
+    xud_check(
+        xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-pause-question-again", "the question answers beside the hold");
+    xud_check(playing == false, "device-paused",
+        "and answers false: the mixer is not reading the held row, which is the hold's own difference from the stop above, whose row "
+        "says stopped rather than held");
+    xud_check(xud_pause_audio(context, handle) == XUD_ALREADY, "device-pause-twice",
+        "and a hold run twice is not a hold that refused the second time, which is the state this call asks for already being the "
+        "state it has");
+
+    xud_check(xud_resume_audio(context, handle) == XUD_OK, "device-resume",
+        "and the release answers OK on the held row: the node goes back to the mix with the cursor where the hold left it");
+    xud_check(
+        xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-resume-question", "the question answers beside the release");
+    xud_check(playing == true, "device-resumed", "and answers true again, so the release is a mix rather than a state flip");
+    xud_check(xud_resume_audio(context, handle) == XUD_ALREADY, "device-resume-twice",
+        "and a release run twice answers ALREADY on a row that is playing for real");
+    xud_check(xud_test_audio_wait_for_end_at(context, handle, &endedAt), "device-pause-ended",
+        "polled with a clock until the question answers false: the take ran out on the audio thread after the release");
+    xud_check((endedAt > 1.0) && (endedAt < 1.8), "device-resume-continues",
+        "and the end is a time on the take's own numbers, not on the take's full length: a release that had taken the cursor back to "
+        "frame 0 would land near the whole two seconds, and one that had taken it past the hold would land near zero, so the window "
+        "catches both the restart and the skip");
+
+    /* The stop on the hold, and the close over it: the held row is the one state the stop's own check does not move, so the pair is
+       watched on a row of its own. */
+    played = xud_play_audio(context, handle);
+    xud_check(played == XUD_OK, "device-pause-replay",
+        "a play on a row that reached its end answers OK, the restart the play half states, which puts the row back to reading for "
+        "the hold below");
+    xud_check(xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-pause-replay-question",
+        "the question answers beside the restart");
+    xud_check(playing == true, "device-pause-replaying", "and answers true, which is the state the hold below has to take");
+    xud_check(xud_pause_audio(context, handle) == XUD_OK, "device-pause-hold",
+        "and the hold takes the row off the mix again, so the stop below has a held row rather than a reading one");
+    xud_check(xud_stop_audio(context, handle) == XUD_ALREADY, "device-stop-held",
+        "and the stop on the held row answers ALREADY rather than OK: the state it asks for - the mixer not reading the row - already "
+        "holds, and the row stays held for the close below rather than moving to stopped");
+    xud_check(
+        xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-stop-held-question", "the question answers beside the refusal");
+    xud_check(playing == false, "device-stop-held-still-paused",
+        "and answers false, so the refusal moved nothing: the row's state is the hold's rather than the stop's");
+    xud_check(xud_close_audio(context, handle) == XUD_OK, "device-close-held",
+        "and the close answers OK over a held row: the detach's refusal is a row the mixer is reading, and a held row is a row it is "
+        "not");
 
     xud_check(xud_sound_close(&context->sound, &closed) == XUD_OK, "device-sound-close",
         "the rung's own teardown closes what the play spent, and the context's teardown runs the same rung above the audio's close_all");

@@ -6,8 +6,9 @@
  *
  *   Owns : XudSound (the engine, the row array and the row count) and XudSoundRow (the one
  *          node pair behind one AUDIOSTREAM slot) plus the rungs above it - xud_sound_result_
- *          from_ma(), xud_sound_open(), xud_sound_play(), xud_sound_stop(), xud_sound_is_pla
- *          ying(), xud_sound_detach() and the teardown rung xud_sound_close().
+ *          from_ma(), xud_sound_open(), xud_sound_play(), xud_sound_stop(), xud_sound_pause(),
+ *          xud_sound_resume(), xud_sound_is_playing(), xud_sound_detach() and the teardown rung
+ *          xud_sound_close().
  *   Layer: above the audio rung and below the public API. This is the SECOND audio rung and it
  *          is the one the audio rung's own note says was missing: what landed there was every
  *          number a play row needs beside the device, and what lands here is the device, the
@@ -89,22 +90,25 @@ static_assert((XUD_SOUND_ROW_MAX_CAPACITY % XUD_SOUND_ROW_MIN_CAPACITY) == 0u,
     "array are unreachable");
 
 /*-----------------------------------------------------------------------------------------------
- * The row's three states, and why there is no fourth
+ * The row's four states, and why the pause names a hold rather than a position
  *-----------------------------------------------------------------------------------------------
 
    NONE and STOPPED are two states rather than one because the node behind a row costs a graph
    attach and a heap allocation, and a stream stopped and played again is the same stream: the
-   node stays and only its state moves. PAUSED is absent for the reason the audio rung's note on
-   frames gives - a paused row is a row whose cursor is somewhere in the block, and the cursor
-   belongs to miniaudio's data source rather than to this rung, so the rung that would expose it
-   would be exposing a number it does not own.
+   node stays and only its state moves. PAUSED is the row the caller asked the mixer to hold while
+   it was reading it: the stop the pause makes leaves the cursor where the node left it, and the
+   cursor belongs to miniaudio's data source rather than to this rung, so the state names the hold
+   and the resume takes the cursor from where the hold left it - the rung exposes no number it does
+   not own, which is the reason the audio rung's note on frames gives.
 */
 
 #define XUD_SOUND_ROW_STATE_NONE 0u /* no node was ever spent for this slot index, which is what a zero-initialised row is */
 #define XUD_SOUND_ROW_STATE_STOPPED                                                                                                        \
     1u /* the node exists and is not playing: it stays attached, so the next play costs a state change rather than a new node */
 #define XUD_SOUND_ROW_STATE_PLAYING 2u /* the node exists and the mixer is reading it */
-#define XUD_SOUND_ROW_STATE_COUNT 3u /* one past the highest row state, which is the row count of the state table this rung's checks read */
+#define XUD_SOUND_ROW_STATE_PAUSED                                                                                                         \
+    3u /* the node exists, is not reading, and the resume takes the cursor from where the pause left it rather than from frame 0 */
+#define XUD_SOUND_ROW_STATE_COUNT 4u /* one past the highest row state, which is the row count of the state table this rung's checks read */
 
 static_assert(XUD_SOUND_ROW_STATE_NONE == 0u,
     "xud_sound.h: NONE must be the 0th state, which is what makes a row this rung calloc-ed name a node that was never spent");
@@ -117,7 +121,7 @@ static_assert(XUD_SOUND_ROW_STATE_COUNT > XUD_SOUND_ROW_STATE_PLAYING,
 
 typedef struct XudSoundRow {
     uint32_t
-        state; /* XUD_SOUND_ROW_STATE_NONE when no node was ever spent for this slot, XUD_SOUND_ROW_STATE_STOPPED once one exists and is not playing, XUD_SOUND_ROW_STATE_PLAYING while it is */
+        state; /* XUD_SOUND_ROW_STATE_NONE when no node was ever spent for this slot, XUD_SOUND_ROW_STATE_STOPPED once one exists and is not playing, XUD_SOUND_ROW_STATE_PLAYING while it is, XUD_SOUND_ROW_STATE_PAUSED while the pause's hold on it is in place */
     ma_audio_buffer_ref
         bufferRef; /* a reference OVER the audio record's block, not a copy: the record owns the block and this row only names it */
     ma_sound sound; /* the engine node pair, attached to the engine's endpoint, reading the row's own bufferRef */
@@ -165,7 +169,7 @@ XudResult xud_sound_result_from_ma(ma_result result);
 XudResult xud_sound_open(XudSound** outSound);
 
 /*-----------------------------------------------------------------------------------------------
- * The play/stop pair, the one question and the release
+ * The play/stop/pause/resume four, the one question and the release
  *-----------------------------------------------------------------------------------------------*/
 
 /// Driver: one stream's node, spent on the first play of the slot and reused after that, then star
@@ -178,12 +182,13 @@ XudResult xud_sound_open(XudSound** outSound);
 /// moves, and miniaudio stops a node itself when its data source runs out, so a row that reached
 /// the end is settled to STOPPED here, and the restart is miniaudio's own note that ma_sound_start
 /// seeks back when the sound is at end. A play on a row stopped mid-way resumes where it stopped,
-/// which is the other half of that same note that a stopped sound is not rewound. XUD_INVALID_ARG o
-/// n a NULL sound rung or table, or on a handle that does not name a live AUDIOSTREAM slot of this
+/// which is the other half of that same note that a stopped sound is not rewound, and a play on a
+/// row held by a pause is the same resume from the hold for the same reason. XUD_INVALID_ARG on a
+/// NULL sound rung or table, or on a handle that does not name a live AUDIOSTREAM slot of this
 /// table; XUD_ALREADY when the row is playing for real (the state this call asks for is already the
 /// state it has); XUD_OUT_OF_MEMORY when the row array or the node cannot be spent; XUD_UNSUPPORTED
-/// on a stream whose block has no frames to read; XUD_INTERNAL_ERROR on the row bound this rung's o
-/// wn ceiling cannot name.
+/// on a stream whose block has no frames to read; XUD_INTERNAL_ERROR on the row bound this rung's own
+/// ceiling cannot name.
 XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle stream);
 
 /// Driver: one stream's node stopped, which is a state change on the node that stays attached: the
@@ -193,6 +198,29 @@ XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle strea
 /// _INVALID_ARG on a NULL sound rung or table, or on a handle that does not name a live AUDIOSTREAM
 /// slot of this table; XUD_ALREADY when the slot never had a node or its node is already stopped (t
 /// he state this call asks for is already the state it has); XUD_OK once the mixer has been told.
+XudResult xud_sound_stop(XudSound* sound, XudHandleTable* table, XudHandle stream);
+
+/// Driver: one stream's node told to hold, which is the stop the pause makes: the node stays
+/// attached, the cursor stays where the node left it, inside miniaudio's data source, and the row
+/// moves to PAUSED rather than STOPPED, so the resume knows to take the cursor from there rather
+/// than from frame 0. The row's state is settled against the node first, for the reason the play
+/// half states, so a stream that reached its end is stopped already by miniaudio and answers here
+/// the same as one never played. XUD_INVALID_ARG on a NULL sound rung or table, or on a handle
+/// that does not name a live AUDIOSTREAM slot of this table; XUD_ALREADY when the slot never had
+/// a node, its node is already stopped, or the row is already held (the state this call asks for
+/// is already the state it has); XUD_OK once the mixer has been told and the row is held.
+XudResult xud_sound_pause(XudSound* sound, XudHandleTable* table, XudHandle stream);
+
+/// Driver: one held stream's node started again, which is the play the resume makes: the row
+/// moves back to PLAYING and takes the cursor from where the pause left it, so the frames that
+/// were never read are the ones still to come rather than the ones already heard. A resume of a
+/// row that was stopped rather than held is the play half's own business, so it answers ALREADY
+/// here and the row stays where it is. The row's state is settled against the node first, for the
+/// reason the play half states. XUD_INVALID_ARG on a NULL sound rung or table, or on a handle
+/// that does not name a live AUDIOSTREAM slot of this table; XUD_ALREADY when the slot never had
+/// a node, its node is stopped, or the row is already playing (the state this call asks for is
+/// already the state it has); XUD_OK once the mixer has been told and the row is playing.
+XudResult xud_sound_resume(XudSound* sound, XudHandleTable* table, XudHandle stream);
 
 /// One question a caller can ask of a row - is the mixer reading it - answered off the row's own
 /// state after settling it against the node: the row's state is the one thing the caller's thread
