@@ -173,29 +173,37 @@ XudResult xud_sound_open(XudSound** outSound);
 /// essor (so a stale handle, a cross-kind handle and a fabricated one refuse before a row is spent
 /// ), the row array grown to name the slot's index if it does not yet, the node built from a ma_au
 /// dio_buffer_ref OVER the record's block and attached to the engine's endpoint when the row has no
-/// node yet, then ma_sound_start. A play on a row that had reached the end restarts at frame 0, wh
-/// ich is miniaudio's own note that ma_sound_start seeks back when the sound is at end; a play on a
-/// row stopped mid-way resumes where it stopped, which is the other half of that same note that a
-/// stopped sound is not rewound. XUD_INVALID_ARG on a NULL sound rung or table, or on a handle tha
-/// t does not name a live AUDIOSTREAM slot of this table; XUD_ALREADY when the
-/// row is already playing (the state this call asks for is already the state it has); XUD_OUT_OF_
-/// MEMORY when the row array or the node cannot be spent; XUD_UNSUPPORTED on a stream whose block
-/// has no frames to read; XUD_INTERNAL_ERROR on the row bound this rung's own ceiling cannot name.
+/// node yet, then the row's state settled against the node, then ma_sound_start. The settle is the
+/// one place the row learns its stream reached the end: the node is the one thing the audio thread
+/// moves, and miniaudio stops a node itself when its data source runs out, so a row that reached
+/// the end is settled to STOPPED here, and the restart is miniaudio's own note that ma_sound_start
+/// seeks back when the sound is at end. A play on a row stopped mid-way resumes where it stopped,
+/// which is the other half of that same note that a stopped sound is not rewound. XUD_INVALID_ARG o
+/// n a NULL sound rung or table, or on a handle that does not name a live AUDIOSTREAM slot of this
+/// table; XUD_ALREADY when the row is playing for real (the state this call asks for is already the
+/// state it has); XUD_OUT_OF_MEMORY when the row array or the node cannot be spent; XUD_UNSUPPORTED
+/// on a stream whose block has no frames to read; XUD_INTERNAL_ERROR on the row bound this rung's o
+/// wn ceiling cannot name.
 XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle stream);
 
 /// Driver: one stream's node stopped, which is a state change on the node that stays attached: the
-/// frames go back to the audio record and the node goes back to the next play of the same slot. XUD
+/// frames go back to the audio record and the node goes back to the next play of the same slot. The
+/// row's state is settled against the node first, for the reason the play half states, so a stream
+/// that reached its end is stopped already by miniaudio and answers here the same as one stopped. XUD
 /// _INVALID_ARG on a NULL sound rung or table, or on a handle that does not name a live AUDIOSTREAM
 /// slot of this table; XUD_ALREADY when the slot never had a node or its node is already stopped (t
 /// he state this call asks for is already the state it has); XUD_OK once the mixer has been told.
-XudResult xud_sound_stop(XudSound* sound, XudHandleTable* table, XudHandle stream);
 
-/// Pure above the rung: the one question a caller can ask of a row - is the mixer reading it - read
-/// off the row's own state rather than off miniaudio's clock, so the answer is this rung's bookkee
-/// ping and not a race against the thread that pulls frames. XUD_INVALID_ARG on a NULL out-playing
-/// or a NULL sound rung; XUD_OK with false on a slot that never had a node or on one whose node is
-/// stopped, which is the answer rather than an error because the question is answerable either way.
-XudResult xud_sound_is_playing(bool* outPlaying, const XudSound* sound, XudHandleTable* table, XudHandle stream);
+/// One question a caller can ask of a row - is the mixer reading it - answered off the row's own
+/// state after settling it against the node: the row's state is the one thing the caller's thread
+/// owns, the node is the one thing the audio thread moves, so the question is asked of both, and a
+/// row that says playing while the node says otherwise is a row whose stream reached the end, which
+/// the settle moves to STOPPED. The answer is therefore this rung's bookkeeping, kept true, rather
+/// than a race against the thread that pulls frames. XUD_INVALID_ARG on a NULL out-playing or a NUL
+/// L sound rung; XUD_OK with false on a slot that never had a node or on one whose node is stopped
+/// - a stop or a stream that reached its end - which is the answer rather than an error because the
+/// question is answerable either way.
+XudResult xud_sound_is_playing(bool* outPlaying, XudSound* sound, XudHandleTable* table, XudHandle stream);
 
 /// Driver: one row's level, written on the node the row owns - ma_sound_set_volume, the engine's
 /// own per-node setter. A slot with no node is the state the call asks for already being the
@@ -217,10 +225,12 @@ XudResult xud_sound_set_row_pitch(XudSound* sound, XudHandle stream, float pitch
 /// Driver: one row's node destroyed and its bufferRef reference given back, which is what the audio
 /// rung's close runs BEFORE it frees the record the row reads: a node left attached over a block the
 /// record is about to free is a mixer reading freed memory, so a row that is playing refuses rather
-/// than being stopped silently on the caller's behalf. XUD_INVALID_ARG on a NULL sound rung or table
-/// , or on a handle that does not name a live AUDIOSTREAM slot of this table; XUD_UNSUPPORTED while
-/// the row is playing (the close is not supported over a row in use, and the caller's answer is to
-/// stop it first); XUD_OK when the row was destroyed or had never owned a node.
+/// than being stopped silently on the caller's behalf. A row that reached its end is not playing:
+/// miniaudio stopped its node, and the settle answers that before the refusal, so a close after the
+/// stream ends is the same close as a close after a stop. XUD_INVALID_ARG on a NULL sound rung or ta
+/// ble, or on a handle that does not name a live AUDIOSTREAM slot of this table; XUD_UNSUPPORTED whi
+/// le the row is playing (the close is not supported over a row in use, and the caller's answer is t
+/// o stop it first); XUD_OK when the row was destroyed or had never owned a node.
 XudResult xud_sound_detach(XudSound* sound, XudHandleTable* table, XudHandle stream);
 
 /// Teardown: every row's node uninitialized and every bufferRef reference given back, then the eng

@@ -1344,11 +1344,12 @@ XudResult xud_play_audio(XudContext* context, XudHandle stream);
 XudResult xud_stop_audio(XudContext* context, XudHandle stream);
 
 /// Is the mixer reading this stream right now: the one question a row answers, read off this rung's o
-/// wn bookkeeping rather than off miniaudio's clock, so the answer is a state this library owns and no
-/// t a race against the thread that pulls frames. XUD_INVALID_ARG on a NULL out-playing, context, or on a
-/// handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that n
-/// ever completed bring-up; XUD_OK with false on a stream that was never played, which is the answer rat
-/// her than an error.
+/// wn bookkeeping after settling it against the stream's node, rather than off miniaudio's clock, so th
+/// e answer is a state this library owns and keeps true - a stream that ended on the audio thread settle
+/// s to stopped - and not a race against the thread that pulls frames. XUD_INVALID_ARG on a NULL out-playi
+/// ng, context, or on a handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED o
+/// n a context that never completed bring-up; XUD_OK with false on a stream that was never played or that e
+/// nded, which is the answer rather than an error.
 XudResult xud_is_audio_playing(bool* outPlaying, XudContext* context, XudHandle stream);
 
 /// Set the level a stream plays at: raylib's SetAudioStreamVolume (raylib.h 1748, "1.0 is max

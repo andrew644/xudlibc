@@ -9,7 +9,8 @@
  *          count read back out of the record beside the ones the container's own header declares
  *          them, the public load/close pair and the two queries against a shell context and ag
  *          ainst a real one, the play/stop pair's validation against a shell and its three states
- *          against a real context, and the teardown rung above the table's own close - and nothing
+ *          against a real context, the natural end of a stream on the audio thread and the close it
+ *          leaves behind, and the teardown rung above the table's own close - and nothing
  *          else: the slot arrays and the generation bumps are the handle area's, the context's own
  *          bring-up and teardown are the core area's, and the vendor area's miniaudio check is o
  *          nly that the library links, which is not that this rung reads a container.
@@ -43,16 +44,21 @@
  *          pure half's own numbers are arithmetic on this rung's bounds rather than the files' answers, so
  *          the pure half runs with no file present at all.
  *
- *   Deterministic: nine fixed files, one fixed fragment length, one fixed claimed length, no time, no
- *   randomness, and the two containers this vendored miniaudio still cannot read are asked about rather
- *   than skipped, so a decoder that gained qoa support would fail this area rather than quietly pass it.
+ *   Deterministic: nine fixed files, one fixed fragment length, one fixed claimed length, no randomness,
+ *   and the two containers this vendored miniaudio still cannot read are asked about rather than skipped,
+ *   so a decoder that gained qoa support would fail this area rather than quietly pass it. The one wait
+ *   the device half runs is a poll with a fixed tick and a fixed ceiling, which waits for the state
+ *   change it checks rather than assuming a wall time the audio thread is not bound to.
  *
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
 
+#define _POSIX_C_SOURCE 200112L /* Required for: nanosleep under -std=c11, where time.h alone does not declare the POSIX names */
+
 #include <stdio.h> /* Required for: fopen, fread, fclose, ftell, fseek and printf, the six audio files both halves read */
 #include <stdlib.h> /* Required for: malloc and free, the file buffers and the bare table */
 #include <string.h> /* Required for: memset, memcpy, the shells and the handles before they are filled */
+#include <time.h> /* Required for: nanosleep, the tick the natural-end poll sleeps between its questions */
 
 #include "xud.h" /* Required for: XudResult, XudHandle, XudContext, XudAudioData, XudAudioInfo, XUD_HANDLE_KIND_AUDIOSTREAM - the public surface above */
 #include "xud_audio.h" /* Required for: XudAudioStreamRecord and the rung's own check/codes/stride/conversions/access/open/close/close_all halves */
@@ -1051,6 +1057,51 @@ static void xud_test_audio_params(void) {
  * The play/stop pair, against a real context: the rung spent, and the row's three states
  *-----------------------------------------------------------------------------------------------*/
 
+#define XUD_TEST_AUDIO_END_POLL_LIMIT                                                                                                      \
+    500u /* the poll's ceiling: a bound on the wait, not a claim about the stream - five seconds at the tick below */
+
+/* The wait the natural end asks for: the stream runs out on the audio thread, so the only honest wait
+   is one that polls the public question until it answers false, with a fixed tick between questions and
+   a fixed ceiling on the number of them. The ceiling is where a backend that ran the stream but never
+   let it end would be caught, and a question that refused on the way is the same answer.
+ */
+static bool xud_test_audio_wait_for_end(XudContext* context, XudHandle handle) {
+    static const struct timespec tick = { 0, 10000000 }; /* one tick, ten milliseconds */
+    bool playing = true;
+    uint32_t polls = 0u;
+
+    while ((polls < XUD_TEST_AUDIO_END_POLL_LIMIT) && (playing == true)) {
+        nanosleep(&tick, NULL);
+        if (xud_is_audio_playing(&playing, context, handle) != XUD_OK) {
+            return false;
+        }
+        polls++;
+    }
+
+    return playing == false;
+}
+
+/* The wait the duration asks for: the natural end's fixed tick and fixed ceiling, with a clock beside the question, so the end
+   is a time the stream's own numbers can be checked against rather than a state the wait merely watched move.
+*/
+static bool xud_test_audio_wait_for_end_at(XudContext* context, XudHandle handle, double* outSeconds) {
+    static const struct timespec tick = { 0, 10000000 }; /* one tick, ten milliseconds */
+    bool playing = true;
+    uint32_t polls = 0u;
+
+    *outSeconds = 0.0;
+    while ((polls < XUD_TEST_AUDIO_END_POLL_LIMIT) && (playing == true)) {
+        nanosleep(&tick, NULL);
+        if (xud_is_audio_playing(&playing, context, handle) != XUD_OK) {
+            return false;
+        }
+        polls++;
+    }
+
+    *outSeconds = (double)polls * 0.01;
+    return playing == false;
+}
+
 static void xud_test_audio_device(void) {
     XudContext* context = NULL;
     XudHandle handle = { 0u, 0u, 0u };
@@ -1060,6 +1111,7 @@ static void xud_test_audio_device(void) {
     float volume = 0.0f;
     float pitch = 0.0f;
     uint32_t closed = 0u;
+    double endedAt = 0.0;
 
     memset(&handle, 0, sizeof(handle));
     memset(&audio, 0, sizeof(audio));
@@ -1148,6 +1200,55 @@ static void xud_test_audio_device(void) {
 
     xud_check(xud_close_audio(context, handle) == XUD_OK, "device-close",
         "the public close releases it, with the detach above it having given the bufferRef reference back before the record's block went");
+
+    /* The natural end, on the shortest stream: the mixer runs it out on its own thread, so the row's
+       state is the one thing this half can watch move between the two clocks. */
+    audio.fileData = xudTestAudioFile[0];
+    audio.fileBytes = xudTestAudioBytes[0];
+    xud_check(xud_load_audio(&handle, context, &audio) == XUD_OK, "device-natural-loaded",
+        "the shortest of the files is decoded, which is the stream the natural end is watched on rather than the minutes the largest one "
+        "would wait");
+    played = xud_play_audio(context, handle);
+    xud_check(played == XUD_OK, "device-natural-play",
+        "the play spends the same rung for a second slot, which is a new row beside the engine rather than a second engine");
+    xud_check(xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-natural-question", "the question answers beside the play");
+    xud_check(playing == true, "device-natural-playing", "and answers true, which is the state the wait below has to watch move");
+    xud_check(xud_test_audio_wait_for_end(context, handle), "device-natural-ended",
+        "polled until the question answers false: the stream ran out on the audio thread, and the row's state is settled to stopped by the "
+        "question rather than left naming a mix that no longer happens");
+    played = xud_play_audio(context, handle);
+    xud_check(played == XUD_OK, "device-natural-replay",
+        "and a play on a row that reached the end answers OK rather than ALREADY, which is the restart the play half states: the row "
+        "settles to stopped, and ma_sound_start seeks back to frame 0");
+    xud_check(xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-natural-replay-question",
+        "the question answers beside the restart");
+    xud_check(playing == true, "device-natural-replaying", "and answers true again, so the restart is a mix rather than a state flip");
+    xud_check(xud_test_audio_wait_for_end(context, handle), "device-natural-ended-again",
+        "and the second run out settles the same way, so the settle is the row's standing behavior rather than a one-time move");
+    xud_check(xud_close_audio(context, handle) == XUD_OK, "device-natural-close",
+        "and the close answers OK over a row that reached its end: the detach's refusal is a row the mixer is reading, and a stream at its "
+        "end is a stream it is not");
+
+    /* The duration, on the two-second take: the stream's own numbers say when the walk is over, and a rate
+       the engine's device does not hold is the one the resampler has to answer for. */
+    audio.fileData = xudTestAudioFile[XUD_TEST_AUDIO_OGG_INDEX];
+    audio.fileBytes = xudTestAudioBytes[XUD_TEST_AUDIO_OGG_INDEX];
+    xud_check(xud_load_audio(&handle, context, &audio) == XUD_OK, "device-duration-loaded",
+        "the two-second take is decoded, which is the stream the duration is timed on rather than a state the wait below merely watched "
+        "move");
+    played = xud_play_audio(context, handle);
+    xud_check(played == XUD_OK, "device-duration-play", "the play spends the same rung for the take");
+    xud_check(
+        xud_is_audio_playing(&playing, context, handle) == XUD_OK, "device-duration-question", "the question answers beside the play");
+    xud_check(playing == true, "device-duration-playing", "and answers true, which is the state the clock below has to watch");
+    xud_check(xud_test_audio_wait_for_end_at(context, handle, &endedAt), "device-duration-ended",
+        "polled with a clock until the question answers false: the take ran out on the audio thread, and the clock is the time the end "
+        "landed on");
+    xud_check((endedAt > 1.5) && (endedAt < 3.0), "device-duration-window",
+        "and the end is a time on the take's own numbers, within half a second of its length on either side: a walk timed at the device's "
+        "rate rather than the take's is the one the window catches, in both directions");
+    xud_check(
+        xud_close_audio(context, handle) == XUD_OK, "device-duration-close", "and the close answers OK over a row that reached its end");
 
     xud_check(xud_sound_close(&context->sound, &closed) == XUD_OK, "device-sound-close",
         "the rung's own teardown closes what the play spent, and the context's teardown runs the same rung above the audio's close_all");

@@ -206,6 +206,19 @@ XudResult xud_sound_open(XudSound** outSound) {
  * The play half, and the one node behind one slot
  *-----------------------------------------------------------------------------------------------*/
 
+/* Settle a row's state against its node: the node is the one thing the audio thread moves, and
+   miniaudio stops a node itself, on that thread, when its data source runs out, so a row whose
+   state says PLAYING while the node answers otherwise is a row whose stream reached its end and
+   whose state has not moved since. This is the one place that move happens, and it is safe to run
+   from the caller's thread because the question it asks, ma_sound_is_playing(), is miniaudio's own
+   cross-thread read of the node's state.
+ */
+static void xud_sound_row_settle(XudSoundRow* row) {
+    if ((row->state == XUD_SOUND_ROW_STATE_PLAYING) && (ma_sound_is_playing(&row->sound) == MA_FALSE)) {
+        row->state = XUD_SOUND_ROW_STATE_STOPPED;
+    }
+}
+
 XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle stream) {
     const XudAudioStreamRecord* record = NULL;
     XudSoundRow* row = NULL;
@@ -253,6 +266,9 @@ XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle strea
             free(row);
             return xud_sound_result_from_ma(maResult);
         }
+        row->bufferRef.sampleRate
+            = record
+                  ->sampleRate; /* this vendored miniaudio leaves the ref's rate at zero, and the engine node reads the data source's rate to set its resampler */
 
         soundConfig = ma_sound_config_init_2(&sound->engine);
         soundConfig.pDataSource = &row->bufferRef;
@@ -286,6 +302,7 @@ XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle strea
         sound->liveRows++;
     }
 
+    xud_sound_row_settle(row);
     if (row->state == XUD_SOUND_ROW_STATE_PLAYING) {
         return XUD_ALREADY;
     }
@@ -321,10 +338,16 @@ XudResult xud_sound_stop(XudSound* sound, XudHandleTable* table, XudHandle strea
         return XUD_ALREADY;
     }
     row = sound->rows[stream.index];
-    if ((row == NULL) || (row->state != XUD_SOUND_ROW_STATE_PLAYING)) {
-        /* A slot that never had a node and a slot whose node is already stopped are one answer an
-           d it is the state this call asks for already being the state it has - the repo's own id
-           empotent-teardown code, and the reason a stop run twice is not a stop that refused the
+    if (row == NULL) {
+        /* A slot that never had a node is the state this call asks for already being the state it has - the repo's own idempotent-teardown code.
+        */
+        return XUD_ALREADY;
+    }
+    xud_sound_row_settle(row);
+    if (row->state != XUD_SOUND_ROW_STATE_PLAYING) {
+        /* A slot whose node is already stopped, and one whose stream reached its end so the settle
+           above moved the state for it, are the same answer: the state this call asks for is already
+           the state it has, which is the reason a stop run twice is not a stop that refused the
            second time.
         */
         return XUD_ALREADY;
@@ -336,9 +359,9 @@ XudResult xud_sound_stop(XudSound* sound, XudHandleTable* table, XudHandle strea
     return XUD_OK;
 }
 
-XudResult xud_sound_is_playing(bool* outPlaying, const XudSound* sound, XudHandleTable* table, XudHandle stream) {
+XudResult xud_sound_is_playing(bool* outPlaying, XudSound* sound, XudHandleTable* table, XudHandle stream) {
     const XudAudioStreamRecord* record = NULL;
-    const XudSoundRow* row = NULL;
+    XudSoundRow* row = NULL;
     XudResult result = XUD_INTERNAL_ERROR;
 
     if ((outPlaying == NULL) || (sound == NULL) || (table == NULL)) {
@@ -356,6 +379,7 @@ XudResult xud_sound_is_playing(bool* outPlaying, const XudSound* sound, XudHandl
     }
     row = sound->rows[stream.index];
     if (row != NULL) {
+        xud_sound_row_settle(row);
         *outPlaying = (row->state == XUD_SOUND_ROW_STATE_PLAYING);
     }
 
@@ -427,6 +451,7 @@ XudResult xud_sound_detach(XudSound* sound, XudHandleTable* table, XudHandle str
     if (row == NULL) {
         return XUD_OK;
     }
+    xud_sound_row_settle(row);
     if (row->state == XUD_SOUND_ROW_STATE_PLAYING) {
         /* The refusal the audio close runs this half for: the row's node is reading the block the
            record is about to free, and a close that stopped the row on the caller's behalf would

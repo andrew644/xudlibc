@@ -404,3 +404,24 @@ until the scene fits the capacity the batch has. The headless half covers the
 guards, the clean diagnosis, the refused-append half and the at-bound half
 against a shell context; the GPU half reads the same query back through a
 completed context.
+
+## Correctness found after the first read
+
+### 18. (RESOLVED) A stream plays at the device's rate rather than its own
+
+`xud_sound_play` builds the row's `ma_audio_buffer_ref` over the decoded
+block and never sets the ref's `sampleRate`, and `ma_audio_buffer_ref_init`
+leaves it zero (miniaudio's own `ma_audio_buffer_init` works around the same
+gap by setting `ref.sampleRate` from its config). The engine node reads the
+data source's rate to work out its resampler ratio, so the zero rate is a
+degenerate ratio and the walk is timed at the device's rate rather than the
+stream's: on a 44100 Hz device the two-second, 22050 Hz take ended in about a
+second, twice the speed it was recorded at.
+
+**Resolved.** `xud_sound_play` sets `row->bufferRef.sampleRate` from the
+record's rate after the ref's init, the same line miniaudio's own buffer init
+sets. The device half of `xud_test_audio.c` pins it with a duration check on
+the two-second take: the public question is polled with a clock, and the end
+must land within half a second of the stream's own length, which is the window
+a walk timed at the device's rate misses.
+

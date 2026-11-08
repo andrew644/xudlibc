@@ -274,6 +274,12 @@ add_executable(hello_audio
 
 target_link_libraries(hello_audio PRIVATE xud)
 
+add_executable(hello_audio_stream
+ examples/hello_audio_stream.c
+)
+
+target_link_libraries(hello_audio_stream PRIVATE xud)
+
 add_executable(hello_ui
     examples/hello_ui.c
 )
