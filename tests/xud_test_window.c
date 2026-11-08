@@ -13,6 +13,7 @@
  ***********************************************************************************************/
 
 #include "xud.h" /* Required for: XudResult, XUD_VERSION, the XUD_GPU_TESTS gate */
+#include "xud_core.h" /* Required for: struct XudContext, whose window the public frame-rate pair reaches */
 #include "xud_instance.h" /* Required for: XudInstance, xud_instance_create/destroy - the surface names the instance it was created for */
 #include "xud_loader.h" /* Required for: XudLoader, the vkDestroySurfaceKHR row */
 #include "xud_physical.h" /* Required for: XudPhysicalDevice, the chosen queue family the presentation check is asked about */
@@ -403,9 +404,64 @@ static void xud_test_gpu_window(void) {
     xud_check(loader == NULL, "gpu-window/loader-null", "and cleared");
 }
 
+/*-----------------------------------------------------------------------------------------------
+ * The public frame-rate pair, against a real context: the recorded target and the interval it is
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_gpu_window_fps(void) {
+    XudContext* context = NULL;
+    XudContext empty;
+    uint32_t fps = 99u;
+    XudResult result = XUD_OK;
+
+    memset(&empty, 0, sizeof(empty));
+
+    xud_check(
+        xud_set_target_fps(NULL, 60u) == XUD_INVALID_ARG, "gpu-fps/set-null-context", "a target with no context to own it is refused");
+    xud_check(
+        xud_get_target_fps(NULL, &empty) == XUD_INVALID_ARG, "gpu-fps/get-null-out", "and a target with nowhere to be written is refused");
+
+    result = xud_init_context(&context, 64u, 64u);
+    xud_check(result == XUD_OK, "gpu-fps/bringup-completes", "a real context is up, and with it the window the pair reaches");
+    if (context == NULL) {
+        return;
+    }
+
+    xud_check(xud_get_target_fps(&fps, &empty) == XUD_UNSUPPORTED, "gpu-fps/get-context-without-window",
+        "and a context that never completed bring-up is refused as UNSUPPORTED rather than as a bad argument, the same split the window's "
+        "own "
+        "queries give");
+
+    xud_check(xud_get_target_fps(&fps, context) == XUD_OK, "gpu-fps/get-default-answers", "the question answers through the real context");
+    xud_check(fps == 0u, "gpu-fps/default-is-zero",
+        "and answers zero, which is the state GLFW opens with rather than a rate the bring-up chose on the caller's behalf");
+
+    xud_check(xud_set_target_fps(context, 60u) == XUD_OK, "gpu-fps/set-60",
+        "a positive target is asked of the window's present, which is the synchronous interval the machine runs with");
+    xud_check(xud_get_target_fps(&fps, context) == XUD_OK, "gpu-fps/get-after-60", "and the question answers beside the set");
+    xud_check(fps == 60u, "gpu-fps/reports-60",
+        "and answers the value the setter asked for, so the state the pair names is the state it was given rather than the interval it "
+        "took");
+
+    xud_check(xud_set_target_fps(context, 1u) == XUD_OK, "gpu-fps/set-1", "a different positive target is asked, the same interval");
+    xud_check(xud_get_target_fps(&fps, context) == XUD_OK, "gpu-fps/get-after-1", "and the question answers beside it");
+    xud_check(fps == 1u, "gpu-fps/reports-1",
+        "and answers one rather than sixty, so two callers asking different rates do not read back one another's ask");
+
+    xud_check(xud_set_target_fps(context, 0u) == XUD_OK, "gpu-fps/set-zero",
+        "and a zero target is the unsynchronised interval, raylib's own no-way-to-change mapping for the off state");
+    xud_check(xud_get_target_fps(&fps, context) == XUD_OK, "gpu-fps/get-after-zero", "and the question answers beside it");
+    xud_check(fps == 0u, "gpu-fps/reports-zero", "and answers zero, so the off state the setter asked for is the state the getter finds");
+
+    result = xud_close_context(&context);
+    xud_check((result == XUD_OK) || (result == XUD_ALREADY), "gpu-fps/context-closed", "and the context closes over the window it owned");
+    xud_check(context == NULL, "gpu-fps/context-cleared", "and the pointer is cleared with it");
+}
+
 void xud_test_window(void) {
     xud_test_window_pure();
     if (xud_gpu_tests_enabled()) {
         xud_test_gpu_window();
+        xud_test_gpu_window_fps();
     }
 }

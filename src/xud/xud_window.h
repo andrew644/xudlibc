@@ -134,6 +134,9 @@ typedef struct XudWindow {
     uint32_t width; /* extent as requested, pixels: what the compositor was asked for, not what
                        it gave back (glfwGetWindowSize is not read here) */
     uint32_t height;
+    uint32_t targetFps; /* the fps the caller last asked the public setter for: 0 until it asks
+                           (the state GLFW opens with - vsync on - and the state the public getter
+                           answers back, the same way raylib's GetTargetFPS answers its default) */
     uint32_t requiredInstanceExtensionCount; /* how many rows below are live, at most XUD_INSTANCE
                                                _EXTRA_MAX */
     char requiredInstanceExtensionNameStorage[XUD_INSTANCE_EXTRA_MAX]
@@ -197,6 +200,18 @@ XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height
 ///   question, read by xud_window_framebuffer_size() below, and the two differ by the display's
 ///   scale factor, which is the whole reason a resize step reads the second and not the first.
 XudResult xud_window_resize(XudWindow* window, uint32_t width, uint32_t height);
+
+/// Driver (GLFW): the window's present interval - glfwSwapInterval. 1 is the interval GLFW opens
+/// with (vsync: the present waits for the compositor's refresh) and 0 is the unsynchronised one
+/// (the present goes as soon as the frame is ready, which is the interval a target-fps request of
+/// zero asks for). glfwSwapInterval returns void and takes effect from the next present, so the
+/// zero-state rule applies: the interval is a fact about the request rather than a read-back, and
+/// the window's own targetFps member is the state the public rung reads back - not this interval,
+/// because the fps-to-interval mapping the public rung makes is a policy this layer does not own.
+/// XUD_INVALID_ARG on a NULL window, one GLFW does not own, or an interval above 1 (the GLFW
+/// intervals are 0 and 1: higher values are a request GLFW would take as 1, which is a lie this
+/// layer does not make); XUD_OK once GLFW has been asked.
+XudResult xud_window_set_swap_interval(XudWindow* window, uint32_t interval);
 
 /// Driver (GLFW): the extent of the window's FRAMEBUFFER as the window system gave it - glfwGet
 ///   FramebufferSize. This is the extent a swapchain for this window has to be created at, and

@@ -124,6 +124,12 @@ typedef struct XudAudioStreamRecord {
     uint32_t sampleRate; /* what miniaudio answered, in Hz */
     uint64_t frameCount; /* one frame is one sample per channel, so the block is frameCount*channels samples */
     float* frames; /* interleaved PCM, miniaudio's own block, frameCount*channels floats of it */
+    float volume; /* the level the public setter last asked, 0.0 silence to 1.0 the block's own
+                    peak: 1.0 (what xud_audio_open writes) is the block played as decoded, and a
+                    value the row is not live for yet is the one the row takes when it is built */
+    float pitch; /* the rate the public setter last asked, 1.0 the block's own tempo: 1.0 (what
+                   xud_audio_open writes) is the decode rate the block was read at, and a value a
+                   row is not live for yet is the one the row takes when it is built */
 } XudAudioStreamRecord;
 
 /*-----------------------------------------------------------------------------------------------

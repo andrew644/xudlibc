@@ -1312,6 +1312,63 @@ XudResult xud_texture_close_all(XudHandleTable* table, XudLoader* loader, const 
     return first;
 }
 
+XudResult xud_texture_recreate_sampler(XudTextureRecord* record, XudLoader* loader, const XudDevice* device, XudDescriptor* descriptor) {
+    VkSampler newSampler = VK_NULL_HANDLE;
+    VkResult vk = VK_SUCCESS;
+
+    if ((record == NULL) || (loader == NULL) || (device == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (record->sampler == VK_NULL_HANDLE) {
+        return XUD_UNSUPPORTED;
+    }
+    if (!xud_loader_is_open(loader)) {
+        return XUD_UNSUPPORTED;
+    }
+    if (device->device == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((loader->deviceTable.vkCreateSampler == NULL) || (loader->deviceTable.vkDestroySampler == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((record->samplerSlotLive != 0u) && (descriptor == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The new sampler is created from the record's own create info, which the caller stamped with the
+       new rows before this call: a create that refused leaves the old sampler live and the record
+       holding the NEW info, so the caller restores the info on a refusal rather than this rung
+       guessing which rows moved. */
+    vk = loader->deviceTable.vkCreateSampler(device->device, &record->samplerInfo, NULL, &newSampler);
+    {
+        XudResult result = xud_result_from_vk(vk);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    /* The set is pointed at the new sampler BEFORE the old one is destroyed, for the reason the
+       descriptor rung states: a set that names a destroyed sampler is the state this tree must not
+       leave, and the swap is the one moment the old sampler has two owners until the set says so.
+     */
+    if (record->samplerSlotLive != 0u) {
+        XudResult result = xud_descriptor_update_texture_slot(
+            descriptor, loader, device, record->samplerSlot, record->view, newSampler, record->imageLayout);
+        if (result != XUD_OK) {
+            (void)loader->deviceTable.vkDestroySampler(device->device, newSampler, NULL);
+            return result;
+        }
+    }
+
+    (void)loader->deviceTable.vkDestroySampler(device->device, record->sampler, NULL);
+    record->sampler = newSampler;
+
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The public pair above the context - the object's lifetime
  *-----------------------------------------------------------------------------------------------*/
@@ -1387,6 +1444,87 @@ XudResult xud_close_texture(XudContext* context, XudHandle handle) {
     }
 
     return xud_texture_close(context->handleTable, handle, context->loader, context->device, context->allocator);
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The public sampler setters - raylib's SetTextureFilter / SetTextureWrap above the sampler swap
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The shared half of the two setters: both tokens are range-checked by the caller before this runs,
+   so this rung sees only in-axis numbers. The no-op answer is the one a caller gets for a token the
+   sampler already names - the row the public pair hands down is read off the sampler's own create
+   info rather than a second piece of state that could disagree with it, which is the accessor rule
+   read at the record's samplerInfo member. A refusal restores the info the rows held before, so the
+   record and its live sampler name one set of state on every answer this rung gives.
+ */
+static XudResult xud_set_texture_params(XudContext* context, const XudTextureRecord* record, uint32_t filter, uint32_t addressMode) {
+    XudTextureRecord* io = (XudTextureRecord*)record;
+    VkFilter oldFilter = VK_FILTER_NEAREST;
+    VkSamplerAddressMode oldAddress = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    XudResult result = XUD_OK;
+
+    oldFilter = record->samplerInfo.magFilter;
+    oldAddress = record->samplerInfo.addressModeU;
+    if ((filter == (uint32_t)oldFilter) && (addressMode == (uint32_t)oldAddress)) {
+        return XUD_OK;
+    }
+
+    io->samplerInfo.magFilter = (VkFilter)filter;
+    io->samplerInfo.minFilter = (VkFilter)filter;
+    io->samplerInfo.addressModeU = (VkSamplerAddressMode)addressMode;
+    io->samplerInfo.addressModeV = (VkSamplerAddressMode)addressMode;
+
+    result = xud_texture_recreate_sampler(io, context->loader, context->device, context->descriptor);
+    if (result != XUD_OK) {
+        io->samplerInfo.magFilter = oldFilter;
+        io->samplerInfo.minFilter = oldFilter;
+        io->samplerInfo.addressModeU = oldAddress;
+        io->samplerInfo.addressModeV = oldAddress;
+    }
+
+    return result;
+}
+
+XudResult xud_set_texture_filter(XudContext* context, XudHandle handle, uint32_t filter) {
+    const XudTextureRecord* record = NULL;
+    XudResult result = XUD_OK;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (filter >= XUD_TEXTURE_FILTER_COUNT) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->descriptor == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+    result = xud_texture_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_set_texture_params(context, record, filter, (uint32_t)record->samplerInfo.addressModeU);
+}
+
+XudResult xud_set_texture_wrap(XudContext* context, XudHandle handle, uint32_t addressMode) {
+    const XudTextureRecord* record = NULL;
+    XudResult result = XUD_OK;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (addressMode >= XUD_TEXTURE_ADDRESS_COUNT) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->descriptor == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+    result = xud_texture_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_set_texture_params(context, record, (uint32_t)record->samplerInfo.magFilter, addressMode);
 }
 
 /*-----------------------------------------------------------------------------------------------

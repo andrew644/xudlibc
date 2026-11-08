@@ -679,6 +679,43 @@ XudResult xud_set_window_size(XudContext* context, uint32_t width, uint32_t heig
     return result;
 }
 
+/// See xud.h. The fps-to-interval mapping this rung owns: zero asks for GLFW's unsynchronised
+/// interval and any positive number its synchronised one, which is the raylib mapping the target
+/// is a maximum and the window system's own interval is the only knob it has.
+XudResult xud_set_target_fps(XudContext* context, uint32_t fps) {
+    XudResult result = XUD_OK;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->window == NULL) {
+        /* A context with no window is a context that never completed bring-up: the same answer and
+           the same reason the window's own queries give it, and there is no window here to ask. */
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The fps is recorded before the interval is asked, so a refusal from the window rung leaves
+       the context saying what the caller asked rather than what the window system took. */
+    context->window->targetFps = fps;
+    result = xud_window_set_swap_interval(context->window, fps > 0u ? 1u : 0u);
+    return result;
+}
+
+/// See xud.h. The window's recorded fps, the default zero included - the value GLFW cannot read
+/// back, answered from the window's own member rather than the window system.
+XudResult xud_get_target_fps(uint32_t* outFps, XudContext* context) {
+    if ((outFps == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->window == NULL) {
+        /* The same answer and the same reason the setter above gives: no window, no recorded fps. */
+        return XUD_UNSUPPORTED;
+    }
+
+    *outFps = context->window->targetFps;
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The public frame pair, above the context
  *

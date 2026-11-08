@@ -243,6 +243,24 @@ XudResult xud_window_resize(XudWindow* window, uint32_t width, uint32_t height) 
     return XUD_OK;
 }
 
+/// See xud_window.h. The interval GLFW presents at: 1 is its own default (vsync) and 0 is the
+///   unsynchronised one. The request is written to GLFW and to nothing else - the fps-to-interval
+///   mapping the public rung makes is policy this layer does not own, so this function takes the
+///   interval itself and the window's targetFps member is written by that rung, not here.
+XudResult xud_window_set_swap_interval(XudWindow* window, uint32_t interval) {
+    if ((window == NULL) || (window->glfwWindow == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (interval > 1u) {
+        /* GLFW's intervals are 0 and 1: a higher value is a request GLFW would take as 1, which is
+           a lie this layer does not make rather than an interval it takes. */
+        return XUD_INVALID_ARG;
+    }
+
+    glfwSwapInterval((int)interval);
+    return XUD_OK;
+}
+
 /// See xud_window.h. The framebuffer's extent, not the window's: GLFW keeps its own fbWidth /
 /// fbHeight per backend (wl_window.c's resizeFramebuffer scales wl.width / wl.height by the
 /// fractional scale or the buffer scale; x11_window.c reads the pixmap XGetWindowPixmap gave back),

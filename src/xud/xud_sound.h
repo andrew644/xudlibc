@@ -197,6 +197,23 @@ XudResult xud_sound_stop(XudSound* sound, XudHandleTable* table, XudHandle strea
 /// stopped, which is the answer rather than an error because the question is answerable either way.
 XudResult xud_sound_is_playing(bool* outPlaying, const XudSound* sound, XudHandleTable* table, XudHandle stream);
 
+/// Driver: one row's level, written on the node the row owns - ma_sound_set_volume, the engine's
+/// own per-node setter. A slot with no node is the state the call asks for already being the
+/// state it has: the value the public surface stored in the record is the one a row takes when
+/// xud_sound_play() builds it, so there is nothing here to apply it to and nothing to fail.
+/// XUD_INVALID_ARG on a NULL sound rung or on a level outside the range the public surface states
+/// (below the silence or above the block's own peak); XUD_OK when the row was told or had none.
+XudResult xud_sound_set_row_volume(XudSound* sound, XudHandle stream, float volume);
+
+/// Driver: one row's rate, written on the node the row owns - ma_sound_set_pitch, which the row's
+/// sound was built with the pitch flag off so that this call is the one it takes. A slot with no
+/// node is the state the call asks for already being the state it has, for the reason the volume
+/// half states: the record's value is the one a row takes when it is built. XUD_INVALID_ARG on a
+/// NULL sound rung or on a non-positive rate - the one ma_sound_set_pitch() would take and do
+/// nothing with, which would leave the record and a live row naming different pitches; XUD_OK
+/// when the row was told or had none.
+XudResult xud_sound_set_row_pitch(XudSound* sound, XudHandle stream, float pitch);
+
 /// Driver: one row's node destroyed and its bufferRef reference given back, which is what the audio
 /// rung's close runs BEFORE it frees the record the row reads: a node left attached over a block the
 /// record is about to free is a mixer reading freed memory, so a row that is playing refuses rather

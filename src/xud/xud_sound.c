@@ -256,7 +256,12 @@ XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle strea
 
         soundConfig = ma_sound_config_init_2(&sound->engine);
         soundConfig.pDataSource = &row->bufferRef;
-        soundConfig.flags = MA_SOUND_FLAG_NO_SPATIALIZATION | MA_SOUND_FLAG_NO_PITCH;
+        /* The pitch flag is not one of the row's: a row the caller sets the pitch of with the
+           public setter would take a ma_sound_set_pitch() that the flag makes a no-op, and the
+           optimization the flag is - no resampler while the pitch is its own - costs nothing at
+           the pitch a row starts at, so the flag buys nothing this rung keeps.
+        */
+        soundConfig.flags = MA_SOUND_FLAG_NO_SPATIALIZATION;
 
         /* The node, attached to the engine's endpoint by the config's own default rather than by a
            bus this rung picked: one node per stream is this rung's decision and the endpoint is m
@@ -268,6 +273,14 @@ XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle strea
             free(row);
             return xud_sound_result_from_ma(maResult);
         }
+
+        /* The record's level and rate, taken on the row the caller set them on: a setter that ran
+           before this play stored the values where the record keeps them, and this is the moment
+           they reach a node that can take them - a row that never is built plays the record's
+           values, not the engine's defaults.
+        */
+        ma_sound_set_volume(&row->sound, record->volume);
+        ma_sound_set_pitch(&row->sound, record->pitch);
 
         sound->rows[stream.index] = row;
         sound->liveRows++;
@@ -344,6 +357,50 @@ XudResult xud_sound_is_playing(bool* outPlaying, const XudSound* sound, XudHandl
     row = sound->rows[stream.index];
     if (row != NULL) {
         *outPlaying = (row->state == XUD_SOUND_ROW_STATE_PLAYING);
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_sound_set_row_volume(XudSound* sound, XudHandle stream, float volume) {
+    XudSoundRow* row = NULL;
+
+    if ((sound == NULL) || (volume < 0.0f) || (volume > 1.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* A row that is not live takes the value when it is built (xud_sound_play reads it off the
+       record, not here), so a slot with no node is the state the call asks for already being the
+       state it has: the record holds the value and nothing is left to apply it to.
+     */
+    if ((sound->rows == NULL) || (stream.index >= sound->rowCount)) {
+        return XUD_OK;
+    }
+    row = sound->rows[stream.index];
+    if (row != NULL) {
+        ma_sound_set_volume(&row->sound, volume);
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_sound_set_row_pitch(XudSound* sound, XudHandle stream, float pitch) {
+    XudSoundRow* row = NULL;
+
+    if ((sound == NULL) || (pitch <= 0.0f)) {
+        /* ma_sound_set_pitch() would take a non-positive rate and do nothing with it, leaving the
+           record and the row naming different pitches: the refusal is the same one the stream's
+           frame-count check gives a stream it cannot read.
+        */
+        return XUD_INVALID_ARG;
+    }
+
+    if ((sound->rows == NULL) || (stream.index >= sound->rowCount)) {
+        return XUD_OK;
+    }
+    row = sound->rows[stream.index];
+    if (row != NULL) {
+        ma_sound_set_pitch(&row->sound, pitch);
     }
 
     return XUD_OK;
@@ -528,4 +585,118 @@ XudResult xud_is_audio_playing(bool* outPlaying, XudContext* context, XudHandle 
     }
 
     return xud_sound_is_playing(outPlaying, context->sound, context->handleTable, stream);
+}
+
+XudResult xud_set_audio_volume(XudContext* context, XudHandle handle, float volume) {
+    const XudAudioStreamRecord* record = NULL;
+    XudAudioStreamRecord* io = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_audio_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if ((volume < 0.0f) || (volume > 1.0f)) {
+        /* The range the public surface states, refused here rather than clamped: a volume outside
+           it is a caller's mistake, and the record's own row is the state a later read-back must
+           answer - a clamped one would answer a value the caller never asked for.
+        */
+        return XUD_INVALID_ARG;
+    }
+
+    io = (XudAudioStreamRecord*)record;
+    io->volume = volume;
+    if (context->sound != NULL) {
+        result = xud_sound_set_row_volume(context->sound, handle, volume);
+        if (result != XUD_OK) {
+            io->volume = 1.0f;
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_get_audio_volume(float* outVolume, XudContext* context, XudHandle handle) {
+    const XudAudioStreamRecord* record = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if ((outVolume == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_audio_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outVolume = record->volume;
+    return XUD_OK;
+}
+
+XudResult xud_set_audio_pitch(XudContext* context, XudHandle handle, float pitch) {
+    const XudAudioStreamRecord* record = NULL;
+    XudAudioStreamRecord* io = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_audio_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (pitch <= 0.0f) {
+        /* The row's own refusal, stated at the public surface: a non-positive rate is one the
+           engine would take and do nothing with, leaving the record and a live row naming
+           different pitches.
+        */
+        return XUD_INVALID_ARG;
+    }
+
+    io = (XudAudioStreamRecord*)record;
+    io->pitch = pitch;
+    if (context->sound != NULL) {
+        result = xud_sound_set_row_pitch(context->sound, handle, pitch);
+        if (result != XUD_OK) {
+            io->pitch = 1.0f;
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_get_audio_pitch(float* outPitch, XudContext* context, XudHandle handle) {
+    const XudAudioStreamRecord* record = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if ((outPitch == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_audio_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outPitch = record->pitch;
+    return XUD_OK;
 }

@@ -703,6 +703,20 @@ XudResult xud_descriptor_bind_texture_slot(XudDescriptor* descriptor, XudLoader*
 ///  is already clear; XUD_OK once the slot's set names the white default again.
 XudResult xud_descriptor_release_texture_slot(XudDescriptor* descriptor, XudLoader* loader, const XudDevice* device, uint32_t slot);
 
+/// Driver: rewrite one ALREADY-BOUND slot's set to name a new (view, sampler, imageLayout) triple -
+/// the same single-set write a bind makes, but over a slot the mask already holds rather than one it
+/// frees: the slot's bit of the mask is left alone, so the set stays the slot's and only the pair it
+/// names changes. This is the rung the texture step reaches for a sampler it recreates on a live
+/// texture: the old sampler is destroyed only AFTER the set names the new one, which is the order that
+/// leaves no instant at which the set names a destroyed sampler. XUD_INVALID_ARG on a NULL
+/// descriptor/loader/device, on a slot past the slot axis's size, on a NULL view or sampler, or on a
+/// record whose slot set is not live; XUD_UNSUPPORTED on a closed loader, on a loader whose device
+/// rows are not this device's, or on a nil update row; XUD_ALREADY when the slot's bit of the mask is
+/// clear (a slot the texture never bound has no set to rewrite); XUD_OK once the slot's set names the
+/// new triple.
+XudResult xud_descriptor_update_texture_slot(XudDescriptor* descriptor, XudLoader* loader, const XudDevice* device, uint32_t slot,
+    VkImageView view, VkSampler sampler, VkImageLayout imageLayout);
+
 /// Pure: the host-side bytes of set 0's block - the identity VP matrix and zeros everywhere else. T
 /// his is the assembly the headless run can assert: the block's layout is a fact about this rung rat
 /// her than a comment, and an identity matrix is the one matrix that is a fact rather than a choice (

@@ -625,4 +625,24 @@ XudResult xud_texture_close(XudHandleTable* table, XudHandle handle, XudLoader* 
 XudResult xud_texture_close_all(
     XudHandleTable* table, XudLoader* loader, const XudDevice* device, XudAllocator* alloc, XudDescriptor* descriptor, uint32_t* outClosed);
 
+/// Driver: recreate the record's sampler from the record's own sampler create info and retire the
+/// one it held - the swap the public filter and wrap setters reach for. The caller stamps the info's
+/// changed rows before this call, and this rung creates the new sampler, points the record's live
+/// slot of set 1's array at it (through the descriptor rung's already-bound update) and only then
+/// destroys the old sampler, which is the order that leaves no instant at which the set names a
+/// destroyed sampler and no instant at which the record and the set disagree about which sampler is
+/// the one. A create or an update that refuses retires the new sampler and leaves the old one live
+/// and the record holding the NEW info, so the caller above restores the info on a refusal rather
+/// than this rung keeping a copy of the old rows. The swap needs no fence and no queue wait: the
+/// frame loop above is synchronous single-flight and waits the frame's fence before it returns, so
+/// the device is idle while the caller runs and no in-flight command names the old sampler - the
+/// same boundary the close's wait-idle guard states, read from the frame rung's own order rather
+/// than re-waited here. XUD_INVALID_ARG on a NULL record, loader or device, on a device that is not
+/// the loader's own handle, or on a record that holds a live slot and a NULL descriptor;
+/// XUD_UNSUPPORTED on a record that owns no sampler (a record the fail ladder retired mid-open), on
+/// a closed loader, on a loader whose device rows are not this device's, or on a nil create/destroy
+/// row; the descriptor rung's own codes on an update that refuses; XUD_VULKAN_ERROR or XUD_LOST when
+/// the driver refuses the create for its own reason.
+XudResult xud_texture_recreate_sampler(XudTextureRecord* record, XudLoader* loader, const XudDevice* device, XudDescriptor* descriptor);
+
 #endif /* XUD_XUD_TEXTURE_H_ */

@@ -188,7 +188,7 @@ and its failure mode, `xud_create_texture`'s doc names it, and a
 number is unchanged; what changed is that a caller can now read it instead of
 discovering it as a refusal.
 
-### 8. Smaller parity gaps
+### 8. (RESOLVED) Smaller parity gaps
 
 - No `SetTextureFilter`/`SetTextureWrap` equivalent — filter and wrap are fixed
   at `xud_create_texture` and cannot be changed on a live texture (no
@@ -197,6 +197,37 @@ discovering it as a refusal.
   app runs at the GLFW default (vsync 1) with no way to change it.
 - Audio has no volume or pitch surface (both are on the `todo.md` path; the
   sound node is created with `MA_SOUND_FLAG_NO_PITCH` and no mixer node).
+
+**Resolved.** All three gaps are closed at the public surface, with the driver
+rung owning the state each setter moves:
+
+- `xud_set_texture_filter()` / `xud_set_texture_wrap()` take one token per axis
+  and refuse a token outside its axis as `XUD_INVALID_ARG` before anything is
+  touched. The change is a recreate of the texture's own sampler —
+  `vkDestroySampler` and `vkCreateSampler` from the record's own create info
+  with the one token moved — the record's `samplerInfo` rows are updated before
+  the recreate and restored on a refusal, so the record and the live sampler
+  name one state on every answer, and a token the sampler already names is the
+  no-op answer checked off those same rows.
+- `xud_set_target_fps()` / `xud_get_target_fps()` map fps to the window's
+  present interval the way raylib's own `SetTargetFPS` does: 0 asks for the
+  unsynchronised interval and any positive number its synchronised one. The fps
+  is recorded on the window's own member before the interval is asked, so the
+  getter answers the caller's ask rather than the interval the window system
+  cannot read back — the same split raylib's `GetTargetFPS` makes with its own
+  recorded default.
+- `xud_set_audio_volume()` / `xud_get_audio_volume()` and
+  `xud_set_audio_pitch()` / `xud_get_audio_pitch()` keep the value in the
+  stream's record, which is where a setter that runs before the stream's first
+  play parks it: the node the first play builds takes the record's value, and a
+  setter on a stream that is playing writes it on the row's own node — the node
+  between the row's sound and the endpoint the level rides on, miniaudio's
+  per-node write, the same one raylib's `SetAudioBufferVolume` runs. Volume is
+  refused outside [0.0, 1.0] (0.0 the silence, 1.0 the block's own peak —
+  raylib's "1.0 is max level") rather than clamped, and pitch is refused at or
+  below zero, the one the engine would take and do nothing with, which would
+  leave the record and a live row naming different pitches. The row's
+  `MA_SOUND_FLAG_NO_PITCH` is dropped so the pitch write is the one it takes.
 
 ## Performance
 

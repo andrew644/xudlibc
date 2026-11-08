@@ -590,6 +590,28 @@ XudResult xud_window_should_close(bool* outShouldClose, XudContext* context);
 /// XUD_MAX_WINDOW_EXTENT] per axis, XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_set_window_size(XudContext* context, uint32_t width, uint32_t height);
 
+/// Set the frame's target rate - raylib's SetTargetFPS, the window's present interval through it:
+/// a target of zero asks for the unsynchronised interval (the present goes as soon as the frame is
+/// ready, which is the frame rate the machine and the caller's loop agree on), and any positive
+/// target asks for the synchronised one (the present waits for the compositor's refresh, which is
+/// the ceiling this call can set - the rate the display refreshes at - because this tree has no
+/// software frame limiter of its own: the frame boundary is a synchronous record-submit-wait, and
+/// a positive target's cap is the refresh rather than a clock). The change takes effect from the
+/// next present, and it is the whole of the control the window system gives: a positive target of
+/// 60 on a 144 Hz display runs at 144, the way raylib's own note states its target is a maximum
+/// rather than a promise. The context's window records the fps asked (the default, before any
+/// call, is zero - the state GLFW opens with, vsync on, and the state xud_get_target_fps() below
+/// answers back). XUD_INVALID_ARG on a NULL context; XUD_UNSUPPORTED on a context that never
+/// completed bring-up.
+XudResult xud_set_target_fps(XudContext* context, uint32_t fps);
+
+/// The fps the target setter last asked - the window's recorded value rather than a read from the
+/// window system, which GLFW cannot give back (glfwSwapInterval returns void): zero before any set
+/// call, which is the state the window opened in (vsync on) and the default raylib's GetTargetFPS
+/// answers the same way. XUD_INVALID_ARG on a NULL out-fps or context; XUD_OK with the window's
+/// answer on a completed context.
+XudResult xud_get_target_fps(uint32_t* outFps, XudContext* context);
+
 /*-----------------------------------------------------------------------------------------------
  * The drawing API - the frame pair and the shapes a frame is made of
  *
@@ -939,6 +961,40 @@ XudResult xud_create_texture(XudHandle* outHandle, XudContext* context, const Xu
 /// context that never completed bring-up or on a loader whose rows are not this device's; the device's
 /// own code when the guard cannot run.
 XudResult xud_close_texture(XudContext* context, XudHandle handle);
+
+/// Change how a live texture is filtered: raylib's SetTextureFilter, the sampler's two filter rows
+/// (magnify and minify) at once, the one token raylib names for both. The token is the sampler's own
+/// - XUD_TEXTURE_FILTER_NEAREST or XUD_TEXTURE_FILTER_LINEAR - and the change is a recreate: the
+/// texture's own sampler is destroyed and a new one created with the new filter, then the entry of
+/// set 1's sampler array that names the texture is rewritten to hold the new sampler, which is what
+/// makes the change live for every draw that samples the texture from this call on, the 3D ones and
+/// the screen-space one alike. The change takes no upload: the texels, the image, the view and the
+/// mip chain are untouched, and a draw in the frame this call runs in samples the new filter,
+/// because the frame loop records its commands when the frame ends, after the call has already
+/// rewritten the set. The frame loop's single-flight order is what makes the swap need no wait of
+/// its own: the device is idle while the caller runs, so no in-flight command names the sampler
+/// that is destroyed. A token the sampler already names is a no-op that answers XUD_OK without
+/// touching the driver. XUD_INVALID_ARG on a NULL context, on a token outside the filter axis, or
+/// on a handle that does not name a live TEXTURE slot of this context; XUD_UNSUPPORTED on a context
+/// that never completed bring-up or on a loader whose rows this rung needs are not there; the
+/// driver's own code when the recreate's create or the set's rewrite refuses.
+XudResult xud_set_texture_filter(XudContext* context, XudHandle handle, uint32_t filter);
+
+/// Change how a live texture wraps: raylib's SetTextureWrap, the sampler's two live address rows
+/// (U and V) at once, the one token raylib names for both. The token is the sampler's own -
+/// XUD_TEXTURE_ADDRESS_REPEAT, XUD_TEXTURE_ADDRESS_MIRRORED_REPEAT or
+/// XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE - and the change is the same recreate the filter setter makes:
+/// the texture's own sampler is destroyed and a new one created with the new wrap, then the entry of
+/// set 1's sampler array that names the texture is rewritten to hold the new sampler, which is what
+/// makes the change live for every draw that samples the texture from this call on. The W axis of
+/// the sampler stays the rung's own mip clamp, because it is the axis of a 2D texture's chain rather
+/// than a wrap the caller can choose. A token the sampler already names is a no-op that answers
+/// XUD_OK without touching the driver. XUD_INVALID_ARG on a NULL context, on a token outside the
+/// address axis, or on a handle that does not name a live TEXTURE slot of this context;
+/// XUD_UNSUPPORTED on a context that never completed bring-up or on a loader whose rows this rung
+/// needs are not there; the driver's own code when the recreate's create or the set's rewrite
+/// refuses.
+XudResult xud_set_texture_wrap(XudContext* context, XudHandle handle, uint32_t addressMode);
 
 /// Load a model this context owns: the object half of the model rung, and the fourth public create
 /// pair whose record owns driver objects - and the first whose record owns OTHER handles. A model is
@@ -1294,6 +1350,46 @@ XudResult xud_stop_audio(XudContext* context, XudHandle stream);
 /// ever completed bring-up; XUD_OK with false on a stream that was never played, which is the answer rat
 /// her than an error.
 XudResult xud_is_audio_playing(bool* outPlaying, XudContext* context, XudHandle stream);
+
+/// Set the level a stream plays at: raylib's SetAudioStreamVolume (raylib.h 1748, "1.0 is max
+/// level"), 0.0 the silence and 1.0 the block's own peak. The value is kept in the stream's record,
+/// which is where a setter that runs before the stream's first play parks it: the node the first
+/// play builds takes the record's value, so the level is right from the first frame the stream is
+/// heard, and a setter on a stream that is playing right now takes effect on the node from the next
+/// frame the engine's own thread pulls - miniaudio's volume write is atomic on the engine side, so
+/// there is no frame the caller can see at the old level and no fence to wait for it. A level
+/// outside the range is a refusal rather than a clamp: the record's own row is the state a later
+/// xud_get_audio_volume() answers, and a clamped one would answer a value the caller never asked
+/// for. XUD_INVALID_ARG on a NULL context, on a level outside [0.0, 1.0], or on a handle that does
+/// not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never
+/// completed bring-up.
+XudResult xud_set_audio_volume(XudContext* context, XudHandle handle, float volume);
+
+/// The level the volume setter last asked - the record's own row, the default 1.0 included: the
+/// state a setter parked before the stream's first play answers back, and the state a play that ran
+/// without one left behind. XUD_INVALID_ARG on a NULL out-volume or context, or on a handle that
+/// does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never
+/// completed bring-up.
+XudResult xud_get_audio_volume(float* outVolume, XudContext* context, XudHandle handle);
+
+/// Set the rate a stream plays at: raylib's SetAudioStreamPitch (raylib.h 1749, "1.0 is base
+/// level"), 1.0 the tempo the block was decoded at and values above it the block resampled faster.
+/// The value is kept in the stream's record, for the reason the volume setter states - a setter
+/// that runs before the stream's first play parks where the node the first play builds takes it
+/// from, and a setter on a stream that is playing right now takes effect from the next frame the
+/// engine's thread pulls, the write being atomic on the engine side. A non-positive rate is a
+/// refusal rather than a no-op: the engine would take one and do nothing with it, leaving the
+/// record and a live row naming different pitches, which is the state a read-back must not answer.
+/// XUD_INVALID_ARG on a NULL context, on a non-positive rate, or on a handle that does not name a
+/// live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_set_audio_pitch(XudContext* context, XudHandle handle, float pitch);
+
+/// The rate the pitch setter last asked - the record's own row, the default 1.0 included: the
+/// state a setter parked before the stream's first play answers back, and the state a play that ran
+/// without one left behind. XUD_INVALID_ARG on a NULL out-pitch or context, or on a handle that
+/// does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never
+/// completed bring-up.
+XudResult xud_get_audio_pitch(float* outPitch, XudContext* context, XudHandle handle);
 
 /*-----------------------------------------------------------------------------------------------
  * The clock API - raylib's time half, above the clock rung

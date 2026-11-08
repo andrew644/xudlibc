@@ -1248,10 +1248,104 @@ static void xud_test_texture_readback_gpu(void) {
     xud_check(context == NULL, "gpu-texture/readback-context-cleared", "and the pointer is cleared with it");
 }
 
+/*-----------------------------------------------------------------------------------------------
+ * The public sampler setters, against a real context: the recreate, the no-op, and the refusals
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_texture_params_gpu(void) {
+    XudContext* context = NULL;
+    XudHandle handle = { 0u, 0u, 0u };
+    XudHandle stale = { 0u, 0u, 0u };
+    XudHandle foreign = { 0u, 0u, 0u };
+    const XudTextureRecord* record = NULL;
+    VkSampler samplerBefore = VK_NULL_HANDLE;
+    XudResult result = XUD_OK;
+
+    memset(&handle, 0, sizeof(handle));
+
+    result = xud_init_context(&context, 64u, 64u);
+    xud_check(result == XUD_OK, "gpu-params/bringup-completes", "a real context is up, which is what the sampler recreate needs");
+    if (context == NULL) {
+        return;
+    }
+
+    xud_check(xud_create_texture(&handle, context,
+                  &(XudTextureData) { .width = 4u,
+                      .height = 4u,
+                      .rgba = xudTestTexels4x4,
+                      .filter = XUD_TEXTURE_FILTER_LINEAR,
+                      .addressMode = XUD_TEXTURE_ADDRESS_REPEAT })
+            == XUD_OK,
+        "gpu-params/create-ok", "the sheet is created with one filter and one wrap to be the ones the setters move off");
+    xud_check(xud_texture_get(context->handleTable, handle, &record) == XUD_OK, "gpu-params/get-ok",
+        "the record reads back through the accessor");
+    xud_check((record->samplerInfo.magFilter == (VkFilter)XUD_TEXTURE_FILTER_LINEAR)
+            && (record->samplerInfo.addressModeU == (VkSamplerAddressMode)XUD_TEXTURE_ADDRESS_REPEAT),
+        "gpu-params/record-starts-where-asked",
+        "and the record's sampler rows say the tokens the create was handed, so the setters below move state rather than writing it");
+
+    xud_check(xud_set_texture_filter(NULL, handle, XUD_TEXTURE_FILTER_NEAREST) == XUD_INVALID_ARG, "gpu-params/null-context",
+        "a setter with no context to name is refused");
+    xud_check(xud_set_texture_filter(context, handle, XUD_TEXTURE_FILTER_COUNT) == XUD_INVALID_ARG, "gpu-params/filter-out-of-axis",
+        "and a filter token outside its axis is refused before a sampler is touched, which is the range check running BEFORE the spend");
+    xud_check(xud_set_texture_wrap(context, handle, XUD_TEXTURE_ADDRESS_COUNT) == XUD_INVALID_ARG, "gpu-params/wrap-out-of-axis",
+        "and a wrap token outside its axis is refused the same way");
+
+    samplerBefore = record->sampler;
+    xud_check(xud_set_texture_filter(context, handle, XUD_TEXTURE_FILTER_NEAREST) == XUD_OK, "gpu-params/set-filter",
+        "the filter setter takes a token the sampler does not name, which is the recreate rather than the no-op answer");
+    xud_check(xud_texture_get(context->handleTable, handle, &record) == XUD_OK, "gpu-params/get-after-filter",
+        "and the record reads back through the same accessor");
+    xud_check((record->samplerInfo.magFilter == (VkFilter)XUD_TEXTURE_FILTER_NEAREST)
+            && (record->samplerInfo.minFilter == (VkFilter)XUD_TEXTURE_FILTER_NEAREST),
+        "gpu-params/record-names-the-filter",
+        "and the record's filter rows say the token the setter asked for, so the row the accessor hands down and the sampler it names are "
+        "one "
+        "state");
+    xud_check(record->sampler != samplerBefore, "gpu-params/sampler-recreated",
+        "and the handle moved, so the driver object behind the row was rebuilt rather than the record alone having been told the new "
+        "token");
+
+    xud_check(xud_set_texture_wrap(context, handle, XUD_TEXTURE_ADDRESS_MIRRORED_REPEAT) == XUD_OK, "gpu-params/set-wrap",
+        "the wrap setter takes a token the sampler does not name, the same recreate with the other axis");
+    xud_check(xud_texture_get(context->handleTable, handle, &record) == XUD_OK, "gpu-params/get-after-wrap",
+        "and the record reads back through the same accessor");
+    xud_check((record->samplerInfo.addressModeU == (VkSamplerAddressMode)XUD_TEXTURE_ADDRESS_MIRRORED_REPEAT)
+            && (record->samplerInfo.addressModeV == (VkSamplerAddressMode)XUD_TEXTURE_ADDRESS_MIRRORED_REPEAT),
+        "gpu-params/record-names-the-wrap",
+        "and both live axes of the record say the token the setter asked for, so the two axes stay the one wrap the caller named");
+
+    xud_check(xud_set_texture_filter(context, handle, XUD_TEXTURE_FILTER_NEAREST) == XUD_OK, "gpu-params/no-op-answers",
+        "a setter given the token the sampler already names answers OK, which is the no-op half the recreate half is paired with");
+    xud_check(xud_texture_get(context->handleTable, handle, &record) == XUD_OK, "gpu-params/get-after-noop",
+        "and the record reads back through the same accessor");
+    xud_check(record->sampler != VK_NULL_HANDLE, "gpu-params/no-op-left-a-sampler",
+        "and the row still names a real object, so the no-op ran the check rather than the recreate and left nothing behind either way");
+
+    stale = handle;
+    xud_check(xud_close_texture(context, handle) == XUD_OK, "gpu-params/close",
+        "the texture closes with the sampler the last setter built, so the retire runs over the object the record names");
+    stale.generation = handle.generation + 1u;
+    xud_check(xud_set_texture_filter(context, stale, XUD_TEXTURE_FILTER_LINEAR) == XUD_INVALID_ARG, "gpu-params/stale-filter",
+        "a handle kept past the close that freed its slot is refused as a bad argument, which is the accessor running before the spend");
+    xud_check(xud_set_texture_wrap(context, stale, XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE) == XUD_INVALID_ARG, "gpu-params/stale-wrap",
+        "and the wrap setter gives the same answer for the same handle, so both setters read the slot rather than either guessing it");
+    foreign = handle;
+    foreign.kind = XUD_HANDLE_KIND_MATERIAL;
+    xud_check(xud_set_texture_filter(context, foreign, XUD_TEXTURE_FILTER_LINEAR) == XUD_INVALID_ARG, "gpu-params/foreign-kind",
+        "and a handle of another kind is refused rather than a sampler rebuilt at that other kind's slot index");
+
+    result = xud_close_context(&context);
+    xud_check((result == XUD_OK) || (result == XUD_ALREADY), "gpu-params/context-closed",
+        "and the context closes with the texture already given back");
+    xud_check(context == NULL, "gpu-params/context-cleared", "and the pointer is cleared with it");
+}
+
 void xud_test_texture(void) {
     xud_test_texture_pure();
     if (xud_gpu_tests_enabled()) {
         xud_test_texture_gpu();
+        xud_test_texture_params_gpu();
         xud_test_texture_readback_gpu();
     }
 }
