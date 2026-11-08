@@ -1173,6 +1173,25 @@ XudResult xud_draw_pixel(XudContext* context, int32_t posX, int32_t posY, XudCol
 /// restored.
 XudResult xud_draw_rectangle_lines(XudContext* context, int32_t posX, int32_t posY, int32_t width, int32_t height, XudColor color);
 
+/// Draw a color-filled triangle at the screen: raylib's DrawTriangle (raylib.h 1285, "Draw a
+/// color-filled triangle, counter-clockwise vertex order"): the caller's three own screen-space
+/// points, in the order the caller named them, y DOWN from the framebuffer's top-left in the same
+/// space the rectangle and the line above take, mapped to clip at the framebuffer's extent and
+/// appended as the batch's triangle shape through the pipeline list's UI column, the same way the
+/// rectangle above draws its quad: the state swap moves the batch to the UI row for the triangle
+/// and back when it is done, so the triangle flushes as one row of its own and the shapes
+/// appended beside it draw with the state the call found. The three vertices the caller named are
+/// the row's three, in the order the caller named them: the winding raylib states is advisory
+/// here, because the UI row's rasterizer culls nothing, so a triangle named clockwise draws as
+/// well as one named counter-clockwise, and a triangle whose points coincide is a degenerate
+/// triangle appended rather than refused, the same way the zero-length line above is. The points
+/// are the caller's floats passed through, the way the 3D triangle above takes the caller's world
+/// coordinates: the framebuffer's extent is checked before it is divided by, and nothing below
+/// is. XUD_INVALID_ARG on a NULL context or a zero framebuffer extent; XUD_UNSUPPORTED on a
+/// context with no batch to append into; XUD_OUT_OF_MEMORY when the triangle's three vertices or
+/// its three indices do not fit the batch.
+XudResult xud_draw_triangle(XudContext* context, XudVector2 v0, XudVector2 v1, XudVector2 v2, XudColor color);
+
 /*-----------------------------------------------------------------------------------------------
  * The font API - raylib's font half, above the font rung
  *

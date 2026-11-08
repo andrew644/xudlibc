@@ -1532,3 +1532,77 @@ XudResult xud_draw_rectangle_lines(XudContext* context, int32_t posX, int32_t po
 
     return result;
 }
+
+/* The 2D triangle: the caller's three own screen-space points, in the order the caller named
+   them, mapped to clip at the framebuffer's extent and appended as the batch's triangle shape
+   through the pipeline list's UI column the rectangle and the line above do - the state swap
+   moves the batch to the UI row for the triangle and back when it is done, so the triangle
+   flushes as one row of its own and the shapes appended beside it draw with the state the call
+   found. The append moves the batch's topology to the triangle's own before a byte is written,
+   and it is the next shape the frame appends that moves it back, the same way the line above does
+   it, which is why the restore here takes back only the material triple the swap took and leaves
+   the topology the append set. The append is the 3D triangle's own: the three vertices in the
+   order the caller named them and the three indices that name them, its constant uv and its flat
+   +Z normal, which the untextured UI row samples to white as the rectangle above's quad does. */
+XudResult xud_draw_triangle(XudContext* context, XudVector2 v0, XudVector2 v1, XudVector2 v2, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 p0;
+    XudVector3 p1;
+    XudVector3 p2;
+    uint32_t oldVariant = 0u;
+    uint32_t oldMaterial = 0u;
+    uint32_t oldTexture = 0u;
+    float clipX = 0.0f;
+    float clipY = 0.0f;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The extent the points divide by is the framebuffer's own, for the same reason the rectangle
+       above refuses a zero one: a divide by it is an inf in a float stream rather than a draw. */
+    if ((context->width == 0u) || (context->height == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_shapes_pixel_to_clip(context->width, context->height, v0.x, v0.y, &clipX, &clipY);
+    if (result != XUD_OK) {
+        return result;
+    }
+    p0.x = clipX;
+    p0.y = clipY;
+    p0.z = 0.0f;
+    result = xud_shapes_pixel_to_clip(context->width, context->height, v1.x, v1.y, &clipX, &clipY);
+    if (result != XUD_OK) {
+        return result;
+    }
+    p1.x = clipX;
+    p1.y = clipY;
+    p1.z = 0.0f;
+    result = xud_shapes_pixel_to_clip(context->width, context->height, v2.x, v2.y, &clipX, &clipY);
+    if (result != XUD_OK) {
+        return result;
+    }
+    p2.x = clipX;
+    p2.y = clipY;
+    p2.z = 0.0f;
+
+    result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_UI, XUD_BATCH_NO_TEXTURE);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_shapes_append_triangle(batch, p0, p1, p2, color);
+    if (result != XUD_OK) {
+        (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+        return result;
+    }
+    result = xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+
+    return result;
+}
