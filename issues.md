@@ -163,7 +163,7 @@ discovering it as a refusal.
 
 ## Performance
 
-### 9. The frame loop is synchronous single-flight
+### 9. (RESOLVED) The frame loop is synchronous single-flight
 
 `xud_frame_draw` waits on the frame fence with an infinite timeout
 (`xud_frame.c:1144`) after every present, so the CPU never starts frame N+1
@@ -174,6 +174,17 @@ semaphore, per-image fences) simple, but it caps throughput at
 max(CPU frame, GPU frame) and it is a structural decision worth recording:
 moving to triple-buffering with per-frame semaphores is a rewrite of the frame
 rung, not a patch.
+
+**Resolved — by decision, recorded in the code.** The decision lives in
+`xud_frame.c`'s own header: the fence wait at step 7 runs to completion
+before `xud_frame_draw` returns, so the CPU cannot start frame N+1 while the
+GPU is still drawing frame N, and throughput is capped at max(CPU frame, GPU
+frame) rather than their overlap. That is the price the fence being one per
+image, the acquire/submit/present triple carrying no frame array, and a
+completed frame leaving the device idle when it returns all buy. Moving to
+triple-buffering with per-frame semaphores is a rewrite of the frame rung,
+not a patch; until that rewrite the wait is a recorded ceiling rather than a
+defect to fix.
 
 ### 10. (RESOLVED) The white default texture is re-cleared every frame
 
@@ -219,7 +230,7 @@ in `xud_texture.c` at both close sites, and the guard is the uniform one
 every destroy rung that a frame may still be reading uses (mesh, descriptor,
 render pass, swapchain, allocator).
 
-### 12. Input is one frame behind by design
+### 12. (RESOLVED) Input is one frame behind by design
 
 `xud_input_poll` runs at the end of `xud_end_drawing`, after the present
 (`xud_core.c`). This matches raylib's `EndDrawing` ordering and is documented,
@@ -227,6 +238,20 @@ but the consequence is worth stating: window events (WM close, resize) and key
 presses only become visible on the frame *after* the one they happened in, and
 `xud_begin_drawing` itself polls nothing. If issue 4 is fixed by polling a
 window-close flag, that flag will also lag by a frame.
+
+**Resolved — by decision, recorded in the code.** The consequence is stated
+where the API states its own contract: the window section of `xud.h` records
+that the state a query answers about is the state as of the poll that opened
+the current frame, that nothing polls on demand, and that the window
+manager's close flag and resize events are read by the SAME poll — so
+`xud_window_should_close()` (issue 4's fix) answers the close state as of the
+poll that ended the LAST frame, and a window closed or minimized mid-frame is
+seen on the next one. That is raylib's `WindowShouldClose`'s own lag for its
+exit key, a property of the poll living at the frame boundary rather than a
+defect: the boundary is the one place two queries in one frame read the same
+records. The same rule is restated at the poll itself (`xud_input.h`), at the
+frame boundary that owns it (`xud_core.c`), and at the close query
+(`xud_window.h`).
 
 ## Inconsistencies and minor issues
 
