@@ -86,6 +86,19 @@ static XudResult xud_context_create(XudContext** outContext, uint32_t width, uin
     return XUD_OK;
 }
 
+/* The extent gate both public window-size entry points run: an extent is legal when it sits inside
+   XUD_MAX_WINDOW_EXTENT on both axes AND inside the device's own 2D image limit, so the effective
+   bound is the smaller of the two. Pure - the machine's limit is an argument rather than a query -
+   so the bound is testable with no device present. The device's limit only ever tightens the
+   public bound, never loosens it. */
+bool xud_window_extent_ok(uint32_t width, uint32_t height, uint32_t maxImageDimension2D) {
+    uint32_t bound = XUD_MAX_WINDOW_EXTENT;
+    if (maxImageDimension2D < bound) {
+        bound = maxImageDimension2D;
+    }
+    return (width <= bound) && (height <= bound);
+}
+
 const char* xud_result_name(XudResult result) {
     switch (result) {
     case XUD_OK:
@@ -271,6 +284,15 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     result = xud_physical_open(&context->physicalDevice, context->loader, context->instance->instance);
     if (result != XUD_OK)
         goto fail;
+    /* The device's own 2D image limit, asked while the caps are fresh: the swapchain's surface gate
+       below answers the SURFACE's maxImageExtent, and the depth image the renderer recreates at this
+       same extent answers the DEVICE's maxImageDimension2D, so an extent the surface would allow but
+       the device's image limit would not is refused here rather than one frame later. The bound is
+       the smaller of the two; the device's answer only tightens the public one. */
+    if (!xud_window_extent_ok(width, height, context->physicalDevice->caps.properties.properties.limits.maxImageDimension2D)) {
+        result = XUD_UNSUPPORTED;
+        goto fail;
+    }
 
     /* GLFW's presentation query, asked about the physical layer's CHOSEN queue family - the presen
        t half of the one-family rule the physical layer's graphics check is the other half of (there
@@ -641,6 +663,16 @@ XudResult xud_set_window_size(XudContext* context, uint32_t width, uint32_t heig
     if (context->window == NULL) {
         /* A context with no window is a context that never completed bring-up: the same answer
            and the same reason the query above gives it, and there is no window here to move. */
+        return XUD_UNSUPPORTED;
+    }
+    if (width > XUD_MAX_WINDOW_EXTENT || height > XUD_MAX_WINDOW_EXTENT) {
+        return XUD_INVALID_ARG;
+    }
+    /* The device's own 2D image limit tightens the public bound above: a completed bring-up always
+       owns a physical device (init's fail ladder tears everything down), and the swapchain's images
+       and the depth image both live at the extent asked for, so above the limit this is a machine
+       refusal, answered here rather than at the frame boundary that would recreate them. */
+    if (!xud_window_extent_ok(width, height, context->physicalDevice->caps.properties.properties.limits.maxImageDimension2D)) {
         return XUD_UNSUPPORTED;
     }
     result = xud_window_resize(context->window, width, height);

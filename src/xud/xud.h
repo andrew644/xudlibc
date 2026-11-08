@@ -110,8 +110,10 @@ extern "C" {
 #define XUD_ENV_VALIDATE "VK_INSTANCE_LAYERS"
 #define XUD_ENV_GPU_TESTS "XUD_GPU_TESTS"
 
-/* Host-side sanity bound on window extent, used until the real gate exists: the device
-   query (maxImageExtent2D, recorded into XudDeviceCaps at step S5) is authoritative. */
+/* Public host-side bound on window extent, per axis: above it the public entry points refuse as a
+   bad argument, and the device's own 2D image limit (maxImageDimension2D, recorded into XudDeviceCaps
+   at step S5) tightens it further - xud_init_context() and xud_set_window_size() refuse an extent
+   above the smaller of the two as XUD_UNSUPPORTED. */
 #define XUD_MAX_WINDOW_EXTENT 16384u
 
 /* The ceiling of live textures one context can hold: the material set's sampler array has 16

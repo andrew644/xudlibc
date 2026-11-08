@@ -46,6 +46,7 @@
 #include "xud_ui.h" /* Required for: XudUi, the ui rung the context owns from the first xud_ui_init() on - the nuklear context, its baked font atlas and the fold into the batch, spent lazily rather than at bring-up because the atlas is a TEXTURE a context that only ever draws never asks for */
 #include "xud_window.h" /* Required for: XudWindow, the GLFW window plus the VkSurfaceKHR it was handed - the context will own one, and the teardown order below is what makes the surface die before the window and the window before the instance */
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Completed here; xud.h keeps callers to an opaque handle. Every Vulkan field is a
    sentinel (NULL / 0) until the layer named beside it fills it, and is destroyed in the
@@ -242,5 +243,11 @@ struct XudContext {
     XudUi*
         ui; /* the nuklear immediate-mode context, its baked font atlas (opened as one TEXTURE) and the fold of its frames into the batch - spent lazily on the first xud_ui_init(), above the input it reads and the renderer whose batch it writes */
 };
+
+/* The extent gate xud_init_context() and xud_set_window_size() run: true when the extent sits
+   inside both XUD_MAX_WINDOW_EXTENT (the public bound, xud.h) and the device's own 2D image limit,
+   the smaller of the two - the machine's limit only ever tightens the public one. Pure, so the
+   bound is testable with no device present. */
+bool xud_window_extent_ok(uint32_t width, uint32_t height, uint32_t maxImageDimension2D);
 
 #endif /* XUD_XUD_CORE_H_ */
