@@ -1382,3 +1382,153 @@ XudResult xud_draw_rectangle(XudContext* context, int32_t posX, int32_t posY, in
 
     return result;
 }
+
+/* The 2D line: the two endpoints at the caller's own pixels, mapped to clip at the framebuffer's
+   extent and appended as the batch's one line shape through the pipeline list's UI column the
+   same way the rectangle above does - the state swap moves the batch to the UI row for the line
+   and back when it is done, so the line flushes as one row of its own and the shapes appended
+   beside it draw with the state the call found. The append moves the batch's topology to the
+   line's own before a byte is written, and it is the next shape the frame appends that moves it
+   back, the same way the 3D line pair above does it, which is why the restore here takes back
+   only the material triple the swap took and leaves the topology the append set. */
+XudResult xud_draw_line(XudContext* context, int32_t startPosX, int32_t startPosY, int32_t endPosX, int32_t endPosY, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 start;
+    XudVector3 end;
+    uint32_t oldVariant = 0u;
+    uint32_t oldMaterial = 0u;
+    uint32_t oldTexture = 0u;
+    float clipX = 0.0f;
+    float clipY = 0.0f;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The extent the endpoints divide by is the framebuffer's own, for the same reason the
+       rectangle above refuses a zero one: a divide by it is an inf in a float stream rather than
+       a draw. */
+    if ((context->width == 0u) || (context->height == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_shapes_pixel_to_clip(context->width, context->height, (float)startPosX, (float)startPosY, &clipX, &clipY);
+    if (result != XUD_OK) {
+        return result;
+    }
+    start.x = clipX;
+    start.y = clipY;
+    start.z = 0.0f;
+    result = xud_shapes_pixel_to_clip(context->width, context->height, (float)endPosX, (float)endPosY, &clipX, &clipY);
+    if (result != XUD_OK) {
+        return result;
+    }
+    end.x = clipX;
+    end.y = clipY;
+    end.z = 0.0f;
+
+    result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_UI, XUD_BATCH_NO_TEXTURE);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_shapes_append_line(batch, start, end, color);
+    if (result != XUD_OK) {
+        (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+        return result;
+    }
+    result = xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+
+    return result;
+}
+
+/* The pixel: one pixel of geometry, which the filled rectangle above is at a one-pixel extent,
+   so the call is that rectangle at width and height one rather than a second append of the same
+   quad: the extent check, the zero-extent refusal and the quad it draws are the rectangle's own.
+ */
+XudResult xud_draw_pixel(XudContext* context, int32_t posX, int32_t posY, XudColor color) {
+    return xud_draw_rectangle(context, posX, posY, 1, 1, color);
+}
+
+/* The rectangle outline: the four edges of the caller's rectangle as the batch's four lines
+   through the UI column the line above does, the four appends sharing one state swap rather than
+   four, so the outline flushes as one row of its own instead of four, the same one-run agreement
+   the glyph walk above states for a run of glyphs. The endpoints carry the same half-pixel inset
+   raylib's outline applies - its 0.5 over the transform's scale, which at the screen's own
+   transform is half a pixel - because an edge that sat on a whole pixel row would straddle the
+   boundary of two rows, and the inset puts the line's centre on the row it names. An edge that
+   does not fit is refused with the edges before it already appended, the same partial-draw
+   agreement the glyph walk states, and the state the call found is restored on every path the
+   append left it moved. */
+XudResult xud_draw_rectangle_lines(XudContext* context, int32_t posX, int32_t posY, int32_t width, int32_t height, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 corner[4u];
+    uint32_t oldVariant = 0u;
+    uint32_t oldMaterial = 0u;
+    uint32_t oldTexture = 0u;
+    float clipX = 0.0f;
+    float clipY = 0.0f;
+    uint32_t edge = 0u;
+    const float insetLeft = (float)posX + 0.5f;
+    const float insetRight = (float)posX + (float)width - 0.5f;
+    const float insetTop = (float)posY + 0.5f;
+    const float insetBottom = (float)posY + (float)height - 0.5f;
+    /* The corners in pixels, top-left first, the order raylib's own vertex sequence walks them:
+       the top edge left to right, the right edge top to bottom, the bottom edge right to left,
+       and the left edge bottom to top. */
+    const float cornerX[4u] = { insetLeft, insetRight, insetRight, insetLeft };
+    const float cornerY[4u] = { insetTop, insetTop, insetBottom, insetBottom };
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* A zero or negative extent is a degenerate outline the append would draw as overlapping or
+       zero-length edges, and it is refused here before any state is moved, the same refusal the
+       filled rectangle above makes of the same numbers. */
+    if ((width <= 0) || (height <= 0)) {
+        return XUD_INVALID_ARG;
+    }
+
+    if ((context->width == 0u) || (context->height == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    for (edge = 0u; edge < 4u; edge++) {
+        result = xud_shapes_pixel_to_clip(context->width, context->height, cornerX[edge], cornerY[edge], &clipX, &clipY);
+        if (result != XUD_OK) {
+            return result;
+        }
+        corner[edge].x = clipX;
+        corner[edge].y = clipY;
+        corner[edge].z = 0.0f;
+    }
+
+    result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_UI, XUD_BATCH_NO_TEXTURE);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    for (edge = 0u; edge < 4u; edge++) {
+        result = xud_shapes_append_line(batch, corner[edge], corner[(edge + 1u) % 4u], color);
+        if (result != XUD_OK) {
+            (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+            return result;
+        }
+    }
+
+    result = xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+
+    return result;
+}

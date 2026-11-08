@@ -1135,6 +1135,44 @@ XudResult xud_draw_texture(XudContext* context, XudHandle handle, int32_t posX, 
 /// append into; XUD_OUT_OF_MEMORY when the quad does not fit the batch.
 XudResult xud_draw_rectangle(XudContext* context, int32_t posX, int32_t posY, int32_t width, int32_t height, XudColor color);
 
+/// Draw a line at the screen: raylib's DrawLine, the 2D half of the line pair, through the same
+/// UI column as the texture and rectangle above: the two endpoints at the caller's own pixels, y
+/// DOWN from the framebuffer's top-left, mapped to clip at the framebuffer's extent and appended
+/// as the batch's line shape with depth test and write both off, so the line is screen-fixed and
+/// a 3D camera in effect moves the scene around it rather than it, and it does not write the
+/// depth a 3D row later in the frame tests against. The endpoints carry no half-pixel offset of
+/// the outline kind below - raylib's own DrawLine passes the coordinates through unshifted - and
+/// a line whose endpoints coincide is the zero-length line raylib draws, appended rather than
+/// refused. The colour is the line's own vertex colour, the row it records into carrying the
+/// white push tint the plain record stamps, the same product the rectangle above states.
+/// XUD_INVALID_ARG on a NULL context or a zero framebuffer extent; XUD_UNSUPPORTED on a context
+/// with no batch to append into; XUD_OUT_OF_MEMORY when the line does not fit the batch.
+XudResult xud_draw_line(XudContext* context, int32_t startPosX, int32_t startPosY, int32_t endPosX, int32_t endPosY, XudColor color);
+
+/// Draw a pixel at the screen: raylib's DrawPixel, one pixel of geometry - the filled rectangle
+/// above at a one-pixel extent, so the call is that rectangle at the caller's pixel position
+/// rather than a second append of the same quad, through the same UI column with the same depth
+/// and state agreement. XUD_INVALID_ARG on a NULL context or a zero framebuffer extent;
+/// XUD_UNSUPPORTED on a context with no batch to append into; XUD_OUT_OF_MEMORY when the quad
+/// does not fit the batch.
+XudResult xud_draw_pixel(XudContext* context, int32_t posX, int32_t posY, XudColor color);
+
+/// Draw a rectangle outline at the screen: raylib's DrawRectangleLines - the four edges of the
+/// caller's rectangle as the batch's four lines, through the same UI column as the line above,
+/// the four appends sharing one state swap so the outline flushes as one row of its own rather
+/// than four. The endpoints carry the same half-pixel inset raylib's outline applies - its 0.5
+/// over the transform's scale, which at the screen's own transform is half a pixel - because an
+/// edge that sat on a whole pixel row would straddle the boundary of two rows, and the inset puts
+/// the line's centre on the row it names. The position is the top-left corner in PIXELS with y
+/// DOWN, the extent the outline's own in pixels, and a zero or negative extent is refused rather
+/// than drawn as a degenerate outline, the same refusal the filled rectangle above makes. The
+/// colour is the edges' own vertex colour, the same reason the rectangle above states it.
+/// XUD_INVALID_ARG on a NULL context, a zero or negative extent, or a zero framebuffer extent;
+/// XUD_UNSUPPORTED on a context with no batch to append into; XUD_OUT_OF_MEMORY when an edge does
+/// not fit the batch, with the edges before it already appended and the state the call found
+/// restored.
+XudResult xud_draw_rectangle_lines(XudContext* context, int32_t posX, int32_t posY, int32_t width, int32_t height, XudColor color);
+
 /*-----------------------------------------------------------------------------------------------
  * The font API - raylib's font half, above the font rung
  *

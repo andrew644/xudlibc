@@ -35,7 +35,7 @@
 #include <stdlib.h> /* Required for: free, the draw rows the topology split allocates in this area's line checks */
 #include <string.h> /* Required for: memset, the batch shell and the context shell this area builds itself */
 
-#include "xud.h" /* Required for: XudResult, XudContext, XudVector3, XudColor, the public frame pair, xud_draw_triangle_3d and xud_draw_rectangle */
+#include "xud.h" /* Required for: XudResult, XudContext, XudVector3, XudColor, the public frame pair, xud_draw_triangle_3d, xud_draw_rectangle, xud_draw_line, xud_draw_pixel and xud_draw_rectangle_lines */
 #include "xud_batch.h" /* Required for: XudBatch, xud_batch_layout/xud_batch_stats/xud_batch_check_invariant, the capacity macros */
 #include "xud_core.h" /* Required for: struct XudContext and struct XudRenderer, whose renderer/frame/batch fields the GPU half reads and whose record the pure half fakes */
 #include "xud_shapes.h" /* Required for: the shapes rung's own constants and its internal append */
@@ -1869,6 +1869,464 @@ static void xud_test_shapes_pure(void) {
             "a framebuffer with no extent is refused before the mapper is asked to divide by it");
     }
 
+    /*--- the public 2D line: the line shape through the UI column -----------------------------*/
+
+    /* The shell the rectangle half above set up is the one the line reuses: a context whose only
+       live fields are the renderer whose only live field is the batch this area owns, and the
+       128 by 128 extent, which is re-set because that half's last check set the width to zero to
+       try the zero-framebuffer refusal. */
+    {
+        XudRenderer fakeRenderer;
+        uint32_t lineVariant = 0u;
+        uint32_t lineMaterial = 0u;
+        uint32_t lineTexture = 0u;
+
+        memset(&fakeRenderer, 0, sizeof(fakeRenderer));
+        fakeRenderer.batch = &b;
+
+        memset(&shell, 0, sizeof(shell));
+        shell.renderer = &fakeRenderer;
+        shell.width = 128u;
+        shell.height = 128u;
+
+        xud_check(xud_batch_layout(&b, XUD_SHAPES_LINE_VERTEX_COUNT) == XUD_OK, "shapes/line-layout",
+            "a batch of one line's vertex count lays out - exactly the capacity one line spends, so the second one is the refusal below");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/line-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        shell.width = 0u;
+        result = xud_draw_line(&shell, 10, 20, 110, 70, color);
+        xud_check(result == XUD_INVALID_ARG, "shapes/line-zero-framebuffer-refused",
+            "a framebuffer with no extent is refused before the mapper is asked to divide by it");
+        shell.width = 128u;
+        result = xud_batch_state_get(&b, &lineVariant, &lineMaterial, &lineTexture);
+        xud_check(result == XUD_OK, "shapes/line-state-after-refusal", "and the state answers after the refusal");
+        xud_check(
+            (lineVariant == XUD_BATCH_VARIANT_OPAQUE) && (lineMaterial == XUD_BATCH_NO_MATERIAL) && (lineTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/line-refusal-moved-no-state",
+            "the refusal moved none of it: the state is where the reset left it, so no refusal split a run or recorded a row");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/line-stats-after-refusal", "and the counters answer too");
+        xud_check((vertexCount == 0u) && (indexCount == 0u) && (drawCount == 0u), "shapes/line-refusal-wrote-nothing",
+            "and they are still empty - a refused line appended no vertex, no index and no row");
+
+        result = xud_draw_line(&shell, 10, 20, 110, 70, color);
+        xud_check(result == XUD_OK, "shapes/line-draw-ok", "the line appends through a context the pure half built itself");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/line-stats-after-draw", "and the counters answer after it");
+        xud_check((vertexCount == XUD_SHAPES_LINE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_LINE_INDEX_COUNT),
+            "shapes/line-costs-two-vertices",
+            "2 vertices and 2 indices, the line shape the 3D line pair appends - the same append, its endpoints in clip rather than world");
+        xud_check(drawCount == 1u, "shapes/line-recorded-one-row",
+            "and exactly one row: the state swap to the UI column opened the line's run and the swap back closed it, so a frame flushes "
+            "the "
+            "line as one draw of its own");
+        xud_check((b.draws[0u].variant == XUD_BATCH_VARIANT_UI) && (b.draws[0u].topology == XUD_BATCH_TOPOLOGY_LINES)
+                && (b.draws[0u].textureIndex == XUD_BATCH_NO_TEXTURE) && (b.draws[0u].materialIndex == XUD_BATCH_NO_MATERIAL),
+            "shapes/line-row-is-the-untextured-ui-line-row",
+            "and the row is the UI variant's line row - the pipeline list's row for the untextured screen-space line, the one neither "
+            "tests nor writes the depth");
+        xud_check((b.draws[0u].firstIndex == 0u) && (b.draws[0u].indexCount == XUD_SHAPES_LINE_INDEX_COUNT),
+            "shapes/line-row-names-the-line", "and it names the line's two indices from the batch's start");
+        result = xud_batch_state_get(&b, &lineVariant, &lineMaterial, &lineTexture);
+        xud_check(result == XUD_OK, "shapes/line-state-after-draw", "and the state answers after the draw");
+        xud_check(
+            (lineVariant == XUD_BATCH_VARIANT_OPAQUE) && (lineMaterial == XUD_BATCH_NO_MATERIAL) && (lineTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/line-restored-the-state",
+            "the material triple the call found is the triple it left: a shape appended beside the line draws with the state the line "
+            "found, the same agreement the rectangle half above states");
+        xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_LINES, "shapes/line-left-the-topology",
+            "and the topology the append moved is the topology it left: the next shape the frame appends moves it back, the same way the "
+            "3D line pair does it");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/line-invariant", "and the batch's invariant still holds");
+
+        /* The bytes, not only the counts: the two endpoints at the caller's own pixels, mapped at
+           the framebuffer's extent, the start pixel first and the end pixel last. */
+        {
+            const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+            float pos[XUD_SHAPES_LINE_VERTEX_COUNT][3];
+            float uvRow[XUD_SHAPES_LINE_VERTEX_COUNT][2];
+            float nrm[XUD_SHAPES_LINE_VERTEX_COUNT][3];
+            uint32_t idx[XUD_SHAPES_LINE_INDEX_COUNT];
+            uint32_t row = 0u;
+            uint32_t endpointsPlaced = 0u;
+            uint32_t flatZ = 0u;
+            uint32_t flatUv = 0u;
+            uint32_t flatNormals = 0u;
+            uint32_t callerColour = 0u;
+            const float lineStartX = ((2.0f * 10.0f) / 128.0f) - 1.0f;
+            const float lineStartY = 1.0f - ((2.0f * 20.0f) / 128.0f);
+            const float lineEndX = ((2.0f * 110.0f) / 128.0f) - 1.0f;
+            const float lineEndY = 1.0f - ((2.0f * 70.0f) / 128.0f);
+
+            for (row = 0u; row < XUD_SHAPES_LINE_VERTEX_COUNT; row++) {
+                memcpy(&pos[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (row * XUD_BATCH_STREAM_POS_SIZE),
+                    XUD_BATCH_STREAM_POS_SIZE);
+                memcpy(&uvRow[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_UV] + (row * XUD_BATCH_STREAM_UV_SIZE),
+                    XUD_BATCH_STREAM_UV_SIZE);
+                memcpy(&nrm[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (row * XUD_BATCH_STREAM_NORMAL_SIZE),
+                    XUD_BATCH_STREAM_NORMAL_SIZE);
+
+                if (((pos[row][0] == lineStartX) && (pos[row][1] == lineStartY))
+                    || ((pos[row][0] == lineEndX) && (pos[row][1] == lineEndY))) {
+                    endpointsPlaced++;
+                }
+                if ((pos[row][2] == 0.0f)) {
+                    flatZ++;
+                }
+                if ((uvRow[row][0] == XUD_SHAPES_UV_S) && (uvRow[row][1] == XUD_SHAPES_UV_T)) {
+                    flatUv++;
+                }
+                if ((nrm[row][0] == XUD_SHAPES_FLAT_NORMAL_X) && (nrm[row][1] == XUD_SHAPES_FLAT_NORMAL_Y)
+                    && (nrm[row][2] == XUD_SHAPES_FLAT_NORMAL_Z)) {
+                    flatNormals++;
+                }
+                if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + (row * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                        XUD_BATCH_STREAM_COLOR_SIZE)
+                    == 0) {
+                    callerColour++;
+                }
+            }
+
+            xud_check(endpointsPlaced == XUD_SHAPES_LINE_VERTEX_COUNT, "shapes/line-endpoints-are-the-callers-pixels",
+                "both vertices sit on the caller's endpoints, the start pixel first and the end pixel last, the order the append's two "
+                "indices name them");
+            xud_check((pos[0u][0] == lineStartX) && (pos[0u][1] == lineStartY) && (pos[1u][0] == lineEndX) && (pos[1u][1] == lineEndY),
+                "shapes/line-vertex-order-is-start-then-end",
+                "and the first vertex is the start endpoint and the second the end one, so a line drawn with its pixels swapped would not "
+                "pass");
+            xud_check(flatZ == XUD_SHAPES_LINE_VERTEX_COUNT, "shapes/line-z-is-the-screen-plane",
+                "and both vertices sit on the z=0 plane the screen-space line is, which is the position the UI row's fixed screen view "
+                "expects");
+            xud_check(flatUv == XUD_SHAPES_LINE_VERTEX_COUNT, "shapes/line-uv-is-the-constant",
+                "and the uv is the append's constant, which the untextured row's sampler never samples");
+            xud_check(flatNormals == XUD_SHAPES_LINE_VERTEX_COUNT, "shapes/line-normals-are-flat",
+                "and both normals are the flat +Z the screen-facing geometry carries, the same constant the other appends stamp");
+            xud_check(callerColour == XUD_SHAPES_LINE_VERTEX_COUNT, "shapes/line-colour-landed-at-both-endpoints",
+                "and the caller's colour is at both endpoints, because the batch's colour stream is per-vertex and a line has one colour");
+
+            memcpy(idx, arena + b.indexOffset, XUD_BATCH_INDEX_SIZE * XUD_SHAPES_LINE_INDEX_COUNT);
+            xud_check((idx[0u] == 0u) && (idx[1u] == 1u), "shapes/line-indices-name-the-two-endpoints",
+                "and the two indices name the two vertices this call just made, start before end");
+        }
+
+        result = xud_draw_line(&shell, 10, 20, 110, 70, color);
+        xud_check(result == XUD_OUT_OF_MEMORY, "shapes/line-second-refused",
+            "a second line does not fit a batch one line has already filled, and is refused with the batch's own code");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/line-stats-after-refusal", "and the counters answer after the refusal");
+        xud_check((vertexCount == XUD_SHAPES_LINE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_LINE_INDEX_COUNT) && (drawCount == 1u),
+            "shapes/line-refusal-wrote-nothing",
+            "the refused line wrote no vertex, no index and no row, so the batch still holds exactly one line and its one row");
+        result = xud_batch_state_get(&b, &lineVariant, &lineMaterial, &lineTexture);
+        xud_check(result == XUD_OK, "shapes/line-state-after-refusal", "and the state answers after the refusal");
+        xud_check(
+            (lineVariant == XUD_BATCH_VARIANT_OPAQUE) && (lineMaterial == XUD_BATCH_NO_MATERIAL) && (lineTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/line-refusal-restored-the-state",
+            "the refusal restored the state it swapped: the append failed after the move to the UI column, and the move back ran anyway, "
+            "so a 3D shape appended beside the refusal still draws on the row it found");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/line-invariant-after-refusal",
+            "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
+    }
+
+    /*--- the public pixel: the one-pixel rectangle --------------------------------------------*/
+
+    {
+        XudRenderer fakeRenderer;
+        uint32_t pixelVariant = 0u;
+        uint32_t pixelMaterial = 0u;
+        uint32_t pixelTexture = 0u;
+
+        memset(&fakeRenderer, 0, sizeof(fakeRenderer));
+        fakeRenderer.batch = &b;
+
+        memset(&shell, 0, sizeof(shell));
+        shell.renderer = &fakeRenderer;
+        shell.width = 128u;
+        shell.height = 128u;
+
+        xud_check(xud_batch_layout(&b, XUD_SHAPES_GLYPH_VERTEX_COUNT) == XUD_OK, "shapes/pixel-layout",
+            "a batch of one quad's vertex count lays out - a pixel is the one quad the filled rectangle at width and height one is, so "
+            "the second one is the refusal below");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/pixel-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        result = xud_draw_pixel(&shell, 30, 40, color);
+        xud_check(result == XUD_OK, "shapes/pixel-draw-ok", "the pixel appends through a context the pure half built itself");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/pixel-stats-after-draw", "and the counters answer after it");
+        xud_check((vertexCount == XUD_SHAPES_GLYPH_VERTEX_COUNT) && (indexCount == XUD_SHAPES_GLYPH_INDEX_COUNT),
+            "shapes/pixel-costs-a-quad",
+            "4 vertices and 6 indices - the pixel IS the one-pixel rectangle, the same quad the rectangle half above appends");
+        xud_check(drawCount == 1u, "shapes/pixel-recorded-one-row",
+            "and exactly one row: the rectangle the pixel composes flushes as one draw of its own");
+        xud_check((b.draws[0u].variant == XUD_BATCH_VARIANT_UI) && (b.draws[0u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES)
+                && (b.draws[0u].textureIndex == XUD_BATCH_NO_TEXTURE) && (b.draws[0u].materialIndex == XUD_BATCH_NO_MATERIAL),
+            "shapes/pixel-row-is-the-untextured-ui-row",
+            "and the row is the same untextured UI row the filled rectangle takes - the pixel draws through the rectangle, so the row is "
+            "the rectangle's");
+        xud_check((b.draws[0u].firstIndex == 0u) && (b.draws[0u].indexCount == XUD_SHAPES_GLYPH_INDEX_COUNT),
+            "shapes/pixel-row-names-the-quad", "and it names the quad's six indices from the batch's start");
+        result = xud_batch_state_get(&b, &pixelVariant, &pixelMaterial, &pixelTexture);
+        xud_check(result == XUD_OK, "shapes/pixel-state-after-draw", "and the state answers after the draw");
+        xud_check((pixelVariant == XUD_BATCH_VARIANT_OPAQUE) && (pixelMaterial == XUD_BATCH_NO_MATERIAL)
+                && (pixelTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/pixel-restored-the-state",
+            "the state the call found is the state it left: the pixel's restoration is the rectangle's, which this half already checked");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/pixel-invariant", "and the batch's invariant still holds");
+
+        /* The bytes, not only the counts: the four corners of the one-pixel box at the caller's
+           position, each pixel edge on the clip corner the mapper names. */
+        {
+            const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+            float pos[XUD_SHAPES_GLYPH_VERTEX_COUNT][3];
+            float nrm[XUD_SHAPES_GLYPH_VERTEX_COUNT][3];
+            uint32_t idx[XUD_SHAPES_GLYPH_INDEX_COUNT];
+            uint32_t row = 0u;
+            uint32_t cornersPlaced = 0u;
+            uint32_t flatZ = 0u;
+            uint32_t flatNormals = 0u;
+            uint32_t callerColour = 0u;
+            const float pixelLeft = ((2.0f * 30.0f) / 128.0f) - 1.0f;
+            const float pixelRight = ((2.0f * 31.0f) / 128.0f) - 1.0f;
+            const float pixelTop = 1.0f - ((2.0f * 40.0f) / 128.0f);
+            const float pixelBottom = 1.0f - ((2.0f * 41.0f) / 128.0f);
+
+            for (row = 0u; row < XUD_SHAPES_GLYPH_VERTEX_COUNT; row++) {
+                memcpy(&pos[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (row * XUD_BATCH_STREAM_POS_SIZE),
+                    XUD_BATCH_STREAM_POS_SIZE);
+                memcpy(&nrm[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (row * XUD_BATCH_STREAM_NORMAL_SIZE),
+                    XUD_BATCH_STREAM_NORMAL_SIZE);
+
+                if (((pos[row][0] == pixelLeft) || (pos[row][0] == pixelRight))
+                    && ((pos[row][1] == pixelTop) || (pos[row][1] == pixelBottom))) {
+                    cornersPlaced++;
+                }
+                if ((pos[row][2] == 0.0f)) {
+                    flatZ++;
+                }
+                if ((nrm[row][0] == XUD_SHAPES_FLAT_NORMAL_X) && (nrm[row][1] == XUD_SHAPES_FLAT_NORMAL_Y)
+                    && (nrm[row][2] == XUD_SHAPES_FLAT_NORMAL_Z)) {
+                    flatNormals++;
+                }
+                if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + (row * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                        XUD_BATCH_STREAM_COLOR_SIZE)
+                    == 0) {
+                    callerColour++;
+                }
+            }
+
+            xud_check(cornersPlaced == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/pixel-corners-are-the-one-pixel-box",
+                "all four vertices sit on the box of the one pixel the caller named, each pixel edge on the clip corner the mapper names "
+                "- a pixel at the framebuffer's top-left corner regardless of the caller's position would not");
+            xud_check((pos[0u][0] == pixelRight) && (pos[0u][1] == pixelBottom) && (pos[1u][0] == pixelRight) && (pos[1u][1] == pixelTop)
+                    && (pos[2u][0] == pixelLeft) && (pos[2u][1] == pixelTop) && (pos[3u][0] == pixelLeft) && (pos[3u][1] == pixelBottom),
+                "shapes/pixel-corners-in-the-quad-order",
+                "and the vertex order is the append's: the caller's bottom-right corner first and its top-left last, the same pairing the "
+                "rectangle half states for its own quad");
+            xud_check(flatZ == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/pixel-z-is-the-quad-plane",
+                "and every vertex sits on the z=0 plane the screen-space quad is, the same plane the rectangle half checked");
+            xud_check(flatNormals == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/pixel-normals-are-flat",
+                "and the four normals are the flat +Z the screen-facing quad carries, the same constant the glyph walk stamps");
+            xud_check(callerColour == XUD_SHAPES_GLYPH_VERTEX_COUNT, "shapes/pixel-colour-landed-four-times",
+                "and the caller's colour is at all four corners, because a pixel, like the rectangle it is, has one colour");
+
+            memcpy(idx, arena + b.indexOffset, XUD_BATCH_INDEX_SIZE * XUD_SHAPES_GLYPH_INDEX_COUNT);
+            xud_check((idx[0u] == 0u) && (idx[1u] == 1u) && (idx[2u] == 2u) && (idx[3u] == 0u) && (idx[4u] == 2u) && (idx[5u] == 3u),
+                "shapes/pixel-indices-are-the-quad-order",
+                "and the six indices close the one-pixel quad the same two triangles a glyph does");
+        }
+
+        result = xud_draw_pixel(&shell, 30, 40, color);
+        xud_check(result == XUD_OUT_OF_MEMORY, "shapes/pixel-second-refused",
+            "a second pixel does not fit a batch one quad has already filled, and is refused with the batch's own code");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/pixel-stats-after-refusal", "and the counters answer after the refusal");
+        xud_check((vertexCount == XUD_SHAPES_GLYPH_VERTEX_COUNT) && (indexCount == XUD_SHAPES_GLYPH_INDEX_COUNT) && (drawCount == 1u),
+            "shapes/pixel-refusal-wrote-nothing",
+            "the refused pixel wrote no vertex, no index and no row, so the batch still holds exactly one quad and its one row");
+        result = xud_batch_state_get(&b, &pixelVariant, &pixelMaterial, &pixelTexture);
+        xud_check(result == XUD_OK, "shapes/pixel-state-after-refusal", "and the state answers after the refusal");
+        xud_check((pixelVariant == XUD_BATCH_VARIANT_OPAQUE) && (pixelMaterial == XUD_BATCH_NO_MATERIAL)
+                && (pixelTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/pixel-refusal-restored-the-state",
+            "the refusal restored the state it swapped: the rectangle the pixel composes refuses and restores, which this half already "
+            "checked for its own call");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/pixel-invariant-after-refusal",
+            "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
+    }
+
+    /*--- the public rectangle outline: the four edges as one row of lines ----------------------*/
+
+    {
+        XudRenderer fakeRenderer;
+        uint32_t outlineVariant = 0u;
+        uint32_t outlineMaterial = 0u;
+        uint32_t outlineTexture = 0u;
+
+        memset(&fakeRenderer, 0, sizeof(fakeRenderer));
+        fakeRenderer.batch = &b;
+
+        memset(&shell, 0, sizeof(shell));
+        shell.renderer = &fakeRenderer;
+        shell.width = 128u;
+        shell.height = 128u;
+
+        xud_check(xud_batch_layout(&b, XUD_SHAPES_LINE_VERTEX_COUNT * 4u) == XUD_OK, "shapes/outline-layout",
+            "a batch of the outline's eight vertex count lays out - exactly the capacity the four edges spend, and four more edges would "
+            "not fit");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/outline-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        /* A degenerate extent is a bad argument, and it is answered BEFORE the state swap, so a
+           refusal here could not have moved or split anything: the state it found is the state it
+           left. */
+        result = xud_draw_rectangle_lines(&shell, 10, 20, 0, 50, color);
+        xud_check(result == XUD_INVALID_ARG, "shapes/outline-zero-width-refused",
+            "an outline with no width is refused rather than drawn as overlapping or zero-length edges");
+        result = xud_draw_rectangle_lines(&shell, 10, 20, 100, 0, color);
+        xud_check(result == XUD_INVALID_ARG, "shapes/outline-zero-height-refused", "and so is one with no height");
+        result = xud_draw_rectangle_lines(&shell, 10, 20, -100, 50, color);
+        xud_check(result == XUD_INVALID_ARG, "shapes/outline-negative-width-refused",
+            "and a negative width is the same refusal - a negative extent is not a flipped outline, it is a number the call cannot draw");
+        result = xud_batch_state_get(&b, &outlineVariant, &outlineMaterial, &outlineTexture);
+        xud_check(result == XUD_OK, "shapes/outline-state-after-refusals", "and the state answers after the refusals");
+        xud_check((outlineVariant == XUD_BATCH_VARIANT_OPAQUE) && (outlineMaterial == XUD_BATCH_NO_MATERIAL)
+                && (outlineTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/outline-refusals-moved-no-state",
+            "the refusals above moved none of it: the state is where the reset left it, so no refusal split a run or recorded a row");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/outline-stats-after-refusals", "and the counters answer too");
+        xud_check((vertexCount == 0u) && (indexCount == 0u) && (drawCount == 0u), "shapes/outline-refusals-wrote-nothing",
+            "and they are still empty - a refused outline appended no edge, no index and no row");
+
+        result = xud_draw_rectangle_lines(&shell, 10, 20, 100, 50, color);
+        xud_check(result == XUD_OK, "shapes/outline-draw-ok", "the outline appends through a context the pure half built itself");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/outline-stats-after-draw", "and the counters answer after it");
+        xud_check((vertexCount == (XUD_SHAPES_LINE_VERTEX_COUNT * 4u)) && (indexCount == (XUD_SHAPES_LINE_INDEX_COUNT * 4u)),
+            "shapes/outline-costs-four-lines",
+            "8 vertices and 8 indices, the four edges of the batch's line shape - the same append the line half above drives, four times");
+        xud_check(drawCount == 1u, "shapes/outline-recorded-one-row",
+            "and exactly one row: the four appends share one state swap, so the outline flushes as one draw of its own rather than four");
+        xud_check((b.draws[0u].variant == XUD_BATCH_VARIANT_UI) && (b.draws[0u].topology == XUD_BATCH_TOPOLOGY_LINES)
+                && (b.draws[0u].textureIndex == XUD_BATCH_NO_TEXTURE) && (b.draws[0u].materialIndex == XUD_BATCH_NO_MATERIAL),
+            "shapes/outline-row-is-the-untextured-ui-line-row",
+            "and the row is the UI variant's line row - the pipeline list's row for the untextured screen-space line, the one neither "
+            "tests nor writes the depth");
+        xud_check((b.draws[0u].firstIndex == 0u) && (b.draws[0u].indexCount == (XUD_SHAPES_LINE_INDEX_COUNT * 4u)),
+            "shapes/outline-row-names-the-four-edges",
+            "and it names all eight of the outline's indices from the batch's start, the four edges of one run");
+        result = xud_batch_state_get(&b, &outlineVariant, &outlineMaterial, &outlineTexture);
+        xud_check(result == XUD_OK, "shapes/outline-state-after-draw", "and the state answers after the draw");
+        xud_check((outlineVariant == XUD_BATCH_VARIANT_OPAQUE) && (outlineMaterial == XUD_BATCH_NO_MATERIAL)
+                && (outlineTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/outline-restored-the-state",
+            "the material triple the call found is the triple it left: a shape appended beside the outline draws with the state the "
+            "outline found, the same agreement the line half above states");
+        xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_LINES, "shapes/outline-left-the-topology",
+            "and the topology the append moved is the topology it left: the next shape the frame appends moves it back");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/outline-invariant", "and the batch's invariant still holds");
+
+        /* The bytes, not only the counts: the eight endpoints at the caller's box inset by half a
+           pixel on every side, in the vertex order raylib's own outline walks the edges. */
+        {
+            const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+            float pos[XUD_SHAPES_LINE_VERTEX_COUNT * 4u][3];
+            float nrm[XUD_SHAPES_LINE_VERTEX_COUNT * 4u][3];
+            uint32_t idx[XUD_SHAPES_LINE_INDEX_COUNT * 4u];
+            uint32_t row = 0u;
+            uint32_t inOrder = 0u;
+            uint32_t flatZ = 0u;
+            uint32_t flatNormals = 0u;
+            uint32_t callerColour = 0u;
+            const float insetLeftX = ((2.0f * 10.5f) / 128.0f) - 1.0f;
+            const float insetRightX = ((2.0f * 109.5f) / 128.0f) - 1.0f;
+            const float insetTopY = 1.0f - ((2.0f * 20.5f) / 128.0f);
+            const float insetBottomY = 1.0f - ((2.0f * 69.5f) / 128.0f);
+            const float edgeX[XUD_SHAPES_LINE_VERTEX_COUNT * 4u]
+                = { insetLeftX, insetRightX, insetRightX, insetRightX, insetRightX, insetLeftX, insetLeftX, insetLeftX };
+            const float edgeY[XUD_SHAPES_LINE_VERTEX_COUNT * 4u]
+                = { insetTopY, insetTopY, insetTopY, insetBottomY, insetBottomY, insetBottomY, insetBottomY, insetTopY };
+
+            for (row = 0u; row < (XUD_SHAPES_LINE_VERTEX_COUNT * 4u); row++) {
+                memcpy(&pos[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (row * XUD_BATCH_STREAM_POS_SIZE),
+                    XUD_BATCH_STREAM_POS_SIZE);
+                memcpy(&nrm[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (row * XUD_BATCH_STREAM_NORMAL_SIZE),
+                    XUD_BATCH_STREAM_NORMAL_SIZE);
+
+                if ((pos[row][0] == edgeX[row]) && (pos[row][1] == edgeY[row])) {
+                    inOrder++;
+                }
+                if ((pos[row][2] == 0.0f)) {
+                    flatZ++;
+                }
+                if ((nrm[row][0] == XUD_SHAPES_FLAT_NORMAL_X) && (nrm[row][1] == XUD_SHAPES_FLAT_NORMAL_Y)
+                    && (nrm[row][2] == XUD_SHAPES_FLAT_NORMAL_Z)) {
+                    flatNormals++;
+                }
+                if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + (row * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                        XUD_BATCH_STREAM_COLOR_SIZE)
+                    == 0) {
+                    callerColour++;
+                }
+            }
+
+            xud_check(inOrder == (XUD_SHAPES_LINE_VERTEX_COUNT * 4u), "shapes/outline-endpoints-are-the-inset-box",
+                "every vertex sits on the inset box in the exact position raylib's edge walk puts it: top edge left to right, right edge "
+                "top to bottom, bottom edge right to left, left edge bottom to top, each corner shared by the two edges that meet there");
+            xud_check(flatZ == (XUD_SHAPES_LINE_VERTEX_COUNT * 4u), "shapes/outline-z-is-the-screen-plane",
+                "and every vertex sits on the z=0 plane the screen-space outline is, the position the UI row's fixed screen view expects");
+            xud_check(flatNormals == (XUD_SHAPES_LINE_VERTEX_COUNT * 4u), "shapes/outline-normals-are-flat",
+                "and every normal is the flat +Z the screen-facing geometry carries, the same constant the other appends stamp");
+            xud_check(callerColour == (XUD_SHAPES_LINE_VERTEX_COUNT * 4u), "shapes/outline-colour-landed-at-every-endpoint",
+                "and the caller's colour is at all eight endpoints, because the outline, like the line it is four of, has one colour");
+
+            memcpy(idx, arena + b.indexOffset, XUD_BATCH_INDEX_SIZE * XUD_SHAPES_LINE_INDEX_COUNT * 4u);
+            xud_check((idx[0u] == 0u) && (idx[1u] == 1u) && (idx[2u] == 2u) && (idx[3u] == 3u) && (idx[4u] == 4u) && (idx[5u] == 5u)
+                    && (idx[6u] == 6u) && (idx[7u] == 7u),
+                "shapes/outline-indices-name-the-four-edges",
+                "and the eight indices close the outline the same way the line's two do, one pair per edge in the order the edges were "
+                "appended");
+        }
+
+        /* The partial refusal: a batch of four vertices holds two of the four edges and refuses
+           the third, the edges before it already appended and the state restored, the same
+           partial-draw agreement the glyph run half above states for a run of quads. */
+        xud_check(xud_batch_layout(&b, XUD_SHAPES_GLYPH_VERTEX_COUNT) == XUD_OK, "shapes/outline-partial-layout",
+            "a batch of four vertices lays out - two of the four edges fit it and the third is the refusal below");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/outline-partial-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        result = xud_draw_rectangle_lines(&shell, 10, 20, 100, 50, color);
+        xud_check(result == XUD_OUT_OF_MEMORY, "shapes/outline-partial-refused",
+            "the outline does not fit a batch of two of its four edges, and is refused with the batch's own code");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/outline-partial-stats-after-refusal", "and the counters answer after the refusal");
+        xud_check(
+            (vertexCount == (XUD_SHAPES_LINE_VERTEX_COUNT * 2u)) && (indexCount == (XUD_SHAPES_LINE_INDEX_COUNT * 2u)) && (drawCount == 1u),
+            "shapes/outline-partial-appended-the-edges-that-fit",
+            "the two edges that fit are already appended and the refusal closed their run as one row - an outline that drew two of its "
+            "four edges rather than none of them, the agreement the glyph run half states");
+        xud_check((b.draws[0u].variant == XUD_BATCH_VARIANT_UI) && (b.draws[0u].topology == XUD_BATCH_TOPOLOGY_LINES)
+                && (b.draws[0u].firstIndex == 0u) && (b.draws[0u].indexCount == (XUD_SHAPES_LINE_INDEX_COUNT * 2u)),
+            "shapes/outline-partial-row-is-the-two-edges",
+            "and the row the partial outline left is the two edges that fit, through the untextured UI line row");
+        result = xud_batch_state_get(&b, &outlineVariant, &outlineMaterial, &outlineTexture);
+        xud_check(result == XUD_OK, "shapes/outline-partial-state-after-refusal", "and the state answers after the refusal");
+        xud_check((outlineVariant == XUD_BATCH_VARIANT_OPAQUE) && (outlineMaterial == XUD_BATCH_NO_MATERIAL)
+                && (outlineTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/outline-partial-restored-the-state",
+            "the refusal restored the state it swapped: the move back ran after the third edge was refused, so a 3D shape appended beside "
+            "the refusal still draws on the row it found");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/outline-invariant-after-partial-refusal",
+            "and the batch's invariant still holds over the partial refusal, so nothing half-written is in it");
+    }
+
     /* The rows the split above allocated are this area's to release: the batch is a stack record
        here rather than one xud_batch_open allocated, and the batch area frees its own rows the
        same way at the end of its pure half.
@@ -2169,10 +2627,60 @@ static void xud_test_shapes_gpu(void) {
         "and the quad's row is the untextured UI row the plain surface is, naming the quad's six indices");
     xud_check(context->renderer->batch->currentVariant == XUD_BATCH_VARIANT_OPAQUE, "gpu-shapes/rect-restored-the-3d-state",
         "and the state the call found is the state it left: the frame's next 3D shape continues on the OPAQUE row the call came from");
-    xud_check((vertexCount == (XUD_SHAPES_SPHERE_VERTEX_COUNT + XUD_SHAPES_CUBE_VERTEX_COUNT + XUD_SHAPES_GLYPH_VERTEX_COUNT))
-            && (indexCount == (XUD_SHAPES_SPHERE_INDEX_COUNT + XUD_SHAPES_CUBE_INDEX_COUNT + XUD_SHAPES_GLYPH_INDEX_COUNT)),
-        "gpu-shapes/grown-frame-counts-all-three",
-        "45 vertices and 132 indices, the sphere's and the box's and the rectangle's, with nothing left over from the frame above");
+    /* The 2D pixel, line and rectangle outline on top of the scene: the three screen-space shapes
+       through the UI column, beside the 3D shapes they split. Each call restores the state it
+       found, and the restore is a change, so each flushes its own row at its end - the pixel a
+       quad row of its own beside the plain rectangle's, and the line and the outline line rows of
+       their own, the two line rows the pure half above byte-checked, drawn through the depth-off
+       pipeline the validation layer would name if either were bound to a depth-on one. */
+    result = xud_draw_pixel(context, 62, 63, white);
+    xud_check(result == XUD_OK, "gpu-shapes/pixel-in-the-grown-frame",
+        "and the one-pixel rectangle draws in the window's own corner, beside the plain rectangle whose row it did not join");
+    result = xud_draw_line(context, 0, 0, 63, 0, white);
+    xud_check(result == XUD_OK, "gpu-shapes/line-in-the-grown-frame",
+        "the screen-space line draws on top of the 3D scene, an edge of the window's own top");
+    result = xud_draw_rectangle_lines(context, 10, 20, 40, 30, white);
+    xud_check(result == XUD_OK, "gpu-shapes/outline-in-the-grown-frame",
+        "and the rectangle outline draws the four edges of the plain rectangle's box, a line row of its own");
+    xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "gpu-shapes/stats-after-the-2d-shapes", "and the counters answer after the 2D shapes");
+    xud_check(drawCount == 5u, "gpu-shapes/the-2d-shapes-added-three-rows",
+        "five rows in the frame now: the 3D run, the plain rectangle's quad row, the pixel's own quad row, the line's row and the "
+        "outline's own, so the boundary above replays them as five draws through the pipeline list's two columns");
+    xud_check((context->renderer->batch->draws[3u].variant == XUD_BATCH_VARIANT_UI)
+            && (context->renderer->batch->draws[3u].topology == XUD_BATCH_TOPOLOGY_LINES)
+            && (context->renderer->batch->draws[3u].textureIndex == XUD_BATCH_NO_TEXTURE)
+            && (context->renderer->batch->draws[3u].materialIndex == XUD_BATCH_NO_MATERIAL),
+        "gpu-shapes/line-row-is-the-untextured-ui-line-row",
+        "and the line's row is the UI variant's line row - the depth-off row neither the quad rows' nor the 3D run's is");
+    xud_check(context->renderer->batch->draws[3u].firstIndex
+                == (XUD_SHAPES_SPHERE_INDEX_COUNT + XUD_SHAPES_CUBE_INDEX_COUNT + (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u))
+            && (context->renderer->batch->draws[3u].indexCount == XUD_SHAPES_LINE_INDEX_COUNT),
+        "gpu-shapes/line-row-names-the-line",
+        "and it names the line's two indices from where the frame's indices had run - the 3D run's 126 and the two quad rows' 12 "
+        "having gone first - the whole argument pair the frame loop hands vkCmdDrawIndexed for the 2D line draw");
+    xud_check((context->renderer->batch->draws[4u].variant == XUD_BATCH_VARIANT_UI)
+            && (context->renderer->batch->draws[4u].topology == XUD_BATCH_TOPOLOGY_LINES)
+            && (context->renderer->batch->draws[4u].textureIndex == XUD_BATCH_NO_TEXTURE)
+            && (context->renderer->batch->draws[4u].materialIndex == XUD_BATCH_NO_MATERIAL),
+        "gpu-shapes/outline-row-is-the-untextured-ui-line-row",
+        "and the outline's row is the same line row, its own - the line's restore flushed the line's row before the outline's append "
+        "started, so the four edges are the row's whole run");
+    xud_check(context->renderer->batch->draws[4u].firstIndex
+                == (XUD_SHAPES_SPHERE_INDEX_COUNT + XUD_SHAPES_CUBE_INDEX_COUNT + (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)
+                    + XUD_SHAPES_LINE_INDEX_COUNT)
+            && (context->renderer->batch->draws[4u].indexCount == (XUD_SHAPES_LINE_INDEX_COUNT * 4u)),
+        "gpu-shapes/outline-row-names-the-four-edges",
+        "and it names the outline's eight indices from where the line's two had run, the four edges of the outline's run");
+    xud_check((vertexCount
+                  == (XUD_SHAPES_SPHERE_VERTEX_COUNT + XUD_SHAPES_CUBE_VERTEX_COUNT + (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u)
+                      + XUD_SHAPES_LINE_VERTEX_COUNT + (XUD_SHAPES_LINE_VERTEX_COUNT * 4u)))
+            && (indexCount
+                == (XUD_SHAPES_SPHERE_INDEX_COUNT + XUD_SHAPES_CUBE_INDEX_COUNT + (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)
+                    + XUD_SHAPES_LINE_INDEX_COUNT + (XUD_SHAPES_LINE_INDEX_COUNT * 4u))),
+        "gpu-shapes/grown-frame-counts-all-six",
+        "59 vertices and 148 indices, the sphere's and the box's and the two quads' and the line's and the outline's, with nothing "
+        "left over from the frame above");
 
     result = xud_end_drawing(context);
     xud_check(result == XUD_OK, "gpu-shapes/end-in-the-grown-frame",
@@ -2180,8 +2688,8 @@ static void xud_test_shapes_gpu(void) {
 
     if (context->validate != 0u) {
         xud_check(context->diagnostics->errorMessages == 0u, "gpu-shapes/validation-clean",
-            "the frames drew a real triangle through a real pipeline and the messenger heard nothing - "
-            "not just that nothing crashed");
+            "the frames drew the 3D shapes through the depth-on pipeline and the 2D surface through the depth-off one and the messenger "
+            "heard nothing - not just that nothing crashed");
     }
 
     result = xud_close_context(&context);
