@@ -1119,6 +1119,22 @@ XudResult xud_draw_model_ex(XudContext* context, XudHandle handle, const float* 
 /// when the quad does not fit the batch.
 XudResult xud_draw_texture(XudContext* context, XudHandle handle, int32_t posX, int32_t posY, XudColor tint);
 
+/// Draw a filled rectangle at the screen: the plain half of the 2D surface, raylib's DrawRectangle,
+/// and the quad no texture walks for. It is one row of the pipeline list's UI column, the same
+/// column the texture pair above and the screen-space text draw through: depth test and write are
+/// both off and the view is fixed to the screen, so a 3D camera in effect moves the scene around
+/// the rectangle rather than the rectangle, and the rectangle does not write the depth a 3D row
+/// later in the frame tests against. The position is the top-left corner in PIXELS with y DOWN from
+/// the framebuffer's top-left, the extent is the rectangle's own in pixels, and a zero or negative
+/// extent is refused rather than drawn as a degenerate quad - the same refusal the textured half
+/// makes of a zero framebuffer extent, applied to the caller's own numbers. The colour is the quad's
+/// own vertex colour for the same reason the textured half above states it: the row it records into
+/// carries the white push tint the plain record stamps, and the fragment stage's product is the
+/// vertex colour times that white, the colour as given. XUD_INVALID_ARG on a NULL context, a zero or
+/// negative extent, or a zero framebuffer extent; XUD_UNSUPPORTED on a context with no batch to
+/// append into; XUD_OUT_OF_MEMORY when the quad does not fit the batch.
+XudResult xud_draw_rectangle(XudContext* context, int32_t posX, int32_t posY, int32_t width, int32_t height, XudColor color);
+
 /*-----------------------------------------------------------------------------------------------
  * The font API - raylib's font half, above the font rung
  *

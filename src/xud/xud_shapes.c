@@ -1298,3 +1298,87 @@ XudResult xud_draw_sphere_wires(XudContext* context, XudVector3 centerPos, float
 
     return xud_shapes_append_sphere_wires(batch, centerPos, radius, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color);
 }
+
+/* The plain half of the 2D surface: the caller's own rectangle as one screen-space quad at the
+   caller's pixel position, through the pipeline list's UI column the same way xud_draw_texture()
+   draws its texture's extent - the state swap moves the batch to the UI row for the quad and back
+   when it is done, so the quad flushes as one row of its own and the shapes appended beside it
+   draw with the state the call found. The quad's full box in uv space is the constant [0, 1], the
+   whole of the slot-0 white texture the untextured row samples, which is why the uv is a constant
+   here rather than a caller's box as in the glyph walk above. */
+XudResult xud_draw_rectangle(XudContext* context, int32_t posX, int32_t posY, int32_t width, int32_t height, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 corner0;
+    XudVector3 corner1;
+    XudVector2 uv0;
+    XudVector2 uv1;
+    uint32_t oldVariant = 0u;
+    uint32_t oldMaterial = 0u;
+    uint32_t oldTexture = 0u;
+    float clipX0 = 0.0f;
+    float clipY0 = 0.0f;
+    float clipX1 = 0.0f;
+    float clipY1 = 0.0f;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The extent the caller's rectangle occupies: a zero or negative one is a degenerate quad the
+       append would refuse corner-by-corner anyway, and it is refused here before any state is
+       moved, for the same reason the textured half refuses a zero framebuffer extent - a degenerate
+       number is a bad argument rather than a draw. */
+    if ((width <= 0) || (height <= 0)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The extent the quad's pixels divide by is the framebuffer's own, the swapchain's imageExtent
+       the window layer reports rather than the size the caller asked for: a zero extent is the
+       state a window with no presentable extent is in, and a divide by it is an inf in a float
+       stream rather than a draw. */
+    if ((context->width == 0u) || (context->height == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The two corners in pixels, the top-left and the bottom-right of the caller's extent at the
+       caller's position, mapped to clip before they become the corners the quad takes: the
+       rectangle's full box in uv space is the quad's, so the uv is the whole of [0, 1]. */
+    result = xud_shapes_pixel_to_clip(context->width, context->height, (float)posX, (float)posY, &clipX0, &clipY0);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_shapes_pixel_to_clip(
+        context->width, context->height, (float)posX + (float)width, (float)posY + (float)height, &clipX1, &clipY1);
+    if (result != XUD_OK) {
+        return result;
+    }
+    corner0.x = clipX0;
+    corner0.y = clipY0;
+    corner0.z = 0.0f;
+    corner1.x = clipX1;
+    corner1.y = clipY1;
+    corner1.z = 0.0f;
+    uv0.x = 0.0f;
+    uv0.y = 0.0f;
+    uv1.x = 1.0f;
+    uv1.y = 1.0f;
+
+    result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_UI, XUD_BATCH_NO_TEXTURE);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_shapes_append_glyph_quad(batch, corner0, corner1, uv0, uv1, color);
+    if (result != XUD_OK) {
+        (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+        return result;
+    }
+    result = xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+
+    return result;
+}
