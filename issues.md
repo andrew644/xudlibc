@@ -211,7 +211,7 @@ window-close flag, that flag will also lag by a frame.
 
 ## Inconsistencies and minor issues
 
-### 13. Two different window-extent bounds
+### 13. (RESOLVED) Two different window-extent bounds
 
 The public `xud_init_context` refuses extents above `XUD_MAX_WINDOW_EXTENT`
 = 16384 (`xud.h:114`), while the window and swapchain rungs accept up to
@@ -221,6 +221,18 @@ The public `xud_init_context` refuses extents above `XUD_MAX_WINDOW_EXTENT`
 window the machine can present (many drivers allow 32768+) is refused as
 `XUD_INVALID_ARG` by the public entry. Either wire the caps value into the
 check or state the 16384 cap publicly.
+
+**Resolved.** The caps value is wired into the check: the pure gate
+`xud_window_extent_ok()` answers true when an extent sits inside both
+`XUD_MAX_WINDOW_EXTENT` and the device's `maxImageDimension2D`, so the
+effective bound is the smaller of the two — the machine's limit only ever
+tightens the public one, never loosens it. Both public entry points run it:
+`xud_init_context` answers `XUD_UNSUPPORTED` for an extent the machine
+cannot present (after the bring-up has the caps to read), and
+`xud_set_window_size` does the same before it would touch the window, so a
+resize the machine cannot present is refused rather than failing at the
+frame boundary that would recreate the swapchain. The public bound still
+answers `XUD_INVALID_ARG` on its own, above or without a device.
 
 ### 14. (RESOLVED) `solid_textured.frag` is `#version 450`, the other two shaders 460
 
