@@ -828,6 +828,16 @@ XudResult xud_batch_stats(const XudBatch* batch, uint32_t* outVertexCount, uint3
     return XUD_OK;
 }
 
+XudResult xud_batch_index_capacity(const XudBatch* batch, uint32_t* outIndexCapacity) {
+    if ((batch == NULL) || (outIndexCapacity == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outIndexCapacity = batch->indexCapacity;
+
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The bring-up - the driver half
  *-----------------------------------------------------------------------------------------------*/

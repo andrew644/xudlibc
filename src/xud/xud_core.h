@@ -45,8 +45,8 @@
 #include "xud_time.h" /* Required for: XudTime, the clock rung the context owns above the window it reads - GLFW's own timer read against this context's own epoch, so the elapsed is a per-context question and the frame pair's boundary is what fills the two mark rows */
 #include "xud_ui.h" /* Required for: XudUi, the ui rung the context owns from the first xud_ui_init() on - the nuklear context, its baked font atlas and the fold into the batch, spent lazily rather than at bring-up because the atlas is a TEXTURE a context that only ever draws never asks for */
 #include "xud_window.h" /* Required for: XudWindow, the GLFW window plus the VkSurfaceKHR it was handed - the context will own one, and the teardown order below is what makes the surface die before the window and the window before the instance */
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 /* Completed here; xud.h keeps callers to an opaque handle. Every Vulkan field is a
    sentinel (NULL / 0) until the layer named beside it fills it, and is destroyed in the

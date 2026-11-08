@@ -106,14 +106,13 @@ static void xud_test_init_bringup_boundary(void) {
     /* The extent gate itself, pure: the effective bound is the smaller of the public bound and the
        device's 2D image limit, so the device's answer only ever tightens the public one - and both
        halves of that, plus the per-axis form, are the rows below. */
-    xud_check(xud_window_extent_ok(XUD_MAX_WINDOW_EXTENT, XUD_MAX_WINDOW_EXTENT, XUD_MAX_WINDOW_EXTENT) == true,
-        "gate/at-both-bounds", "an extent at both bounds is legal");
+    xud_check(xud_window_extent_ok(XUD_MAX_WINDOW_EXTENT, XUD_MAX_WINDOW_EXTENT, XUD_MAX_WINDOW_EXTENT) == true, "gate/at-both-bounds",
+        "an extent at both bounds is legal");
     xud_check(xud_window_extent_ok(XUD_MAX_WINDOW_EXTENT, 1u, 32768u) == true, "gate/host-bound-governs",
         "a device limit above the public bound does not loosen it: the public bound still governs");
     xud_check(xud_window_extent_ok(XUD_MAX_WINDOW_EXTENT + 1u, 1u, 32768u) == false, "gate/above-host-bound",
         "one above the public bound is refused even where the device would allow it");
-    xud_check(xud_window_extent_ok(8192u, 8192u, 8192u) == true, "gate/at-device-bound",
-        "an extent at the device's own limit is legal");
+    xud_check(xud_window_extent_ok(8192u, 8192u, 8192u) == true, "gate/at-device-bound", "an extent at the device's own limit is legal");
     xud_check(xud_window_extent_ok(8193u, 1u, 8192u) == false, "gate/above-device-bound",
         "one above the device's limit is refused even though it sits inside the public bound");
     xud_check(xud_window_extent_ok(8192u, 8193u, 8192u) == false, "gate/above-device-bound-other-axis",
@@ -370,8 +369,7 @@ static void xud_test_gpu_context(void) {
         const uint32_t deviceLimit = context->physicalDevice->caps.properties.properties.limits.maxImageDimension2D;
         xud_check(deviceLimit >= 1u, "gpu-context/device-limit-recorded",
             "the physical layer recorded the device's own 2D image limit, which the gate below reads");
-        xud_check(xud_window_extent_ok(context->width, context->height, deviceLimit),
-            "gpu-context/rendered-extent-inside-gate",
+        xud_check(xud_window_extent_ok(context->width, context->height, deviceLimit), "gpu-context/rendered-extent-inside-gate",
             "the extent the frame just rendered at is legal under the machine's own limit");
         xud_check(xud_set_window_size(context, XUD_MAX_WINDOW_EXTENT + 1u, 120u) == XUD_INVALID_ARG,
             "gpu-context/set-size-over-public-bound",
@@ -379,15 +377,13 @@ static void xud_test_gpu_context(void) {
         if (deviceLimit < XUD_MAX_WINDOW_EXTENT) {
             XudContext* oversized = NULL;
             xud_check(xud_set_window_size(context, deviceLimit + 1u, deviceLimit + 1u) == XUD_UNSUPPORTED,
-                "gpu-context/set-size-over-device-bound",
-                "above the device's 2D image limit is a machine refusal, not a bad argument");
+                "gpu-context/set-size-over-device-bound", "above the device's 2D image limit is a machine refusal, not a bad argument");
             xud_check(context->window->width == 160u, "gpu-context/set-size-refusal-untouched",
                 "and the refusal moved nothing: the window record still names the extent the resize above left");
             xud_check(xud_init_context(&oversized, deviceLimit + 1u, deviceLimit + 1u) == XUD_UNSUPPORTED,
                 "gpu-context/init-over-device-bound",
                 "and the same refusal at bring-up: the extent gate answers before the swapchain would have");
-            xud_check(oversized == NULL, "gpu-context/init-over-device-bound-null",
-                "and nothing was handed back");
+            xud_check(oversized == NULL, "gpu-context/init-over-device-bound-null", "and nothing was handed back");
         }
     }
 

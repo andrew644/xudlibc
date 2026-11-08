@@ -646,6 +646,14 @@ XudResult xud_batch_reset(XudBatch* batch);
 XudResult xud_batch_stats(const XudBatch* batch, uint32_t* outVertexCount, uint32_t* outIndexCount, uint32_t* outVertexCapacity,
     uint32_t* outDrawCount, VkDeviceSize* outStagingBytes);
 
+/// Pure: the index capacity the layout installed alongside its vertex capacity - the 3n/2 that
+/// xud_batch_layout() computed and wrote into the batch when it set the vertex capacity, read back
+/// from the field rather than re-derived: the field is the number an append's index bound is
+/// checked against, so the answer this hands out is the number a refusal fired against. The index
+/// half of the same pair xud_batch_stats above hands out the vertex half of. XUD_INVALID_ARG on a
+/// NULL batch or out-pointer.
+XudResult xud_batch_index_capacity(const XudBatch* batch, uint32_t* outIndexCapacity);
+
 /// Driver: the whole rung up in one call. Order: the arena's layout for the initial capacity, the
 /// staging VkBuffer (usage TRANSFER_SRC, sized to the arena), its memory requirements, the STATI
 /// C range for it at a memoryTypeBits narrowed to the caps' host-visible rows (the narrowing is a

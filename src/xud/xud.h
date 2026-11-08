@@ -795,6 +795,33 @@ XudResult xud_end_material(XudContext* context);
 /// e batch alone.
 XudResult xud_end_drawing(XudContext* context);
 
+/// The frame's batch as the caller sees it: the live counts, the two capacities the appends are
+/// checked against, the recorded draw rows, the arena's total, and the capacity ask the frame
+/// boundary reads before it grows - the largest total a refused append was asked to hold since the
+/// last grow, 0/0 when nothing has been refused. The two flags are the diagnosis a refused frame
+/// needs: growthAsked says the ask exceeds the current capacity, so the next xud_begin_drawing()
+/// will try to grow, and atBound says the capacity is at the batch's bound, so the grow cannot
+/// happen and an ask above the capacity is refused until the scene fits the capacity it has. The
+/// counters are the batch's own rows read through its accessors, live in the batch a completed
+/// bring-up owns.
+typedef struct XudBatchStats {
+    uint32_t vertexCount; /* the live vertices, the count every stream holds */
+    uint32_t indexCount; /* the live indices */
+    uint32_t vertexCapacity; /* the capacity an append's vertex bound is checked against */
+    uint32_t indexCapacity; /* the capacity an append's index bound is checked against */
+    uint32_t drawCount; /* the draw rows recorded for the frame so far */
+    uint64_t stagingBytes; /* the arena's total, in bytes */
+    uint32_t wantedVertices; /* the largest refused append's vertex ask since the last grow - 0 when nothing was refused */
+    uint32_t wantedIndices; /* the index half of the same ask */
+    uint32_t growthAsked; /* 1 when the ask above exceeds the current capacity: the next xud_begin_drawing() grows */
+    uint32_t
+        atBound; /* 1 when the capacity is at the batch's bound: a grow cannot happen, so an ask above the capacity is refused until the scene fits */
+} XudBatchStats;
+
+/// The batch stats above, for the context's frame batch. XUD_INVALID_ARG on a NULL out-stats or
+/// context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_batch_stats(XudBatchStats* outStats, XudContext* context);
+
 /// Set the background the frames this context draws are cleared to: raylib's ClearBackground
 /// (raylib.h 1047, "Clear background (framebuffer) to color") at this library's currency - a call
 /// with the caller's colour and a frame whose clear is the answer, rather than a clear that

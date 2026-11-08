@@ -6,7 +6,7 @@
  *   Owns : the arena's layout and the capacity doubling, the caps gate on the vertex-input limits,
  *          the two vertex-input rows per stream, the five copy rows, the invariant the settled SoA
  *          decision states, the flush-on-variant/material-change decision, the recorded draw rows,
- *          the two appends and the reset - and the GPU half that brings the whole rung up against a
+ *          the two appends and the reset, the public stats query above the rung's accessors - and
  *          real device, grows it once and lets xud_close_context() tear it down. Layer: tests. See
  *          xud_batch.h and xud_physical.h: every gate below is read off the caps' vertex-input and
  *          memory rows, which is the record the physical layer owns.
@@ -30,6 +30,7 @@
 #include "xud_batch.h" /* Required for: XudBatch, the batch rung's own constants and every fill rung below */
 #include "xud_core.h" /* Required for: XudContext, the owner the GPU half runs the ladder against */
 #include "xud_physical.h" /* Required for: XudDeviceCaps, the vertex-input limits every gate is read off */
+#include "xud_renderer.h" /* Required for: XudRenderer, the shell's renderer the public stats query reads through */
 #include "xud_shapes.h" /* Required for: XUD_SHAPES_CUBE_VERTEX_COUNT/XUD_SHAPES_CUBE_INDEX_COUNT, the shape size a refused frame asks the batch to grow for */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
 #include <stdlib.h> /* Required for: free, the draw array this area's own record loop allocates */
@@ -830,6 +831,80 @@ static void xud_test_batch_pure(void) {
     free(b.geometry);
     b.geometry = NULL;
     b.geometryCapacity = 0u;
+
+    /*--- the public query above the batch: the guards, the diagnosis the two flags state, and the
+        at-bound half of it ------------------------------------------------------------------*/
+    {
+        XudBatch pb;
+        XudRenderer renderer;
+        XudContext shell;
+        XudBatchStats stats;
+        uint32_t indexCapacity = 0u;
+
+        memset(&pb, 0, sizeof(pb));
+        memset(&renderer, 0, sizeof(renderer));
+        memset(&shell, 0, sizeof(shell));
+        memset(&stats, 0, sizeof(stats));
+        renderer.batch = &pb;
+        shell.renderer = &renderer;
+
+        xud_check(xud_get_batch_stats(NULL, &shell) == XUD_INVALID_ARG, "batch-public/arg-null-stats",
+            "a query with nowhere to write its answer is a bad argument");
+        xud_check(
+            xud_get_batch_stats(&stats, NULL) == XUD_INVALID_ARG, "batch-public/arg-null-context", "and so is one with no context to read");
+        shell.renderer = NULL;
+        xud_check(xud_get_batch_stats(&stats, &shell) == XUD_UNSUPPORTED, "batch-public/no-renderer",
+            "a context that never completed bring-up cannot answer: the same answer the public frame pair gives it");
+
+        xud_check(xud_batch_layout(&pb, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "batch-public/layout", "the shell's batch lays out");
+        shell.renderer = &renderer;
+        xud_check(xud_get_batch_stats(&stats, &shell) == XUD_OK, "batch-public/ok", "and the query answers through the shell");
+        xud_check((stats.vertexCount == 0u) && (stats.indexCount == 0u) && (stats.drawCount == 0u), "batch-public/empty-counts",
+            "a laid-out batch has appended nothing and recorded nothing, and the query reads it as such");
+        xud_check((stats.vertexCapacity == XUD_BATCH_INITIAL_VERTICES)
+                && (stats.indexCapacity == XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+            "batch-public/both-capacities", "the two capacities an append is checked against, both read from the layout");
+        xud_check((stats.wantedVertices == 0u) && (stats.wantedIndices == 0u) && (stats.growthAsked == 0u), "batch-public/unrefused",
+            "a batch that was never refused keeps answering 0/0 with no grow asked");
+        xud_check(stats.atBound == 0u, "batch-public/not-at-bound",
+            "the initial capacity is below the bound, so a grow could still happen: the batch is not full");
+
+        /* The refused-append half: the ask is recorded, the query reads it back, and the flags say
+           what the frame boundary will do about it. */
+        xud_check(xud_batch_note_refused(&pb, XUD_BATCH_INITIAL_VERTICES + XUD_SHAPES_CUBE_VERTEX_COUNT,
+                      XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) + XUD_SHAPES_CUBE_INDEX_COUNT)
+                == XUD_OK,
+            "batch-public/refusal-noted", "a shape that did not fit records the total it asked to hold");
+        xud_check(xud_get_batch_stats(&stats, &shell) == XUD_OK, "batch-public/ok-after-refusal", "and the query answers after it");
+        xud_check(stats.wantedVertices == (XUD_BATCH_INITIAL_VERTICES + XUD_SHAPES_CUBE_VERTEX_COUNT), "batch-public/wanted-vertices",
+            "the ask is the total the append was asked to hold, not the shape's own size");
+        xud_check(stats.wantedIndices == (XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) + XUD_SHAPES_CUBE_INDEX_COUNT),
+            "batch-public/wanted-indices", "and so is the index half of the ask");
+        xud_check(stats.growthAsked == 1u, "batch-public/growth-asked",
+            "the ask exceeds the current capacity, so the next xud_begin_drawing() grows rather than refusing again");
+        xud_check(stats.atBound == 0u, "batch-public/not-at-bound-after-refusal",
+            "and the capacity is below the bound, so the grow the ask asks for can still happen");
+
+        /* The at-bound half: the state the whole query exists for - the grow cannot happen, so the
+           ask is refused until the scene fits the capacity the batch has. */
+        xud_check(xud_batch_layout(&pb, XUD_BATCH_MAX_VERTICES) == XUD_OK, "batch-public/layout-at-bound",
+            "a layout at the bound is legal: the bound is a capacity, not a refusal");
+        xud_check(xud_batch_note_refused(&pb, XUD_BATCH_MAX_VERTICES + XUD_SHAPES_CUBE_VERTEX_COUNT,
+                      XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES) + XUD_SHAPES_CUBE_INDEX_COUNT)
+                == XUD_OK,
+            "batch-public/refusal-noted-at-bound", "and a refusal against a full batch records its ask too");
+        xud_check(xud_get_batch_stats(&stats, &shell) == XUD_OK, "batch-public/ok-at-bound", "and the query answers at the bound");
+        xud_check((stats.vertexCapacity == XUD_BATCH_MAX_VERTICES) && (stats.growthAsked == 1u), "batch-public/asked-at-bound",
+            "the ask is set against a capacity at the bound");
+        xud_check(stats.atBound == 1u, "batch-public/at-bound",
+            "and the flag says the grow cannot happen: this is the state in which appends are refused until the scene fits");
+
+        xud_check(xud_batch_index_capacity(NULL, &indexCapacity) == XUD_INVALID_ARG, "batch/index-capacity-null-batch", "refused");
+        xud_check(xud_batch_index_capacity(&pb, NULL) == XUD_INVALID_ARG, "batch/index-capacity-null-out", "refused");
+        xud_check((xud_batch_index_capacity(&pb, &indexCapacity) == XUD_OK)
+                && (indexCapacity == XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES)),
+            "batch/index-capacity-is-the-field", "the layout's 3n/2, read back from the field rather than re-derived");
+    }
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -847,12 +922,15 @@ static void xud_test_batch_gpu(void) {
     uint32_t capacity = 0u;
     uint32_t drawCount = 0u;
     VkDeviceSize stagingBytes = 0u;
+    XudBatchStats stats;
     const float pos[3] = { 0.0f, 0.0f, 0.0f };
     const float uv[2] = { 0.0f, 0.0f };
     const uint8_t color[4] = { 255u, 255u, 255u, 255u };
     const float normal[3] = { 0.0f, 0.0f, 1.0f };
     uint32_t vertex = 0u;
     uint32_t stream = 0u;
+
+    memset(&stats, 0, sizeof(stats));
 
     result = xud_init_context(&context, 256u, 256u);
     xud_check(result == XUD_OK, "gpu-batch/context-completes", "the ladder has to complete before the batch can exist");
@@ -924,6 +1002,15 @@ static void xud_test_batch_gpu(void) {
         "gpu-batch/stats-read-back", "the counters read back");
     xud_check((vertexCount == 3u) && (indexCount == 3u), "gpu-batch/three-vertices-three-indices",
         "three vertices and three indices are live in all four streams at once, which is the invariant's subject read at the counts");
+    xud_check(xud_get_batch_stats(&stats, context) == XUD_OK, "gpu-batch-public/query-against-a-driver",
+        "the public query answers through the completed context");
+    xud_check((stats.vertexCount == 3u) && (stats.indexCount == 3u) && (stats.vertexCapacity == XUD_BATCH_INITIAL_VERTICES)
+            && (stats.indexCapacity == XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+        "gpu-batch-public/the-counters-are-the-rungs",
+        "the live counts and the two capacities are the batch's own rows, read through the accessors against a real device");
+    xud_check((stats.wantedVertices == 0u) && (stats.wantedIndices == 0u) && (stats.growthAsked == 0u) && (stats.atBound == 0u),
+        "gpu-batch-public/unrefused-and-not-full",
+        "nothing has been refused and the initial capacity is below the bound, so the diagnosis reads clean");
     xud_check(xud_batch_fill_copy_regions(batch) == XUD_OK, "gpu-batch/copy-rows-against-a-driver",
         "the five copy rows fill against the live counts, which is the arithmetic the frame loop's five vkCmdCopyBuffer calls will be "
         "built from");

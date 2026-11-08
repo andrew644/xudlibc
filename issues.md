@@ -257,7 +257,7 @@ difference against the materials array's base (well-defined one element past
 its end) rather than through cgltf's own accessor, which asserts the very bound
 being checked.
 
-### 17. A batch that hits its growth bound refuses forever
+### 17. (RESOLVED) A batch that hits its growth bound refuses forever
 
 `xud_batch_grow` answers `XUD_UNSUPPORTED` at the bound, `xud_begin_drawing`
 breaks out of the grow loop and keeps the ask set, and every subsequent append
@@ -266,3 +266,17 @@ fits, but the app has no public query to ask *why* appends are failing or how
 much capacity it is short by — the only way out is to shrink the scene. A
 `xud_get_batch_stats`-style public query (the internal `xud_batch_stats`
 already exists) would make the state diagnosable.
+
+**Resolved.** `xud_get_batch_stats(XudBatchStats*, XudContext*)` now answers
+above the batch rung from `xud_core.c`, reading the batch's own rows through
+its accessors rather than its fields: the live vertex/index counts, both
+capacities (a new `xud_batch_index_capacity` accessor reads back the 3n/2 the
+layout installed rather than re-deriving it), the recorded draw rows, the
+arena's total, and the refused ask. The two flags are the diagnosis:
+`growthAsked` is the batch's own growth question the frame boundary asks
+before it grows, and `atBound` (the batch's next capacity is 0 — the grow
+cannot happen) is the state in which an ask above the capacity is refused
+until the scene fits the capacity the batch has. The headless half covers the
+guards, the clean diagnosis, the refused-append half and the at-bound half
+against a shell context; the GPU half reads the same query back through a
+completed context.

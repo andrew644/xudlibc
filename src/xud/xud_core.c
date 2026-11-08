@@ -862,6 +862,60 @@ XudResult xud_end_drawing(XudContext* context) {
     return XUD_OK;
 }
 
+/// See xud.h. The batch's own rows, read through the batch's own accessors - the repo's accessor
+/// rule read at the public rung: the query asks the batch rather than reaching its fields, and
+/// reaches the renderer rung and nothing else, like the frame pair beside it. The two flags come
+/// from the batch's own two decisions: xud_batch_growth_asked() is the question the frame
+/// boundary above asks before it grows, and xud_batch_next_capacity() answering 0 is the batch
+/// being full - the state in which that question's answer is refused forever rather than answered
+/// by a grow, which is what makes a batch that hit its bound diagnosable from above.
+XudResult xud_get_batch_stats(XudBatchStats* outStats, XudContext* context) {
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t vertexCapacity = 0u;
+    uint32_t nextCapacity = 0u;
+    uint32_t asked = 0u;
+    VkDeviceSize stagingBytes = 0u;
+
+    if ((outStats == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->renderer == NULL) {
+        /* A context with no renderer is a context that never completed bring-up: xud_init_context()
+           hands back NULL for that case, so this is a caller holding on rather than a state the
+           library leaves behind. Reported, not ignored - the same answer the frame pair above
+           gives for the same reason. */
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_batch_stats(
+        context->renderer->batch, &outStats->vertexCount, &outStats->indexCount, &vertexCapacity, &outStats->drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+    outStats->vertexCapacity = vertexCapacity;
+    outStats->stagingBytes = stagingBytes;
+    result = xud_batch_index_capacity(context->renderer->batch, &outStats->indexCapacity);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_wanted(context->renderer->batch, &outStats->wantedVertices, &outStats->wantedIndices);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_growth_asked(context->renderer->batch, &asked);
+    if (result != XUD_OK) {
+        return result;
+    }
+    outStats->growthAsked = asked;
+    result = xud_batch_next_capacity(vertexCapacity, &nextCapacity);
+    if (result != XUD_OK) {
+        return result;
+    }
+    outStats->atBound = (nextCapacity == 0u) ? 1u : 0u;
+
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The public camera pair, above the context
  *
