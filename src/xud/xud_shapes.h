@@ -169,6 +169,34 @@ static_assert((XUD_SHAPES_LINE_INDEX_COUNT == XUD_SHAPES_LINE_VERTEX_COUNT) && (
     "makes the LINE_LIST topology below read two at a time rather than three");
 
 /*-----------------------------------------------------------------------------------------------
+ * The circle: the centre and the 36 rim points a full circle's sector walks
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The circle of raylib's DrawCircle (reference/raylib/src/raylib.h 1306, "Draw a color-filled
+   circle", whose arguments are (centerX, centerY, radius, color)): raylib's own DrawCircleV
+   passes the centre through to DrawCircleSector(center, radius, 0, 360, 36, color) (rshapes.c
+   1624), and the 36 is the segment count a full circle is walked with here rather than a count
+   the caller picks - the public call above takes the same five arguments raylib's int version
+   takes, and there is no segments parameter for it to pass. The fan is the centre plus the 36
+   rim points, one at each 10 degrees, and the 36 triangles that name it: the centre, the rim
+   point at angle i, and the rim point at angle i + 1, the last wrapping back to the first. That
+   is 37 vertices and 108 indices, and 108 is the fact this section exists for: xud_batch.h
+   sizes the index headroom at 3n/2 of the vertex capacity, and a fan spends three indices per
+   rim vertex, which is 2/3 over that bound - the 96 slots a fresh 64-vertex batch carries fall
+   12 short of a full circle's 108, so a circle is the one shape in this rung that does not fit
+   the batch a context opens at, and the sphere's ask is what grows the batch to the capacity a
+   circle draws in. */
+#define XUD_SHAPES_CIRCLE_SEGMENTS 36u
+#define XUD_SHAPES_CIRCLE_VERTEX_COUNT (1u + XUD_SHAPES_CIRCLE_SEGMENTS)
+#define XUD_SHAPES_CIRCLE_INDEX_COUNT (3u * XUD_SHAPES_CIRCLE_SEGMENTS)
+
+static_assert((XUD_SHAPES_CIRCLE_VERTEX_COUNT == 37u) && (XUD_SHAPES_CIRCLE_INDEX_COUNT == 108u),
+    "xud_shapes.h: a circle is the centre and the 36 rim points, with the 36 triangles the 108 indices name");
+static_assert(XUD_SHAPES_CIRCLE_INDEX_COUNT > XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES),
+    "xud_shapes.h: a full circle's 108 indices are over the 96 slots the initial capacity sizes, which is why a circle "
+    "does not fit the batch a context opens at and draws in the capacity the sphere's ask grew it to");
+
+/*-----------------------------------------------------------------------------------------------
  * The sphere: rings latitude divisions, slices longitudes, and two single-vertex poles
  *-----------------------------------------------------------------------------------------------*/
 
@@ -476,6 +504,32 @@ XudResult xud_shapes_append_cube_wires(XudBatch* batch, XudVector3 center, float
 /// no arena mapped to write into or when xud_batch_set_topology refuses to move the state; XUD_OK
 /// only when the state moved, all 17 vertex appends and all 70 index appends completed.
 XudResult xud_shapes_append_sphere_wires(XudBatch* batch, XudVector3 center, float radius, uint32_t rings, uint32_t slices, XudColor color);
+
+/// Pure: append one filled circle - the caller's centre and radius in the framebuffer's pixel
+/// space (y down from the top-left), read as raylib's DrawCircle reads them - as the fan the
+/// header states: the centre plus the 36 rim points and the 108 indices that name them, under
+/// the batch's TRIANGLES topology, which the append moves the batch to before a byte is written.
+/// The rim is computed in pixel space at the caller's centre and radius and every one of the 37
+/// points is mapped through xud_shapes_pixel_to_clip() at the caller's extent before it becomes
+/// a vertex: a circle in pixels is an ellipse in clip under the extent's non-uniform scale, which
+/// is why the points are mapped one at a time rather than the centre mapped once and a radius
+/// scaled. The normal is the flat +Z constant above: a screen-facing shape answers the way the
+/// triangle does, and the uv is the zero constant for the reason stated beside it.
+///
+/// The append is ATOMIC in the same shape as the triangle's, the box's and the sphere's, and for
+/// a circle the index bound is the one that trips first the way the sphere's is: the fan spends
+/// three indices per rim vertex, which is 2/3 over the 3n/2 the batch sizes its index headroom
+/// at, so a batch with 28 vertices of room left can have no room for the circle's 108 indices.
+///
+/// XUD_INVALID_ARG on a NULL batch, on a zero extent (the same argument xud_shapes_pixel_to_clip
+/// refuses), or on a radius that is not strictly positive (a circle with no radius has no rim to
+/// walk, and the test is written "not greater" so a NaN radius is refused by the same
+/// comparison the sphere's is); XUD_OUT_OF_MEMORY when the 37 vertices or the 108 indices do not
+/// fit the batch's capacities; XUD_UNSUPPORTED when the batch has no arena mapped to write into
+/// (the same answer xud_batch_append_vertex gives for the same reason, one rung up); XUD_OK only
+/// when all 37 vertex appends and all 108 index appends completed.
+XudResult xud_shapes_append_circle(
+    XudBatch* batch, uint32_t extentWidth, uint32_t extentHeight, float centerX, float centerY, float radius, XudColor color);
 
 /// Pure: append one glyph quad - the caller's box and the caller's box of texture coordinates,
 /// paired corner to corner as the note above states - as 4 vertices and the 6 indices that name

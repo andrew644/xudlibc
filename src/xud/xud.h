@@ -1210,6 +1210,21 @@ XudResult xud_draw_triangle(XudContext* context, XudVector2 v0, XudVector2 v1, X
 /// do not fit the batch.
 XudResult xud_draw_triangle_lines(XudContext* context, XudVector2 v0, XudVector2 v1, XudVector2 v2, XudColor color);
 
+/// Draw a filled circle at the screen: raylib's DrawCircle (raylib.h 1306, "Draw a color-filled
+/// circle"), the 36-segment fan raylib's own DrawCircleSector walks for a full circle: the centre
+/// plus the 36 rim points at 10 degrees apart and the 36 triangles the 108 indices name, the
+/// centre and a pair of neighbouring rim points each. The centre and the radius are in the pixel
+/// space the rectangle and the line above take, y DOWN from the framebuffer's top-left, and the
+/// radius is refused when it is not positive - raylib draws nothing for a radius of zero or less,
+/// and the refusal is stated rather than appended as a fan of 37 coincident points. The rim is
+/// computed in pixel space at the caller's centre and radius and every one of the 37 points is
+/// mapped to clip at the framebuffer's extent the way the 2D shapes above map their points: the
+/// extent is checked before it is divided by, and nothing below is. XUD_INVALID_ARG on a NULL
+/// context, a radius that is not positive, or a zero framebuffer extent; XUD_UNSUPPORTED on a
+/// context with no batch to append into; XUD_OUT_OF_MEMORY when the circle's 37 vertices or its
+/// 108 indices do not fit the batch.
+XudResult xud_draw_circle(XudContext* context, int32_t centerX, int32_t centerY, float radius, XudColor color);
+
 /*-----------------------------------------------------------------------------------------------
  * The font API - raylib's font half, above the font rung
  *

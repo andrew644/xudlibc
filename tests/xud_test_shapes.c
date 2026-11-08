@@ -2657,6 +2657,218 @@ static void xud_test_shapes_pure(void) {
         xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/triline-invariant-after-refusal",
             "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
     }
+    /*--- the circle against the capacity a context's batch opens at ---*/
+
+    /* The shell and the batch the triangle outline half above set up are the ones this half reuses,
+       at the 128 by 128 extent that half drew over, and the centre and radius below are the dyadic
+       pair over it - (64, 64) at 32. The half's fact is the refusal the fresh batch gives rather
+       than a fit: the fan's 108 indices are 12 over the 96 slots the initial capacity sizes its
+       headroom at, while its 37 vertices are 27 under its 64, so the bound that trips is the index
+       one. */
+    {
+        XudRenderer fakeRenderer;
+        uint32_t circleVariant = 0u;
+        uint32_t circleMaterial = 0u;
+        uint32_t circleTexture = 0u;
+
+        memset(&fakeRenderer, 0, sizeof(fakeRenderer));
+        fakeRenderer.batch = &b;
+
+        memset(&shell, 0, sizeof(shell));
+        shell.renderer = &fakeRenderer;
+        shell.width = 128u;
+        shell.height = 128u;
+
+        /* A radius with no rim to walk: 0 and a negative one are refused before the capacity
+           question the append asks next, the same way the sphere's public call leaves its radius to
+           its append. */
+        result = xud_draw_circle(&shell, 64, 64, 0.0f, color);
+        xud_check(result == XUD_INVALID_ARG, "shapes/circle-zero-radius-refused",
+            "a circle with no radius has no rim to walk, and is refused before a byte is written");
+        result = xud_draw_circle(&shell, 64, 64, -1.0f, color);
+        xud_check(result == XUD_INVALID_ARG, "shapes/circle-negative-radius-refused",
+            "and a negative radius is refused the same way: a radius is a distance, not a signed one");
+
+        xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "shapes/circle-initial-layout",
+            "a batch at the capacity a context opens at lays out");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/circle-initial-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        result = xud_draw_circle(&shell, 64, 64, 32.0f, color);
+        xud_check(result == XUD_OUT_OF_MEMORY, "shapes/circle-refused-at-the-initial-capacity",
+            "a full circle's 108 indices are 12 over the 96 slots the initial capacity sizes, so the fresh batch refuses the fan before "
+            "a byte is written");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/circle-stats-after-refusal", "and the counters answer after the refusal");
+        xud_check((vertexCount == 0u) && (indexCount == 0u) && (drawCount == 0u), "shapes/circle-refusal-wrote-nothing",
+            "the refused fan wrote no vertex, no index and no row, so the batch is as the reset left it");
+        result = xud_batch_state_get(&b, &circleVariant, &circleMaterial, &circleTexture);
+        xud_check(result == XUD_OK, "shapes/circle-state-after-refusal", "and the state answers after the refusal");
+        xud_check((circleVariant == XUD_BATCH_VARIANT_OPAQUE) && (circleMaterial == XUD_BATCH_NO_MATERIAL)
+                && (circleTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/circle-refusal-restored-the-state",
+            "the refusal restored the state it swapped: the move back to the OPAQUE column ran anyway, so a 3D shape appended beside the "
+            "refusal still draws on the row it found");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/circle-invariant-after-refusal",
+            "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
+    }
+
+    /*--- the circle's fan, byte for byte, at the capacity the GPU half grows to ---*/
+
+    {
+        XudRenderer fakeRenderer;
+        uint32_t circleVariant = 0u;
+        uint32_t circleMaterial = 0u;
+        uint32_t circleTexture = 0u;
+        uint32_t rim = 0u;
+
+        memset(&fakeRenderer, 0, sizeof(fakeRenderer));
+        fakeRenderer.batch = &b;
+
+        memset(&shell, 0, sizeof(shell));
+        shell.renderer = &fakeRenderer;
+        shell.width = 128u;
+        shell.height = 128u;
+
+        xud_check(xud_batch_layout(&b, (XUD_BATCH_INITIAL_VERTICES * 2u)) == XUD_OK, "shapes/circle-layout",
+            "a batch at the doubled capacity lays out - 128 vertices and, at 3n/2, the 192 index slots the fan's 108 fit inside");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/circle-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        result = xud_draw_circle(&shell, 64, 64, 32.0f, color);
+        xud_check(result == XUD_OK, "shapes/circle-draw-ok", "the fan appends through a context the pure half built itself");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/circle-stats-after-draw", "and the counters answer after it");
+        xud_check((vertexCount == XUD_SHAPES_CIRCLE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT),
+            "shapes/circle-costs-the-fan",
+            "37 vertices and 108 indices, the centre and the 36 rim points the fan shares, and the 36 triangles that name them");
+        xud_check(drawCount == 1u, "shapes/circle-recorded-one-row",
+            "and exactly one row: the whole fan shares the state's triangle run rather than 36 rows of its own");
+        xud_check((b.draws[0u].variant == XUD_BATCH_VARIANT_UI) && (b.draws[0u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES)
+                && (b.draws[0u].textureIndex == XUD_BATCH_NO_TEXTURE) && (b.draws[0u].materialIndex == XUD_BATCH_NO_MATERIAL),
+            "shapes/circle-row-is-the-untextured-ui-triangle-row",
+            "and the row is the UI variant's triangle row with no texture and no material - the column the pipeline list gives the 2D "
+            "surface, the one that neither tests nor writes the depth");
+        xud_check((b.draws[0u].firstIndex == 0u) && (b.draws[0u].indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT),
+            "shapes/circle-row-names-the-fan", "and it names the fan's 108 indices from the batch's start");
+        result = xud_batch_state_get(&b, &circleVariant, &circleMaterial, &circleTexture);
+        xud_check(result == XUD_OK, "shapes/circle-state-after-draw", "and the state answers after the draw");
+        xud_check((circleVariant == XUD_BATCH_VARIANT_OPAQUE) && (circleMaterial == XUD_BATCH_NO_MATERIAL)
+                && (circleTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/circle-restored-the-state",
+            "the state the call found is the state it left: a shape appended beside the circle draws with the state the circle found");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/circle-invariant", "and the batch's invariant still holds");
+
+        /* The bytes, not only the counts. The claim under test is the walk of the rim: the angles
+           in their order, each point mapped at the framebuffer's own extent, the centre shared by
+           every triangle of the fan. A check that only counted the 37 rows would pass a fan whose
+           vertices are the zero constant 37 times, which is the circle collapsed to the
+           framebuffer's centre regardless of the rim it named. */
+        {
+            const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+            float pos[XUD_SHAPES_CIRCLE_VERTEX_COUNT][3];
+            float uvRow[XUD_SHAPES_CIRCLE_VERTEX_COUNT][2];
+            float nrm[XUD_SHAPES_CIRCLE_VERTEX_COUNT][3];
+            uint32_t idx[XUD_SHAPES_CIRCLE_INDEX_COUNT];
+            uint32_t zeroUv = 0u;
+            uint32_t flatNormals = 0u;
+            uint32_t callerColour = 0u;
+            uint32_t rimMatched = 0u;
+            uint32_t fanMatched = 0u;
+            const float circleStep = ((2.0f * XUD_SHAPES_SPHERE_PI) / (float)XUD_SHAPES_CIRCLE_SEGMENTS);
+
+            for (rim = 0u; rim < XUD_SHAPES_CIRCLE_VERTEX_COUNT; rim++) {
+                memcpy(&pos[rim][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (rim * XUD_BATCH_STREAM_POS_SIZE),
+                    XUD_BATCH_STREAM_POS_SIZE);
+                memcpy(&uvRow[rim][0], arena + b.streamOffset[XUD_BATCH_STREAM_UV] + (rim * XUD_BATCH_STREAM_UV_SIZE),
+                    XUD_BATCH_STREAM_UV_SIZE);
+                memcpy(&nrm[rim][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (rim * XUD_BATCH_STREAM_NORMAL_SIZE),
+                    XUD_BATCH_STREAM_NORMAL_SIZE);
+
+                if ((uvRow[rim][0] == XUD_SHAPES_UV_S) && (uvRow[rim][1] == XUD_SHAPES_UV_T)) {
+                    zeroUv++;
+                }
+                if ((nrm[rim][0] == XUD_SHAPES_FLAT_NORMAL_X) && (nrm[rim][1] == XUD_SHAPES_FLAT_NORMAL_Y)
+                    && (nrm[rim][2] == XUD_SHAPES_FLAT_NORMAL_Z)) {
+                    flatNormals++;
+                }
+                if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + (rim * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                        XUD_BATCH_STREAM_COLOR_SIZE)
+                    == 0) {
+                    callerColour++;
+                }
+            }
+
+            /* The centre, the vertex the 36 triangles all share: the dyadic pair (64, 64) over the
+               128 extent is exact at the origin. The rim in the angles' order: the step is 2 PI over
+               the 36 segments, each point the centre offset by the radius in that angle's direction
+               and mapped per point, the way the mapper above states, and the first rim point is the
+               other exact value the pair gives, (96, 64) over 128 at (0.5, 0). */
+            xud_check((pos[0u][0] == 0.0f) && (pos[0u][1] == 0.0f) && (pos[0u][2] == 0.0f),
+                "shapes/circle-centre-is-the-framebuffers-centre",
+                "the first vertex is the caller's centre mapped at the framebuffer's own extent, the dyadic pair exact at the origin");
+            for (rim = 0u; rim < XUD_SHAPES_CIRCLE_SEGMENTS; rim++) {
+                const float angle = ((float)rim) * circleStep;
+                const float rimX = ((float)64) + (cosf(angle) * ((float)32));
+                const float rimY = ((float)64) + (sinf(angle) * ((float)32));
+                const float expectedX = ((2.0f * rimX) / 128.0f) - 1.0f;
+                const float expectedY = 1.0f - ((2.0f * rimY) / 128.0f);
+
+                if ((pos[1u + rim][0] == expectedX) && (pos[1u + rim][1] == expectedY) && (pos[1u + rim][2] == 0.0f)) {
+                    rimMatched++;
+                }
+            }
+            xud_check(rimMatched == XUD_SHAPES_CIRCLE_SEGMENTS, "shapes/circle-rim-is-the-angles-walked",
+                "all 36 rim points are the centre offset by the radius in the angles' directions, each mapped at the framebuffer's own "
+                "extent, the same mapper the other 2D shapes use");
+            xud_check((pos[1u][0] == 0.5f) && (pos[1u][1] == 0.0f), "shapes/circle-first-rim-point-is-exact",
+                "and the first rim point is the dyadic value the pair states, exact at (0.5, 0) at the angle's start");
+            xud_check(zeroUv == XUD_SHAPES_CIRCLE_VERTEX_COUNT, "shapes/circle-uv-is-the-shape-constant",
+                "and the uv is the no-surface constant at all 37 vertices: the untextured UI row samples the slot-0 white texture at it, "
+                "and the circle's colour is the stream's, not the texture's");
+            xud_check(flatNormals == XUD_SHAPES_CIRCLE_VERTEX_COUNT, "shapes/circle-normals-are-flat",
+                "and the 37 normals are the flat +Z the screen-facing shape carries, the same constant the other appends stamp");
+            xud_check(callerColour == XUD_SHAPES_CIRCLE_VERTEX_COUNT, "shapes/circle-colour-landed-thirty-seven-times",
+                "and the caller's colour is at all 37 vertices, because the batch's colour stream is per-vertex and the fan takes the "
+                "circle's one colour");
+
+            memcpy(idx, arena + b.indexOffset, XUD_BATCH_INDEX_SIZE * XUD_SHAPES_CIRCLE_INDEX_COUNT);
+            for (rim = 0u; rim < XUD_SHAPES_CIRCLE_SEGMENTS; rim++) {
+                if ((idx[3u * rim] == 0u) && (idx[3u * rim + 1u] == (1u + rim))
+                    && (idx[3u * rim + 2u] == (1u + ((rim + 1u) % XUD_SHAPES_CIRCLE_SEGMENTS)))) {
+                    fanMatched++;
+                }
+            }
+            xud_check(fanMatched == XUD_SHAPES_CIRCLE_SEGMENTS, "shapes/circle-indices-name-the-fan",
+                "and the 108 indices name the fan the walk states: each triangle the shared centre and a pair of neighbouring rim "
+                "points, the last wrapping back to the first to close the ring");
+        }
+
+        /* The refusal with the fan already in: a second circle does not fit beside its own twin -
+           the 74 vertices are inside the 128 but the 216 indices are over the 192, so the bound
+           that trips is the index one, the same bound that refused the fan at the initial capacity
+           above. */
+        result = xud_draw_circle(&shell, 64, 64, 32.0f, color);
+        xud_check(result == XUD_OUT_OF_MEMORY, "shapes/circle-second-refused",
+            "a second circle's 216 indices are 24 over the 192 slots the doubled capacity sizes, so it is refused with the batch's own "
+            "code");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/circle-stats-after-refusal", "and the counters answer after the refusal");
+        xud_check((vertexCount == XUD_SHAPES_CIRCLE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT) && (drawCount == 1u),
+            "shapes/circle-refusal-wrote-nothing",
+            "the refused circle wrote no vertex, no index and no row, so the batch still holds exactly one fan and its one row");
+        result = xud_batch_state_get(&b, &circleVariant, &circleMaterial, &circleTexture);
+        xud_check(result == XUD_OK, "shapes/circle-state-after-second-refusal", "and the state answers after the refusal");
+        xud_check((circleVariant == XUD_BATCH_VARIANT_OPAQUE) && (circleMaterial == XUD_BATCH_NO_MATERIAL)
+                && (circleTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/circle-refusal-restored-the-state",
+            "the refusal restored the state it swapped: the append failed after the move to the UI column, and the move back ran "
+            "anyway, so a 3D shape appended beside the refusal still draws on the row it found");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/circle-invariant-after-refusal",
+            "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
+    }
 
     /* The rows the split above allocated are this area's to release: the batch is a stack record
        here rather than one xud_batch_open allocated, and the batch area frees its own rows the
@@ -3058,6 +3270,46 @@ static void xud_test_shapes_gpu(void) {
     result = xud_end_drawing(context);
     xud_check(result == XUD_OK, "gpu-shapes/end-in-the-grown-frame",
         "and the grown frame closes through the same buffers the recreate installed");
+    /*--- the circle's frame, the first this machine draws at the grown capacity ---*/
+
+    /* A fresh frame at the grown 128/192 rather than at the initial 64/96: a full circle's 108
+       indices do not fit the headroom the batch opens at (the pure half refuses one against a batch
+       it laid out at that capacity), so the circle is the first shape this frame loop draws at the
+       capacity the boundary above grew to - 108 inside the 192-slot headroom that capacity sizes,
+       with nothing to ask the grow path for. The centre and radius are the dyadic pair over the 64
+       extent, (32, 32) at 16, so the fan sits wholly inside the frame. */
+    result = xud_begin_drawing(context);
+    xud_check(result == XUD_OK, "gpu-shapes/circle-frame-begins",
+        "and a fresh frame opens at the grown capacity, with no growth the frame above left to answer");
+    result = xud_draw_circle(context, 32, 32, 16.0f, white);
+    xud_check(result == XUD_OK, "gpu-shapes/circle-in-the-fresh-frame", "the circle's fan appends into the grown batch");
+    xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "gpu-shapes/circle-stats", "and the counters answer after it");
+    xud_check((vertexCount == XUD_SHAPES_CIRCLE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT),
+        "gpu-shapes/circle-costs-the-fan", "37 vertices and 108 indices, the fan the header states, with nothing else in the frame");
+    xud_check(capacity == (XUD_BATCH_INITIAL_VERTICES * 2u), "gpu-shapes/circle-frame-asked-no-grow",
+        "and the capacity is still the grown 128: the fan's 108 fit the 192-slot headroom, so the frame asked nothing of the grow path");
+    xud_check(xud_batch_growth_asked(context->renderer->batch, &asked) == XUD_OK, "gpu-shapes/circle-growth-question",
+        "the question the boundary above asked, asked of the frame that fit");
+    xud_check(asked == 0u, "gpu-shapes/circle-left-no-ask",
+        "and the frame that fit left no ask behind, so the frame after this one opens at the same capacity");
+    xud_check(drawCount == 1u, "gpu-shapes/circle-is-a-row-of-its-own",
+        "one row in the frame: the fan's own, the UI variant's triangle row the 2D fill flushes through");
+    xud_check((context->renderer->batch->draws[0u].variant == XUD_BATCH_VARIANT_UI)
+            && (context->renderer->batch->draws[0u].topology == XUD_BATCH_TOPOLOGY_TRIANGLES)
+            && (context->renderer->batch->draws[0u].textureIndex == XUD_BATCH_NO_TEXTURE)
+            && (context->renderer->batch->draws[0u].materialIndex == XUD_BATCH_NO_MATERIAL),
+        "gpu-shapes/circle-row-is-the-untextured-ui-triangle-row",
+        "and the row is the UI variant's triangle row - the depth-off row a screen-space fill draws through, the row the 2D surface "
+        "above drew its own through");
+    xud_check((context->renderer->batch->draws[0u].firstIndex == 0u)
+            && (context->renderer->batch->draws[0u].indexCount == XUD_SHAPES_CIRCLE_INDEX_COUNT),
+        "gpu-shapes/circle-row-names-the-fan",
+        "and it names the fan's 108 indices from the frame's own start, the whole argument pair the frame loop hands vkCmdDrawIndexed "
+        "for the 2D circle draw");
+    result = xud_end_drawing(context);
+    xud_check(result == XUD_OK, "gpu-shapes/end-in-the-circle-frame",
+        "and the circle's frame closes through the same buffers the recreate installed");
 
     if (context->validate != 0u) {
         xud_check(context->diagnostics->errorMessages == 0u, "gpu-shapes/validation-clean",
