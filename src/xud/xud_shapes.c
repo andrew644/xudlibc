@@ -1606,3 +1606,71 @@ XudResult xud_draw_triangle(XudContext* context, XudVector2 v0, XudVector2 v1, X
 
     return result;
 }
+
+/* The triangle outline: the three edges of the caller's triangle as the batch's three lines
+   through the UI column the line above does, the three appends sharing one state swap rather
+   than three, so the outline is one run of its own instead of three, the same one-run agreement
+   the rectangle outline above states for its four edges. The endpoints are the caller's own
+   points, in the order the caller named them, at the same extent the triangle above divides by
+   and with no inset of its own - raylib's triangle outline, unlike its rectangle one, carries
+   no half-pixel, so the edges sit on the caller's points rather than inside the triangle they
+   bound: the first edge from the first point to the second, the second edge from the second to
+   the third, and the third edge from the third back to the first, the order raylib's own vertex
+   sequence walks them. An edge that does not fit is refused with the edges before it already
+   appended, the same partial-draw agreement the rectangle outline states, and the state the call
+   found is restored on every path the append left it moved. */
+XudResult xud_draw_triangle_lines(XudContext* context, XudVector2 v0, XudVector2 v1, XudVector2 v2, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 corner[3u];
+    uint32_t oldVariant = 0u;
+    uint32_t oldMaterial = 0u;
+    uint32_t oldTexture = 0u;
+    float clipX = 0.0f;
+    float clipY = 0.0f;
+    uint32_t edge = 0u;
+    const float pointX[3u] = { v0.x, v1.x, v2.x };
+    const float pointY[3u] = { v0.y, v1.y, v2.y };
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The extent the points divide by is the framebuffer's own, for the same reason the triangle
+       above refuses a zero one: a divide by it is an inf in a float stream rather than a draw. */
+    if ((context->width == 0u) || (context->height == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    for (edge = 0u; edge < 3u; edge++) {
+        result = xud_shapes_pixel_to_clip(context->width, context->height, pointX[edge], pointY[edge], &clipX, &clipY);
+        if (result != XUD_OK) {
+            return result;
+        }
+        corner[edge].x = clipX;
+        corner[edge].y = clipY;
+        corner[edge].z = 0.0f;
+    }
+
+    result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_UI, XUD_BATCH_NO_TEXTURE);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    for (edge = 0u; edge < 3u; edge++) {
+        result = xud_shapes_append_line(batch, corner[edge], corner[(edge + 1u) % 3u], color);
+        if (result != XUD_OK) {
+            (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+            return result;
+        }
+    }
+
+    result = xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+
+    return result;
+}

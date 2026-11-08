@@ -1192,6 +1192,24 @@ XudResult xud_draw_rectangle_lines(XudContext* context, int32_t posX, int32_t po
 /// its three indices do not fit the batch.
 XudResult xud_draw_triangle(XudContext* context, XudVector2 v0, XudVector2 v1, XudVector2 v2, XudColor color);
 
+/// Draw a triangle outline at the screen: raylib's DrawTriangleLines (raylib.h 1287, "Draw triangle
+/// outline, counter-clockwise vertex order"): the caller's three own screen-space points, in the
+/// order the caller named them, y DOWN from the framebuffer's top-left in the same space the
+/// triangle above takes, the three edges between them in the order raylib's own vertex sequence
+/// walks them - first to second, second to third, and third back to first - appended as the
+/// batch's three lines through the pipeline list's UI column the line above draws its one with:
+/// the state swap moves the batch to the UI row for the outline and back when it is done, so the
+/// outline flushes as one row of its own instead of three, the same one-run agreement the
+/// rectangle outline above states for its four edges. The points are the caller's floats passed
+/// through at the same extent the triangle above divides by, and unlike the rectangle outline
+/// above, raylib's triangle outline carries no half-pixel inset, so the edges sit on the caller's
+/// points rather than inside the triangle they bound: a triangle whose points coincide is
+/// degenerate edges appended rather than refused, the same way the zero-length line above is.
+/// XUD_INVALID_ARG on a NULL context or a zero framebuffer extent; XUD_UNSUPPORTED on a context
+/// with no batch to append into; XUD_OUT_OF_MEMORY when an edge's two vertices or its two indices
+/// do not fit the batch.
+XudResult xud_draw_triangle_lines(XudContext* context, XudVector2 v0, XudVector2 v1, XudVector2 v2, XudColor color);
+
 /*-----------------------------------------------------------------------------------------------
  * The font API - raylib's font half, above the font rung
  *

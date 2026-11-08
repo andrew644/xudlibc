@@ -35,7 +35,7 @@
 #include <stdlib.h> /* Required for: free, the draw rows the topology split allocates in this area's line checks */
 #include <string.h> /* Required for: memset, the batch shell and the context shell this area builds itself */
 
-#include "xud.h" /* Required for: XudResult, XudContext, XudVector2, XudVector3, XudColor, the public frame pair, xud_draw_triangle_3d, xud_draw_rectangle, xud_draw_line, xud_draw_pixel, xud_draw_rectangle_lines and xud_draw_triangle */
+#include "xud.h" /* Required for: XudResult, XudContext, XudVector2, XudVector3, XudColor, the public frame pair, xud_draw_triangle_3d, xud_draw_rectangle, xud_draw_line, xud_draw_pixel, xud_draw_rectangle_lines, xud_draw_triangle and xud_draw_triangle_lines */
 #include "xud_batch.h" /* Required for: XudBatch, xud_batch_layout/xud_batch_stats/xud_batch_check_invariant, the capacity macros */
 #include "xud_core.h" /* Required for: struct XudContext and struct XudRenderer, whose renderer/frame/batch fields the GPU half reads and whose record the pure half fakes */
 #include "xud_shapes.h" /* Required for: the shapes rung's own constants and its internal append */
@@ -2492,6 +2492,172 @@ static void xud_test_shapes_pure(void) {
             "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
     }
 
+    /*--- the public 2D triangle outline: the caller's three points as one run of three lines ---*/
+
+    /* The shell the triangle half above set up is the one the outline reuses: a context whose only
+       live fields are the renderer whose only live field is the batch this area owns, and the 128
+       by 128 extent. The three points below are the triangle half's own - the same dyadic pixels
+       over the 128 extent - so the expected corners below are the same exact values the triangle's
+       mapper wrote, and the edges between them are raylib's own vertex sequence: the first edge
+       from the first point to the second, the second from the second to the third, and the third
+       from the third back to the first. */
+    {
+        XudRenderer fakeRenderer;
+        uint32_t triVariant = 0u;
+        uint32_t triMaterial = 0u;
+        uint32_t triTexture = 0u;
+        XudVector2 tri0 = (XudVector2) { .x = 32.0f, .y = 32.0f };
+        XudVector2 tri1 = (XudVector2) { .x = 96.0f, .y = 64.0f };
+        XudVector2 tri2 = (XudVector2) { .x = 64.0f, .y = 96.0f };
+
+        memset(&fakeRenderer, 0, sizeof(fakeRenderer));
+        fakeRenderer.batch = &b;
+
+        memset(&shell, 0, sizeof(shell));
+        shell.renderer = &fakeRenderer;
+        shell.width = 128u;
+        shell.height = 128u;
+
+        /* A framebuffer with no presentable extent: the divide the mapper would make is an inf in
+           a float stream rather than a draw, and the refusal is answered BEFORE the state swap, so
+           a refusal here could not have moved or split anything. */
+        shell.width = 0u;
+        result = xud_draw_triangle_lines(&shell, tri0, tri1, tri2, color);
+        xud_check(result == XUD_INVALID_ARG, "shapes/triline-zero-framebuffer-refused",
+            "a framebuffer with no extent is refused before the mapper is asked to divide by it");
+        result = xud_batch_state_get(&b, &triVariant, &triMaterial, &triTexture);
+        xud_check(result == XUD_OK, "shapes/triline-state-after-refusal", "and the state answers after the refusal");
+        xud_check(
+            (triVariant == XUD_BATCH_VARIANT_OPAQUE) && (triMaterial == XUD_BATCH_NO_MATERIAL) && (triTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/triline-refusal-moved-no-state",
+            "the refusal above moved none of it: the state is where the previous half left it, so no refusal split a run or recorded a "
+            "row");
+        shell.width = 128u;
+
+        xud_check(xud_batch_layout(&b, (XUD_SHAPES_LINE_VERTEX_COUNT * 3u)) == XUD_OK, "shapes/triline-layout",
+            "a batch of the outline's six vertices lays out - exactly the capacity one outline spends, so the second one is the "
+            "refusal below");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/triline-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        result = xud_draw_triangle_lines(&shell, tri0, tri1, tri2, color);
+        xud_check(result == XUD_OK, "shapes/triline-draw-ok", "the outline appends through a context the pure half built itself");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/triline-stats-after-draw", "and the counters answer after it");
+        xud_check((vertexCount == (XUD_SHAPES_LINE_VERTEX_COUNT * 3u)) && (indexCount == (XUD_SHAPES_LINE_INDEX_COUNT * 3u)),
+            "shapes/triline-costs-three-lines",
+            "6 vertices and 6 indices, the three edges raylib's vertex sequence walks - first to second, second to third, and third "
+            "back to first");
+        xud_check(drawCount == 1u, "shapes/triline-recorded-one-row",
+            "and exactly one row: the three edges share the state's line run rather than three rows of their own, the same one-run "
+            "agreement the rectangle outline half above states for its four edges");
+        xud_check((b.draws[0u].variant == XUD_BATCH_VARIANT_UI) && (b.draws[0u].topology == XUD_BATCH_TOPOLOGY_LINES)
+                && (b.draws[0u].textureIndex == XUD_BATCH_NO_TEXTURE) && (b.draws[0u].materialIndex == XUD_BATCH_NO_MATERIAL),
+            "shapes/triline-row-is-the-untextured-ui-line-row",
+            "and the row is the UI variant's line row with no texture and no material - the column the pipeline list gives the 2D "
+            "surface, the one that neither tests nor writes the depth");
+        xud_check((b.draws[0u].firstIndex == 0u) && (b.draws[0u].indexCount == (XUD_SHAPES_LINE_INDEX_COUNT * 3u)),
+            "shapes/triline-row-names-the-three-edges", "and it names the outline's six indices from the batch's start");
+        result = xud_batch_state_get(&b, &triVariant, &triMaterial, &triTexture);
+        xud_check(result == XUD_OK, "shapes/triline-state-after-draw", "and the state answers after the draw");
+        xud_check(
+            (triVariant == XUD_BATCH_VARIANT_OPAQUE) && (triMaterial == XUD_BATCH_NO_MATERIAL) && (triTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/triline-restored-the-state",
+            "the state the call found is the state it left: a shape appended beside the outline draws with the state the outline "
+            "found, the same agreement the rectangle outline half above states for its own call");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/triline-invariant", "and the batch's invariant still holds");
+
+        /* The bytes, not only the counts. The claim under test is the pixel point to the clip
+           point the same mapper the line half above uses: a check that only counted the six rows
+           would pass an outline whose vertices are the zero constant six times, which is the
+           caller's triangle collapsed to the framebuffer's top-left regardless of the points it
+           named. */
+        {
+            const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+            float pos[6][3];
+            float uvRow[6][2];
+            float nrm[6][3];
+            uint32_t idx[6];
+            uint32_t row = 0u;
+            uint32_t zeroUv = 0u;
+            uint32_t flatNormals = 0u;
+            uint32_t callerColour = 0u;
+            const float edgeX[6] = { -0.5f, 0.5f, 0.5f, 0.0f, 0.0f, -0.5f };
+            const float edgeY[6] = { 0.5f, 0.0f, 0.0f, -0.5f, -0.5f, 0.5f };
+
+            for (row = 0u; row < 6u; row++) {
+                memcpy(&pos[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (row * XUD_BATCH_STREAM_POS_SIZE),
+                    XUD_BATCH_STREAM_POS_SIZE);
+                memcpy(&uvRow[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_UV] + (row * XUD_BATCH_STREAM_UV_SIZE),
+                    XUD_BATCH_STREAM_UV_SIZE);
+                memcpy(&nrm[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (row * XUD_BATCH_STREAM_NORMAL_SIZE),
+                    XUD_BATCH_STREAM_NORMAL_SIZE);
+
+                if ((uvRow[row][0] == XUD_SHAPES_UV_S) && (uvRow[row][1] == XUD_SHAPES_UV_T)) {
+                    zeroUv++;
+                }
+                if ((nrm[row][0] == XUD_SHAPES_FLAT_NORMAL_X) && (nrm[row][1] == XUD_SHAPES_FLAT_NORMAL_Y)
+                    && (nrm[row][2] == XUD_SHAPES_FLAT_NORMAL_Z)) {
+                    flatNormals++;
+                }
+                if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + (row * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                        XUD_BATCH_STREAM_COLOR_SIZE)
+                    == 0) {
+                    callerColour++;
+                }
+            }
+
+            xud_check((pos[0u][0] == edgeX[0u]) && (pos[0u][1] == edgeY[0u]) && (pos[0u][2] == 0.0f) && (pos[1u][0] == edgeX[1u])
+                    && (pos[1u][1] == edgeY[1u]) && (pos[1u][2] == 0.0f) && (pos[2u][0] == edgeX[2u]) && (pos[2u][1] == edgeY[2u])
+                    && (pos[2u][2] == 0.0f) && (pos[3u][0] == edgeX[3u]) && (pos[3u][1] == edgeY[3u]) && (pos[3u][2] == 0.0f)
+                    && (pos[4u][0] == edgeX[4u]) && (pos[4u][1] == edgeY[4u]) && (pos[4u][2] == 0.0f) && (pos[5u][0] == edgeX[5u])
+                    && (pos[5u][1] == edgeY[5u]) && (pos[5u][2] == 0.0f),
+                "shapes/triline-vertices-are-the-callers-points",
+                "the six vertices are the caller's three points in the order raylib's vertex sequence walks them, mapped at the "
+                "framebuffer's own extent and on the z=0 plane the screen-space outline is");
+            xud_check(zeroUv == 6u, "shapes/triline-uv-is-the-shape-constant",
+                "and the uv is the no-surface constant at all six vertices, the same constant the line half above stamps: the "
+                "untextured UI row samples the slot-0 white texture at it, and the outline's colour is the stream's, not the "
+                "texture's");
+            xud_check(flatNormals == 6u, "shapes/triline-normals-are-flat",
+                "and the six normals are the flat +Z the screen-facing shape carries, the same constant the other appends stamp");
+            xud_check(callerColour == 6u, "shapes/triline-colour-landed-six-times",
+                "and the caller's colour is at all six vertices, because the batch's colour stream is per-vertex and every edge takes "
+                "the outline's one colour");
+
+            memcpy(idx, arena + b.indexOffset, XUD_BATCH_INDEX_SIZE * 6u);
+            xud_check((idx[0u] == 0u) && (idx[1u] == 1u) && (idx[2u] == 2u) && (idx[3u] == 3u) && (idx[4u] == 4u) && (idx[5u] == 5u),
+                "shapes/triline-indices-name-the-vertices",
+                "and the six indices name the six vertices this call just made, two at a time in the edges' order, the whole argument "
+                "pair the frame loop hands vkCmdDrawIndexed for the outline's draw");
+        }
+
+        /* The refusal with the batch already filled: the second outline does not fit beside its
+           own twin, and the check is the STATE as well as the counters, because a call that moved
+           the state to the UI column and then refused without restoring it would leave the next 3D
+           shape on the depth-off row. */
+        result = xud_draw_triangle_lines(&shell, tri0, tri1, tri2, color);
+        xud_check(result == XUD_OUT_OF_MEMORY, "shapes/triline-second-refused",
+            "a second outline does not fit a batch one outline has already filled, and is refused with the batch's own code");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/triline-stats-after-refusal", "and the counters answer after the refusal");
+        xud_check(
+            (vertexCount == (XUD_SHAPES_LINE_VERTEX_COUNT * 3u)) && (indexCount == (XUD_SHAPES_LINE_INDEX_COUNT * 3u)) && (drawCount == 1u),
+            "shapes/triline-refusal-wrote-nothing",
+            "the refused outline wrote no vertex, no index and no row, so the batch still holds exactly one outline and its one "
+            "row");
+        result = xud_batch_state_get(&b, &triVariant, &triMaterial, &triTexture);
+        xud_check(result == XUD_OK, "shapes/triline-state-after-second-refusal", "and the state answers after the refusal");
+        xud_check(
+            (triVariant == XUD_BATCH_VARIANT_OPAQUE) && (triMaterial == XUD_BATCH_NO_MATERIAL) && (triTexture == XUD_BATCH_NO_TEXTURE),
+            "shapes/triline-refusal-restored-the-state",
+            "the refusal restored the state it swapped: the append failed after the move to the UI column, and the move back ran "
+            "anyway, so a 3D shape appended beside the refusal still draws on the row it found");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/triline-invariant-after-refusal",
+            "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
+    }
+
     /* The rows the split above allocated are this area's to release: the batch is a stack record
        here rather than one xud_batch_open allocated, and the batch area frees its own rows the
        same way at the end of its pure half.
@@ -2795,13 +2961,14 @@ static void xud_test_shapes_gpu(void) {
         "and the quad's row is the untextured UI row the plain surface is, naming the quad's six indices");
     xud_check(context->renderer->batch->currentVariant == XUD_BATCH_VARIANT_OPAQUE, "gpu-shapes/rect-restored-the-3d-state",
         "and the state the call found is the state it left: the frame's next 3D shape continues on the OPAQUE row the call came from");
-    /* The 2D pixel, line, rectangle outline and triangle on top of the scene: the four
-       screen-space shapes through the UI column, beside the 3D shapes they split. Each call
-       restores the state it found, and the restore is a change, so each flushes its own row at
-       its end - the pixel a quad row of its own beside the plain rectangle's, the line and the
-       outline line rows of their own, and the triangle a triangle row of its own, the two line
-       rows and the triangle row the pure half above byte-checked, drawn through the depth-off
-       pipeline the validation layer would name if any were bound to a depth-on one. */
+    /* The 2D pixel, line, rectangle outline, triangle and triangle outline on top of the scene:
+       the five screen-space shapes through the UI column, beside the 3D shapes they split. Each
+       call restores the state it found, and the restore is a change, so each flushes its own row
+       at its end - the pixel a quad row of its own beside the plain rectangle's, the line and the
+       rectangle outline line rows of their own, the triangle a triangle row of its own, and the
+       triangle outline a line row of its own, the line rows and the triangle row the pure half
+       above byte-checked, drawn through the depth-off pipeline the validation layer would name if
+       any were bound to a depth-on one. */
     result = xud_draw_pixel(context, 62, 63, white);
     xud_check(result == XUD_OK, "gpu-shapes/pixel-in-the-grown-frame",
         "and the one-pixel rectangle draws in the window's own corner, beside the plain rectangle whose row it did not join");
@@ -2815,11 +2982,15 @@ static void xud_test_shapes_gpu(void) {
     xud_check(result == XUD_OK, "gpu-shapes/triangle-in-the-grown-frame",
         "and the caller's three own points draw the screen-space triangle on top of the 3D scene, a triangle row of its own beside "
         "the outline's");
+    result = xud_draw_triangle_lines(context, triA, triB, triC, white);
+    xud_check(result == XUD_OK, "gpu-shapes/triline-in-the-grown-frame",
+        "and the caller's three own points outline the triangle the fill above drew, a line row of its own beside the triangle's");
     xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
         "gpu-shapes/stats-after-the-2d-shapes", "and the counters answer after the 2D shapes");
-    xud_check(drawCount == 6u, "gpu-shapes/the-2d-shapes-added-four-rows",
-        "six rows in the frame now: the 3D run, the plain rectangle's quad row, the pixel's own quad row, the line's row, the outline's "
-        "own and the triangle's, so the boundary above replays them as six draws through the pipeline list's two columns");
+    xud_check(drawCount == 7u, "gpu-shapes/the-2d-shapes-added-five-rows",
+        "seven rows in the frame now: the 3D run, the plain rectangle's quad row, the pixel's own quad row, the line's row, the "
+        "rectangle outline's row, the triangle's own and the triangle outline's, so the boundary above replays them as seven draws "
+        "through the pipeline list's two columns");
     xud_check((context->renderer->batch->draws[3u].variant == XUD_BATCH_VARIANT_UI)
             && (context->renderer->batch->draws[3u].topology == XUD_BATCH_TOPOLOGY_LINES)
             && (context->renderer->batch->draws[3u].textureIndex == XUD_BATCH_NO_TEXTURE)
@@ -2858,15 +3029,31 @@ static void xud_test_shapes_gpu(void) {
         "gpu-shapes/triangle-row-names-the-triangle",
         "and it names the triangle's three indices from where the outline's eight had run, the whole argument pair the frame loop "
         "hands vkCmdDrawIndexed for the 2D triangle draw");
+    xud_check((context->renderer->batch->draws[6u].variant == XUD_BATCH_VARIANT_UI)
+            && (context->renderer->batch->draws[6u].topology == XUD_BATCH_TOPOLOGY_LINES)
+            && (context->renderer->batch->draws[6u].textureIndex == XUD_BATCH_NO_TEXTURE)
+            && (context->renderer->batch->draws[6u].materialIndex == XUD_BATCH_NO_MATERIAL),
+        "gpu-shapes/triline-row-is-the-untextured-ui-line-row",
+        "and the outline's row is the UI variant's line row - the same row the rectangle outline's is, its own: the triangle's "
+        "restore flushed the triangle's row before the outline's append started, so the three edges are the row's whole run");
+    xud_check(context->renderer->batch->draws[6u].firstIndex
+                == (XUD_SHAPES_SPHERE_INDEX_COUNT + XUD_SHAPES_CUBE_INDEX_COUNT + (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)
+                    + XUD_SHAPES_LINE_INDEX_COUNT + (XUD_SHAPES_LINE_INDEX_COUNT * 4u) + XUD_SHAPES_TRIANGLE_INDEX_COUNT)
+            && (context->renderer->batch->draws[6u].indexCount == (XUD_SHAPES_LINE_INDEX_COUNT * 3u)),
+        "gpu-shapes/triline-row-names-the-three-edges",
+        "and it names the outline's six indices from where the triangle's three had run, the whole argument pair the frame loop "
+        "hands vkCmdDrawIndexed for the 2D outline draw");
     xud_check((vertexCount
                   == (XUD_SHAPES_SPHERE_VERTEX_COUNT + XUD_SHAPES_CUBE_VERTEX_COUNT + (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u)
-                      + XUD_SHAPES_LINE_VERTEX_COUNT + (XUD_SHAPES_LINE_VERTEX_COUNT * 4u) + XUD_SHAPES_TRIANGLE_VERTEX_COUNT))
+                      + XUD_SHAPES_LINE_VERTEX_COUNT + (XUD_SHAPES_LINE_VERTEX_COUNT * 4u) + XUD_SHAPES_TRIANGLE_VERTEX_COUNT
+                      + (XUD_SHAPES_LINE_VERTEX_COUNT * 3u)))
             && (indexCount
                 == (XUD_SHAPES_SPHERE_INDEX_COUNT + XUD_SHAPES_CUBE_INDEX_COUNT + (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)
-                    + XUD_SHAPES_LINE_INDEX_COUNT + (XUD_SHAPES_LINE_INDEX_COUNT * 4u) + XUD_SHAPES_TRIANGLE_INDEX_COUNT)),
-        "gpu-shapes/grown-frame-counts-all-seven",
-        "62 vertices and 151 indices, the sphere's and the box's and the two quads' and the line's and the outline's and the triangle's, "
-        "with nothing left over from the frame above");
+                    + XUD_SHAPES_LINE_INDEX_COUNT + (XUD_SHAPES_LINE_INDEX_COUNT * 4u) + XUD_SHAPES_TRIANGLE_INDEX_COUNT
+                    + (XUD_SHAPES_LINE_INDEX_COUNT * 3u))),
+        "gpu-shapes/grown-frame-counts-all-eight",
+        "68 vertices and 157 indices, the sphere's and the box's and the two quads' and the line's and the rectangle outline's and the "
+        "triangle's and the triangle outline's, with nothing left over from the frame above");
 
     result = xud_end_drawing(context);
     xud_check(result == XUD_OK, "gpu-shapes/end-in-the-grown-frame",
