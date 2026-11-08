@@ -375,6 +375,34 @@ static_assert(XUD_FONT_ATLAS_MAX_DIM <= 16777216u,
 /// every quad that was attempted completed.
 XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, uint32_t textureIndex, const uint32_t* text,
     uint32_t textCount, XudVector3 position, float pixelSize, float spacing, XudColor color);
+/// Pure: the pen walk's screen-space half - the same walk, the same rows and the same pen step,
+/// with the boxes mapped from pixels to the clip space the identity view and projection expect
+/// rather than placed in world space, and drawn through the batch's UI variant with the set-1
+/// slot textureIndex names rather than the textured variant, which is the row the UI's quads
+/// draw through. The position is the pen's start in pixels with y down from the top-left of the
+/// framebuffer, and its y is the baseline of the text rather than the top of its box, the same
+/// reading xud_draw_text() gives the position's y in world space: a caller who wants the top of
+/// the string at a pixel places the baseline one ascent below it. The pen walks in pixels, the
+/// boxes' pixel corners are mapped to clip by xud_shapes_pixel_to_clip() before they become the
+/// corners the glyph quad takes, and the quads carry the caller's colour per vertex with the row's
+/// own push tint left at white, the same split the textured row the 3D walk draws through makes.
+/// The extent is the framebuffer's imageExtent, the divisor of the mapping, and a zero extent is
+/// a refusal rather than a divide. The state move is the material's alone: the walk reads the
+/// batch's state, moves the material state to the UI row at the slot textureIndex names for the
+/// walk, and restores it on the way out, the restore closing the glyph run into a row of the UI
+/// variant stamped with the identity and white the plain record stamps rather than an empty row.
+/// A textureIndex of XUD_BATCH_NO_TEXTURE is the
+/// no-map form the 3D walk names.
+///
+/// XUD_INVALID_ARG on a NULL batch, record or text array, a textCount of zero, a pixelSize that is
+/// not strictly positive, a textureIndex that is not the sentinel and not an entry of set 1's
+/// sampler array, or a zero extent; the shapes rung's own codes for each quad it appends; XUD_
+/// OUT_OF_MEMORY when one glyph quad does not fit the batch, with the glyphs before it already
+/// appended; XUD_INTERNAL_ERROR on a record whose own numbers are the sentinels; XUD_OK only when
+/// every quad that was attempted completed.
+XudResult xud_font_append_text_screen(XudBatch* batch, const XudFontRecord* record, uint32_t textureIndex, const uint32_t* text,
+    uint32_t textCount, float posX, float posY, float pixelSize, float spacing, XudColor color, uint32_t extentWidth,
+    uint32_t extentHeight);
 
 /// Pure: stb's own answer turned into this library's code. The packer answers 1 for success and 0
 /// for "this set does not fit this atlas", and the font header's two sniff functions answer a

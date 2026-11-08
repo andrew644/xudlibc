@@ -505,5 +505,13 @@ XudResult xud_shapes_append_sphere_wires(XudBatch* batch, XudVector3 center, flo
 /// sampler does the bounds work, an address does not.
 XudResult xud_shapes_append_glyph_quad(
     XudBatch* batch, XudVector3 corner0, XudVector3 corner1, XudVector2 uv0, XudVector2 uv1, XudColor color);
+/// Pure: one pixel of a framebuffer to the clip space the identity view and projection expect -
+/// the UI mapper's own mapping restated for a bare pixel rather than a baked vertex, the one the
+/// screen-space draw above moves its boxes through before they become clip corners. The pixel is
+/// the y-down one the window layer reports (the top-left of the framebuffer is (0, 0)), the clip
+/// is y-up, so the top row maps to +1 and the bottom to -1, and a pixel past an edge is a clip
+/// coordinate past one rather than a refusal: a texture half off-screen is still a draw. XUD_
+/// INVALID_ARG on a zero extent or a NULL out-pointer; XUD_OK otherwise.
+XudResult xud_shapes_pixel_to_clip(uint32_t extentWidth, uint32_t extentHeight, float x, float y, float* outClipX, float* outClipY);
 
 #endif /* XUD_SHAPES_H_ */

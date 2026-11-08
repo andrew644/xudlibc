@@ -180,11 +180,27 @@ static void xud_test_frame_pure(void) {
     */
     {
         XudPushRow pushRow;
-        const XudBatchDraw sentinelRow = { 0u, 3u, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-            XUD_BATCH_NO_TEXTURE, XUD_BATCH_GEOMETRY_OWN };
-        const XudBatchDraw realRow = { 12u, 6u, XUD_BATCH_TOPOLOGY_LINES, XUD_BATCH_VARIANT_TRANSPARENT, 3u, 2u, XUD_BATCH_GEOMETRY_OWN };
+        const XudBatchDraw sentinelRow = { .firstIndex = 0u,
+            .indexCount = 3u,
+            .topology = XUD_BATCH_TOPOLOGY_TRIANGLES,
+            .variant = XUD_BATCH_VARIANT_OPAQUE,
+            .materialIndex = XUD_BATCH_NO_MATERIAL,
+            .textureIndex = XUD_BATCH_NO_TEXTURE,
+            .geometryIndex = XUD_BATCH_GEOMETRY_OWN,
+            .modelMatrix = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f },
+            .tint = { 1.0f, 1.0f, 1.0f, 1.0f } };
+        const XudBatchDraw realRow = { .firstIndex = 12u,
+            .indexCount = 6u,
+            .topology = XUD_BATCH_TOPOLOGY_LINES,
+            .variant = XUD_BATCH_VARIANT_TRANSPARENT,
+            .materialIndex = 3u,
+            .textureIndex = 2u,
+            .geometryIndex = XUD_BATCH_GEOMETRY_OWN,
+            .modelMatrix = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f },
+            .tint = { 1.0f, 1.0f, 1.0f, 1.0f } };
         uint32_t axis = 0u;
         uint32_t offDiagonal = 0u;
+        uint32_t mismatched = 0u;
 
         xud_check(xud_frame_fill_push_row(NULL, &sentinelRow) == XUD_INVALID_ARG, "frame/push-null-out", "refused");
         xud_check(xud_frame_fill_push_row(&pushRow, NULL) == XUD_INVALID_ARG, "frame/push-null-draw",
@@ -223,8 +239,40 @@ static void xud_test_frame_pure(void) {
             "passed through unchanged, which is the slot the frame loop's slice rebind will bind set "
             "1 at beside this draw");
         xud_check(pushRow.modelMatrix[0] == 1.0f, "frame/push-identity-again",
-            "and the model matrix is the identity for every row, because the matrix is not a per-draw"
-            "fact until the transform step above makes it one");
+            "and the model matrix is the identity for these rows, because the rows are the plain-append"
+            "shape the literal names identity beside, the per-draw fact the pose step above moves for"
+            " a posed row rather than a value this rung would choose");
+
+        const XudBatchDraw posedRow = { .firstIndex = 6u,
+            .indexCount = 3u,
+            .topology = XUD_BATCH_TOPOLOGY_TRIANGLES,
+            .variant = XUD_BATCH_VARIANT_OPAQUE,
+            .materialIndex = XUD_BATCH_NO_MATERIAL,
+            .textureIndex = XUD_BATCH_NO_TEXTURE,
+            .geometryIndex = XUD_BATCH_GEOMETRY_OWN,
+            .modelMatrix = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 2.0f, 3.0f, 4.0f, 1.0f },
+            .tint = { 0.5f, 1.0f, 0.0f, 0.25f } };
+
+        xud_check(xud_frame_fill_push_row(&pushRow, &posedRow) == XUD_OK, "frame/push-posed-ok",
+            "and so for a row that carries its own matrix and tint, because the posed draws above the batch write the "
+            "row's facts rather than the identity the plain appends spend");
+        for (axis = 0u; axis < 16u; axis++) {
+            if (pushRow.modelMatrix[axis] != posedRow.modelMatrix[axis]) {
+                mismatched++;
+            }
+        }
+        xud_check(mismatched == 0u, "frame/push-posed-matrix-is-the-row's",
+            "and every element of the matrix is the row's own rather than the identity, which is the pass-through the "
+            "posed draws depend on - a copy that dropped one element would be a transform silently missing part of it");
+        mismatched = 0u;
+        for (axis = 0u; axis < 4u; axis++) {
+            if (pushRow.tint[axis] != posedRow.tint[axis]) {
+                mismatched++;
+            }
+        }
+        xud_check(mismatched == 0u, "frame/push-posed-tint-is-the-row's",
+            "and the tint is the row's four channels the same way, which is the colour the fragment stage multiplies "
+            "into the draw rather than the white the plain rows spend");
     }
 }
 

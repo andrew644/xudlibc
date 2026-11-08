@@ -40,10 +40,19 @@
    convention (solid.frag reads location 1 for the colour and location 2 for the normal, which are
    the same two outputs). */
 
+layout(push_constant) uniform XudPushRow {
+    mat4 modelMatrix;    // 0  - the draw's own model matrix, column-major
+    uint materialIndex;  // 64 - which material slot this draw uses (unread today)
+    uint textureIndex;   // 68 - which entry of set 1's sampler array (unread today)
+    uint flags;          // 72 - the variant this draw was flushed under
+    uint reserved;       // 76 - keeps the row 16-aligned with no hole
+    vec4 tint;           // 80 - the draw's own tint, 0..1 per channel
+} xudPush;
+
 layout(location = 0) in vec2 inUv;
 layout(location = 1) in vec4 inColor;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 1, binding = 0) uniform sampler2D xudSampler;
 
-void main() { outColor = inColor * texture(xudSampler, inUv); }
+void main() { outColor = inColor * texture(xudSampler, inUv) * xudPush.tint; }

@@ -221,9 +221,10 @@ typedef struct XudPushRow {
     uint32_t textureIndex; /* 4 B - which entry of set 1's sampler array this draw samples */
     uint32_t flags; /* 4 B - the draw's own bits (blend variant, unlit, ...) */
     uint32_t reserved; /* 4 B - keeps the row a multiple of 16 with no hole */
+    float tint[4]; /* 16 B - the draw's own tint, 0..1 per channel: the per-draw colour the fragment stage multiplies by */
 } XudPushRow;
 
-#define XUD_DESCRIPTOR_PUSH_SIZE 80u /* sizeof(XudPushRow), asserted below */
+#define XUD_DESCRIPTOR_PUSH_SIZE 96u /* sizeof(XudPushRow), asserted below */
 #define XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE 120u /* sizeof(XudFrameUniformRow), asserted below */
 
 static_assert(sizeof(XudFrameUniformRow) == XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE,

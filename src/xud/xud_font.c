@@ -516,6 +516,128 @@ XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, uin
     return XUD_OK;
 }
 
+XudResult xud_font_append_text_screen(XudBatch* batch, const XudFontRecord* record, uint32_t textureIndex, const uint32_t* text,
+    uint32_t textCount, float posX, float posY, float pixelSize, float spacing, XudColor color, uint32_t extentWidth,
+    uint32_t extentHeight) {
+    XudGlyphRow row;
+    XudVector3 corner0;
+    XudVector3 corner1;
+    XudVector2 uv0;
+    XudVector2 uv1;
+    uint32_t oldVariant = 0u;
+    uint32_t oldMaterial = 0u;
+    uint32_t oldTexture = 0u;
+    float scale = 0.0f;
+    float penX = 0.0f;
+    float boxLeft = 0.0f;
+    float boxTop = 0.0f;
+    float boxRight = 0.0f;
+    float boxBottom = 0.0f;
+    float clipX0 = 0.0f;
+    float clipY0 = 0.0f;
+    float clipX1 = 0.0f;
+    float clipY1 = 0.0f;
+    float atlasWidth = 0.0f;
+    float atlasHeight = 0.0f;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t index = 0u;
+    uint32_t step = 0u;
+
+    if ((batch == NULL) || (record == NULL) || (text == NULL) || (textCount == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((textureIndex != XUD_BATCH_NO_TEXTURE) && (textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
+        return XUD_INVALID_ARG;
+    }
+    if (!(pixelSize > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((record->pixelSize == 0u) || (record->glyphCount == 0u) || (record->glyphs == NULL) || (record->atlasWidth == 0u)
+        || (record->atlasHeight == 0u)) {
+        return XUD_INTERNAL_ERROR;
+    }
+
+    /* The mapping's divisors, read before a byte is written: a zero extent is the same state the
+       UI's mapper refuses, and the extent a caller names is the framebuffer's imageExtent, which
+       is the swapchain's answer to "how big is the surface" rather than a number this rung asks for.
+    */
+    if ((extentWidth == 0u) || (extentHeight == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    scale = pixelSize / (float)record->pixelSize;
+    atlasWidth = (float)record->atlasWidth;
+    atlasHeight = (float)record->atlasHeight;
+    penX = posX;
+
+    result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_UI, textureIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    for (step = 0u; step < textCount; step++) {
+        result = xud_font_glyph_index(record->glyphs, record->glyphCount, text[step], &index);
+        if (result != XUD_OK) {
+            (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+            return result;
+        }
+        row = record->glyphs[index];
+
+        /* The box in pixels, y down: the same two stb numbers the 3D walk reads - offsetX the pen's
+           step to the box's left edge, offsetY its step to the box's top, negative above the
+           baseline in stb's own y-down bake space - and the pen's y is the baseline, so the box's
+           top row is the baseline's row plus the step, no flip, because the step and the axis it
+           steps along are both y-down here.
+        */
+        boxLeft = penX + (row.offsetX * scale);
+        boxTop = posY + (row.offsetY * scale);
+        boxRight = boxLeft + ((float)row.atlasWidth * scale);
+        boxBottom = boxTop + ((float)row.atlasHeight * scale);
+        uv0.x = (float)row.atlasX / atlasWidth;
+        uv0.y = (float)row.atlasY / atlasHeight;
+        uv1.x = (float)(row.atlasX + row.atlasWidth) / atlasWidth;
+        uv1.y = (float)(row.atlasY + row.atlasHeight) / atlasHeight;
+
+        if ((row.atlasWidth > 0u) && (row.atlasHeight > 0u)) {
+            result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, boxLeft, boxTop, &clipX0, &clipY0);
+            if (result != XUD_OK) {
+                (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+                return result;
+            }
+            result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, boxRight, boxBottom, &clipX1, &clipY1);
+            if (result != XUD_OK) {
+                (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+                return result;
+            }
+            corner0.x = clipX0;
+            corner0.y = clipY0;
+            corner0.z = 0.0f;
+            corner1.x = clipX1;
+            corner1.y = clipY1;
+            corner1.z = 0.0f;
+            result = xud_shapes_append_glyph_quad(batch, corner0, corner1, uv0, uv1, color);
+            if (result != XUD_OK) {
+                (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+                return result;
+            }
+        }
+
+        penX += (row.advanceX * scale) + spacing;
+    }
+
+    /* The move back: the restore of the material closes the glyph run into a row of the UI
+       variant, the row stamped with the identity and white the plain record stamps, and moves
+       the state to what the caller drew with before the walk. A walk that drew nothing (a string
+       of spaces) moves the state back without recording a row at all. */
+    result = xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+
+    return result;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The atlas's own set-1 slot - the sampler's half of the draw
  *-----------------------------------------------------------------------------------------------*/
@@ -1040,6 +1162,33 @@ XudResult xud_draw_text_ex(XudContext* context, XudHandle handle, const uint32_t
     }
 
     return xud_font_append_text(batch, record, textureIndex, text, textCount, position, pixelSize, spacing, color);
+}
+
+XudResult xud_draw_text_screen(XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, int32_t posX, int32_t posY,
+    float pixelSize, float spacing, XudColor color) {
+    XudBatch* batch = NULL;
+    const XudFontRecord* record = NULL;
+    uint32_t textureIndex = XUD_BATCH_NO_TEXTURE;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_font_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_font_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_font_atlas_slot(context->handleTable, record, &textureIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The extent the pen's pixels divide by is the framebuffer's own: the swapchain's imageExtent
+       the window layer reports, refreshed on a resize rather than the size the caller asked for,
+       the same pair the UI's mapper divides by one rung up. */
+    return xud_font_append_text_screen(
+        batch, record, textureIndex, text, textCount, (float)posX, (float)posY, pixelSize, spacing, color, context->width, context->height);
 }
 
 XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context, XudHandle handle, uint32_t codepoint) {

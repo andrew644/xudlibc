@@ -43,10 +43,11 @@
  * takes or fills a table today and the object pairs above it are what hand a handle out and what a handle names); the sha pes rung's calls
  * are the geometry a caller draws, which is what the drawing API above the renderer reaches. What is here today above the renderer is the
  * frame pair, the shapes family (a triangle, a box, a sphere, a line, a point and the two wire forms), the camera pair, the material pair,
- * the mesh pair, the model pair, the text pair and the two draws that name a handle (xud_draw_mesh() / xud_draw_model()); what is still
- * missing there is the camera + transform math above the shapes - the model matrix is the identity today, so a mesh is placed by the camera
- * alone - plus the sampler that would put a font's atlas into set 1 for the text pair to draw through, and no object kind is left without a
- * rung above the table today (the FONT kind's public half landed with the font pair, which is the last one that was missing).
+ * the mesh pair, the model pair, the text pair, the screen-space pair (xud_draw_texture() / xud_draw_text_screen()) and the draws that
+ * name a handle (xud_draw_mesh() / xud_draw_mesh_ex() / xud_draw_model() / xud_draw_model_ex()), the _ex forms carrying the caller's
+ * model matrix and colour the row's own push channel spends; no object kind is left without a rung above the table today (the FONT kind's
+ * public half landed with the font pair, which was the last one missing), and the textured 2D surface is the pipeline list's UI column
+ * with its screen-fixed view and depth off, the same row the font's screen walk and the UI draw record their quads into.
  *
  *   xudlibc is a C11 library shaped after raylib's public API but rendered with Vulkan:
  *   no OpenGL, no EGL, no fixed-function, no GL state machine. raylib is an API-shape
@@ -1009,21 +1010,58 @@ XudResult xud_get_model_bounding_box(XudVector3* outMin, XudVector3* outMax, Xud
 /// codes otherwise, XUD_OUT_OF_MEMORY being the only one a caller can act on.
 XudResult xud_draw_mesh(XudContext* context, XudHandle handle);
 
+/// Draw a mesh with the caller's transform and colour: raylib's DrawMeshEx. The matrix is the 16
+/// floats in column-major order the row's own push channel carries - the vertex stage applies it to
+/// the position and to the normal, so a posed mesh is placed by the matrix beside the camera's
+/// view-projection rather than by the camera alone, and the fragment stage multiplies the caller's
+/// colour into the row. The material around the call is still the material the row draws under: the
+/// pose and the colour are per-draw channels, the material is the state above, and the two do not
+/// mix. XUD_INVALID_ARG on a NULL context, a NULL matrix, a non-finite element of the matrix, or on
+/// a handle that does not name a live MESH slot of this context; XUD_UNSUPPORTED on a context that
+/// never completed bring-up; XUD_OUT_OF_MEMORY being the only batch code a caller can act on.
+XudResult xud_draw_mesh_ex(XudContext* context, XudHandle handle, const float* modelMatrix, XudColor tint);
+
 /// Draw every mesh a model owns, each with the material the load read for it: the model's row of the
-/// drawing API, and the reason raylib's DrawModel3D loses its position/rotation/scale arguments. The
-/// model matrix is the identity today (the camera + transform step above the shapes has not landed),
-/// so a model is placed by the camera alone and a caller that wants it elsewhere moves the camera. A
-/// model is a list of MESH slots and one MATERIAL slot per primitive, so this call is the loop over
-/// that list rather than one row: each mesh is recorded with the variant and the material slot the
-/// load read for it, whatever material was begun around the call, and the batch's state moves to the
-/// LAST mesh's pair on success, which is raylib's DrawModel leaving the last mesh's texture state
-/// behind it. XUD_INVALID_ARG on a NULL context or on a handle that does not name a live MODEL slot
-/// of this context; XUD_UNSUPPORTED on a context that never completed bring-up; XUD_INTERNAL_ERROR if
+/// drawing API. A model is a list of MESH slots and one MATERIAL slot per primitive, so this call
+/// is the loop over that list rather than one row: each mesh is recorded with the variant and the
+/// material slot the load read for it, whatever material was begun around the call, and the batch's
+/// state moves to the LAST mesh's pair on success, which is raylib's DrawModel leaving the last mesh's
+/// texture state behind it. XUD_INVALID_ARG on a NULL context or on a handle that does not name a live
+/// MODEL slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up; XUD_INTERNAL_ERROR if
 /// any MESH or MATERIAL slot the load created has lost its buffers or its record, which is a state the
 /// model rung's own open made; the batch's codes otherwise, and a row that refused leaves the rows
 /// recorded so far recorded - the batch's rows are a list, and a partial model is a frame that drew
 /// part of it rather than a frame that drew none of it.
 XudResult xud_draw_model(XudContext* context, XudHandle handle);
+
+/// Draw a model with the caller's transform and colour: raylib's DrawModelEx. The matrix is the 16
+/// floats in column-major order the row's own push channel carries - the vertex stage applies it to
+/// the position and to the normal, so a posed model is placed by the matrix beside the camera's
+/// view-projection rather than by the camera alone, and the fragment stage multiplies the caller's
+/// colour into the row. The pose is beside every row the model's primitives record, because the pose
+/// is the model's transform and every primitive of the model lives in the model's space; the
+/// material is still the one the load read for each primitive, a model's own rather than the state
+/// around the call. XUD_INVALID_ARG on a NULL context, a NULL matrix, a non-finite element of the
+/// matrix, or a model handle the table does not name; XUD_UNSUPPORTED on a context with no batch to
+/// record into; XUD_OUT_OF_MEMORY when a row does not fit the batch, with the rows before it already
+/// recorded.
+XudResult xud_draw_model_ex(XudContext* context, XudHandle handle, const float* modelMatrix, XudColor tint);
+
+/// Draw one texture at the screen: the textured half of the 2D surface, raylib's DrawTexture. The
+/// texture's whole extent is one screen-space quad at the caller's pixel position, through the
+/// pipeline list's UI column with depth test and write both off and the view fixed to the screen -
+/// a 3D camera in effect moves the scene around the quad rather than the quad, and the quad does not
+/// write the depth a later 3D row tests against. The position is the top-left corner in PIXELS with y
+/// DOWN from the framebuffer's top-left, the quad is the texture's own extent at its own size (the
+/// scaled form is a later step's), and the caller's colour is the quad's own vertex colour: the row
+/// it records into carries the white push tint the plain record stamps, and the fragment stage's
+/// product is the sampled texel times the vertex colour times that white, the tinted texture. The
+/// texture draws through its own set-1 slot, a record that
+/// holds none drawing through the sentinel the frame loop maps to slot 0's default. XUD_INVALID_ARG
+/// on a NULL context, a texture handle the table does not name, a zero framebuffer extent, or a quad
+/// the batch does not fit; XUD_UNSUPPORTED on a context with no batch to append into; XUD_OUT_OF_MEMORY
+/// when the quad does not fit the batch.
+XudResult xud_draw_texture(XudContext* context, XudHandle handle, int32_t posX, int32_t posY, XudColor tint);
 
 /*-----------------------------------------------------------------------------------------------
  * The font API - raylib's font half, above the font rung
@@ -1123,6 +1161,21 @@ XudResult xud_draw_text(
 ///   no source for, and a caller that wants the look without one asks for the negative step itself. XUD_INVALID_ARG
 ///   on the same arguments as the pair above, and on nothing else; the same codes for the same reasons.
 XudResult xud_draw_text_ex(XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, XudVector3 position,
+    float pixelSize, float spacing, XudColor color);
+
+/// The screen-space text: the same glyph walk as the 3D pair above, but the boxes mapped from pixels
+/// to clip space at the framebuffer's own extent rather than placed in world space, so the string is
+/// screen-fixed - a 3D camera in effect moves the scene around it rather than the string, raylib's
+/// DrawTextEx on a 2D canvas and the same UI column the pipeline list gives the screen surface, depth
+/// test and write both off. pos is the pen's top-left corner in PIXELS with y DOWN from the
+/// framebuffer's top-left (the 3D pair's position is a world point, this one is a screen point), and
+/// the string's rows advance in pixels rather than in the pen's own step. The colour is the quad's
+/// own vertex colour for the same reason the textured half above states: the row the run records
+/// into carries the white push tint the plain record stamps. XUD_INVALID_ARG on a NULL context, a font handle the table does not
+/// name, a zero framebuffer extent, or a quad the batch does not fit; XUD_UNSUPPORTED on a context
+/// with no batch to append into; XUD_OUT_OF_MEMORY when one glyph quad does not fit the batch, with
+/// the glyphs before it already appended.
+XudResult xud_draw_text_screen(XudContext* context, XudHandle handle, const uint32_t* text, uint32_t textCount, int32_t posX, int32_t posY,
     float pixelSize, float spacing, XudColor color);
 
 /// Which of a font's rows a codepoint names: raylib's GetGlyphIndex (raylib.h 405), and the fallback it states rather than a

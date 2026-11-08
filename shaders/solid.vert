@@ -18,9 +18,9 @@
 //
 // The push-constant model matrix IS read here now: the frame loop pushes it with vkCmdPushConstants
 // beside every draw it records, so the vertex is placed by frame-viewProj * the draw's own model. The
-// block's member order and widths are the C layout of XudPushRow read against std140: mat4 at 0 (64
-// B), uint at 64, 68, 72 and 76 - 80 B, byte-for-byte the struct in xud_descriptor.h and the assert
-// beside XUD_DESCRIPTOR_PUSH_SIZE is the same number from the other side. The materialIndex and
+// block's member order and widths are the C layout of XudPushRow read against std140: mat4 at 0 (64 B),
+// uint at 64, 68, 72 and 76, vec4 at 80 - 96 B, byte-for-byte the struct in xud_descriptor.h and the
+// assert beside XUD_DESCRIPTOR_PUSH_SIZE is the same number from the other side. The materialIndex and
 // textureIndex members are unread: set 1's array is chosen by the frame loop's rebind beside the
 // draw, not by a read in this stage. The flags member IS read now: it carries the batch's variant
 // the draw was flushed under, and the UI column (XUD_BATCH_VARIANT_UI, xud_batch.h) is the one whose
@@ -44,6 +44,7 @@ layout(push_constant) uniform XudPushRow {
     uint textureIndex;   // 68 - which entry of set 1's sampler array (unread today, set 1 unbound)
     uint flags;          // 72 - the variant this draw was flushed under (the UI column skips viewProj)
     uint reserved;       // 76 - keeps the row 16-aligned with no hole
+    vec4 tint;           // 80 - the draw's own tint: the fragment stage multiplies it in, this stage only carries it
 } xudPush;
 
 layout(location = 0) in vec3 inPos;
@@ -74,5 +75,5 @@ void main(void)
     gl_Position = vec4(clipPos.x, -clipPos.y, clipPos.z, clipPos.w);
     outUv = inUv;
     outColor = inColor;
-    outNormal = inNormal;
+    outNormal = (xudPush.modelMatrix * vec4(inNormal, 0.0f)).xyz;
 }

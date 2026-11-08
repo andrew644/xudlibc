@@ -32,6 +32,15 @@
    0.02, 0.05), so a face turned away from a single light at 0 would be pure black on
    near-black, a face that is drawn but not seen. */
 
+layout(push_constant) uniform XudPushRow {
+    mat4 modelMatrix;    // 0  - the draw's own model matrix, column-major
+    uint materialIndex;  // 64 - which material slot this draw uses (unread today)
+    uint textureIndex;   // 68 - which entry of set 1's sampler array (unread today)
+    uint flags;          // 72 - the variant this draw was flushed under
+    uint reserved;       // 76 - keeps the row 16-aligned with no hole
+    vec4 tint;           // 80 - the draw's own tint, 0..1 per channel
+} xudPush;
+
 layout(location = 1) in vec4 inColor;
 layout(location = 2) in vec3 inNormal;
 layout(location = 0) out vec4 outColor;
@@ -40,10 +49,9 @@ layout(location = 0) out vec4 outColor;
    a plain dot(): a face whose unit normal is aligned with this vector is fully lit and
    one at or past 90 degrees to it keeps only the floor below. It is normalize(vec3(1.0,
    2.0, 3.0)) written out as components - normalize() is not a constant expression, and
-   this constant is written once. World-space: the model matrix is identity for every
-   shape the shapes rung appends today, so the attribute's normal is already in this
-   space, and a non-identity model would need the vertex stage to carry the normal over
-   instead. */
+   this constant is written once. World-space: the vertex stage hands out the normal after the
+   draw's own model has been applied to it, so a drawn row's normal is in the space its position
+   lives in - identity for every shape the shapes rung appends, the caller's pose for a drawn model. */
 const vec3 xudLightDir = vec3(0.267261f, 0.534522f, 0.801784f);
 
 const float xudAmbient = 0.25f;
@@ -53,5 +61,7 @@ void main()
     vec3 normal = normalize(inNormal);
     float lambert = max(dot(normal, xudLightDir), 0.0f);
     float shade = min(xudAmbient + lambert, 1.0f);
-    outColor = vec4(inColor.rgb * shade, inColor.a);
+    /* The draw's own tint, white for every row a plain append records: a posed mesh or model
+       carries the caller's colour in here, and the shade is what that colour is lit BY. */
+    outColor = vec4(inColor.rgb * shade * xudPush.tint.rgb, inColor.a * xudPush.tint.a);
 }

@@ -898,7 +898,12 @@ XudResult xud_close_mesh(XudContext* context, XudHandle handle) {
  * The public draw above the context - the first public call that names a handle
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_draw_mesh(XudContext* context, XudHandle handle) {
+/* The shared half of the public mesh pair: the guard, the five buffers read out of the record, the
+   material state the call draws under, and the one row the batch records, the caller's pose beside
+   it - identity and white for the plain call, the caller's matrix and colour for the _ex one. The
+   two publics differ only in where the pose comes from, which is why the body is here and they
+   are one line each above it. */
+static XudResult xud_mesh_draw(XudContext* context, XudHandle handle, const float* modelMatrix, const float* tint) {
     XudBatch* batch = NULL;
     const XudMeshRecord* record = NULL;
     VkBuffer buffers[XUD_MESH_BUFFER_COUNT];
@@ -952,8 +957,38 @@ XudResult xud_draw_mesh(XudContext* context, XudHandle handle) {
        which is what makes xud_draw_mesh() take no material argument: a mesh is geometry and the
        material is the state above it. The topology is the mesh rung's one topology rather than the
        batch's current one, because a mesh's index buffer is a list of triangles whatever the pending
-       run of the arena was assembled as.
-    */
+       run of the arena was assembled as. The pose is the caller's, identity and white for the plain
+       call, the row the vertex stage places and the fragment stage tints with it. */
     return xud_batch_record_mesh_draw(
-        batch, XUD_BATCH_TOPOLOGY_TRIANGLES, variant, materialIndex, textureIndex, buffers, offsets, record->indexCount);
+        batch, XUD_BATCH_TOPOLOGY_TRIANGLES, variant, materialIndex, textureIndex, modelMatrix, tint, buffers, offsets, record->indexCount);
+}
+
+XudResult xud_draw_mesh(XudContext* context, XudHandle handle) {
+    return xud_mesh_draw(context, handle, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE);
+}
+
+/* raylib's DrawMeshEx: the same mesh, the caller's model matrix and colour beside it. The matrix
+   is the 16 floats in column-major order the push row carries, the vertex stage applies it to the
+   position and to the normal, and the fragment stage multiplies the caller's colour into the row.
+   The material around the call is still the material the row draws under - the pose and the tint
+   are per-draw channels, the material is the state above, and the two do not mix. XUD_INVALID_ARG
+   on a NULL context, a NULL matrix, a non-finite element of the matrix, or a mesh handle the table
+   does not name; XUD_UNSUPPORTED on a context with no batch to record into. */
+XudResult xud_draw_mesh_ex(XudContext* context, XudHandle handle, const float* modelMatrix, XudColor tint) {
+    float tintRow[XUD_BATCH_TINT_COUNT];
+    XudResult result;
+
+    result = xud_batch_model_matrix_check(modelMatrix);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    tintRow[0] = (float)tint.r / 255.0f;
+    tintRow[1] = (float)tint.g / 255.0f;
+    tintRow[2] = (float)tint.b / 255.0f;
+    tintRow[3] = (float)tint.a / 255.0f;
+    return xud_mesh_draw(context, handle, modelMatrix, tintRow);
 }

@@ -41,12 +41,13 @@
 #include "xud_texture.h" /* Required for: this file's own contract - the record, the constants and every rung declared above */
 #include "xud.h" /* Required for: XudResult, XudHandle, XudTextureData, XUD_HANDLE_KIND_TEXTURE - the public surface above */
 #include "xud_allocator.h" /* Required for: xud_allocator_acquire_host_visible, xud_allocator_release, xud_allocator_select_memory_type - the block this rung owns */
-#include "xud_batch.h" /* Required for: xud_batch_host_visible_bits - the host-visible mask, read rather than restated */
+#include "xud_batch.h" /* Required for: xud_batch_host_visible_bits - the host-visible mask, read rather than restated; XUD_BATCH_VARIANT_UI, XUD_BATCH_NO_MATERIAL and the pose pair the public draw below moves */
 #include "xud_core.h" /* Required for: struct XudContext, whose handleTable/loader/device/allocator the public pair reaches */
 #include "xud_device.h" /* Required for: XudDevice, xud_device_wait_idle - the wait-idle guard a destroy owes */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
 #include "xud_loader.h" /* Required for: XudLoader, xud_loader_device_bound - the device-table rows and the bound-handle check */
 #include "xud_physical.h" /* Required for: XudDeviceCaps - the image limits every gate below is read off */
+#include "xud_shapes.h" /* Required for: xud_shapes_pixel_to_clip and xud_shapes_append_glyph_quad - the screen-space quad the public draw below appends */
 #include "xud_vulkan.h" /* Required for: xud_result_from_vk - the one VkResult funnel, and why this rung uses the general one and never the swapchain's */
 
 #include <assert.h> /* Required for: static_assert, the pure halves' own invariants below */
@@ -1386,4 +1387,105 @@ XudResult xud_close_texture(XudContext* context, XudHandle handle) {
     }
 
     return xud_texture_close(context->handleTable, handle, context->loader, context->device, context->allocator);
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The public screen-space draw - raylib's DrawTexture above the batch's UI column
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The textured half of the 2D surface: the texture's whole extent as one screen-space quad at the
+   caller's pixel position, drawn through the batch's UI column with the caller's tint in the
+   quad's own vertex colour. The push tint of the row the quad is recorded into stays white - the
+   plain record stamps it so - so the fragment stage's product is the caller's tint times the
+   sampled texel, the texture itself. The position is the top-left corner in pixels with y down
+   from the framebuffer's top-left, and the quad is the texture's own extent at its own size -
+   raylib's DrawTexture draws the texture at the size it is, and the scaled form is a later step's.
+   The state move is the 2D surface's own: read the batch's state, move the material state to the
+   UI row at the texture's own set-1 slot for the one quad, and move it back on the way out, the
+   move back closing the quad's run into a row of the UI column rather than an empty row. A
+   texture whose record holds no live slot of the
+   array draws through the sentinel, which the frame loop maps to slot 0's white default - the
+   same answer the font walk gives its atlas when the atlas occupies no entry. XUD_INVALID_ARG on
+   a NULL context, a texture handle the table does not name, a zero framebuffer extent, or a quad
+   the batch does not have room for; XUD_UNSUPPORTED on a context with no batch to record into. */
+XudResult xud_draw_texture(XudContext* context, XudHandle handle, int32_t posX, int32_t posY, XudColor tint) {
+    XudBatch* batch = NULL;
+    const XudTextureRecord* record = NULL;
+    XudVector3 corner0;
+    XudVector3 corner1;
+    XudVector2 uv0;
+    XudVector2 uv1;
+    uint32_t oldVariant = 0u;
+    uint32_t oldMaterial = 0u;
+    uint32_t oldTexture = 0u;
+    uint32_t textureIndex = XUD_BATCH_NO_TEXTURE;
+    float clipX0 = 0.0f;
+    float clipY0 = 0.0f;
+    float clipX1 = 0.0f;
+    float clipY1 = 0.0f;
+    XudResult result = XUD_INVALID_ARG;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->renderer == NULL) || (context->renderer->batch == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+    batch = context->renderer->batch;
+
+    result = xud_texture_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The extent the quad's pixels divide by is the framebuffer's own, the swapchain's imageExtent
+       the window layer reports rather than the size the caller asked for: a zero extent is the
+       state a window with no presentable extent is in, and a divide by it is an inf in a float
+       stream rather than a draw. */
+    if ((context->width == 0u) || (context->height == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    textureIndex = (record->samplerSlotLive != 0u) ? record->samplerSlot : XUD_BATCH_NO_TEXTURE;
+
+    /* The two corners in pixels, the top-left and the bottom-right of the texture's own extent at
+       the caller's position, mapped to clip before they become the corners the quad takes: the
+       texture's full box in uv space is the quad's, so the atlas-box divide the glyph walk does is
+       the whole of [0, 1] here. */
+    result = xud_shapes_pixel_to_clip(context->width, context->height, (float)posX, (float)posY, &clipX0, &clipY0);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_shapes_pixel_to_clip(
+        context->width, context->height, (float)posX + (float)record->width, (float)posY + (float)record->height, &clipX1, &clipY1);
+    if (result != XUD_OK) {
+        return result;
+    }
+    corner0.x = clipX0;
+    corner0.y = clipY0;
+    corner0.z = 0.0f;
+    corner1.x = clipX1;
+    corner1.y = clipY1;
+    corner1.z = 0.0f;
+    uv0.x = 0.0f;
+    uv0.y = 0.0f;
+    uv1.x = 1.0f;
+    uv1.y = 1.0f;
+
+    result = xud_batch_state_get(batch, &oldVariant, &oldMaterial, &oldTexture);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_set_material(batch, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_UI, textureIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_shapes_append_glyph_quad(batch, corner0, corner1, uv0, uv1, tint);
+    if (result != XUD_OK) {
+        (void)xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+        return result;
+    }
+    result = xud_batch_set_material(batch, oldMaterial, oldVariant, oldTexture);
+
+    return result;
 }

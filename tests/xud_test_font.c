@@ -815,6 +815,448 @@ static void xud_test_font_text_walk(void) {
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The screen-space walk: the same string at a pixel position, and the bytes it wrote into a batch
+ * this area built
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The same hand-made record as the walk above: a bake's boxes are wherever the packer put them, and
+   the one place the walk's ARITHMETIC is checkable as a number rather than as "inside the clip box"
+   is a set of rows whose boxes this file chose. The extent and the position are dyadic on both
+   sides of the mapping's divides - a 16-high bake scaled to 8, an extent of 64, a position at 10
+   and 5 - so every equality below is an equality rather than a tolerance, and a walk that rounded
+   anywhere, or handed the mapper a pixel the pen never visited, would fail one of them. The
+   expected clip edges are computed here through the mapper rather than spelled as clip fractions,
+   because the mapper's own divide is checked in the shapes area: this section states the pen and
+   the box in pixels, and claims the walk wrote exactly those pixels through the mapping.
+*/
+static void xud_test_font_text_walk_screen(void) {
+    XudBatch b;
+    XudBatch tiny;
+    XudFontRecord record;
+    XudFontRecord broken;
+    XudGlyphRow rows[4];
+    XudColor color;
+    const uint8_t* arena = NULL;
+    float width = 0.0f;
+    float pen = 0.0f;
+    float scale = 0.0f;
+    const float posX = 10.0f;
+    const float posY = 5.0f;
+    VkDeviceSize stagingBytes = 0u;
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t capacity = 0u;
+    uint32_t drawCount = 0u;
+    uint32_t i = 0u;
+    uint32_t row = 0u;
+    uint32_t quad = 0u;
+    uint32_t inked = 0u;
+    uint32_t realUv = 0u;
+    uint32_t flatNormals = 0u;
+    uint32_t colourLanded = 0u;
+    uint32_t uFollowsX = 0u;
+    uint32_t vFollowsY = 0u;
+    const uint32_t string[3] = { 65u, 32u, 66u };
+    const uint32_t spaceOnly[1] = { 32u };
+    const uint32_t uncovered[1] = { 0x10FFFFu };
+    const uint32_t extentWidth = 64u;
+    const uint32_t extentHeight = 64u;
+    uint32_t rowOfQuad[2];
+    float expLeftPx[2];
+    float expTopPx[2];
+    float expBotPx[2];
+    float pos[XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u][3];
+    float uvRow[XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u][2];
+    float nrm[XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u][3];
+
+    memset(&b, 0, sizeof(b));
+    memset(&tiny, 0, sizeof(tiny));
+    memset(rows, 0, sizeof(rows));
+    memset(&record, 0, sizeof(record));
+
+    rows[0u].codepoint = XUD_FONT_MIN_CODEPOINT;
+    rows[0u].atlasX = 0u;
+    rows[0u].atlasY = 0u;
+    rows[0u].atlasWidth = 0u;
+    rows[0u].atlasHeight = 0u;
+    rows[0u].offsetX = 0.0f;
+    rows[0u].offsetY = 0.0f;
+    rows[0u].advanceX = 4.0f;
+    rows[1u].codepoint = XUD_FONT_FALLBACK_CODEPOINT;
+    rows[1u].atlasX = 1u;
+    rows[1u].atlasY = 1u;
+    rows[1u].atlasWidth = 9u;
+    rows[1u].atlasHeight = 11u;
+    rows[1u].offsetX = 1.0f;
+    rows[1u].offsetY = 3.0f;
+    rows[1u].advanceX = 11.0f;
+    rows[2u].codepoint = 65u;
+    rows[2u].atlasX = 11u;
+    rows[2u].atlasY = 1u;
+    rows[2u].atlasWidth = 10u;
+    rows[2u].atlasHeight = 12u;
+    rows[2u].offsetX = 1.0f;
+    rows[2u].offsetY = 3.0f;
+    rows[2u].advanceX = 12.0f;
+    rows[3u].codepoint = 66u;
+    rows[3u].atlasX = 22u;
+    rows[3u].atlasY = 1u;
+    rows[3u].atlasWidth = 10u;
+    rows[3u].atlasHeight = 11u;
+    rows[3u].offsetX = 1.0f;
+    rows[3u].offsetY = 4.0f;
+    rows[3u].advanceX = 11.0f;
+
+    record.pixelSize = 16u;
+    record.padding = XUD_FONT_ATLAS_PADDING;
+    record.glyphCount = 4u;
+    record.atlasWidth = 64u;
+    record.atlasHeight = 64u;
+    record.glyphs = rows;
+
+    color.r = 200u;
+    color.g = 100u;
+    color.b = 50u;
+    color.a = 255u;
+
+    /* The pen, walked here from the rows rather than read from the walk: the box's pixels in the
+       order the string names the INKED glyphs - left, top and bottom edges, the top and bottom in
+       this rung's y-down pixel space where the pen's y is the baseline and the row's offsetY steps
+       to the box's top - and the pen's final position after the last glyph. This is the arithmetic
+       the walk is claimed to do, written a second time against the rows rather than against the
+       implementation, which is what makes the comparisons below a check of the walk.
+    */
+    scale = 8.0f / (float)record.pixelSize;
+    pen = posX;
+    inked = 0u;
+    for (i = 0u; i < 3u; i++) {
+        for (row = 0u; row < record.glyphCount; row++) {
+            if (rows[row].codepoint == string[i]) {
+                break;
+            }
+        }
+        if (row == record.glyphCount) {
+            row = 1u;
+        }
+        if (rows[row].atlasWidth > 0u) {
+            rowOfQuad[inked] = row;
+            expLeftPx[inked] = pen + (rows[row].offsetX * scale);
+            expTopPx[inked] = posY + (rows[row].offsetY * scale);
+            expBotPx[inked] = expTopPx[inked] + ((float)rows[row].atlasHeight * scale);
+            inked++;
+        }
+        pen += (rows[row].advanceX * scale);
+    }
+
+    xud_check(xud_batch_layout(&b, 16u) == XUD_OK, "swalk-layout",
+        "a batch with headroom for four quads lays out, so the walk below has somewhere to write");
+    b.stagingMapped = xudTestTextArena;
+    b.stagingMappedLive = 1u;
+
+    xud_check(xud_batch_set_material(&b, 7u, XUD_BATCH_VARIANT_TRANSPARENT, 1u) == XUD_OK, "swalk-pre-state",
+        "the walk moves the batch's material state to the UI row for its quads, so this area starts it on a known row to read it "
+        "back against");
+
+    xud_check(
+        xud_font_append_text_screen(&b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_OK,
+        "swalk-ok", "a letter, a space and a letter append at the pixel position the caller named");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "swalk-stats",
+        "and the batch's counters answer after them");
+    xud_check(vertexCount == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u), "swalk-space-spends-nothing",
+        "8 vertices: the two letters spend a quad each and the space spends none, which is the answer the rows state rather than an "
+        "absent "
+        "row");
+    xud_check(indexCount == (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u), "swalk-two-quads-close",
+        "and 12 indices, the two triangles that close each of the two quads");
+    {
+        XudBatchDraw walkRow;
+        uint32_t variant = 0u;
+        uint32_t material = 0u;
+        uint32_t texture = 0u;
+
+        xud_check(drawCount == 1u, "swalk-records-one-draw",
+            "the glyph run flushes as one draw row of its own when the walk's state move back closes it, rather than riding in a row "
+            "of "
+            "the caller's state");
+        xud_check(
+            xud_batch_draw_get(&b, 0u, &walkRow) == XUD_OK, "swalk-draw-row-get", "and the row answers for the counters that named it");
+        xud_check((walkRow.topology == XUD_BATCH_TOPOLOGY_TRIANGLES) && (walkRow.variant == XUD_BATCH_VARIANT_UI), "swalk-draw-row-ui",
+            "the row names the UI column of the pipeline list, so the glyphs map to the screen through the identity and ignore the "
+            "camera "
+            "the 3D walk draws through");
+        xud_check((walkRow.materialIndex == XUD_BATCH_NO_MATERIAL) && (walkRow.textureIndex == XUD_BATCH_NO_TEXTURE),
+            "swalk-draw-row-sentinels",
+            "and the no-material and no-map sentinels for the slots the walk itself names rather than a material it does not own");
+        xud_check((walkRow.firstIndex == 0u) && (walkRow.indexCount == (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)), "swalk-draw-row-range",
+            "and the row's range is the walk's twelve indices and nothing else");
+        xud_check(
+            xud_batch_state_get(&b, &variant, &material, &texture) == XUD_OK, "swalk-state-query", "and the state answers after the walk");
+        xud_check((variant == XUD_BATCH_VARIANT_TRANSPARENT) && (material == 7u) && (texture == 1u), "swalk-state-restored",
+            "and it is the row the walk read it from: a text draw is not a material change the caller asked for, so the shapes "
+            "appended beside the glyphs draw with the state the walk found");
+    }
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "swalk-invariant", "and the batch's invariant still holds over the walk");
+
+    arena = (const uint8_t*)b.stagingMapped;
+    for (i = 0u; i < (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u); i++) {
+        memcpy(&pos[i][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (i * XUD_BATCH_STREAM_POS_SIZE), XUD_BATCH_STREAM_POS_SIZE);
+        memcpy(&uvRow[i][0], arena + b.streamOffset[XUD_BATCH_STREAM_UV] + (i * XUD_BATCH_STREAM_UV_SIZE), XUD_BATCH_STREAM_UV_SIZE);
+        memcpy(
+            &nrm[i][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (i * XUD_BATCH_STREAM_NORMAL_SIZE), XUD_BATCH_STREAM_NORMAL_SIZE);
+
+        if ((uvRow[i][0] != XUD_SHAPES_UV_S) || (uvRow[i][1] != XUD_SHAPES_UV_T)) {
+            realUv++;
+        }
+        if ((nrm[i][0] == XUD_SHAPES_FLAT_NORMAL_X) && (nrm[i][1] == XUD_SHAPES_FLAT_NORMAL_Y) && (nrm[i][2] == XUD_SHAPES_FLAT_NORMAL_Z)) {
+            flatNormals++;
+        }
+        if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + (i * XUD_BATCH_STREAM_COLOR_SIZE), &color, XUD_BATCH_STREAM_COLOR_SIZE)
+            == 0) {
+            colourLanded++;
+        }
+    }
+
+    /* The two boxes, read per quad rather than per vertex: the walk's claim is about a GLYPH's box at
+       a pixel position, and the four edges it is stated against - left, right, top and bottom - are
+       per-quad facts. The expected clip edges are this file's own pixels through the mapper, so the
+       check below is of the pixels the walk handed it rather than of the mapping's divides, which
+       the shapes area states on its own.
+    */
+    for (quad = 0u; quad < 2u; quad++) {
+        const XudGlyphRow* g = &rows[rowOfQuad[quad]];
+        float minX = 0.0f;
+        float maxX = 0.0f;
+        float minY = 0.0f;
+        float maxY = 0.0f;
+        float minU = 0.0f;
+        float maxU = 0.0f;
+        float minV = 0.0f;
+        float maxV = 0.0f;
+        float leftClipX = 0.0f;
+        float topClipY = 0.0f;
+        float rightClipX = 0.0f;
+        float botClipY = 0.0f;
+        uint32_t v = 0u;
+
+        for (v = 0u; v < XUD_SHAPES_GLYPH_VERTEX_COUNT; v++) {
+            const uint32_t at = (quad * XUD_SHAPES_GLYPH_VERTEX_COUNT) + v;
+
+            if ((v == 0u) || (pos[at][0] < minX)) {
+                minX = pos[at][0];
+            }
+            if ((v == 0u) || (pos[at][0] > maxX)) {
+                maxX = pos[at][0];
+            }
+            if ((v == 0u) || (pos[at][1] < minY)) {
+                minY = pos[at][1];
+            }
+            if ((v == 0u) || (pos[at][1] > maxY)) {
+                maxY = pos[at][1];
+            }
+            if ((v == 0u) || (uvRow[at][0] < minU)) {
+                minU = uvRow[at][0];
+            }
+            if ((v == 0u) || (uvRow[at][0] > maxU)) {
+                maxU = uvRow[at][0];
+            }
+            if ((v == 0u) || (uvRow[at][1] < minV)) {
+                minV = uvRow[at][1];
+            }
+            if ((v == 0u) || (uvRow[at][1] > maxV)) {
+                maxV = uvRow[at][1];
+            }
+        }
+
+        xud_check(xud_shapes_pixel_to_clip(extentWidth, extentHeight, expLeftPx[quad], expTopPx[quad], &leftClipX, &topClipY) == XUD_OK,
+            "swalk-mapper-answers-top", "and the mapper answers for the box's top-left pixel before the edges are read against it");
+        xud_check(xud_shapes_pixel_to_clip(
+                      extentWidth, extentHeight, expLeftPx[quad] + ((float)g->atlasWidth * scale), expBotPx[quad], &rightClipX, &botClipY)
+                == XUD_OK,
+            "swalk-mapper-answers-bottom", "and for its bottom-right one");
+        xud_check(minX == leftClipX, "swalk-left-edge-is-the-pen",
+            "the quad's left edge is the pen's pixel this file walked to for this glyph plus the row's own offset scaled, through the "
+            "mapper - the first quad's is the string's start, the second's is the pen after the space's advance");
+        xud_check(maxX == rightClipX, "swalk-right-edge-is-the-box",
+            "and the right edge is the box's width scaled rather than a width the walk chose itself");
+        xud_check(maxY == topClipY, "swalk-top-edge-is-the-pen",
+            "the quad's top edge is the baseline the caller named plus the row's step to the box's top - the pen's y in this rung's "
+            "y-down pixel space, where a step above the baseline is a NEGATIVE offsetY rather than a flip of the axis");
+        xud_check(minY == botClipY, "swalk-bottom-edge-is-the-box",
+            "and the bottom edge is the top's plus the box's texel height scaled, so the glyph is not stretched by the mapping");
+        xud_check((minU == ((float)g->atlasX / (float)record.atlasWidth))
+                && (maxU == ((float)(g->atlasX + g->atlasWidth) / (float)record.atlasWidth)),
+            "swalk-uv-u-is-the-box",
+            "and the quad's u range is the row's atlas box divided by the atlas's width, the same divide the "
+            "3D walk's check states");
+        xud_check((minV == ((float)g->atlasY / (float)record.atlasHeight))
+                && (maxV == ((float)(g->atlasY + g->atlasHeight) / (float)record.atlasHeight)),
+            "swalk-uv-v-is-the-box", "and the v range is the row's box over the atlas's height, top-down as the atlas bakes it");
+
+        for (v = 0u; v < XUD_SHAPES_GLYPH_VERTEX_COUNT; v++) {
+            const uint32_t at = (quad * XUD_SHAPES_GLYPH_VERTEX_COUNT) + v;
+
+            if (pos[at][0] == minX) {
+                uFollowsX += (uvRow[at][0] == minU) ? 1u : 0u;
+            }
+            if (pos[at][0] == maxX) {
+                uFollowsX += (uvRow[at][0] == maxU) ? 1u : 0u;
+            }
+            if (pos[at][1] == maxY) {
+                vFollowsY += (uvRow[at][1] == minV) ? 1u : 0u;
+            }
+            if (pos[at][1] < maxY) {
+                vFollowsY += (uvRow[at][1] == maxV) ? 1u : 0u;
+            }
+        }
+    }
+
+    xud_check(uFollowsX == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u), "swalk-uv-follows-the-x-edge",
+        "every vertex's u is the u of the atlas box's corner on the SAME x edge as it, for both quads - a uv paired diagonal to "
+        "diagonal would be a glyph drawn mirrored inside its own box");
+    xud_check(vFollowsY == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u), "swalk-uv-follows-the-y-edge",
+        "and every vertex on a quad's TOP edge carries the SMALLER v while every one on its BOTTOM edge carries the LARGER one, for "
+        "both "
+        "quads, which is the atlas's own top-down row 0 read against this rung's y-down pixel space, and the reason the divide by the "
+        "extent "
+        "needs no flip at any glyph");
+    xud_check(realUv == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u), "swalk-uv-is-real",
+        "and no vertex carries the shapes header's zero pair, so these are real uvs rather than the constant a solid shape writes");
+    xud_check(flatNormals == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u), "swalk-normals-are-flat",
+        "and the normals are the flat +Z the quad faces the camera it was drawn for with, which is what a glyph is and of nothing "
+        "else");
+    xud_check(colourLanded == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u), "swalk-colour-landed",
+        "and the caller's colour is at all 8 vertices, because the batch's colour stream is per-vertex and a glyph has one colour");
+
+    xud_check(xud_font_measure(&width, rows, record.glyphCount, record.pixelSize, string, 3u, 8.0f, 0.0f) == XUD_OK, "swalk-measure-query",
+        "the same string through the measure answers");
+    xud_check((posX + width) == pen, "swalk-and-measure-agree",
+        "and the pen this file walked to is the string's start plus the measured width, which is the fact the measure's own note "
+        "states from its side and is what lets a caller centre a screen-space string at a pixel position");
+
+    xud_check(xud_font_append_text_screen(
+                  &b, &record, XUD_BATCH_NO_TEXTURE, spaceOnly, 1u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_OK,
+        "swalk-space-only-ok", "a string of one space is not a refusal");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "swalk-space-only-stats-query", "and the counters answer after it");
+    xud_check((vertexCount == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u)) && (indexCount == (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)),
+        "swalk-space-only-spent-nothing",
+        "and it spent nothing, so a space is a row that draws no quad rather than a row that is "
+        "missing");
+    xud_check(drawCount == 1u, "swalk-space-only-records-nothing",
+        "and no second draw row: the run the walk moved the state for was empty, so the move back closed nothing");
+
+    xud_check(xud_font_append_text_screen(
+                  &b, &record, XUD_BATCH_NO_TEXTURE, uncovered, 1u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_OK,
+        "swalk-fallback-ok", "a codepoint the set does not cover still draws");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "swalk-fallback-stats-query",
+        "and the counters answer after it");
+    xud_check(vertexCount == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 3u), "swalk-fallback-is-the-fallback-row",
+        "and it spent one quad, which is the fallback row's box - the same row the lookups in the area above answer, so a measure "
+        "and a draw of one string cannot disagree about which row a codepoint is");
+    xud_check(drawCount == 2u, "swalk-fallback-records-a-row", "and the quad it spent flushed as a second draw row of the UI row");
+    {
+        XudBatchDraw fallbackRow;
+
+        xud_check(xud_batch_draw_get(&b, 1u, &fallbackRow) == XUD_OK, "swalk-fallback-row-get", "and the second row answers");
+        xud_check((fallbackRow.variant == XUD_BATCH_VARIANT_UI) && (fallbackRow.firstIndex == (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u))
+                && (fallbackRow.indexCount == XUD_SHAPES_GLYPH_INDEX_COUNT),
+            "swalk-fallback-row-range",
+            "and its range is the one quad the walk appended, after the twelve indices the first row "
+            "closed");
+    }
+
+    xud_check(xud_batch_layout(&tiny, XUD_SHAPES_GLYPH_VERTEX_COUNT) == XUD_OK, "swalk-tiny-layout",
+        "a batch with headroom for exactly one quad lays out");
+    tiny.stagingMapped = xudTestTextArena;
+    tiny.stagingMappedLive = 1u;
+    xud_check(xud_font_append_text_screen(
+                  &tiny, &record, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_OUT_OF_MEMORY,
+        "swalk-refuses-at-a-glyph-boundary", "the string refuses at the second glyph rather than as a whole");
+    xud_check(xud_batch_stats(&tiny, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "swalk-refusal-stats-query", "and the counters answer after the refusal");
+    xud_check(vertexCount == XUD_SHAPES_GLYPH_VERTEX_COUNT, "swalk-partial-string-drew-the-first",
+        "and the first glyph's quad is in the batch, so a string that does not fit draws the glyphs that do and refuses at the next "
+        "glyph boundary");
+    xud_check(drawCount == 1u, "swalk-refusal-flushed-the-partial",
+        "and the refusal moved the state back too, so the partial run closed as its own UI draw row rather than riding in a later row "
+        "of the caller's");
+    xud_check(xud_batch_check_invariant(&tiny) == XUD_OK, "swalk-refusal-invariant", "and nothing half-written is in it");
+
+    xud_check(xud_font_append_text_screen(
+                  NULL, &record, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INVALID_ARG,
+        "swalk-null-batch", "a batch with nowhere to append into is refused");
+    xud_check(
+        xud_font_append_text_screen(&b, NULL, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INVALID_ARG,
+        "swalk-null-record", "and so is a record with no metrics to scale by");
+    xud_check(
+        xud_font_append_text_screen(&b, &record, XUD_BATCH_NO_TEXTURE, NULL, 1u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INVALID_ARG,
+        "swalk-null-text", "and a string with no characters behind it");
+    xud_check(
+        xud_font_append_text_screen(&b, &record, XUD_BATCH_NO_TEXTURE, string, 0u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INVALID_ARG,
+        "swalk-empty-text", "and a string whose count is zero, which is a question a caller has to mean something else by");
+    xud_check(xud_font_append_text_screen(
+                  &b, &record, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE, string, 3u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INVALID_ARG,
+        "swalk-bad-texture-slot",
+        "and a sampler slot at the edge of the descriptor's array, which the 3D walk refuses by the same "
+        "bound");
+    xud_check(
+        xud_font_append_text_screen(&b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 0.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INVALID_ARG,
+        "swalk-zero-size", "a requested em height of zero is refused rather than scaling every box to nothing");
+    xud_check(xud_font_append_text_screen(
+                  &b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, -8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INVALID_ARG,
+        "swalk-negative-size", "and so is a negative one, which would flip every box upside down");
+    xud_check(xud_font_append_text_screen(
+                  &b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, -(0.0f / 0.0f), 0.0f, color, extentWidth, extentHeight)
+            == XUD_INVALID_ARG,
+        "swalk-nan-size",
+        "and a height that is not a number at all, refused by the same comparison as the two above - the reason the sphere's note "
+        "gives for a NaN radius, one rung up");
+    xud_check(xud_font_append_text_screen(&b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 8.0f, 0.0f, color, 0u, extentHeight)
+            == XUD_INVALID_ARG,
+        "swalk-zero-extent-width", "and an extent the mapper would divide by zero on");
+    xud_check(xud_font_append_text_screen(&b, &record, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 8.0f, 0.0f, color, extentWidth, 0u)
+            == XUD_INVALID_ARG,
+        "swalk-zero-extent-height", "and the other half of the same extent, the swapchain's answer to how big the surface is");
+
+    broken = record;
+    broken.pixelSize = 0u;
+    xud_check(
+        xud_font_append_text_screen(&b, &broken, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INTERNAL_ERROR,
+        "swalk-no-base-height",
+        "a record that never had a bake height has nothing to scale against, and that is a state the open made rather than an "
+        "argument a caller could fix");
+    broken = record;
+    broken.atlasWidth = 0u;
+    xud_check(
+        xud_font_append_text_screen(&b, &broken, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INTERNAL_ERROR,
+        "swalk-no-extent",
+        "and a record that never had an extent has nothing to divide a texel count by - a uv out of it would be an inf in a float "
+        "stream");
+    broken = record;
+    broken.glyphs = NULL;
+    xud_check(
+        xud_font_append_text_screen(&b, &broken, XUD_BATCH_NO_TEXTURE, string, 3u, posX, posY, 8.0f, 0.0f, color, extentWidth, extentHeight)
+            == XUD_INTERNAL_ERROR,
+        "swalk-no-rows", "and a record whose rows are gone has no pen numbers to walk by");
+
+    xud_check(xud_batch_reset(&b) == XUD_OK, "swalk-reset",
+        "the batch's row list and topology state are retired, so the section above leaves no row behind for the next one");
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The public pair and the five public queries, against a real context
  *-----------------------------------------------------------------------------------------------*/
 
@@ -1059,6 +1501,123 @@ static void xud_test_font_gpu(void) {
         "gpu-text-refusals-stats-query", "the counters answer after the refusals above");
     xud_check(vertexCount == (XUD_SHAPES_GLYPH_VERTEX_COUNT * 3u), "gpu-text-refusals-spent-nothing",
         "and they spent nothing, so a refused draw is not a half-drawn string");
+    /* The screen-space pair: the guards are the 3D pair's argument set plus the extent the mapper
+       divides by, and the quads land in the UI column rather than the textured one, at the pixel
+       position the caller named. The row records the atlas's own sampler slot, which is what samples
+       the atlas through the same sampler the 3D walk's row records, and the first quad's edges are
+       read back from the arena against the pixels this walk is claimed to hand the mapper.
+    */
+    xud_check(xud_draw_text_screen(context, stale, twoChars, 2u, 5, 5, (float)XUD_TEST_FONT_SIZE, 0.0f, color) == XUD_INVALID_ARG,
+        "gpu-text-screen-stale-handle", "a handle kept past the release that freed its slot is refused before a quad is spent");
+    xud_check(xud_draw_text_screen(context, handle, NULL, 1u, 5, 5, (float)XUD_TEST_FONT_SIZE, 0.0f, color) == XUD_INVALID_ARG,
+        "gpu-text-screen-null-text", "and so is a string with no characters behind it");
+    xud_check(xud_draw_text_screen(context, handle, twoChars, 0u, 5, 5, (float)XUD_TEST_FONT_SIZE, 0.0f, color) == XUD_INVALID_ARG,
+        "gpu-text-screen-empty-text", "and a string whose count is zero");
+    xud_check(xud_draw_text_screen(context, handle, twoChars, 2u, 5, 5, 0.0f, 0.0f, color) == XUD_INVALID_ARG, "gpu-text-screen-zero-size",
+        "a requested em height of zero is refused rather than scaling every box to nothing");
+    {
+        uint32_t vertexBefore = 0u;
+        uint32_t indexBefore = 0u;
+        uint32_t drawBefore = 0u;
+        uint32_t glyphIndex = 0u;
+        float scale = (float)XUD_TEST_FONT_SIZE / (float)record->pixelSize;
+
+        xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "gpu-text-screen-stats-before", "and the counters answer before the call");
+        vertexBefore = vertexCount;
+        indexBefore = indexCount;
+        drawBefore = drawCount;
+        xud_check(xud_draw_text_screen(context, handle, twoChars, 2u, 5, 5, (float)XUD_TEST_FONT_SIZE, 0.0f, color) == XUD_OK,
+            "gpu-text-screen-ok", "the pair at the pixel position the caller named appends");
+        xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "gpu-text-screen-stats", "and the counters answer after it");
+        xud_check(vertexCount == (vertexBefore + (XUD_SHAPES_GLYPH_VERTEX_COUNT * 2u)), "gpu-text-screen-costs-two-quads",
+            "and the call spent two quads beside the three the two 3D draws above spent, so a frame holds a 3D string and a screen string "
+            "at once");
+        xud_check(indexCount == (indexBefore + (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)), "gpu-text-screen-costs-their-indices",
+            "and the two quads' twelve indices beside the first three quads' eighteen");
+        xud_check(drawCount == (drawBefore + 1u), "gpu-text-screen-records-one-row",
+            "the run flushes as its own row when the walk's state move back closes it, rather than riding in a row of the caller's state");
+        {
+            XudBatchDraw screenRow;
+            const XudTextureRecord* atlas = NULL;
+
+            xud_check(xud_batch_draw_get(context->renderer->batch, drawCount - 1u, &screenRow) == XUD_OK, "gpu-text-screen-row-get",
+                "and the row answers");
+            xud_check((screenRow.topology == XUD_BATCH_TOPOLOGY_TRIANGLES) && (screenRow.variant == XUD_BATCH_VARIANT_UI),
+                "gpu-text-screen-row-ui",
+                "the row names the UI column of the pipeline list, so the glyphs map to the screen through the identity rather than the "
+                "camera the 3D rows draw through");
+            xud_check(xud_texture_get(context->handleTable, record->atlas, &atlas) == XUD_OK, "gpu-text-screen-atlas-get",
+                "the atlas's own record is readable, which is what the slot below is read off");
+            xud_check((atlas != NULL) && (screenRow.textureIndex == atlas->samplerSlot), "gpu-text-screen-row-sampler",
+                "and the row records the atlas's own sampler slot, so the glyphs sample the atlas through the same sampler the 3D walk's "
+                "row records");
+            xud_check((screenRow.firstIndex == indexBefore) && (screenRow.indexCount == (XUD_SHAPES_GLYPH_INDEX_COUNT * 2u)),
+                "gpu-text-screen-row-range", "and the row's range is the walk's twelve indices and nothing else");
+        }
+        if (context->renderer->batch->stagingMapped != NULL) {
+            const uint8_t* arena = (const uint8_t*)context->renderer->batch->stagingMapped;
+            const XudGlyphRow* g = NULL;
+            float leftPx = 0.0f;
+            float topPx = 0.0f;
+            float rightPx = 0.0f;
+            float botPx = 0.0f;
+            float leftClipX = 0.0f;
+            float topClipY = 0.0f;
+            float rightClipX = 0.0f;
+            float botClipY = 0.0f;
+            float minX = 0.0f;
+            float maxX = 0.0f;
+            float minY = 0.0f;
+            float maxY = 0.0f;
+            uint32_t v = 0u;
+
+            xud_check(xud_font_glyph_index(record->glyphs, record->glyphCount, 65u, &glyphIndex) == XUD_OK, "gpu-text-screen-glyph-query",
+                "the row the first character of the drawn string lives in answers");
+            g = &record->glyphs[glyphIndex];
+            leftPx = 5.0f + (g->offsetX * scale);
+            topPx = 5.0f + (g->offsetY * scale);
+            rightPx = leftPx + ((float)g->atlasWidth * scale);
+            botPx = topPx + ((float)g->atlasHeight * scale);
+            xud_check(xud_shapes_pixel_to_clip(context->width, context->height, leftPx, topPx, &leftClipX, &topClipY) == XUD_OK,
+                "gpu-text-screen-mapper-top", "and the mapper answers for the box's top-left pixel before the edges are read against it");
+            xud_check(xud_shapes_pixel_to_clip(context->width, context->height, rightPx, botPx, &rightClipX, &botClipY) == XUD_OK,
+                "gpu-text-screen-mapper-bottom", "and for its bottom-right one");
+            for (v = 0u; v < XUD_SHAPES_GLYPH_VERTEX_COUNT; v++) {
+                const uint32_t at = vertexBefore + v;
+                float x = 0.0f;
+                float y = 0.0f;
+
+                memcpy(
+                    &x, arena + context->renderer->batch->streamOffset[XUD_BATCH_STREAM_POS] + (at * XUD_BATCH_STREAM_POS_SIZE), sizeof(x));
+                memcpy(&y, arena + context->renderer->batch->streamOffset[XUD_BATCH_STREAM_POS] + (at * XUD_BATCH_STREAM_POS_SIZE) + 4u,
+                    sizeof(y));
+                if ((v == 0u) || (x < minX)) {
+                    minX = x;
+                }
+                if ((v == 0u) || (x > maxX)) {
+                    maxX = x;
+                }
+                if ((v == 0u) || (y < minY)) {
+                    minY = y;
+                }
+                if ((v == 0u) || (y > maxY)) {
+                    maxY = y;
+                }
+            }
+            xud_check(minX == leftClipX, "gpu-text-screen-left-edge",
+                "the quad's left edge is the caller's pixel plus the row's offset scaled, through the mapper - the walk handed the mapper "
+                "the pen's pixel rather than a pixel it chose itself");
+            xud_check(maxX == rightClipX, "gpu-text-screen-right-edge", "and the right edge is the box's width scaled");
+            xud_check(maxY == topClipY, "gpu-text-screen-top-edge",
+                "the quad's top edge is the caller's pixel plus the row's step to the box's top, the pen's y in this rung's y-down pixel "
+                "space");
+            xud_check(minY == botClipY, "gpu-text-screen-bottom-edge", "and the bottom edge is the top's plus the box's texel height");
+        } else {
+            printf("note: the context's batch has no mapped staging block, so the drawn pixels are not readable in this build\n");
+        }
+    }
 
     xud_check(xud_close_font(context, handle) == XUD_OK, "gpu-close",
         "the public close closes the atlas through the texture rung below and frees the rows above it");
@@ -1105,6 +1664,7 @@ void xud_test_font(void) {
         xud_test_font_dim();
         xud_test_font_stb();
         xud_test_font_text_walk();
+        xud_test_font_text_walk_screen();
         return;
     }
     xud_test_font_check();
@@ -1114,6 +1674,7 @@ void xud_test_font(void) {
     xud_test_font_bake_pure();
     xud_test_font_bake_refused();
     xud_test_font_text_walk();
+    xud_test_font_text_walk_screen();
     if (xud_gpu_tests_enabled()) {
         xud_test_font_gpu();
     }

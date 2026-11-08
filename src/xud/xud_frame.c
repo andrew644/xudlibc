@@ -272,16 +272,16 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
         return XUD_INVALID_ARG;
     }
 
-    /* The model matrix is the IDENTITY, and that is the same honest answer the descriptor rung gives
-       its block: a matrix that is not identity is a transform the camera/transform step has to CHOO
-       SE, and that step is above this one and has not landed. What is NOT decoration here is the chan
-       nel itself - the row is pushed, the vertex stage reads it, and the step above hands the object'
-       s own matrix in place of this one without this rung's shape changing. Identity is the one matri
-       x that is a fact rather than a choice, exactly as identity is the one viewProj the block holds t
-       oday.
+    /* The model matrix is the draw's own, copied out of the row the batch recorded it in: a plain
+       append recorded the identity into that member (xud_batch_record_draw's own stamp), a posed
+       mesh, a posed model or a screen-space 2D row recorded the transform it was asked for, and
+       this rung's job is to push the row's channel through rather than to choose a matrix of its
+       own. The identity the row carries for a plain draw is the same fact the stage below sees
+       either way: the vertex is placed by frame-viewProj * the draw's own model, and a draw whose
+       model is the identity is a draw the viewProj alone places.
     */
-    for (axis = 0u; axis < 16u; axis++) {
-        outRow->modelMatrix[axis] = ((axis % 5u) == 0u) ? 1.0f : 0.0f;
+    for (axis = 0u; axis < XUD_BATCH_MODEL_MATRIX_COUNT; axis++) {
+        outRow->modelMatrix[axis] = drawRow->modelMatrix[axis];
     }
 
     /* The batch's sentinel is mapped to slot 0 here rather than passed through, and the reason is th
@@ -313,6 +313,12 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
        to special-case beside each push. */
     outRow->flags = drawRow->variant;
     outRow->reserved = 0u;
+    /* The tint is the draw's own, copied out of the row the same way the matrix above is: white for
+       a plain append, the caller's colour for a posed or a 2D draw, and the fragment stage is the
+       one that multiplies it in - the push row carries the channel, the stage spends it. */
+    for (axis = 0u; axis < XUD_BATCH_TINT_COUNT; axis++) {
+        outRow->tint[axis] = drawRow->tint[axis];
+    }
 
     return XUD_OK;
 }

@@ -319,6 +319,13 @@ struct XudBatchStream {
 };
 
 typedef struct XudBatchDraw XudBatchDraw;
+#define XUD_BATCH_MODEL_MATRIX_COUNT                                                                                                       \
+    16u /* a column-major mat4's element count, the width the push row and the row's matrix member both name */
+#define XUD_BATCH_TINT_COUNT 4u /* the tint's channel count: rgb + a, the width the push row's vec4 names */
+#define XUD_BATCH_MODEL_MATRIX_IDENTITY                                                                                                    \
+    ((const float[XUD_BATCH_MODEL_MATRIX_COUNT]) {                                                                                         \
+        1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f })
+#define XUD_BATCH_TINT_WHITE ((const float[XUD_BATCH_TINT_COUNT]) { 1.0f, 1.0f, 1.0f, 1.0f })
 struct XudBatchDraw {
     uint32_t firstIndex; /* where in the index buffer this draw starts */
     uint32_t indexCount; /* how many indices it takes - vkCmdDrawIndexed's whole argument pair */
@@ -333,6 +340,11 @@ struct XudBatchDraw {
                                 from - XUD_BATCH_GEOMETRY_OWN for the batch's own arena, which is
                                 what every shape's append accumulates under and the only value a
                                 row recorded by xud_batch_record_draw can carry */
+    float modelMatrix[16]; /* the draw's own model matrix, column-major: identity for every row a
+                                plain append records, and the per-draw transform a posed row carries
+                                to the push row the frame loop pushes beside the draw */
+    float tint[4]; /* the draw's own tint, 0..1 per channel: white for every row a plain append
+                       records, the per-draw colour a posed or a 2D row carries to the push row */
 };
 
 typedef struct XudBatchGeometry XudBatchGeometry;
@@ -521,6 +533,12 @@ XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_
 /// material of its own, and the mesh's row is then the same row xud_batch_set_material() would have
 /// split. XUD_INVALID_ARG on a NULL batch or out-pointer.
 XudResult xud_batch_state_get(const XudBatch* batch, uint32_t* outVariant, uint32_t* outMaterialIndex, uint32_t* outTextureIndex);
+/// Pure: the finiteness the public posed draws validate a caller's matrix with before it becomes
+/// the row's - a matrix that carries a NaN or an inf is a refusal the caller sees here rather than
+/// a row that pushes non-finite numbers beside a draw. The same gate reads a finite float back as
+/// finite, so the check is the one both posed public draws take rather than a per-file copy.
+/// XUD_INVALID_ARG on a NULL matrix or a non-finite element.
+XudResult xud_batch_model_matrix_check(const float* modelMatrix);
 
 /// Pure: whether the capacity ask the batch recorded is bigger than the batch can hold - the one
 /// question the frame boundary above needs before it calls xud_batch_grow, and the reason it is
@@ -562,10 +580,14 @@ XudResult xud_batch_should_flush(uint32_t* outFlush, const XudBatch* batch, uint
 /// batch's own half of "the draw's whole argument pair": firstIndex/indexCount, the two arguments
 /// of vkCmdDrawIndexed that the frame loop will hand, plus the two numbers the frame loop binds a
 /// pipeline with beside that draw - which is the Vulkan form of raylib's replay reading `mode` off
-/// the row itself (rlgl.h 3116's glDrawArrays(batch->draws[i].mode, ...)). The row array doubles
-/// on the sequence the rest of this tree uses, so a record is never refused for being at a bound;
-/// XUD_INVALID_ARG on a NULL batch, a topology at or past the topology list or a variant at or
-/// past the variant list; XUD_OUT_OF_MEMORY only when that doubling step fails on the host.
+/// the row itself (rlgl.h 3116's glDrawArrays(batch->draws[i].mode, ...)). The row is stamped with
+/// the identity model matrix and the white tint, the no-op pair the stages treat as "no transform,
+/// no modulation": a plain shape run carries no per-draw pose, and the pose of a posed draw is the
+/// fact of the mesh row the explicit record above stamps rather than state this record would read.
+/// The row array doubles on the sequence the rest of this tree uses, so a record is never refused
+/// for being at a bound; XUD_INVALID_ARG on a NULL batch, a topology at or past the topology list
+/// or a variant at or past the variant list; XUD_OUT_OF_MEMORY only when that doubling step fails
+/// on the host.
 XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, uint32_t textureIndex);
 
 /// Pure: record one draw row that replays through buffers BESIDE the batch's arena - a mesh's own
@@ -584,7 +606,7 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
 /// five (a draw that binds a null buffer is a draw reading nothing); XUD_OUT_OF_MEMORY only when
 /// the draw list's or the geometry list's doubling step fails on the host.
 XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, uint32_t textureIndex,
-    const VkBuffer* buffers, const VkDeviceSize* offsets, uint32_t indexCount);
+    const float* modelMatrix, const float* tint, const VkBuffer* buffers, const VkDeviceSize* offsets, uint32_t indexCount);
 
 /// Pure: move the batch's topology state, and close the pending run into a draw row of the SAME
 /// batch first if the state actually changes and the run has content in it. This is raylib's

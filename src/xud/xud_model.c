@@ -1459,7 +1459,11 @@ XudResult xud_get_model_bounding_box(XudVector3* outMin, XudVector3* outMax, Xud
  * The public draw above the context - the model's row of the drawing API
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_draw_model(XudContext* context, XudHandle handle) {
+/* The shared half of the public model pair: the guard, the loop over the model's primitives, and
+   the row each one records, the caller's pose beside every row - identity and white for the plain
+   call, the caller's matrix and colour for the _ex one. The two publics differ only in where the
+   pose comes from, which is why the body is here and they are a few lines each above it. */
+static XudResult xud_model_draw(XudContext* context, XudHandle handle, const float* modelMatrix, const float* tint) {
     XudBatch* batch = NULL;
     const XudModelRecord* model = NULL;
     const XudMeshRecord* mesh = NULL;
@@ -1494,8 +1498,9 @@ XudResult xud_draw_model(XudContext* context, XudHandle handle) {
        one model is more than one draw row and the batch's row names one material. Each row is
        recorded with the variant and the material slot the load read for that primitive, whatever
        material the caller had begun around this call - a model brings its own materials with it, so
-       the material around the call is not the material of its primitives.
-    */
+       the material around the call is not the material of its primitives. The pose is the
+       caller's beside every row, because the pose is the MODEL's transform and every primitive of
+       the model lives in the model's space. */
     for (primitive = 0u; primitive < model->meshCount; primitive++) {
         result = xud_mesh_get(context->handleTable, model->mesh[primitive], &mesh);
         if (result != XUD_OK) {
@@ -1533,7 +1538,7 @@ XudResult xud_draw_model(XudContext* context, XudHandle handle) {
         }
 
         result = xud_batch_record_mesh_draw(batch, XUD_BATCH_TOPOLOGY_TRIANGLES, material->variant, model->meshMaterial[primitive].index,
-            textureIndex, buffers, offsets, mesh->indexCount);
+            textureIndex, modelMatrix, tint, buffers, offsets, mesh->indexCount);
         if (result != XUD_OK) {
             return result;
         }
@@ -1555,4 +1560,33 @@ XudResult xud_draw_model(XudContext* context, XudHandle handle) {
     }
 
     return xud_batch_set_material(batch, model->meshMaterial[model->meshCount - 1u].index, material->variant, textureIndex);
+}
+
+XudResult xud_draw_model(XudContext* context, XudHandle handle) {
+    return xud_model_draw(context, handle, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE);
+}
+
+/* raylib's DrawModelEx: the same model, the caller's model matrix and colour beside every row the
+   primitives record - the pose is the model's transform, so every primitive of the model takes it
+   rather than a row of its own choosing. The matrix is the 16 floats in column-major order the
+   push row carries; the caller's colour tints every row of the model. XUD_INVALID_ARG on a NULL
+   context, a NULL matrix, a non-finite element of the matrix, or a model handle the table does not
+   name; XUD_UNSUPPORTED on a context with no batch to record into. */
+XudResult xud_draw_model_ex(XudContext* context, XudHandle handle, const float* modelMatrix, XudColor tint) {
+    float tintRow[XUD_BATCH_TINT_COUNT];
+    XudResult result;
+
+    result = xud_batch_model_matrix_check(modelMatrix);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    tintRow[0] = (float)tint.r / 255.0f;
+    tintRow[1] = (float)tint.g / 255.0f;
+    tintRow[2] = (float)tint.b / 255.0f;
+    tintRow[3] = (float)tint.a / 255.0f;
+    return xud_model_draw(context, handle, modelMatrix, tintRow);
 }

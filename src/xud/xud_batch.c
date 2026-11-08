@@ -39,6 +39,7 @@
 #include "xud_vulkan.h"
 
 #include <assert.h> /* Required for: static_assert, the counts that cannot disagree */
+#include <math.h> /* Required for: isfinite, the finiteness the public posed draws validate their caller's matrix with */
 #include <stdlib.h> /* Required for: calloc, free, realloc */
 #include <string.h> /* Required for: memcpy, the one host write into the mapped arena */
 
@@ -440,6 +441,15 @@ static XudResult xud_batch_geometry_reserve(XudBatch* batch) {
     return XUD_OK;
 }
 
+/* The pose the recorded row is stamped with: the identity and the white, the no-op pair the vertex
+   and fragment stages treat as "no transform, no modulation". A per-draw pose exists only in the
+   explicit records below - a mesh row stamped with the caller's transform and colour - and the
+   plain record here never leaks a neighbour's pose into the shape runs it closes. */
+static void xud_batch_pose_identity(float* model, float* tint) {
+    memcpy(model, XUD_BATCH_MODEL_MATRIX_IDENTITY, sizeof(float[XUD_BATCH_MODEL_MATRIX_COUNT]));
+    memcpy(tint, XUD_BATCH_TINT_WHITE, sizeof(float[XUD_BATCH_TINT_COUNT]));
+}
+
 XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, uint32_t textureIndex) {
     XudResult result = XUD_OK;
 
@@ -465,6 +475,7 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
     batch->draws[batch->drawCount].materialIndex = materialIndex;
     batch->draws[batch->drawCount].textureIndex = textureIndex;
     batch->draws[batch->drawCount].geometryIndex = XUD_BATCH_GEOMETRY_OWN;
+    xud_batch_pose_identity(batch->draws[batch->drawCount].modelMatrix, batch->draws[batch->drawCount].tint);
     batch->drawCount++;
 
     batch->pendingFirstIndex = batch->indexCount;
@@ -487,14 +498,16 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
    stream rows rather than a stored one, which is what keeps a grow that recreated the six buffers
    from leaving a stale row behind. */
 XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, uint32_t textureIndex,
-    const VkBuffer* buffers, const VkDeviceSize* offsets, uint32_t indexCount) {
+    const float* modelMatrix, const float* tint, const VkBuffer* buffers, const VkDeviceSize* offsets, uint32_t indexCount) {
     XudResult result = XUD_OK;
     uint32_t geometryIndex = XUD_BATCH_GEOMETRY_OWN;
     uint32_t found = 0u;
     uint32_t slot = 0u;
     uint32_t candidate = 0u;
+    uint32_t axis = 0u;
+    uint32_t channel = 0u;
 
-    if ((batch == NULL) || (buffers == NULL) || (offsets == NULL)) {
+    if ((batch == NULL) || (modelMatrix == NULL) || (tint == NULL) || (buffers == NULL) || (offsets == NULL)) {
         return XUD_INVALID_ARG;
     }
     if ((topology >= XUD_BATCH_TOPOLOGY_COUNT) || (variant >= XUD_BATCH_VARIANT_COUNT)) {
@@ -557,6 +570,12 @@ XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_
     batch->draws[batch->drawCount].materialIndex = materialIndex;
     batch->draws[batch->drawCount].textureIndex = textureIndex;
     batch->draws[batch->drawCount].geometryIndex = geometryIndex;
+    for (axis = 0u; axis < XUD_BATCH_MODEL_MATRIX_COUNT; axis++) {
+        batch->draws[batch->drawCount].modelMatrix[axis] = modelMatrix[axis];
+    }
+    for (channel = 0u; channel < XUD_BATCH_TINT_COUNT; channel++) {
+        batch->draws[batch->drawCount].tint[channel] = tint[channel];
+    }
     batch->drawCount++;
 
     return XUD_OK;
@@ -622,6 +641,21 @@ XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32
     batch->currentMaterial = materialIndex;
     batch->currentVariant = variant;
     batch->currentTexture = textureIndex;
+
+    return XUD_OK;
+}
+
+XudResult xud_batch_model_matrix_check(const float* modelMatrix) {
+    uint32_t axis = 0u;
+
+    if (modelMatrix == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    for (axis = 0u; axis < XUD_BATCH_MODEL_MATRIX_COUNT; axis++) {
+        if (!isfinite((double)modelMatrix[axis])) {
+            return XUD_INVALID_ARG;
+        }
+    }
 
     return XUD_OK;
 }

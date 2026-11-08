@@ -34,6 +34,7 @@
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
 
+#include <math.h> /* Required for: NAN, the non-finite element the matrix guard refuses */
 #include <stdio.h> /* Required for: fopen, fwrite and remove, the one GLB file the GPU half round-trips through xud_load_model() */
 #include <stdlib.h> /* Required for: calloc and free, the stage block and the synthetic record this area allocates and frees */
 #include <string.h> /* Required for: memset, the cgltf options this area builds itself */
@@ -871,6 +872,13 @@ static void xud_test_model_gpu(void) {
     uint32_t binLength = 0u;
     cgltf_data* document = NULL;
     FILE* file = NULL;
+    float poseMatrix[XUD_BATCH_MODEL_MATRIX_COUNT];
+    float nanMatrix[XUD_BATCH_MODEL_MATRIX_COUNT];
+    XudColor tint;
+    uint32_t row = 0u;
+    uint32_t element = 0u;
+    uint32_t mismatched = 0u;
+    uint32_t drawBefore = 0u;
 
     result = xud_init_context(&context, 64u, 64u);
     xud_check(result == XUD_OK, "gpu-model/context",
@@ -1087,6 +1095,50 @@ static void xud_test_model_gpu(void) {
                     "and the variant that material's record carries rather than one the batch chose, which is the textured row the "
                     "material's "
                     "map moves it to");
+
+                /* The posed pair: the pose is the MODEL's transform, so every row the primitives
+                   record takes it rather than a row of its own choosing, and the tint is spent by
+                   the fragment stage rather than the material the rows name. */
+                memset(poseMatrix, 0, sizeof(poseMatrix));
+                poseMatrix[0] = 1.0f;
+                poseMatrix[5] = 1.0f;
+                poseMatrix[10] = 1.0f;
+                poseMatrix[12] = -0.5f;
+                poseMatrix[13] = 0.25f;
+                poseMatrix[15] = 1.0f;
+                tint = (XudColor) { .r = 0u, .g = 255u, .b = 0u, .a = 128u };
+                xud_check(xud_draw_model_ex(NULL, loadedHandle, poseMatrix, tint) == XUD_INVALID_ARG, "gpu-model/draw-ex-null-context",
+                    "a posed draw with no context is refused");
+                xud_check(xud_draw_model_ex(context, loadedHandle, NULL, tint) == XUD_INVALID_ARG, "gpu-model/draw-ex-null-matrix",
+                    "and a matrix with no elements behind it is refused before the handle is read");
+                memcpy(nanMatrix, poseMatrix, sizeof(nanMatrix));
+                nanMatrix[14] = NAN;
+                xud_check(xud_draw_model_ex(context, loadedHandle, nanMatrix, tint) == XUD_INVALID_ARG, "gpu-model/draw-ex-nan-matrix",
+                    "and a non-finite element is the same refusal, because a matrix that is not a number is not a transform a vertex stage "
+                    "could apply");
+                drawBefore = context->renderer->batch->drawCount;
+                xud_check(xud_draw_model_ex(context, loadedHandle, poseMatrix, tint) == XUD_OK, "gpu-model/draw-ex-ok",
+                    "the posed draw records one row per primitive the same way the plain one does");
+                xud_check(context->renderer->batch->drawCount == (drawBefore + loadedRecord->meshCount),
+                    "gpu-model/draw-ex-one-row-per-primitive",
+                    "and the row count is still the primitive count, so the pose costs a stamp on every row rather than a row of its own");
+                for (row = drawBefore; row < context->renderer->batch->drawCount; row++) {
+                    for (element = 0u; element < XUD_BATCH_MODEL_MATRIX_COUNT; element++) {
+                        if (context->renderer->batch->draws[row].modelMatrix[element] != poseMatrix[element]) {
+                            mismatched++;
+                        }
+                    }
+                    if ((context->renderer->batch->draws[row].tint[0] != 0.0f)
+                        || (context->renderer->batch->draws[row].tint[1] != (255.0f / 255.0f))
+                        || (context->renderer->batch->draws[row].tint[2] != 0.0f)
+                        || (context->renderer->batch->draws[row].tint[3] != (128.0f / 255.0f))) {
+                        mismatched++;
+                    }
+                }
+                xud_check(mismatched == 0u, "gpu-model/draw-ex-every-row-stamped",
+                    "and EVERY row the posed draw recorded carries the caller's matrix and tint element for element, which is the fact "
+                    "that "
+                    "the pose is the model's transform rather than a per-row choice");
                 result = xud_end_drawing(context);
                 xud_check(result == XUD_OK, "gpu-model/frame-presents",
                     "and the frame presents, so the rebind of a mesh's buffers beside the arena is a command buffer the validation layer "

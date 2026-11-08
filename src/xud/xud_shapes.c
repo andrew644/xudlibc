@@ -1156,6 +1156,26 @@ XudResult xud_shapes_append_glyph_quad(
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The pixel to clip - the screen-space draw's corner math
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The inverse of the vertex stage's own final Y-flip, the way xud_ui_map_vertex states it: the
+   top row of the framebuffer is the clip's +1 and the bottom its -1, and the X axis divides the
+   same way with the left edge at -1. The divide is the extent's, not a constant, because the
+   extent is the swapchain's imageExtent the window layer reports and it changes with the window,
+   and the NaN a zero extent would make is refused by the check rather than divided into. */
+XudResult xud_shapes_pixel_to_clip(uint32_t extentWidth, uint32_t extentHeight, float x, float y, float* outClipX, float* outClipY) {
+    if ((extentWidth == 0u) || (extentHeight == 0u) || (outClipX == NULL) || (outClipY == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outClipX = (2.0f * x) / (float)extentWidth - 1.0f;
+    *outClipY = 1.0f - (2.0f * y) / (float)extentHeight;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The one guard every public draw call above this rung needs
  *-----------------------------------------------------------------------------------------------*/
 

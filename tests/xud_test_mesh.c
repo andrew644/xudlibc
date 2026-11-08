@@ -31,6 +31,7 @@
  *   Copyright (c) 2026 xudlibc authors.
  ***********************************************************************************************/
 
+#include <math.h> /* Required for: NAN, the non-finite element the matrix guard refuses */
 #include <stdlib.h> /* Required for: malloc and free, the heap arena the write is handed instead of a mapping */
 #include <string.h> /* Required for: memcmp and memset, the bytes the write is checked against */
 
@@ -390,6 +391,11 @@ static void xud_test_mesh_gpu(void) {
     VkDeviceSize firstArenaBytes = 0u;
     uint32_t live = 0u;
     uint32_t triangles = 0u;
+    float poseMatrix[XUD_BATCH_MODEL_MATRIX_COUNT];
+    float nanMatrix[XUD_BATCH_MODEL_MATRIX_COUNT];
+    XudColor tint;
+    uint32_t element = 0u;
+    uint32_t mismatched = 0u;
 
     result = xud_init_context(&context, 64u, 64u);
     xud_check(result == XUD_OK, "gpu-mesh/bringup-completes",
@@ -495,6 +501,43 @@ static void xud_test_mesh_gpu(void) {
     xud_check(context->renderer->batch->geometryCount == 1u, "gpu-mesh/draw-deduped-geometry",
         "but still one geometry entry, so the frame loop rebinds once rather than twice - which is what "
         "a frame that draws one model a hundred times pays for");
+
+    /* The posed pair: the guards are the matrix's rather than the mesh's, so they are checked
+       against the same live handle, and the draw that passes them stamps the row rather than the
+       identity, which is what the frame loop's push row reads out. */
+    memset(poseMatrix, 0, sizeof(poseMatrix));
+    poseMatrix[0] = 1.0f;
+    poseMatrix[5] = 1.0f;
+    poseMatrix[10] = 1.0f;
+    poseMatrix[12] = 0.5f;
+    poseMatrix[13] = -1.0f;
+    poseMatrix[15] = 1.0f;
+    tint = (XudColor) { .r = 255u, .g = 0u, .b = 0u, .a = 128u };
+    xud_check(xud_draw_mesh_ex(NULL, second, poseMatrix, tint) == XUD_INVALID_ARG, "gpu-mesh/draw-ex-null-context",
+        "a posed draw with no context is refused");
+    xud_check(xud_draw_mesh_ex(context, second, NULL, tint) == XUD_INVALID_ARG, "gpu-mesh/draw-ex-null-matrix",
+        "and a matrix with no elements behind it is refused before the handle is read");
+    memcpy(nanMatrix, poseMatrix, sizeof(nanMatrix));
+    nanMatrix[14] = NAN;
+    xud_check(xud_draw_mesh_ex(context, second, nanMatrix, tint) == XUD_INVALID_ARG, "gpu-mesh/draw-ex-nan-matrix",
+        "and a non-finite element is the same refusal, because a matrix that is not a number is not a transform a vertex stage could "
+        "apply");
+    xud_check(xud_draw_mesh_ex(context, second, poseMatrix, tint) == XUD_OK, "gpu-mesh/draw-ex-ok",
+        "the posed draw records a row the same way the plain one does");
+    xud_check(context->renderer->batch->drawCount == 3u, "gpu-mesh/draw-ex-third-row", "and it is the frame's third row");
+    for (element = 0u; element < XUD_BATCH_MODEL_MATRIX_COUNT; element++) {
+        if (context->renderer->batch->draws[context->renderer->batch->drawCount - 1u].modelMatrix[element] != poseMatrix[element]) {
+            mismatched++;
+        }
+    }
+    xud_check(mismatched == 0u, "gpu-mesh/draw-ex-row-stamped-with-the-matrix",
+        "and the row carries the caller's matrix element for element, which is the stamp the frame loop's push row reads out");
+    xud_check((context->renderer->batch->draws[context->renderer->batch->drawCount - 1u].tint[0] == (255.0f / 255.0f))
+            && (context->renderer->batch->draws[context->renderer->batch->drawCount - 1u].tint[1] == 0.0f)
+            && (context->renderer->batch->draws[context->renderer->batch->drawCount - 1u].tint[2] == 0.0f)
+            && (context->renderer->batch->draws[context->renderer->batch->drawCount - 1u].tint[3] == (128.0f / 255.0f)),
+        "gpu-mesh/draw-ex-row-stamped-with-the-tint",
+        "and the row carries the caller's tint the same way, the four channels the fragment stage will spend");
     result = xud_end_drawing(context);
     xud_check(result == XUD_OK, "gpu-mesh/frame-presents",
         "and the frame presents, so the rebind of a mesh's buffers beside the arena is a command buffer "

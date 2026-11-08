@@ -175,6 +175,46 @@ static void xud_test_shapes_pure(void) {
     glyphUv0 = (XudVector2) { .x = 0.125f, .y = 0.25f };
     glyphUv1 = (XudVector2) { .x = 0.375f, .y = 0.625f };
 
+    /*--- the screen mapper: a pixel corner and its clip corner, with no context in between -------*/
+
+    {
+        float clipX = 0.0f;
+        float clipY = 0.0f;
+
+        xud_check(xud_shapes_pixel_to_clip(128u, 128u, 0.0f, 0.0f, &clipX, &clipY) == XUD_OK, "shapes/clip-map-topleft-query",
+            "the framebuffer's own top-left corner answers");
+        xud_check((clipX == -1.0f) && (clipY == 1.0f), "shapes/clip-map-topleft",
+            "and it answers the clip corner itself, because the top of the buffer is +Y in clip rather than in pixels");
+        xud_check(xud_shapes_pixel_to_clip(128u, 128u, 128.0f, 128.0f, &clipX, &clipY) == XUD_OK, "shapes/clip-map-fb-corner-query",
+            "and the buffer's own bottom-right corner answers");
+        xud_check((clipX == 1.0f) && (clipY == -1.0f), "shapes/clip-map-fb-corner",
+            "and it is the clip corner on the other side, which is the extent's own edge rather than one past it");
+        xud_check(xud_shapes_pixel_to_clip(128u, 128u, 64.0f, 64.0f, &clipX, &clipY) == XUD_OK, "shapes/clip-map-centre-query",
+            "and the centre answers");
+        xud_check((clipX == 0.0f) && (clipY == 0.0f), "shapes/clip-map-centre",
+            "and the centre is the origin of clip, which is the one corner a matrix whose translation is zero leaves alone");
+        xud_check(xud_shapes_pixel_to_clip(128u, 128u, 32.0f, 96.0f, &clipX, &clipY) == XUD_OK, "shapes/clip-map-offcentre-query",
+            "and an off-centre corner answers");
+        xud_check((clipX == -0.5f) && (clipY == -0.5f), "shapes/clip-map-offcentre",
+            "and it is half-way in from the corner on both axes, because x and y are independent here rather than one shared scale");
+        xud_check(xud_shapes_pixel_to_clip(128u, 128u, 127.0f, 127.0f, &clipX, &clipY) == XUD_OK, "shapes/clip-map-last-pixel-query",
+            "and the last valid pixel's corner answers");
+        xud_check((clipX == 0.984375f) && (clipY == -0.984375f), "shapes/clip-map-last-pixel",
+            "and it is one texel inside the corner on both axes, which is the fact that a pixel is a box rather than a point");
+        xud_check(xud_shapes_pixel_to_clip(128u, 128u, 256.0f, 0.0f, &clipX, &clipY) == XUD_OK, "shapes/clip-map-offscreen-query",
+            "and a pixel past the extent answers");
+        xud_check((clipX == 3.0f) && (clipY == 1.0f), "shapes/clip-map-offscreen",
+            "and it is the clip coordinate a rasteriser clips away rather than a refusal, because a draw past one edge is still a draw");
+        xud_check(xud_shapes_pixel_to_clip(0u, 128u, 0.0f, 0.0f, &clipX, &clipY) == XUD_INVALID_ARG, "shapes/clip-map-zero-width",
+            "and an extent with no width has no divide to be a corner of");
+        xud_check(xud_shapes_pixel_to_clip(128u, 0u, 0.0f, 0.0f, &clipX, &clipY) == XUD_INVALID_ARG, "shapes/clip-map-zero-height",
+            "and so for the other axis");
+        xud_check(xud_shapes_pixel_to_clip(128u, 128u, 0.0f, 0.0f, NULL, &clipY) == XUD_INVALID_ARG, "shapes/clip-map-null-out-x",
+            "and a corner with nowhere to be written is refused");
+        xud_check(xud_shapes_pixel_to_clip(128u, 128u, 0.0f, 0.0f, &clipX, NULL) == XUD_INVALID_ARG, "shapes/clip-map-null-out-y",
+            "and so for the other axis");
+    }
+
     /*--- the refusals that need no batch and no context at all -------------------------------*/
 
     xud_check(xud_shapes_append_triangle(NULL, v0, v1, v2, color) == XUD_INVALID_ARG, "shapes/append-no-batch",

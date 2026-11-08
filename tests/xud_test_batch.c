@@ -33,6 +33,7 @@
 #include "xud_renderer.h" /* Required for: XudRenderer, the shell's renderer the public stats query reads through */
 #include "xud_shapes.h" /* Required for: XUD_SHAPES_CUBE_VERTEX_COUNT/XUD_SHAPES_CUBE_INDEX_COUNT, the shape size a refused frame asks the batch to grow for */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
+#include <math.h> /* Required for: NAN and INFINITY, the non-finite elements the matrix's guard refuses */
 #include <stdlib.h> /* Required for: free, the draw array this area's own record loop allocates */
 #include <string.h> /* Required for: memset, memcmp, the synthetic rows this area zeroes and compares */
 
@@ -699,6 +700,11 @@ static void xud_test_batch_pure(void) {
         uint32_t stateTexture = 0u;
         uint32_t drawBefore = 0u;
         uint32_t slot = 0u;
+        float poseMatrix[XUD_BATCH_MODEL_MATRIX_COUNT];
+        const float poseTint[XUD_BATCH_TINT_COUNT] = { 1.0f, 0.0f, 0.0f, 128.0f / 255.0f };
+        float badMatrix[XUD_BATCH_MODEL_MATRIX_COUNT];
+        uint32_t element = 0u;
+        uint32_t mismatched = 0u;
 
         xud_check(xud_batch_state_get(&b, &stateVariant, &stateMaterial, &stateTexture) == XUD_OK, "batch/state-read", "the triple reads");
         xud_check((stateVariant == b.currentVariant) && (stateMaterial == b.currentMaterial) && (stateTexture == b.currentTexture),
@@ -708,6 +714,29 @@ static void xud_test_batch_pure(void) {
         xud_check(xud_batch_state_get(NULL, &stateVariant, &stateMaterial, &stateTexture) == XUD_INVALID_ARG, "batch/state-null-batch",
             "refused");
         xud_check(xud_batch_state_get(&b, &stateVariant, NULL, &stateTexture) == XUD_INVALID_ARG, "batch/state-null-out", "refused");
+
+        /* The matrix the posed rows carry: the check is the guard above both the mesh's and the
+           model's record, so it is tested here once rather than in the two rungs that call it. */
+        xud_check(xud_batch_model_matrix_check(NULL) == XUD_INVALID_ARG, "batch/matrix-null-refused",
+            "a matrix with no elements behind it is refused before a row could be stamped with it");
+        xud_check(xud_batch_model_matrix_check(XUD_BATCH_MODEL_MATRIX_IDENTITY) == XUD_OK, "batch/matrix-identity-accepted",
+            "and the identity the plain draws stamp answers OK, which is the row's no-op pair");
+        memcpy(poseMatrix, XUD_BATCH_MODEL_MATRIX_IDENTITY, sizeof(poseMatrix));
+        poseMatrix[12] = 2.0f;
+        poseMatrix[13] = 3.0f;
+        poseMatrix[14] = 4.0f;
+        xud_check(xud_batch_model_matrix_check(poseMatrix) == XUD_OK, "batch/matrix-translation-accepted",
+            "and a matrix that is the identity with a translation column answers OK, so the guard reads the elements' "
+            "finiteness rather than their values");
+        memcpy(badMatrix, XUD_BATCH_MODEL_MATRIX_IDENTITY, sizeof(badMatrix));
+        badMatrix[3] = NAN;
+        xud_check(xud_batch_model_matrix_check(badMatrix) == XUD_INVALID_ARG, "batch/matrix-nan-refused",
+            "and a NaN element is refused, because a matrix that is not a number is not a transform a vertex stage "
+            "could apply");
+        memcpy(badMatrix, XUD_BATCH_MODEL_MATRIX_IDENTITY, sizeof(badMatrix));
+        badMatrix[15] = INFINITY;
+        xud_check(xud_batch_model_matrix_check(badMatrix) == XUD_INVALID_ARG, "batch/matrix-infinity-refused",
+            "and so is an infinite one, which is the same refusal on the other side of the non-finite set");
 
         meshBuffers[0] = (VkBuffer)&b.stream[0].binding;
         meshBuffers[1] = (VkBuffer)&b.stream[1].binding;
@@ -719,40 +748,40 @@ static void xud_test_batch_pure(void) {
         }
 
         xud_check(xud_batch_record_mesh_draw(NULL, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, meshBuffers, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-null-batch", "refused");
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_COUNT, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, meshBuffers, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-bad-topology",
             "a row that names no topology the batch names is a bad argument, the same rule its own "
             "record of the arena's rows applies");
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_COUNT, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, meshBuffers, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-bad-variant", "a row that names no variant the plan names is a bad argument");
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, NULL, meshOffsets, 3u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, NULL, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-null-buffers",
             "the five buffers are the argument of two bind calls, so an array of nothing is a bad argument rather than a row that binds "
             "nothing");
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, NULL, 3u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, meshBuffers, NULL, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-null-offsets", "and so is an array of nothing for the second argument of the same two calls");
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 2u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, meshBuffers, meshOffsets, 2u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-index-count-below-three", "the mesh rung's own rule, read again where the range is named");
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 4u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, meshBuffers, meshOffsets, 4u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-index-count-not-whole-triangles", "and a range that is not a whole number of triangles is the same refusal");
         meshBuffers[XUD_BATCH_STREAM_COUNT] = VK_NULL_HANDLE;
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, meshBuffers, meshOffsets, 3u)
                 == XUD_INVALID_ARG,
             "batch/mesh-draw-null-buffer",
             "a row that binds a null buffer is a draw that reads nothing, so the five are checked before the row is recorded");
@@ -762,7 +791,7 @@ static void xud_test_batch_pure(void) {
         b.pendingIndexCount = 3u;
         drawBefore = b.drawCount;
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, meshBuffers, meshOffsets, 6u)
                 == XUD_OK,
             "batch/mesh-draw-recorded", "the mesh's row records");
         xud_check(b.drawCount == (drawBefore + 2u), "batch/mesh-draw-closed-the-pending-run",
@@ -782,7 +811,7 @@ static void xud_test_batch_pure(void) {
         xud_check(b.geometryCount == 1u, "batch/mesh-draw-recorded-one-geometry-entry", "one entry for one mesh");
 
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u)
+                      XUD_BATCH_NO_TEXTURE, poseMatrix, poseTint, meshBuffers, meshOffsets, 6u)
                 == XUD_OK,
             "batch/mesh-draw-same-buffers-recorded", "the same mesh drawn again records a row");
         xud_check(b.geometryCount == 1u, "batch/mesh-draw-deduped-the-buffers",
@@ -790,10 +819,22 @@ static void xud_test_batch_pure(void) {
             "entry and two draw rows - the frame loop rebinds once rather than twice");
         xud_check(b.draws[b.drawCount - 1u].geometryIndex == 1u, "batch/mesh-draw-reused-the-entry",
             "and the second row names the entry the first named");
+        for (element = 0u; element < XUD_BATCH_MODEL_MATRIX_COUNT; element++) {
+            if (b.draws[b.drawCount - 1u].modelMatrix[element] != poseMatrix[element]) {
+                mismatched++;
+            }
+        }
+        xud_check(mismatched == 0u, "batch/mesh-draw-row-stamped-with-the-matrix",
+            "and the row the second draw recorded carries the caller's matrix element for element rather than the identity, "
+            "which is the stamp the frame loop's push row reads out");
+        xud_check((b.draws[b.drawCount - 1u].tint[0] == (255.0f / 255.0f)) && (b.draws[b.drawCount - 1u].tint[1] == 0.0f)
+                && (b.draws[b.drawCount - 1u].tint[2] == 0.0f) && (b.draws[b.drawCount - 1u].tint[3] == (128.0f / 255.0f)),
+            "batch/mesh-draw-row-stamped-with-the-tint",
+            "and the row carries the caller's tint the same way, the four channels the fragment stage will spend");
 
         meshBuffers[0] = (VkBuffer)&b.stagingBufferInfo;
         xud_check(xud_batch_record_mesh_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
-                      XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 3u)
+                      XUD_BATCH_NO_TEXTURE, XUD_BATCH_MODEL_MATRIX_IDENTITY, XUD_BATCH_TINT_WHITE, meshBuffers, meshOffsets, 3u)
                 == XUD_OK,
             "batch/mesh-draw-second-mesh", "a different buffer set records a row");
         xud_check(b.geometryCount == 2u, "batch/mesh-draw-second-entry", "and it gets its own entry, so the two meshes never share a bind");
