@@ -129,7 +129,7 @@ any call is cleared with the old default: the `XUD_RENDERPASS_CLEAR_COLOR_*`
 macros are now the pass's default, quantized to the byte grid at renderer open.
 See `xud.h` (drawing section) and `xud_core.c`'s note above the setter.
 
-### 6. No 2D drawing surface and no per-draw transforms
+### 6. (RESOLVED) No 2D drawing surface and no per-draw transforms
 
 - There is no `xud_draw_texture`: a `XudTextureData` can only be seen through a
   material applied to a 3D shape or as a model's map. raylib's `DrawTexture`
@@ -146,6 +146,27 @@ See `xud.h` (drawing section) and `xud_core.c`'s note above the setter.
 These are probably the shape of the next steps rather than defects, but as the
 library stands, the raylib-shaped programs (sprites, textured 2D, posed models)
 cannot be written.
+
+**Resolved.** The three gaps are one column and one channel. The screen-space
+surface is the pipeline list's UI column (`XUD_BATCH_VARIANT_UI`, depth off,
+screen-fixed through the vertex stage's flags branch, the same row issue 3's
+UI folds into), and the two public draws that name it are
+`xud_draw_texture()` (a textured screen-space quad: the texture's own extent in
+pixels at the caller's position, through the shapes rung's `xud_draw_texture`
+append) and `xud_draw_text_screen()` (the font's pen walk at a pixel position,
+the 3D walk's arithmetic with the position's pixels mapped by the same
+mapper). Both refuse a context with no live swapchain extent and a batch that
+does not fit, and both record their quads into the UI column rather than the
+textured one, so a frame holds a 3D string and a screen string at once.
+
+The per-draw transform is the row's own push channel: `XudBatchDraw` carries
+a `modelMatrix` and a `tint` (identity and white for every row a plain append
+records), the frame loop's push row copies the drawn row's pair into the
+push-constant row it already writes beside every draw, and
+`xud_draw_mesh_ex()` / `xud_draw_model_ex()` are the two public draws that name
+a caller's matrix and colour rather than the renderer's per-frame state - the
+plain forms are unchanged, and a posed model stamps every row its primitives
+record with the same matrix rather than one per mesh.
 
 ### 7. (RESOLVED) A context can hold at most ~15 live textures
 
