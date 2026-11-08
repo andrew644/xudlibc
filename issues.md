@@ -191,7 +191,7 @@ to TRANSFER_DST and back), and every frame after the first skips all three
 because the clear left the image in exactly the layout it ends in. The 1x1
 white default is written once, not once per frame.
 
-### 11. Every texture close stalls the whole device
+### 11. (RESOLVED) Every texture close stalls the whole device
 
 `xud_texture_close` and `xud_texture_close_all` both run
 `xud_device_wait_idle` (`xud_texture.c:1197, 1261`), and the allocator close
@@ -199,6 +199,25 @@ waits again. Closing N textures therefore takes N full device idles in series.
 A per-texture fence (the texture's own upload fence is already the model for
 this) would let closes proceed without idling in-flight frames from other
 objects.
+
+**Resolved — by decision, recorded here.** The N-stall cost does not
+materialize in this loop, and a per-texture fence cannot express what the
+close needs. A texture's own upload fence is waited at creation, so at
+close nothing of the texture rung's is in flight; the only in-flight reader
+a live texture can have is the frame loop's submit — and the frame loop owns
+that fence and waits it before `xud_end_drawing` returns (`xud_frame.c`,
+step 7: wait, reset, `lastFrameFence = NULL`), so on the normal path every
+close-time `xud_device_wait_idle` answers immediately: N closes are N no-ops,
+not N stalls. The guard is active only on the path where a previous frame
+failed partway after its submit — the one state where a submission really is
+in flight and `VUID-vkDestroyImage-image-00009` (all uses completed) demands
+the wait. Vulkan has no fence meaning "all uses of image X are complete";
+the only fence that covers a texture's sampling is the frame loop's, and
+reaching up into it from the texture rung would invert the rung order — the
+same frame-rung rewrite issue 9 names for single-flight. The rationale lives
+in `xud_texture.c` at both close sites, and the guard is the uniform one
+every destroy rung that a frame may still be reading uses (mesh, descriptor,
+render pass, swapchain, allocator).
 
 ### 12. Input is one frame behind by design
 
