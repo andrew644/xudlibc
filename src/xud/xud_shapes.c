@@ -1389,6 +1389,936 @@ XudResult xud_shapes_append_sphere_wires(
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The cylinder and the capsule: one axis, the rings about it, and the frame that puts them there
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_shapes_cross(const float left[3], const float right[3], float* out) {
+    out[0] = (left[1] * right[2]) - (left[2] * right[1]);
+    out[1] = (left[2] * right[0]) - (left[0] * right[2]);
+    out[2] = (left[0] * right[1]) - (left[1] * right[0]);
+}
+
+static float xud_shapes_length(const float v[3]) { return sqrtf((v[0] * v[0]) + (v[1] * v[1]) + (v[2] * v[2])); }
+
+/* The frame a ring about the caller's axis is written in: the axis unitised and the two vectors
+   across it. raylib's DrawCylinderEx builds the same frame (rmodels.c 651: b1 =
+   Vector3Perpendicular(direction), b2 = Vector3CrossProduct(b1, direction)) and gets its
+   perpendicular from the axis's least-aligned axis, which is the branch-free way to be sure the
+   cross product has something to bite on. The difference is that a zero-length axis is refused here
+   rather than divided by: an axis with no direction has no ring that can be round about it, and a
+   NaN one fails the same comparison, so both reach the caller as XUD_INVALID_ARG instead of as a
+   shape made of NaNs. side2 is cross(side1, axis) exactly as raylib's b2 is, which is what makes
+   the winding the indices below are derived against the same for every axis and not upright only.
+*/
+static XudResult xud_shapes_axis_basis(XudVector3 start, XudVector3 end, float axis[3], float side1[3], float side2[3], float* outLength) {
+    float delta[3];
+    float least[3];
+    float length;
+
+    delta[0] = end.x - start.x;
+    delta[1] = end.y - start.y;
+    delta[2] = end.z - start.z;
+    length = xud_shapes_length(delta);
+    if (!(length > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+    *outLength = length;
+    axis[0] = delta[0] / length;
+    axis[1] = delta[1] / length;
+    axis[2] = delta[2] / length;
+
+    least[0] = 0.0f;
+    least[1] = 0.0f;
+    least[2] = 0.0f;
+    if ((axis[0] * axis[0]) <= (axis[1] * axis[1]) && (axis[0] * axis[0]) <= (axis[2] * axis[2])) {
+        least[0] = 1.0f;
+    } else if ((axis[1] * axis[1]) <= (axis[2] * axis[2])) {
+        least[1] = 1.0f;
+    } else {
+        least[2] = 1.0f;
+    }
+
+    xud_shapes_cross(axis, least, side1);
+    length = xud_shapes_length(side1);
+    if (!(length > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+    side1[0] /= length;
+    side1[1] /= length;
+    side1[2] /= length;
+    xud_shapes_cross(side1, axis, side2);
+
+    return XUD_OK;
+}
+
+/* One vertex of a shape that has no uv and one colour the whole shape shares: the uv and the rgba
+   filled the way every other shape in this file fills them. The two round shapes below write a
+   hundred and more of these out of three loops, which is why the spelling of one is a function.
+*/
+static XudResult xud_shapes_round_vertex(XudBatch* batch, const float pos[3], const float normal[3], XudColor color) {
+    float uv[2];
+    uint8_t rgba[4];
+
+    uv[0] = XUD_SHAPES_UV_S;
+    uv[1] = XUD_SHAPES_UV_T;
+    rgba[0] = color.r;
+    rgba[1] = color.g;
+    rgba[2] = color.b;
+    rgba[3] = color.a;
+
+    return xud_batch_append_vertex(batch, pos, uv, rgba, normal);
+}
+
+/* A vertex of a ring, and the normal the slant of the side carries there: the centre plus RADIUS
+   times the unit direction at ANGLE around the frame, and the radial direction corrected by SLOPE -
+   (radius at the far end minus radius here) over the axis's length. Correcting rather than ignoring
+   the slope is the difference between a cone that shades as one surface and one that shades as a
+   stack of rings: raylib's immediate-mode cylinder hands the driver no normal and lets it light each
+   triangle flat, which is a look this library cannot copy because solid.frag lights by the
+   interpolated normal the vertex carries. The corrected vector is never zero - the radial direction
+   is unit and lies across the axis, so no multiple of the axis cancels it - which is why the divide
+   below needs no guard the slope's own finite-ness does not already give.
+*/
+static void xud_shapes_ring_point(float pos[3], float normal[3], const float center[3], float radius, float angle, const float axis[3],
+    const float side1[3], const float side2[3], float slope) {
+    float radial[3];
+    float length;
+
+    radial[0] = (sinf(angle) * side1[0]) + (cosf(angle) * side2[0]);
+    radial[1] = (sinf(angle) * side1[1]) + (cosf(angle) * side2[1]);
+    radial[2] = (sinf(angle) * side1[2]) + (cosf(angle) * side2[2]);
+
+    pos[0] = center[0] + (radius * radial[0]);
+    pos[1] = center[1] + (radius * radial[1]);
+    pos[2] = center[2] + (radius * radial[2]);
+
+    normal[0] = radial[0] - (slope * axis[0]);
+    normal[1] = radial[1] - (slope * axis[1]);
+    normal[2] = radial[2] - (slope * axis[2]);
+    length = xud_shapes_length(normal);
+    normal[0] /= length;
+    normal[1] /= length;
+    normal[2] /= length;
+}
+
+/* A vertex of a cap: the point at ANGLE around the frame and ALPHA out from the wide ring, on the
+   side SIGN of the cap's own centre, with the normal it carries - the same unit direction, because
+   a cap is a sphere about its own centre and the direction that places the vertex is the direction
+   that shades it. No divide, so no guard: the two terms are unit and across each other.
+*/
+static void xud_shapes_cap_point(float pos[3], float normal[3], const float center[3], float radius, float angle, float alpha, float sign,
+    const float axis[3], const float side1[3], const float side2[3]) {
+    float dir[3];
+
+    dir[0] = (sinf(alpha) * sign * axis[0]) + (cosf(alpha) * ((sinf(angle) * side1[0]) + (cosf(angle) * side2[0])));
+    dir[1] = (sinf(alpha) * sign * axis[1]) + (cosf(alpha) * ((sinf(angle) * side1[1]) + (cosf(angle) * side2[1])));
+    dir[2] = (sinf(alpha) * sign * axis[2]) + (cosf(alpha) * ((sinf(angle) * side1[2]) + (cosf(angle) * side2[2])));
+
+    pos[0] = center[0] + (radius * dir[0]);
+    pos[1] = center[1] + (radius * dir[1]);
+    pos[2] = center[2] + (radius * dir[2]);
+    normal[0] = dir[0];
+    normal[1] = dir[1];
+    normal[2] = dir[2];
+}
+
+/* One cap's vertices: RINGS-1 rings out from the wide ring the caller already appended, then the
+   pole, which is the axis direction and not sin/cos of the last row (xud_shapes.c's sphere note:
+   sin(PI) is 1.2e-16, and a pole that lands off-axis by that is a normal that lands off-axis too).
+*/
+static XudResult xud_shapes_append_cap_vertices(XudBatch* batch, const float center[3], float radius, float sign, float step,
+    float alphaStep, uint32_t rings, uint32_t slices, const float axis[3], const float side1[3], const float side2[3], XudColor color) {
+    float pos[3];
+    float normal[3];
+    uint32_t ring = 0u;
+    uint32_t slice = 0u;
+    XudResult result = XUD_OK;
+
+    for (ring = 1u; ring < rings; ring++) {
+        float alpha = alphaStep * (float)ring;
+        for (slice = 0u; slice < slices; slice++) {
+            xud_shapes_cap_point(pos, normal, center, radius, step * (float)slice, alpha, sign, axis, side1, side2);
+            result = xud_shapes_round_vertex(batch, pos, normal, color);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    pos[0] = center[0] + (radius * sign * axis[0]);
+    pos[1] = center[1] + (radius * sign * axis[1]);
+    pos[2] = center[2] + (radius * sign * axis[2]);
+    normal[0] = sign * axis[0];
+    normal[1] = sign * axis[1];
+    normal[2] = sign * axis[2];
+
+    return xud_shapes_round_vertex(batch, pos, normal, color);
+}
+
+/* Both wide rings and both caps' vertices, in the order the filled capsule's counts assume: the
+   start ring, the start cap, the end ring, the end cap. The two forms of the capsule share this one
+   spelling because xud_shapes.h asserts they are ONE vertex layout - the wire draws lines between
+   the vertices the fill shades, and two loops that had drifted by one row would be a wire drawn over
+   a gap rather than over an edge.
+*/
+static XudResult xud_shapes_append_capsule_vertices(XudBatch* batch, const float startC[3], const float endC[3], float radius, float step,
+    float alphaStep, uint32_t rings, uint32_t slices, const float axis[3], const float side1[3], const float side2[3], XudColor color) {
+    const float* center = startC;
+    float pos[3];
+    float normal[3];
+    uint32_t slice = 0u;
+    XudResult result = XUD_OK;
+
+    for (uint32_t cap = 0u; cap < 2u; cap++) {
+        center = (cap == 0u) ? startC : endC;
+        for (slice = 0u; slice < slices; slice++) {
+            xud_shapes_ring_point(pos, normal, center, radius, step * (float)slice, axis, side1, side2, 0.0f);
+            result = xud_shapes_round_vertex(batch, pos, normal, color);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+        result = xud_shapes_append_cap_vertices(
+            batch, center, radius, (cap == 0u) ? -1.0f : 1.0f, step, alphaStep, rings, slices, axis, side1, side2, color);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+/* The vertex one row of a capsule's mesh is at: row 0 is the wide ring the band shares with the cap,
+   row RINGS is the pole, and the rows between are the cap's own. One function because the wire's four
+   loops and the filled form's index order both need the same answer.
+*/
+static uint32_t xud_shapes_capsule_vertex(
+    uint32_t ringFirst, uint32_t capFirst, uint32_t row, uint32_t slice, uint32_t rings, uint32_t slices) {
+    if (row == 0u) {
+        return ringFirst + slice;
+    }
+    if (row == rings) {
+        return capFirst + ((rings - 1u) * slices);
+    }
+
+    return capFirst + ((row - 1u) * slices) + slice;
+}
+
+XudResult xud_shapes_append_capsule_wires(XudBatch* batch, XudVector3 start, XudVector3 end, float radius, XudColor color) {
+    float axis[3];
+    float side1[3];
+    float side2[3];
+    float startC[3];
+    float endC[3];
+    float delta[3];
+    float length = 0.0f;
+    float step;
+    float alphaStep;
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    const uint32_t rings = XUD_SHAPES_CAPSULE_RING_COUNT;
+    const uint32_t slices = XUD_SHAPES_CAPSULE_SLICE_COUNT;
+    const uint32_t capVerts = ((rings - 1u) * slices) + 1u;
+    uint32_t first = 0u;
+    uint32_t startCap = 0u;
+    uint32_t endRing = 0u;
+    uint32_t endCap = 0u;
+    uint32_t cap = 0u;
+    uint32_t row = 0u;
+    uint32_t slice = 0u;
+
+    if ((batch == NULL) || !(radius > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    delta[0] = end.x - start.x;
+    delta[1] = end.y - start.y;
+    delta[2] = end.z - start.z;
+    length = xud_shapes_length(delta);
+    if (!(length >= 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+    if (length > 0.0f) {
+        result = xud_shapes_axis_basis(start, end, axis, side1, side2, &length);
+        if (result != XUD_OK) {
+            return result;
+        }
+    } else {
+        axis[0] = 0.0f;
+        axis[1] = 1.0f;
+        axis[2] = 0.0f;
+        side1[0] = 1.0f;
+        side1[1] = 0.0f;
+        side1[2] = 0.0f;
+        side2[0] = 0.0f;
+        side2[1] = 0.0f;
+        side2[2] = 1.0f;
+    }
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if (((vertexCount + XUD_SHAPES_CAPSULE_WIRE_VERTEX_COUNT) > vertexCapacity)
+        || ((indexCount + XUD_SHAPES_CAPSULE_WIRE_INDEX_COUNT) > batch->indexCapacity)) {
+        xud_shapes_note_refused(
+            batch, vertexCount + XUD_SHAPES_CAPSULE_WIRE_VERTEX_COUNT, indexCount + XUD_SHAPES_CAPSULE_WIRE_INDEX_COUNT);
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_LINES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    step = ((2.0f * XUD_SHAPES_SPHERE_PI) / (float)slices);
+    alphaStep = ((XUD_SHAPES_SPHERE_PI / 2.0f) / (float)rings);
+    first = vertexCount;
+    startCap = first + slices;
+    endRing = startCap + capVerts;
+    endCap = endRing + slices;
+    startC[0] = start.x;
+    startC[1] = start.y;
+    startC[2] = start.z;
+    endC[0] = end.x;
+    endC[1] = end.y;
+    endC[2] = end.z;
+
+    result = xud_shapes_append_capsule_vertices(batch, startC, endC, radius, step, alphaStep, rings, slices, axis, side1, side2, color);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* Every edge of the filled mesh, and nothing that is not: a ring around each row of each cap, a
+       longitudinal segment from each row to the next (the last row's meeting at the pole), and the
+       band's own longitudinal. The band's ring edges ARE the two caps' row-0 rings, which is why they
+       are not drawn twice here and why the count is the header's formula rather than that plus two
+       more rings.
+    */
+    for (cap = 0u; cap < 2u; cap++) {
+        const uint32_t ringFirst = (cap == 0u) ? first : endRing;
+        const uint32_t capFirst = (cap == 0u) ? startCap : endCap;
+
+        for (row = 0u; row < rings; row++) {
+            for (slice = 0u; slice < slices; slice++) {
+                result = xud_batch_append_index(batch, xud_shapes_capsule_vertex(ringFirst, capFirst, row, slice, rings, slices));
+                if (result != XUD_OK) {
+                    return result;
+                }
+                result = xud_batch_append_index(
+                    batch, xud_shapes_capsule_vertex(ringFirst, capFirst, row, (slice + 1u) % slices, rings, slices));
+                if (result != XUD_OK) {
+                    return result;
+                }
+            }
+        }
+        for (row = 0u; row < rings; row++) {
+            for (slice = 0u; slice < slices; slice++) {
+                result = xud_batch_append_index(batch, xud_shapes_capsule_vertex(ringFirst, capFirst, row, slice, rings, slices));
+                if (result != XUD_OK) {
+                    return result;
+                }
+                result = xud_batch_append_index(batch, xud_shapes_capsule_vertex(ringFirst, capFirst, row + 1u, slice, rings, slices));
+                if (result != XUD_OK) {
+                    return result;
+                }
+            }
+        }
+    }
+
+    for (slice = 0u; slice < slices; slice++) {
+        result = xud_batch_append_index(batch, first + slice);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, endRing + slice);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+/* One cap's triangles: the bands from the wide ring out, then the fan from the last row to the pole
+   - which is the row of one, so the fan is the last band with its far edge collapsed, exactly as the
+   sphere's two fans are. SIGN picks the winding: a cap on the −axis side is written in a frame whose
+   handedness the sign flips, so every triangle is named in the opposite order there, which is what
+   raylib's "NOTE: make sure cap triangle normals are facing outwards" branch (rmodels.c 636) is
+   doing with its two copies of the same fan.
+*/
+static XudResult xud_shapes_append_cap_indices(
+    XudBatch* batch, uint32_t ringFirst, uint32_t capFirst, float sign, uint32_t rings, uint32_t slices) {
+    uint32_t row = 0u;
+    uint32_t slice = 0u;
+    uint32_t last = 0u;
+    uint32_t pole = 0u;
+    uint32_t lower = 0u;
+    uint32_t upper = 0u;
+    uint32_t next = 0u;
+    uint32_t tri[6];
+    XudResult result = XUD_OK;
+
+    for (row = 0u; (row + 1u) < rings; row++) {
+        lower = (row == 0u) ? ringFirst : (capFirst + ((row - 1u) * slices));
+        upper = capFirst + (row * slices);
+        for (slice = 0u; slice < slices; slice++) {
+            next = (slice + 1u) % slices;
+            if (sign > 0.0f) {
+                tri[0] = lower + slice;
+                tri[1] = lower + next;
+                tri[2] = upper + next;
+                tri[3] = lower + slice;
+                tri[4] = upper + next;
+                tri[5] = upper + slice;
+            } else {
+                tri[0] = lower + slice;
+                tri[1] = upper + next;
+                tri[2] = lower + next;
+                tri[3] = lower + slice;
+                tri[4] = upper + slice;
+                tri[5] = upper + next;
+            }
+            for (uint32_t k = 0u; k < 6u; k++) {
+                result = xud_batch_append_index(batch, tri[k]);
+                if (result != XUD_OK) {
+                    return result;
+                }
+            }
+        }
+    }
+
+    last = (rings == 1u) ? ringFirst : (capFirst + ((rings - 2u) * slices));
+    pole = capFirst + ((rings - 1u) * slices);
+    for (slice = 0u; slice < slices; slice++) {
+        next = (slice + 1u) % slices;
+        tri[0] = pole;
+        tri[1] = (sign > 0.0f) ? (last + slice) : (last + next);
+        tri[2] = (sign > 0.0f) ? (last + next) : (last + slice);
+        for (uint32_t k = 0u; k < 3u; k++) {
+            result = xud_batch_append_index(batch, tri[k]);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_shapes_append_capsule(XudBatch* batch, XudVector3 start, XudVector3 end, float radius, XudColor color) {
+    float axis[3];
+    float side1[3];
+    float side2[3];
+    float startC[3];
+    float endC[3];
+    float delta[3];
+    float length = 0.0f;
+    float step;
+    float alphaStep;
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    const uint32_t rings = XUD_SHAPES_CAPSULE_RING_COUNT;
+    const uint32_t slices = XUD_SHAPES_CAPSULE_SLICE_COUNT;
+    const uint32_t capVerts = ((rings - 1u) * slices) + 1u;
+    uint32_t first = 0u;
+    uint32_t startCap = 0u;
+    uint32_t endRing = 0u;
+    uint32_t endCap = 0u;
+    uint32_t slice = 0u;
+    uint32_t next = 0u;
+
+    if ((batch == NULL) || !(radius > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    delta[0] = end.x - start.x;
+    delta[1] = end.y - start.y;
+    delta[2] = end.z - start.z;
+    length = xud_shapes_length(delta);
+    if (!(length >= 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+    if (length > 0.0f) {
+        result = xud_shapes_axis_basis(start, end, axis, side1, side2, &length);
+        if (result != XUD_OK) {
+            return result;
+        }
+    } else {
+        /* raylib's sphereCase (rmodels.c 790): two centres meeting is a sphere, and the frame the
+           two caps are written in is then the caller's to be nothing in particular - +Y is the one
+           the band would have had, and the band closes to nothing either way.
+        */
+        axis[0] = 0.0f;
+        axis[1] = 1.0f;
+        axis[2] = 0.0f;
+        side1[0] = 1.0f;
+        side1[1] = 0.0f;
+        side1[2] = 0.0f;
+        side2[0] = 0.0f;
+        side2[1] = 0.0f;
+        side2[2] = 1.0f;
+    }
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if (((vertexCount + XUD_SHAPES_CAPSULE_VERTEX_COUNT) > vertexCapacity)
+        || ((indexCount + XUD_SHAPES_CAPSULE_INDEX_COUNT) > batch->indexCapacity)) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_CAPSULE_VERTEX_COUNT, indexCount + XUD_SHAPES_CAPSULE_INDEX_COUNT);
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_TRIANGLES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    step = ((2.0f * XUD_SHAPES_SPHERE_PI) / (float)slices);
+    alphaStep = ((XUD_SHAPES_SPHERE_PI / 2.0f) / (float)rings);
+    first = vertexCount;
+    startCap = first + slices;
+    endRing = startCap + capVerts;
+    endCap = endRing + slices;
+
+    startC[0] = start.x;
+    startC[1] = start.y;
+    startC[2] = start.z;
+    endC[0] = end.x;
+    endC[1] = end.y;
+    endC[2] = end.z;
+
+    result = xud_shapes_append_capsule_vertices(batch, startC, endC, radius, step, alphaStep, rings, slices, axis, side1, side2, color);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    for (slice = 0u; slice < slices; slice++) {
+        next = (slice + 1u) % slices;
+        uint32_t band[6];
+
+        band[0] = first + slice;
+        band[1] = first + next;
+        band[2] = endRing + next;
+        band[3] = first + slice;
+        band[4] = endRing + next;
+        band[5] = endRing + slice;
+        for (uint32_t k = 0u; k < 6u; k++) {
+            result = xud_batch_append_index(batch, band[k]);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    result = xud_shapes_append_cap_indices(batch, first, startCap, -1.0f, rings, slices);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_cap_indices(batch, endRing, endCap, 1.0f, rings, slices);
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The cylinder: two rings, two caps, and the 12 indices a side costs
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_shapes_append_cylinder(
+    XudBatch* batch, XudVector3 start, XudVector3 end, float radiusStart, float radiusEnd, XudColor color) {
+    float axis[3];
+    float side1[3];
+    float side2[3];
+    float center[3];
+    float pos[3];
+    float normal[3];
+    float slope = 0.0f;
+    float length = 0.0f;
+    float step;
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    uint64_t vertexNeed = 0ull;
+    uint64_t indexNeed = 0ull;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t sides = XUD_SHAPES_CYLINDER_SIDE_COUNT;
+    uint32_t first = 0u;
+    uint32_t cap = 0u;
+    uint32_t slot = 0u;
+    uint32_t row = 0u;
+    uint32_t next = 0u;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    /* Both radii, read as "not at least zero" so a NaN is refused by the same test that refuses a
+       negative one - a negative radius is a ring inside-out, and this rung refuses a mirrored solid
+       rather than guessing the caller meant the absolute value (raylib's absf is that guess).
+    */
+    if (!(radiusStart >= 0.0f) || !(radiusEnd >= 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_shapes_axis_basis(start, end, axis, side1, side2, &length);
+    if (result != XUD_OK) {
+        return result;
+    }
+    slope = (radiusEnd - radiusStart) / length;
+
+    /* The two counts, exactly: a ring at each end of the axis always, and one cap per end THAT HAS
+       A RADIUS TO CLOSE - a cone's apex is a point on the axis and the fan over it would be n
+       triangles of zero area meeting at the apex the body already reaches.
+    */
+    vertexNeed = 2ull * sides;
+    indexNeed = 6ull * sides;
+    if (radiusStart > 0.0f) {
+        vertexNeed += sides + 1ull;
+        indexNeed += 3ull * sides;
+    }
+    if (radiusEnd > 0.0f) {
+        vertexNeed += sides + 1ull;
+        indexNeed += 3ull * sides;
+    }
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if (((uint64_t)vertexCount + vertexNeed) > (uint64_t)vertexCapacity) {
+        xud_shapes_note_refused(batch, (uint64_t)vertexCount + vertexNeed, (uint64_t)indexCount + indexNeed);
+        return XUD_OUT_OF_MEMORY;
+    }
+    if (((uint64_t)indexCount + indexNeed) > (uint64_t)batch->indexCapacity) {
+        xud_shapes_note_refused(batch, (uint64_t)vertexCount + vertexNeed, (uint64_t)indexCount + indexNeed);
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_TRIANGLES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    step = ((2.0f * XUD_SHAPES_SPHERE_PI) / (float)sides);
+    first = vertexCount;
+    center[0] = start.x;
+    center[1] = start.y;
+    center[2] = start.z;
+
+    for (row = 0u; row < sides; row++) {
+        xud_shapes_ring_point(pos, normal, center, radiusStart, step * (float)row, axis, side1, side2, slope);
+        result = xud_shapes_round_vertex(batch, pos, normal, color);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+    center[0] = end.x;
+    center[1] = end.y;
+    center[2] = end.z;
+    for (row = 0u; row < sides; row++) {
+        xud_shapes_ring_point(pos, normal, center, radiusEnd, step * (float)row, axis, side1, side2, slope);
+        result = xud_shapes_round_vertex(batch, pos, normal, color);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    /* The band: two triangles a side, (base_i, base_next, top_next) and (base_i, top_next, top_i).
+       Derived once against the outward radial normal - the cross product of the first triangle's two
+       edges at theta = 0 of an upright cylinder is +Z, which IS the outward normal there - and the
+       frame above is the same right-handed one for every axis, so the order holds for a cylinder
+       lying along any direction and not for the upright one only.
+    */
+    for (row = 0u; row < sides; row++) {
+        next = first + ((row + 1u) % sides);
+        result = xud_batch_append_index(batch, first + row);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, next);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + sides + ((row + 1u) % sides));
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + row);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + sides + ((row + 1u) % sides));
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + sides + row);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    /* The two caps, each a centre and its own rim, each fanned in the direction that answers its
+       OWN outward normal: the start cap faces back down the axis, so its fan runs rim_next before
+       rim; the end cap's runs the other way. Both are the same rule the plane's winding test reads
+       (the cross product of a triangle's edges along the outward normal), applied to +-axis.
+    */
+    slot = first + (2u * sides);
+    for (cap = 0u; cap < 2u; cap++) {
+        float radius = (cap == 0u) ? radiusStart : radiusEnd;
+        float facing[3];
+        uint32_t centre = 0u;
+
+        if (!(radius > 0.0f)) {
+            continue;
+        }
+        center[0] = (cap == 0u) ? start.x : end.x;
+        center[1] = (cap == 0u) ? start.y : end.y;
+        center[2] = (cap == 0u) ? start.z : end.z;
+        facing[0] = (cap == 0u) ? -axis[0] : axis[0];
+        facing[1] = (cap == 0u) ? -axis[1] : axis[1];
+        facing[2] = (cap == 0u) ? -axis[2] : axis[2];
+        centre = slot;
+        slot += sides + 1u;
+
+        result = xud_shapes_round_vertex(batch, center, facing, color);
+        if (result != XUD_OK) {
+            return result;
+        }
+        for (row = 0u; row < sides; row++) {
+            pos[0] = center[0] + (radius * ((sinf(step * (float)row) * side1[0]) + (cosf(step * (float)row) * side2[0])));
+            pos[1] = center[1] + (radius * ((sinf(step * (float)row) * side1[1]) + (cosf(step * (float)row) * side2[1])));
+            pos[2] = center[2] + (radius * ((sinf(step * (float)row) * side1[2]) + (cosf(step * (float)row) * side2[2])));
+            result = xud_shapes_round_vertex(batch, pos, facing, color);
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+        for (row = 0u; row < sides; row++) {
+            next = (row + 1u) % sides;
+            result = xud_batch_append_index(batch, centre);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, centre + 1u + ((cap == 0u) ? next : row));
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, centre + 1u + ((cap == 0u) ? row : next));
+            if (result != XUD_OK) {
+                return result;
+            }
+        }
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_shapes_append_cylinder_wires(
+    XudBatch* batch, XudVector3 start, XudVector3 end, float radiusStart, float radiusEnd, XudColor color) {
+    float axis[3];
+    float side1[3];
+    float side2[3];
+    float center[3];
+    float pos[3];
+    float normal[3];
+    float slope = 0.0f;
+    float length = 0.0f;
+    float step;
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t sides = XUD_SHAPES_CYLINDER_SIDE_COUNT;
+    uint32_t first = 0u;
+    uint32_t row = 0u;
+    uint32_t next = 0u;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (!(radiusStart >= 0.0f) || !(radiusEnd >= 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_shapes_axis_basis(start, end, axis, side1, side2, &length);
+    if (result != XUD_OK) {
+        return result;
+    }
+    slope = (radiusEnd - radiusStart) / length;
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if (((uint32_t)(vertexCount + XUD_SHAPES_CYLINDER_WIRE_VERTEX_COUNT) > vertexCapacity)
+        || ((uint32_t)(indexCount + XUD_SHAPES_CYLINDER_WIRE_INDEX_COUNT) > batch->indexCapacity)) {
+        xud_shapes_note_refused(
+            batch, vertexCount + XUD_SHAPES_CYLINDER_WIRE_VERTEX_COUNT, indexCount + XUD_SHAPES_CYLINDER_WIRE_INDEX_COUNT);
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_LINES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    step = ((2.0f * XUD_SHAPES_SPHERE_PI) / (float)sides);
+    first = vertexCount;
+    center[0] = start.x;
+    center[1] = start.y;
+    center[2] = start.z;
+    for (row = 0u; row < sides; row++) {
+        xud_shapes_ring_point(pos, normal, center, radiusStart, step * (float)row, axis, side1, side2, slope);
+        result = xud_shapes_round_vertex(batch, pos, normal, color);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+    center[0] = end.x;
+    center[1] = end.y;
+    center[2] = end.z;
+    for (row = 0u; row < sides; row++) {
+        xud_shapes_ring_point(pos, normal, center, radiusEnd, step * (float)row, axis, side1, side2, slope);
+        result = xud_shapes_round_vertex(batch, pos, normal, color);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    /* Three lines a side, over the two rings only: the base rim, the vertical that leaves it, and the
+       top rim the vertical arrives on - raylib's DrawCylinderWires (rmodels.c 706) line for line, the
+       difference being that its six vertices a side are six and these two rings are shared.
+    */
+    for (row = 0u; row < sides; row++) {
+        next = (row + 1u) % sides;
+        result = xud_batch_append_index(batch, first + row);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + next);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + row);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + sides + row);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + sides + row);
+        if (result != XUD_OK) {
+            return result;
+        }
+        result = xud_batch_append_index(batch, first + sides + next);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_shapes_append_grid(
+    XudBatch* batch, XudVector3 center, uint32_t divisions, float spacing, XudColor centerColor, XudColor gridColor) {
+    float pos[3];
+    float normal[3];
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    uint64_t vertexNeed = 0ull;
+    uint64_t indexNeed = 0ull;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    float half = 0.0f;
+    float offset = 0.0f;
+    uint32_t line = 0u;
+    uint32_t next = 0u;
+
+    if ((batch == NULL) || (divisions < XUD_SHAPES_GRID_DIVISIONS_MIN) || !(spacing > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    vertexNeed = 4ull * ((uint64_t)divisions + 1ull);
+    indexNeed = vertexNeed;
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if ((((uint64_t)vertexCount + vertexNeed) > (uint64_t)vertexCapacity)
+        || (((uint64_t)indexCount + indexNeed) > (uint64_t)batch->indexCapacity)) {
+        xud_shapes_note_refused(batch, (uint64_t)vertexCount + vertexNeed, (uint64_t)indexCount + indexNeed);
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_LINES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    normal[0] = XUD_SHAPES_GROUND_NORMAL_X;
+    normal[1] = XUD_SHAPES_GROUND_NORMAL_Y;
+    normal[2] = XUD_SHAPES_GROUND_NORMAL_Z;
+    half = (spacing * (float)divisions) / 2.0f;
+    /* The cursor the two vertices of each line are indexed against: the count the fit check read is
+       the grid's first vertex, and every line after it starts two further on, so the pairs are the
+       cursor and the cursor plus one rather than an offset rebuilt from the division's index.
+    */
+    next = vertexCount;
+
+    /* Two passes over the same division count: lines parallel to x at each z, then lines parallel to
+       z at each x. The centre line of each pass is the one whose offset is exactly zero - the test is
+       on the index rather than on the offset's float so that the axis pair is the caller's colour for
+       an even divisions and not whichever line happens to round closest to zero.
+    */
+    for (uint32_t way = 0u; way < 2u; way++) {
+        for (line = 0u; line <= divisions; line++) {
+            XudColor color = ((line * 2u) == divisions) ? centerColor : gridColor;
+            offset = (half * -1.0f) + (spacing * (float)line);
+
+            pos[0] = (way == 0u) ? (center.x - half) : (center.x + offset);
+            pos[1] = center.y;
+            pos[2] = (way == 0u) ? (center.z + offset) : (center.z - half);
+            result = xud_shapes_round_vertex(batch, pos, normal, color);
+            if (result != XUD_OK) {
+                return result;
+            }
+            pos[0] = (way == 0u) ? (center.x + half) : (center.x + offset);
+            pos[2] = (way == 0u) ? (center.z + offset) : (center.z + half);
+            result = xud_shapes_round_vertex(batch, pos, normal, color);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, next);
+            if (result != XUD_OK) {
+                return result;
+            }
+            result = xud_batch_append_index(batch, next + 1u);
+            if (result != XUD_OK) {
+                return result;
+            }
+            next += 2u;
+        }
+    }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The glyph quad: the first shape here whose uv is the caller's rather than a constant
  *-----------------------------------------------------------------------------------------------*/
 
@@ -1678,6 +2608,89 @@ XudResult xud_draw_plane(XudContext* context, XudVector3 centerPos, XudVector2 s
     }
 
     return xud_shapes_append_plane(batch, centerPos, size, color);
+}
+
+XudResult xud_draw_cylinder(XudContext* context, XudVector3 position, float radiusTop, float radiusBottom, float height, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 start;
+    XudVector3 end;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* raylib's DrawCylinder (rmodels.c 588) is the upright form of the one shape below: its position
+       is the BASE, its height runs up +Y, and the axis the append takes is the segment between.
+    */
+    start.x = position.x;
+    start.y = position.y;
+    start.z = position.z;
+    end.x = position.x;
+    end.y = position.y + height;
+    end.z = position.z;
+
+    return xud_shapes_append_cylinder(batch, start, end, radiusBottom, radiusTop, color);
+}
+
+XudResult xud_draw_cylinder_wires(
+    XudContext* context, XudVector3 position, float radiusTop, float radiusBottom, float height, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 start;
+    XudVector3 end;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    start.x = position.x;
+    start.y = position.y;
+    start.z = position.z;
+    end.x = position.x;
+    end.y = position.y + height;
+    end.z = position.z;
+
+    return xud_shapes_append_cylinder_wires(batch, start, end, radiusBottom, radiusTop, color);
+}
+
+XudResult xud_draw_capsule(XudContext* context, XudVector3 startPos, XudVector3 endPos, float radius, XudColor color) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_capsule(batch, startPos, endPos, radius, color);
+}
+
+XudResult xud_draw_capsule_wires(XudContext* context, XudVector3 startPos, XudVector3 endPos, float radius, XudColor color) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_capsule_wires(batch, startPos, endPos, radius, color);
+}
+
+XudResult xud_draw_grid(
+    XudContext* context, XudVector3 centerPos, uint32_t divisions, float spacing, XudColor centerColor, XudColor gridColor) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_grid(batch, centerPos, divisions, spacing, centerColor, gridColor);
 }
 
 /* The plain half of the 2D surface: the caller's own rectangle as one screen-space quad at the

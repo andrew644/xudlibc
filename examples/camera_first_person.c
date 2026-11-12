@@ -3,8 +3,9 @@
  *   camera_first_person.c - raylib's core_3d_camera_first_person example on xudlibc
  *
  *   Owns : one context, one font, one camera record, and the twenty columns the scene is seeded
- *          from. The scene is the shapes rung's - a ground plane, three walls, twenty boxes with
- *          their wire frames, and the player's own box while the camera is behind it - and the
+ *          from. The scene is the shapes rung's - a ground grid, three walls, the round shapes and
+ *          their wire frames, twenty boxes with their wire frames, and the player's own box while the
+ *          camera is behind it - and the
  *          controls are the camera rung's: xud_update_camera() is this library's copy of rcamera's
  *          UpdateCamera (reference/raylib/src/rcamera.h 440), so the walk, the look, the pan and
  *          the zoom are the library's hardcoded keyboard and mouse reading rather than a reading
@@ -15,8 +16,9 @@
  *          public API - xud_update_camera() with the XUD_CAMERA_MODE_* list (rcamera's UpdateCamera
  *          and CameraMode), xud_hide_cursor()/xud_show_cursor() (DisableCursor/EnableCursor: the
  *          relative pointer a first-person look needs, because a locked pointer reports deltas and
- *          no absolute position), xud_draw_plane() (DrawPlane: the ground), and
- *          xud_get_random_value()/xud_set_random_seed() (GetRandomValue/SetRandomSeed: the columns).
+ *          no absolute position), the ground grid and the round shapes (DrawGrid, DrawCylinder,
+ *          DrawCylinderWires, DrawCapsule and DrawCapsuleWires: the arena's floor, cone and capsules),
+ *          and xud_get_random_value()/xud_set_random_seed() (GetRandomValue/SetRandomSeed: the columns).
  *          raylib's example also toggles an orthographic projection with P; this library's one
  *          camera is perspective and xud.h says so beside the mode list, so there is no projection
  *          to toggle and no key for it here.
@@ -83,6 +85,7 @@
 */
 static const XudColor xudFirstPersonRaywhite = { .r = 245u, .g = 245u, .b = 250u, .a = 255u };
 static const XudColor xudFirstPersonLightGray = { .r = 200u, .g = 200u, .b = 200u, .a = 255u };
+static const XudColor xudFirstPersonGray = { .r = 130u, .g = 130u, .b = 130u, .a = 255u };
 static const XudColor xudFirstPersonBlue = { .r = 0u, .g = 120u, .b = 240u, .a = 255u };
 static const XudColor xudFirstPersonLime = { .r = 0u, .g = 220u, .b = 80u, .a = 255u };
 static const XudColor xudFirstPersonGold = { .r = 255u, .g = 180u, .b = 0u, .a = 255u };
@@ -190,20 +193,18 @@ static XudResult xud_first_person_text(
  * The scene and the HUD
  *-----------------------------------------------------------------------------------------------*/
 
-/* The scene, every frame: the ground the walker is on, the three walls the arena is closed by, and
-   the twenty columns - each one a box and the wire frame around that same box, the pair raylib's
-   example draws (its file, line 159 and 160) and the reason the columns read as columns rather than
-   as a field of blobs once the eye is inside them.
+/* The scene, every frame: the grid the walker is on, the three walls the arena is closed by, the row
+   of round shapes that show what a cylinder, a cone, a frustum and a capsule look like when the eye
+   walks around them, and the twenty columns - each one a box and the wire frame around that same box,
+   the pair raylib's example draws (its file, line 159 and 160) and the reason the columns read as
+   columns rather than as a field of blobs once the eye is inside them. The grid IS the ground rather
+   than a pattern laid over a plane: two surfaces at one height are a z-fight the depth buffer settles
+   differently every frame.
 */
 static XudResult xud_first_person_scene(XudContext* context, const XudFirstPersonColumn* columns, uint32_t columnCount) {
     uint32_t column = 0u;
     XudResult result;
 
-    result = xud_draw_plane(
-        context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f }, (XudVector2) { .x = 32.0f, .y = 32.0f }, xudFirstPersonLightGray);
-    if (result != XUD_OK) {
-        return result;
-    }
     result = xud_draw_cube(context, (XudVector3) { .x = -16.0f, .y = 2.5f, .z = 0.0f }, 1.0f, 5.0f, 32.0f, xudFirstPersonBlue);
     if (result != XUD_OK) {
         return result;
@@ -213,6 +214,62 @@ static XudResult xud_first_person_scene(XudContext* context, const XudFirstPerso
         return result;
     }
     result = xud_draw_cube(context, (XudVector3) { .x = 0.0f, .y = 2.5f, .z = 16.0f }, 32.0f, 5.0f, 1.0f, xudFirstPersonGold);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    result
+        = xud_draw_grid(context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f }, 32u, 1.0f, xudFirstPersonLightGray, xudFirstPersonGray);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The round shapes, in a row the walker meets on the way to the far wall: a cylinder, a cone (the
+       cylinder's zero top radius), a frustum, a capsule stood up and a capsule laid down - each with
+       its wires, which is the pair raylib's geometric-shapes example draws for the same reason.
+    */
+    result = xud_draw_cylinder(context, (XudVector3) { .x = -8.0f, .y = 0.0f, .z = -8.0f }, 1.0f, 1.0f, 3.0f, xudFirstPersonPurple);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result
+        = xud_draw_cylinder_wires(context, (XudVector3) { .x = -8.0f, .y = 0.0f, .z = -8.0f }, 1.0f, 1.0f, 3.0f, xudFirstPersonDarkPurple);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_draw_cylinder(context, (XudVector3) { .x = -4.0f, .y = 0.0f, .z = -8.0f }, 0.0f, 1.5f, 3.0f, xudFirstPersonGold);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_draw_cylinder_wires(context, (XudVector3) { .x = -4.0f, .y = 0.0f, .z = -8.0f }, 0.0f, 1.5f, 3.0f, xudFirstPersonMaroon);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_draw_cylinder(context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = -8.0f }, 0.5f, 1.5f, 2.5f, xudFirstPersonBlue);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_draw_cylinder_wires(context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = -8.0f }, 0.5f, 1.5f, 2.5f, xudFirstPersonBlack);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_draw_capsule(context, (XudVector3) { .x = 4.0f, .y = 1.0f, .z = -8.0f }, (XudVector3) { .x = 4.0f, .y = 3.0f, .z = -8.0f },
+        0.8f, xudFirstPersonLime);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_draw_capsule_wires(context, (XudVector3) { .x = 4.0f, .y = 1.0f, .z = -8.0f },
+        (XudVector3) { .x = 4.0f, .y = 3.0f, .z = -8.0f }, 0.8f, xudFirstPersonMaroon);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_draw_capsule(context, (XudVector3) { .x = -6.0f, .y = 0.8f, .z = -3.0f },
+        (XudVector3) { .x = 6.0f, .y = 0.8f, .z = -3.0f }, 0.8f, xudFirstPersonPurple);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_draw_capsule_wires(context, (XudVector3) { .x = -6.0f, .y = 0.8f, .z = -3.0f },
+        (XudVector3) { .x = 6.0f, .y = 0.8f, .z = -3.0f }, 0.8f, xudFirstPersonDarkPurple);
     if (result != XUD_OK) {
         return result;
     }

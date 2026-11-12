@@ -3749,8 +3749,371 @@ static void xud_test_shapes_gpu(void) {
     xud_check(context == NULL, "gpu-shapes/close-clears", "and the out-param is cleared");
 }
 
+/*-----------------------------------------------------------------------------------------------
+ * The round shapes and the grid: the same geometry read off the arena as the box's and the sphere's
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The vertex's position and normal, read off the arena the append wrote through. */
+static void xudTestRoundVertex(const XudBatch* b, uint32_t index, float pos[3], float nrm[3]) {
+    const uint8_t* arena = (const uint8_t*)b->stagingMapped;
+
+    memcpy(pos, arena + b->streamOffset[XUD_BATCH_STREAM_POS] + ((size_t)index * XUD_BATCH_STREAM_POS_SIZE), sizeof(float) * 3u);
+    memcpy(nrm, arena + b->streamOffset[XUD_BATCH_STREAM_NORMAL] + ((size_t)index * XUD_BATCH_STREAM_NORMAL_SIZE), sizeof(float) * 3u);
+}
+
+static void xudTestRoundIndex(const XudBatch* b, uint32_t index, uint32_t* outIndex) {
+    memcpy(outIndex, (const uint8_t*)b->stagingMapped + b->indexOffset + ((size_t)index * XUD_BATCH_INDEX_SIZE), sizeof(uint32_t));
+}
+
+static void xudTestRoundColor(const XudBatch* b, uint32_t index, uint8_t rgba[4]) {
+    memcpy(rgba, (const uint8_t*)b->stagingMapped + b->streamOffset[XUD_BATCH_STREAM_COLOR] + ((size_t)index * XUD_BATCH_STREAM_COLOR_SIZE),
+        4u);
+}
+
+/* The point of the segment s..e closest to p, and the parameter along it: the capsule's definition
+   is "every point at one radius of a SEGMENT", so the closest point is the thing the shape's own
+   distances and normals have to agree with.
+*/
+static void xudTestClosestOnSegment(XudVector3 s, XudVector3 e, const float p[3], float out[3]) {
+    float d[3];
+    float t;
+    float length;
+
+    d[0] = e.x - s.x;
+    d[1] = e.y - s.y;
+    d[2] = e.z - s.z;
+    length = (d[0] * d[0]) + (d[1] * d[1]) + (d[2] * d[2]);
+    t = ((p[0] - s.x) * d[0]) + ((p[1] - s.y) * d[1]) + ((p[2] - s.z) * d[2]);
+    t = (length > 0.0f) ? (t / length) : 0.0f;
+    if (t < 0.0f) {
+        t = 0.0f;
+    }
+    if (t > 1.0f) {
+        t = 1.0f;
+    }
+    out[0] = s.x + (t * d[0]);
+    out[1] = s.y + (t * d[1]);
+    out[2] = s.z + (t * d[2]);
+}
+
+static float xudTestDistance(const float a[3], const float b[3]) {
+    return sqrtf(((a[0] - b[0]) * (a[0] - b[0])) + ((a[1] - b[1]) * (a[1] - b[1])) + ((a[2] - b[2]) * (a[2] - b[2])));
+}
+
+/* The winding claim, stated the way the box's and the sphere's state it: the cross product of a
+   triangle's two edges has to point along the face's own outward direction, which here is the sum of
+   the three normals the face's vertices carry - the shape's claim about itself, read off the arena
+   rather than off the table the append was written from.
+*/
+static uint32_t xudTestWindingOk(
+    const float a[3], const float b[3], const float c[3], const float na[3], const float nb[3], const float nc[3]) {
+    float cross[3];
+    float outward[3];
+
+    cross[0] = ((b[1] - a[1]) * (c[2] - a[2])) - ((b[2] - a[2]) * (c[1] - a[1]));
+    cross[1] = ((b[2] - a[2]) * (c[0] - a[0])) - ((b[0] - a[0]) * (c[2] - a[2]));
+    cross[2] = ((b[0] - a[0]) * (c[1] - a[1])) - ((b[1] - a[1]) * (c[0] - a[0]));
+    outward[0] = na[0] + nb[0] + nc[0];
+    outward[1] = na[1] + nb[1] + nc[1];
+    outward[2] = na[2] + nb[2] + nc[2];
+
+    return (((cross[0] * outward[0]) + (cross[1] * outward[1]) + (cross[2] * outward[2])) > 0.0f) ? 1u : 0u;
+}
+
+static void xud_test_shapes_round(void) {
+    XudBatch b;
+    XudColor color;
+    XudColor centerColor;
+    XudColor gridColor;
+    XudVector3 start;
+    XudVector3 end;
+    XudResult result = XUD_OK;
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t capacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    uint32_t i = 0u;
+    uint32_t bad = 0u;
+    uint32_t refs = 0u;
+    uint32_t idx = 0u;
+    uint32_t centreLines = 0u;
+    float pos[3];
+    float nrm[3];
+    float va[3];
+    float vb[3];
+    float vc[3];
+    float na[3];
+    float nb[3];
+    float nc[3];
+    float closest[3];
+    const float zero[3] = { 0.0f, 0.0f, 0.0f };
+    float normalLength = 0.0f;
+    float radial[3];
+    float axis[3];
+    uint8_t rgba[4];
+    float radialDistance = 0.0f;
+    uint32_t slot = 0u;
+    const float radiusStart = 1.5f;
+    const float radiusEnd = 0.75f;
+
+    memset(&b, 0, sizeof(b));
+    color = (XudColor) { .r = 11u, .g = 22u, .b = 33u, .a = 244u };
+    centerColor = (XudColor) { .r = 240u, .g = 241u, .b = 242u, .a = 255u };
+    gridColor = (XudColor) { .r = 130u, .g = 131u, .b = 132u, .a = 255u };
+    /* A diagonal axis with two different radii: the frame the append builds about the axis has to be
+       right for THIS one, because an implementation that hardwrote +Y (as raylib's upright
+       DrawCylinder does) gets every position and normal below wrong at once.
+    */
+    start = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+    end = (XudVector3) { .x = 2.0f, .y = 2.0f, .z = 0.0f };
+    axis[0] = 0.70710678f;
+    axis[1] = 0.70710678f;
+    axis[2] = 0.0f;
+
+    xud_check(xud_shapes_append_cylinder(NULL, start, end, radiusStart, radiusEnd, color) == XUD_INVALID_ARG, "round/cylinder-no-batch",
+        "a cylinder with nowhere to be appended into is refused");
+    xud_check(xud_draw_cylinder(NULL, start, radiusStart, radiusEnd, 2.0f, color) == XUD_INVALID_ARG, "round/cylinder-draw-no-context",
+        "and the public call refuses the same way with no context");
+
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "round/cylinder-layout",
+        "the batch a context opens at is the one the header's assert sizes a cylinder against, and it lays out");
+    /* The host arena the append writes through, attached the way every other batch in this area
+       attaches it: the mapping itself is the GPU half's fact, and the headless run hands the append a
+       block of host memory and reads the bytes back.
+    */
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+    xud_check(xud_shapes_append_cylinder(&b, start, end, -1.0f, radiusEnd, color) == XUD_INVALID_ARG, "round/cylinder-negative-radius",
+        "a radius inside-out is refused rather than drawn mirrored");
+    xud_check(xud_shapes_append_cylinder(&b, start, end, radiusStart, NAN, color) == XUD_INVALID_ARG, "round/cylinder-nan-radius",
+        "and a NaN radius is refused by the same comparison rather than appended as a NaN vertex");
+    xud_check(xud_shapes_append_cylinder(&b, start, start, radiusStart, radiusEnd, color) == XUD_INVALID_ARG, "round/cylinder-zero-axis",
+        "an axis of zero length names no direction to be round about, which the capsule below is the shape for");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+        "round/cylinder-refusals-stats", "and every refusal above left the batch alone");
+    xud_check(
+        (vertexCount == 0u) && (indexCount == 0u), "round/cylinder-refusals-empty", "no vertex and no index of a refused shape is spent");
+
+    result = xud_shapes_append_cylinder(&b, start, end, radiusStart, radiusEnd, color);
+    xud_check(result == XUD_OK, "round/cylinder-append", "the closed cylinder appends");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "round/cylinder-stats",
+        "and the counters read back");
+    xud_check((vertexCount == XUD_SHAPES_CYLINDER_VERTEX_COUNT) && (indexCount == XUD_SHAPES_CYLINDER_INDEX_COUNT), "round/cylinder-counts",
+        "two rings and two caps are the 34 vertices and the 96 indices the header's assert states");
+
+    for (i = 0u; i < vertexCount; i++) {
+        xudTestRoundVertex(&b, i, pos, nrm);
+        xudTestClosestOnSegment(start, end, pos, closest);
+        radialDistance = xudTestDistance(pos, closest);
+        radial[0] = (pos[0] - closest[0]);
+        radial[1] = (pos[1] - closest[1]);
+        radial[2] = (pos[2] - closest[2]);
+        if (i < (2u * XUD_SHAPES_CYLINDER_SIDE_COUNT)) {
+            const float want = (i < XUD_SHAPES_CYLINDER_SIDE_COUNT) ? radiusStart : radiusEnd;
+            normalLength = xudTestDistance(nrm, zero);
+            bad += (fabsf(radialDistance - want) > 1e-4f) ? 1u : 0u;
+            bad += (fabsf(normalLength - 1.0f) > 1e-4f) ? 1u : 0u;
+            bad += (((radial[0] * nrm[0]) + (radial[1] * nrm[1]) + (radial[2] * nrm[2])) > 0.0f) ? 0u : 1u;
+        } else {
+            const uint32_t cap = (i < (2u * XUD_SHAPES_CYLINDER_SIDE_COUNT) + (XUD_SHAPES_CYLINDER_SIDE_COUNT + 1u)) ? 0u : 1u;
+            const float facing = (cap == 0u) ? -1.0f : 1.0f;
+            const uint32_t isCentre
+                = ((i == (2u * XUD_SHAPES_CYLINDER_SIDE_COUNT)) || (i == (3u * XUD_SHAPES_CYLINDER_SIDE_COUNT) + 1u)) ? 1u : 0u;
+            bad += (isCentre != 0u) ? ((radialDistance > 1e-4f) ? 1u : 0u)
+                                    : ((fabsf(radialDistance - ((cap == 0u) ? radiusStart : radiusEnd)) > 1e-4f) ? 1u : 0u);
+            bad += (fabsf(((nrm[0] * axis[0]) + (nrm[1] * axis[1]) + (nrm[2] * axis[2])) - facing) > 1e-4f) ? 1u : 0u;
+        }
+    }
+    xud_check(bad == 0u, "round/cylinder-geometry",
+        "every ring vertex is one radius off the diagonal axis, every cap vertex lies in its own cap's plane, and every normal is the "
+        "radial or the axial one its vertex's place says it is");
+
+    bad = 0u;
+    for (i = 0u; i < indexCount; i += 3u) {
+        xudTestRoundIndex(&b, i, &idx);
+        xudTestRoundVertex(&b, idx, va, na);
+        xudTestRoundIndex(&b, i + 1u, &idx);
+        xudTestRoundVertex(&b, idx, vb, nb);
+        xudTestRoundIndex(&b, i + 2u, &idx);
+        xudTestRoundVertex(&b, idx, vc, nc);
+        bad += xudTestWindingOk(va, vb, vc, na, nb, nc) ^ 1u;
+    }
+    xud_check(bad == 0u, "round/cylinder-winding",
+        "every triangle's own cross product points along the sum of the three normals its vertices carry, which is outward for the band "
+        "and +-axis for the two caps");
+    memset(&b, 0, sizeof(b));
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "round/cone-layout",
+        "the batch a context opens at is the one a cylinder is sized against, and it lays out");
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+    xud_check(xud_shapes_append_cylinder(&b, start, end, radiusStart, 0.0f, color) == XUD_OK, "round/cone-append",
+        "a radius of zero at one end is the cone raylib's own note names, not a refusal");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "round/cone-stats",
+        "and the cone's counters read back");
+    xud_check((vertexCount == ((3u * XUD_SHAPES_CYLINDER_SIDE_COUNT) + 1u)) && (indexCount == (9u * XUD_SHAPES_CYLINDER_SIDE_COUNT)),
+        "round/cone-counts", "the apex's ring is still there but the fan that would have closed it is not: 25 vertices and 72 indices");
+    bad = 0u;
+    for (i = 0u; i < XUD_SHAPES_CYLINDER_SIDE_COUNT; i++) {
+        xudTestRoundVertex(&b, XUD_SHAPES_CYLINDER_SIDE_COUNT + i, pos, nrm);
+        bad += (xudTestDistance(pos, (const float[]) { end.x, end.y, end.z }) > 1e-5f) ? 1u : 0u;
+    }
+    xud_check(bad == 0u, "round/cone-apex", "the eight vertices of the zero ring all sit on the apex, which is what makes them one point");
+
+    memset(&b, 0, sizeof(b));
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "round/cylinder-wire-layout",
+        "and the same initial batch holds a wired cylinder's two rings and three lines a side");
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+    xud_check(xud_shapes_append_cylinder_wires(&b, start, end, radiusStart, radiusEnd, color) == XUD_OK, "round/cylinder-wire-append",
+        "the wire form appends over the same two rings");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "round/cylinder-wire-stats",
+        "and its counters read back");
+    xud_check((vertexCount == XUD_SHAPES_CYLINDER_WIRE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_CYLINDER_WIRE_INDEX_COUNT),
+        "round/cylinder-wire-counts", "16 shared ring vertices and the 48 indices of three lines a side, no vertex doubled for a rim");
+    bad = 0u;
+    for (i = 0u; i < vertexCount; i++) {
+        refs = 0u;
+        for (idx = 0u; idx < indexCount; idx++) {
+            uint32_t name = 0u;
+            xudTestRoundIndex(&b, idx, &name);
+            refs += (name == i) ? 1u : 0u;
+            bad += (name < vertexCount) ? 0u : 1u;
+        }
+        bad += (refs == 3u) ? 0u : 1u;
+    }
+    xud_check(bad == 0u, "round/cylinder-wire-edges",
+        "every ring vertex is named by exactly three lines - two of its own rim and the vertical that leaves it - and no index names a "
+        "vertex the append did not place");
+
+    memset(&b, 0, sizeof(b));
+    start = (XudVector3) { .x = 1.0f, .y = -1.0f, .z = 2.0f };
+    end = (XudVector3) { .x = 1.0f, .y = 2.0f, .z = 2.0f };
+    xud_check(xud_shapes_append_capsule(NULL, start, end, 0.8f, color) == XUD_INVALID_ARG, "round/capsule-no-batch",
+        "a capsule with nowhere to go is refused");
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "round/capsule-layout",
+        "the same initial batch, which is the one the capsule's 96 indices fit exactly");
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+    xud_check(xud_shapes_append_capsule(&b, start, end, 0.0f, color) == XUD_INVALID_ARG, "round/capsule-zero-radius",
+        "a capsule with no radius is a line segment, and is refused rather than drawn as one");
+    xud_check(xud_shapes_append_capsule(&b, start, end, NAN, color) == XUD_INVALID_ARG, "round/capsule-nan-radius",
+        "and a NaN radius is refused by the same comparison");
+    xud_check(xud_shapes_append_capsule(&b, start, end, -0.5f, color) == XUD_INVALID_ARG, "round/capsule-negative-radius",
+        "and so is a radius below zero");
+    xud_check(xud_shapes_append_capsule(&b, start, end, 0.8f, color) == XUD_OK, "round/capsule-append", "the capsule appends");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "round/capsule-stats",
+        "and its counters read back");
+    xud_check((vertexCount == XUD_SHAPES_CAPSULE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_CAPSULE_INDEX_COUNT), "round/capsule-counts",
+        "two wide rings, two poles and the rows between are the 18 vertices and the 96 indices the header states");
+
+    bad = 0u;
+    for (i = 0u; i < vertexCount; i++) {
+        xudTestRoundVertex(&b, i, pos, nrm);
+        xudTestClosestOnSegment(start, end, pos, closest);
+        radial[0] = pos[0] - closest[0];
+        radial[1] = pos[1] - closest[1];
+        radial[2] = pos[2] - closest[2];
+        radialDistance = xudTestDistance(pos, closest);
+        normalLength
+            = (radialDistance > 1e-6f) ? ((radial[0] * nrm[0]) + (radial[1] * nrm[1]) + (radial[2] * nrm[2])) / radialDistance : 0.0f;
+        bad += (fabsf(radialDistance - 0.8f) > 1e-4f) ? 1u : 0u;
+        bad += (normalLength > 0.9999f) ? 0u : 1u;
+    }
+    xud_check(bad == 0u, "round/capsule-geometry",
+        "every vertex is one radius from the SEGMENT - which is the capsule's whole definition, band and caps alike - and its normal "
+        "points straight back out along that radius");
+
+    bad = 0u;
+    for (i = 0u; i < indexCount; i += 3u) {
+        xudTestRoundIndex(&b, i, &idx);
+        xudTestRoundVertex(&b, idx, va, na);
+        xudTestRoundIndex(&b, i + 1u, &idx);
+        xudTestRoundVertex(&b, idx, vb, nb);
+        xudTestRoundIndex(&b, i + 2u, &idx);
+        xudTestRoundVertex(&b, idx, vc, nc);
+        bad += xudTestWindingOk(va, vb, vc, na, nb, nc) ^ 1u;
+    }
+    xud_check(bad == 0u, "round/capsule-winding",
+        "every triangle of the band and of both caps is wound counter-clockwise seen from outside the capsule");
+    memset(&b, 0, sizeof(b));
+    start = (XudVector3) { .x = 1.0f, .y = 3.0f, .z = -2.0f };
+    xud_check(xud_shapes_append_grid(NULL, start, 4u, 1.0f, centerColor, gridColor) == XUD_INVALID_ARG, "round/grid-no-batch",
+        "a grid with nowhere to go is refused");
+    xud_check(xud_draw_grid(NULL, start, 4u, 1.0f, centerColor, gridColor) == XUD_INVALID_ARG, "round/grid-draw-no-context",
+        "and the public call with no context");
+    xud_check(xud_batch_layout(&b, 24u) == XUD_OK, "round/grid-layout", "a batch of a five-division grid's vertex count lays out");
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+    xud_check(xud_shapes_append_grid(&b, start, 0u, 1.0f, centerColor, gridColor) == XUD_INVALID_ARG, "round/grid-no-divisions",
+        "a grid of no divisions is refused - one line each way is the least crossing there is");
+    xud_check(xud_shapes_append_grid(&b, start, 4u, 0.0f, centerColor, gridColor) == XUD_INVALID_ARG, "round/grid-zero-spacing",
+        "and a spacing of zero is every line on top of every other, which is a shape with no extent");
+    xud_check(xud_shapes_append_grid(&b, start, 4u, NAN, centerColor, gridColor) == XUD_INVALID_ARG, "round/grid-nan-spacing",
+        "and a NaN spacing is refused by the same comparison");
+    xud_check(xud_shapes_append_grid(&b, start, 4u, 1.0f, centerColor, gridColor) == XUD_OK, "round/grid-append", "the grid appends");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "round/grid-stats",
+        "and its counters read back");
+    xud_check((vertexCount == XUD_SHAPES_GRID_VERTEX_COUNT(4u)) && (indexCount == XUD_SHAPES_GRID_VERTEX_COUNT(4u)), "round/grid-counts",
+        "five lines each way are twenty vertices and twenty indices, two of each per line and nothing shared across a crossing");
+
+    bad = 0u;
+    for (i = 0u; i < vertexCount; i++) {
+        refs = 0u;
+        for (idx = 0u; idx < indexCount; idx++) {
+            memcpy(&slot, (const uint8_t*)b.stagingMapped + b.indexOffset + ((size_t)idx * XUD_BATCH_INDEX_SIZE), sizeof(slot));
+            refs += (slot == i) ? 1u : 0u;
+        }
+        bad += (refs == 1u) ? 0u : 1u;
+    }
+    for (i = 0u; i < indexCount; i += 2u) {
+        memcpy(&slot, (const uint8_t*)b.stagingMapped + b.indexOffset + ((size_t)i * XUD_BATCH_INDEX_SIZE), sizeof(slot));
+        xudTestRoundVertex(&b, slot, va, na);
+        memcpy(&slot, (const uint8_t*)b.stagingMapped + b.indexOffset + ((size_t)(i + 1u) * XUD_BATCH_INDEX_SIZE), sizeof(slot));
+        xudTestRoundVertex(&b, slot, vb, nb);
+        bad += (((va[0] == vb[0]) == (va[2] == vb[2])) || (fabsf(va[1] - vb[1]) > 0.0f)) ? 1u : 0u;
+    }
+    xud_check(bad == 0u, "round/grid-indexed",
+        "twenty indices are twenty references with none left over, and every consecutive pair is one line: two points of the grid at the "
+        "same height that share exactly one of x and z");
+    bad = 0u;
+    centreLines = 0u;
+    for (i = 0u; i < vertexCount; i++) {
+        xudTestRoundVertex(&b, i, pos, nrm);
+        bad += (fabsf(pos[1] - start.y) > 1e-6f) ? 1u : 0u;
+        bad += ((pos[0] < (start.x - 2.0f)) || (pos[0] > (start.x + 2.0f))) ? 1u : 0u;
+        bad += ((pos[2] < (start.z - 2.0f)) || (pos[2] > (start.z + 2.0f))) ? 1u : 0u;
+        xudTestRoundColor(&b, i, rgba);
+        if ((rgba[0] == centerColor.r) && (rgba[1] == centerColor.g) && (rgba[2] == centerColor.b) && (rgba[3] == centerColor.a)) {
+            centreLines++;
+        } else {
+            bad += ((rgba[0] == gridColor.r) && (rgba[1] == gridColor.g) && (rgba[2] == gridColor.b) && (rgba[3] == gridColor.a)) ? 0u : 1u;
+        }
+    }
+    xud_check(bad == 0u, "round/grid-geometry",
+        "every vertex lies on the grid's own plane, inside the extent divisions*spacing names, and carries one of the caller's two "
+        "colours");
+    xud_check(centreLines == 4u, "round/grid-centre-colour",
+        "and the two lines through the centre - four vertices - are the centre colour, the two-tone grid with both colours the caller's");
+
+    xud_check(xud_shapes_append_grid(&b, start, 4u, 1.0f, centerColor, gridColor) == XUD_OUT_OF_MEMORY, "round/grid-second-refused",
+        "a second grid does not fit the batch the first one filled, and says so");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "round/grid-refusal-stats",
+        "and the refusal left the batch exactly as it was");
+    xud_check((vertexCount == XUD_SHAPES_GRID_VERTEX_COUNT(4u)) && (indexCount == XUD_SHAPES_GRID_VERTEX_COUNT(4u)),
+        "round/grid-refusal-whole", "the atomic rule again: no half a grid is written before the part that does not fit is refused");
+
+    xud_check(xud_draw_capsule(NULL, start, end, 0.5f, color) == XUD_INVALID_ARG, "round/capsule-draw-no-context",
+        "the capsule's public call refuses with no context");
+    xud_check(xud_draw_capsule_wires(NULL, start, end, 0.5f, color) == XUD_INVALID_ARG, "round/capsule-wires-draw-no-context",
+        "and so does its wire form");
+    xud_check(xud_draw_cylinder_wires(NULL, start, 0.5f, 0.5f, 1.0f, color) == XUD_INVALID_ARG, "round/cylinder-wires-draw-no-context",
+        "and the cylinder's");
+}
+
 void xud_test_shapes(void) {
     xud_test_shapes_pure();
+    xud_test_shapes_round();
     if (xud_gpu_tests_enabled()) {
         xud_test_shapes_gpu();
     }

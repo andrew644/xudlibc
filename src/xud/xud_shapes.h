@@ -415,6 +415,98 @@ static_assert(((XUD_BATCH_INITIAL_VERTICES / XUD_SHAPES_GLYPH_VERTEX_COUNT) == 1
     "draw today before the frame boundary above grows the batch - this rung cannot ask for that growth");
 
 /*-----------------------------------------------------------------------------------------------
+ * The cylinder and the capsule: the two round shapes, and the axis they are round about
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The cylinder of raylib's DrawCylinder (reference/raylib/src/rmodels.c 588, "NOTE: It could be
+   also used for pyramid and cone") in the ONE spelling its DrawCylinderEx (its 647) uses: a start
+   point, an end point and a radius at each. That covers the upright form (start at the base, end at
+   base + height*+Y) and the cone (a radius of zero at one end, where raylib's own code switches to a
+   fan) without a second code path: a zero radius is a ring whose vertices all coincide on the axis,
+   and the cap that would have closed it is simply not emitted.
+
+   The tessellation is the header's rather than the caller's, as it is for the sphere and the circle -
+   raylib passes `sides` at every call and its own examples pass 4, 6 and 8, which is a per-draw
+   quality dial the batch's capacity has to survive. Eight sides is the sphere's order of size and it
+   makes the two counts below the exact ones the assert states: 2*8 body vertices plus two caps of
+   nine is 34 vertices, and 6*8 body indices plus two caps of 24 is 96, which is exactly
+   XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) - a closed cylinder is the closed-mesh case of
+   the capacity a batch opens at, not a shape that needs a grow before it can be drawn at all.
+*/
+#define XUD_SHAPES_CYLINDER_SIDE_COUNT 8u
+#define XUD_SHAPES_CYLINDER_SIDE_MIN 3u
+#define XUD_SHAPES_CYLINDER_VERTEX_COUNT ((4u * XUD_SHAPES_CYLINDER_SIDE_COUNT) + 2u)
+#define XUD_SHAPES_CYLINDER_INDEX_COUNT (12u * XUD_SHAPES_CYLINDER_SIDE_COUNT)
+#define XUD_SHAPES_CYLINDER_WIRE_VERTEX_COUNT (2u * XUD_SHAPES_CYLINDER_SIDE_COUNT)
+#define XUD_SHAPES_CYLINDER_WIRE_INDEX_COUNT (6u * XUD_SHAPES_CYLINDER_SIDE_COUNT)
+
+/* The capsule of raylib's DrawCapsule (rmodels.c 783: "Draw a capsule with the center of its sphere
+   caps at startPos and endPos"): two hemispherical caps about the two centres and the band between
+   them. Each cap walks rows out from the wide ring the band already owns - that ring's normal is the
+   radial one the band's vertices carry, so it is shared rather than doubled - to the pole, and the
+   pole is the axis direction rather than sin/cos of the last row for the reason the sphere's poles
+   give (xud_shapes.c: sin(PI) is 1.2e-16, not zero). RINGS is the rows a cap has between the wide
+   ring and its pole; one row keeps the two counts the same order as the cylinder's, and an axis of
+   zero length is raylib's own sphereCase (its 790) rather than a refusal: the two caps then meet and
+   the band's quads close to nothing.
+*/
+#define XUD_SHAPES_CAPSULE_RING_COUNT 1u
+#define XUD_SHAPES_CAPSULE_SLICE_COUNT 8u
+#define XUD_SHAPES_CAPSULE_SLICE_MIN 3u
+#define XUD_SHAPES_CAPSULE_VERTEX_COUNT ((2u * XUD_SHAPES_CAPSULE_RING_COUNT * XUD_SHAPES_CAPSULE_SLICE_COUNT) + 2u)
+#define XUD_SHAPES_CAPSULE_INDEX_COUNT (12u * XUD_SHAPES_CAPSULE_SLICE_COUNT * XUD_SHAPES_CAPSULE_RING_COUNT)
+/* The wire is the filled mesh's own edges: the two ring rows the band ends on (SLICE edges each), the
+   band's SLICE longitudinal edges, and RINGS longitudinal edges per cap - each row to the next and the
+   last row to the pole.
+*/
+#define XUD_SHAPES_CAPSULE_WIRE_VERTEX_COUNT XUD_SHAPES_CAPSULE_VERTEX_COUNT
+#define XUD_SHAPES_CAPSULE_WIRE_INDEX_COUNT (2u * XUD_SHAPES_CAPSULE_SLICE_COUNT * ((4u * XUD_SHAPES_CAPSULE_RING_COUNT) + 1u))
+
+static_assert((XUD_SHAPES_CYLINDER_VERTEX_COUNT == 34u) && (XUD_SHAPES_CYLINDER_INDEX_COUNT == 96u),
+    "xud_shapes.h: the cylinder's two rings, two caps and their indices are the 34/96 the append's two bounds are written against");
+static_assert((XUD_SHAPES_CYLINDER_VERTEX_COUNT <= XUD_BATCH_INITIAL_VERTICES)
+        && (XUD_SHAPES_CYLINDER_INDEX_COUNT <= XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+    "xud_shapes.h: one closed cylinder - the most vertices and indices any cylinder of this rung's can "
+    "have, a cone needs less - fits the capacity a batch opens at");
+static_assert(XUD_SHAPES_CYLINDER_WIRE_INDEX_COUNT == (6u * XUD_SHAPES_CYLINDER_SIDE_COUNT),
+    "xud_shapes.h: a wired cylinder is three lines a side (base rim, vertical, top rim) over the two rings it shares its vertices with");
+static_assert((XUD_SHAPES_CAPSULE_VERTEX_COUNT == 18u) && (XUD_SHAPES_CAPSULE_INDEX_COUNT == 96u),
+    "xud_shapes.h: the capsule's two wide rings, two poles and their bands are the 18/96 the append's two bounds are written against");
+static_assert((XUD_SHAPES_CAPSULE_VERTEX_COUNT <= XUD_BATCH_INITIAL_VERTICES)
+        && (XUD_SHAPES_CAPSULE_INDEX_COUNT <= XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+    "xud_shapes.h: one capsule fits the capacity a batch opens at, the same fact the cylinder's assert states for the shape it is capped "
+    "from");
+static_assert(XUD_SHAPES_CAPSULE_WIRE_VERTEX_COUNT == XUD_SHAPES_CAPSULE_VERTEX_COUNT,
+    "xud_shapes.h: the wired capsule places the vertices the filled capsule places, in the same order, so the two forms are one vertex "
+    "layout");
+static_assert(XUD_SHAPES_CAPSULE_WIRE_INDEX_COUNT == 80u,
+    "xud_shapes.h: the wired capsule's edge count is the 80 the append's index bound is written against");
+
+/*-----------------------------------------------------------------------------------------------
+ * The grid: the ground's lines, two per crossing
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The grid of raylib's DrawGrid (reference/raylib/raylib.h 1602, "Draw a grid (default on xz-plane)"):
+   divisions+1 lines each way across the XZ plane at `spacing` apart, centred on the origin, so the
+   extent is divisions*spacing and the half-extent is half that again - the same reading DrawPlane's
+   size gets. Two vertices per line and no sharing: the grid is LINES topology, one index pair per
+   line, and a vertex shared between a line of one direction and a line of the other would be a
+   crossing that no line is drawn through. The counts are therefore not constants: 4*(divisions+1) of
+   each, which is why the append fits the batch with the wide arithmetic the circle's arc form uses
+   rather than a constant a caller's divisions could outgrow.
+
+   The two lines through the centre are the caller's second colour, which is raylib's own behaviour
+   (its LIGHTGRAY axes among its RAYGRAY lines) with the two colours named by the caller instead of
+   hardcoded, as every other colour in this library is.
+*/
+#define XUD_SHAPES_GRID_DIVISIONS_MIN 1u
+#define XUD_SHAPES_GRID_VERTEX_COUNT(divisions) (4u * ((divisions) + 1u))
+
+static_assert(XUD_SHAPES_GRID_VERTEX_COUNT(XUD_SHAPES_GRID_DIVISIONS_MIN) == 8u,
+    "xud_shapes.h: the smallest grid this rung draws is a cross of four lines, two vertices and two "
+    "indices each - the shape that fits the initial capacity before any larger grid does");
+
+/*-----------------------------------------------------------------------------------------------
  * The layer's contract
  *-----------------------------------------------------------------------------------------------*/
 
@@ -641,6 +733,49 @@ XudResult xud_shapes_append_ellipse(XudBatch* batch, uint32_t extentWidth, uint3
 /// sampler does the bounds work, an address does not.
 XudResult xud_shapes_append_glyph_quad(
     XudBatch* batch, XudVector3 corner0, XudVector3 corner1, XudVector2 uv0, XudVector2 uv1, XudColor color);
+
+/// Pure: append one cylinder, cone or frustum over the axis the caller names - raylib's DrawCylinder
+/// and DrawCylinderEx (rmodels.c 588 and 647) as the one shape they are: the base ring at `start` with
+/// `radiusStart`, the top ring at `end` with `radiusEnd`, and a cap at each end only where that end has
+/// a radius to close. Every vertex carries the true slanted normal - the radial direction off the axis
+/// corrected by the slope (radiusEnd - radiusStart) over the axis's length - so a cone shades as a cone
+/// and not as a stack of rings. XUD_INVALID_ARG on a NULL batch, a non-finite position or radius, a
+/// negative radius (a mirrored solid, and a negative radius at one end is a cone inside-out), or an
+/// axis of zero length, which names no axis to be round about - the capsule below is the shape that
+/// takes two centres meeting; XUD_OUT_OF_MEMORY when the 4*sides+2 vertices or the 12*sides indices do
+/// not fit, the whole shape refused before a byte is written; XUD_UNSUPPORTED with no arena mapped.
+XudResult xud_shapes_append_cylinder(XudBatch* batch, XudVector3 start, XudVector3 end, float radiusStart, float radiusEnd, XudColor color);
+
+/// Pure: append the wire form of the same cylinder - the two rims, one vertical per side, and the two
+/// rings' 2*sides vertices shared between them, in the order the filled form's rings are in. LINES
+/// topology, so this is the second row of the pipeline's list and the batch's one index buffer, drawn
+/// with the same count-and-offset the filled shapes share. Same refusals as the filled append.
+XudResult xud_shapes_append_cylinder_wires(
+    XudBatch* batch, XudVector3 start, XudVector3 end, float radiusStart, float radiusEnd, XudColor color);
+
+/// Pure: append one capsule - raylib's DrawCapsule (rmodels.c 783): a hemisphere about `start` and one
+/// about `end`, each of RING_COUNT rows out from the wide ring the band between them owns, and the band
+/// itself. The two wide rings are shared with the band and the poles are exact, for the two reasons the
+/// counts' note gives. A zero-length axis is not a refusal but raylib's own sphereCase: the caps meet.
+/// The normal of every vertex is the unit direction out of the cap centre it belongs to (the band's is
+/// the radial one), which is why a zero radius is refused rather than divided by. Same refusals and
+/// same atomic-fit rule as the cylinder.
+XudResult xud_shapes_append_capsule(XudBatch* batch, XudVector3 start, XudVector3 end, float radius, XudColor color);
+
+/// Pure: append the wire form of the same capsule - the mesh's own edges, over the vertices the filled
+/// capsule places in the same order. Same refusals as the filled append.
+XudResult xud_shapes_append_capsule_wires(XudBatch* batch, XudVector3 start, XudVector3 end, float radius, XudColor color);
+
+/// Pure: append one ground grid - raylib's DrawGrid (raylib.h 1602): divisions+1 lines each way across
+/// the XZ plane `spacing` apart, centred on `center`, the two lines through the centre in the second
+/// colour. XUD_INVALID_ARG on a NULL batch, a non-finite centre or spacing, a spacing of zero (every
+/// line on top of every other, which is a shape with no extent) or divisions of zero (a grid is a
+/// crossing of lines and one line each way is the least one); XUD_OUT_OF_MEMORY when the 4*(divisions
+/// +1) vertices or indices do not fit, which a grid of the size a caller can see is the first shape
+/// here to need the batch grown for. LINES topology.
+XudResult xud_shapes_append_grid(
+    XudBatch* batch, XudVector3 center, uint32_t divisions, float spacing, XudColor centerColor, XudColor gridColor);
+
 /// Pure: one pixel of a framebuffer to the clip space the identity view and projection expect -
 /// the UI mapper's own mapping restated for a bare pixel rather than a baked vertex, the one the
 /// screen-space draw above moves its boxes through before they become clip corners. The pixel is

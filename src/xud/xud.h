@@ -765,6 +765,39 @@ XudResult xud_draw_sphere_wires(XudContext* context, XudVector3 centerPos, float
 /// XUD_OUT_OF_MEMORY when the 4 vertices or the 6 indices do not fit the batch.
 XudResult xud_draw_plane(XudContext* context, XudVector3 centerPos, XudVector2 size, XudColor color);
 
+/// Draw a cylinder, cone or frustum standing on its base, raylib's DrawCylinder (raylib.h 1598, whose
+/// arguments are (position, radiusTop, radiusBottom, height, color)): position is the BASE, the axis
+/// runs up +Y, and a radiusTop of zero is the cone raylib's own note names. Every vertex carries the
+/// slanted normal rather than a flat one, so the cone shades as one surface. The tessellation is the
+/// header's (XUD_SHAPES_CYLINDER_SIDE_COUNT), for the reason xud_draw_sphere() states. XUD_INVALID_ARG
+/// on a NULL context, a negative or NaN radius, or a height of zero, which names no axis to be round
+/// about; XUD_OUT_OF_MEMORY when the shape does not fit the batch.
+XudResult xud_draw_cylinder(XudContext* context, XudVector3 position, float radiusTop, float radiusBottom, float height, XudColor color);
+
+/// Draw a cylinder's wires, raylib's DrawCylinderWires: the two rims and one vertical per side, over
+/// the two rings only. A second row through the pipeline's LINES column, so a filled cylinder and its
+/// wires in one frame are two draws. Same refusals as xud_draw_cylinder().
+XudResult xud_draw_cylinder_wires(
+    XudContext* context, XudVector3 position, float radiusTop, float radiusBottom, float height, XudColor color);
+
+/// Draw a capsule, raylib's DrawCapsule (raylib.h 1596, (startPos, endPos, radius, color)): two hemi-
+/// spherical caps about the two centres and the band between them, the caps' wide rings shared with the
+/// band. startPos == endPos is a sphere rather than a refusal, as it is in raylib. XUD_INVALID_ARG on a
+/// NULL context or a radius that is not greater than zero; XUD_OUT_OF_MEMORY when the shape does not fit.
+XudResult xud_draw_capsule(XudContext* context, XudVector3 startPos, XudVector3 endPos, float radius, XudColor color);
+
+/// Draw a capsule's wires, raylib's DrawCapsuleWires: the mesh's own edges - a ring around each row of
+/// each cap, the longitudinal segments between the rows and into the poles, and the band's longitudinal.
+XudResult xud_draw_capsule_wires(XudContext* context, XudVector3 startPos, XudVector3 endPos, float radius, XudColor color);
+
+/// Draw a ground grid, raylib's DrawGrid (raylib.h 1602, (slices, spacing)): divisions+1 lines each way
+/// across the XZ plane `spacing` apart, centred on centerPos, the two lines through the centre in
+/// centerColor and the rest in gridColor - raylib's two-tone grid with both colours the caller's, as
+/// every colour here is. XUD_INVALID_ARG on a NULL context, a spacing that is not greater than zero, or
+/// divisions of zero; XUD_OUT_OF_MEMORY when the 4*(divisions+1) vertices do not fit the batch.
+XudResult xud_draw_grid(
+    XudContext* context, XudVector3 centerPos, uint32_t divisions, float spacing, XudColor centerColor, XudColor gridColor);
+
 /// Put a 3D camera in the scene: the public BeginCamera3D() of raylib's camera pair (reference/ray
 /// lib/rcamera.h 369, raylib.h's BeginCamera3D()), whose camera is a global the library holds and
 /// whose state therefore cannot be validated at the call. Here the record is the caller's and this
