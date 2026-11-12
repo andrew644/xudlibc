@@ -33,7 +33,7 @@
 #include "xud.h" /* Required for: XudResult, XudVector3, XudColor */
 #include "xud_batch.h" /* Required for: XudBatch, xud_batch_stats, xud_batch_append_vertex/xud_batch_append_index */
 #include "xud_core.h" /* Required for: struct XudContext, the one owner whose renderer's batch a public draw call appends into */
-#include <math.h> /* Required for: sinf/cosf, the sphere's latitude and longitude - host arithmetic on the caller's floats, the one system header this file takes */
+#include <math.h> /* Required for: sinf/cosf, the sphere's latitude and longitude, and fabsf, the bounding box's absolute size - host arithmetic on the caller's floats, the one system header this file takes */
 
 /*-----------------------------------------------------------------------------------------------
  * What a refused shape tells the batch
@@ -2604,6 +2604,35 @@ XudResult xud_draw_cube_wires(XudContext* context, XudVector3 position, float wi
     }
 
     return xud_shapes_append_cube_wires(batch, position, width, height, length, color);
+}
+
+XudResult xud_draw_bounding_box(XudContext* context, XudBoundingBox box, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 center;
+    XudVector3 size;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* raylib's construction (rmodels.c 4145-4153): the absolute size on every axis and one wire cube
+       over it, which is the whole of its DrawBoundingBox. The centre is the midpoint of the two
+       corners rather than the minimum plus half that size - raylib's line 4151 lands a box whose
+       corners came in the wrong order on the far side of its own minimum. A reversed pair still
+       draws, and that is the one place this call is the collision rung's opposite: a test over a
+       reversed box has no answer, so that rung refuses it, while a wire cube over an absolute size
+       always has one.
+    */
+    size.x = fabsf(box.max.x - box.min.x);
+    size.y = fabsf(box.max.y - box.min.y);
+    size.z = fabsf(box.max.z - box.min.z);
+    center.x = (box.min.x + box.max.x) * 0.5f;
+    center.y = (box.min.y + box.max.y) * 0.5f;
+    center.z = (box.min.z + box.max.z) * 0.5f;
+
+    return xud_shapes_append_cube_wires(batch, center, size.x, size.y, size.z, color);
 }
 
 XudResult xud_draw_sphere_wires(XudContext* context, XudVector3 centerPos, float radius, XudColor color) {

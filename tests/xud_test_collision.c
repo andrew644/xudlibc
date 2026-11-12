@@ -1,16 +1,17 @@
 /***********************************************************************************************
  *
- *   xud_test_collision.c - the collision rung's five calls
+ *   xud_test_collision.c - the collision rung's nine calls
  *
  *   Owns : the tests of xud_check_collision_spheres(), xud_check_collision_boxes(),
- *          xud_check_collision_box_sphere(), xud_get_ray_collision_sphere() and
- *          xud_get_ray_collision_box(), and nothing else: the ray the two casts are handed is the
- *          camera area's to test, and where a hit lands on the frame is the fold's.
+ *          xud_check_collision_box_sphere(), the five casts (sphere, box, triangle, quad, mesh) and
+ *          xud_get_mesh_bounding_box(), and nothing else: the ray the casts are handed is the camera
+ *          area's to test, and where a hit lands on the frame is the fold's.
  *   Layer: tests, above the camera area and below the core, which is the layer order: the casts read
  *          the same XudRay the camera's fold fills, so the area runs after the one that produces it.
  *          There is no GPU half, which is the point of the rung rather than an omission: none of the
- *          five reads a context, so every fact about them - which pairs touch, how far along a ray the
- *          first surface is, which way that surface faces - is answerable with no driver present.
+ *          nine reads a context, so every fact about them - which pairs touch, how far along a ray the
+ *          first surface is, which way that surface faces, which triangle of a mesh is met first - is
+ *          answerable with no driver present.
  *
  *   What the expected values are. Every one is a number the area states in the check's own words -
  *   a sphere of radius 1 at the origin seen from five units away is hit at four, and the surface it
@@ -29,7 +30,7 @@
 #include <math.h> /* Required for: NAN, INFINITY, the area's own sqrt for a diagonal's unit direction */
 #include <stddef.h> /* Required for: NULL, the out-parameter the refusal checks hand over */
 
-#include "xud.h" /* Required for: XudResult, XudVector3, XudRay, XudBoundingBox, XudRayCollision, the five calls */
+#include "xud.h" /* Required for: XudResult, XudVector3, XudRay, XudBoundingBox, XudRayCollision, XudMeshData, the nine calls */
 #include "xud_collision.h" /* Required for: XUD_COLLISION_PARALLEL_COMPONENT, the floor a near-parallel ray is built under */
 #include "xud_test_harness.h"
 
@@ -401,6 +402,183 @@ static void xud_test_collision_cast_box(void) {
         "collision/box-plate", "a box with no thickness is still a surface: the ray from below meets it at the plate's own plane");
 }
 
+/* The triangle, the quad and the mesh description. The triangle is the counter-clockwise one the docs
+   promise: the floor at z = 0 spanning -1..1 on x and y, wound (v0, v1, v2) so its normal is +Z, seen
+   from above at the eye -X and from below at +X, because both windings answer.
+*/
+static void xud_test_collision_cast_triangle(void) {
+    XudVector3 v0 = { .x = -1.0f, .y = -1.0f, .z = 0.0f };
+    XudVector3 v1 = { .x = 1.0f, .y = -1.0f, .z = 0.0f };
+    XudVector3 v2 = { .x = 1.0f, .y = 1.0f, .z = 0.0f };
+    XudVector3 v3 = { .x = -1.0f, .y = 1.0f, .z = 0.0f };
+    XudVector3 above = { .x = 0.0f, .y = 0.0f, .z = 5.0f };
+    XudVector3 down = { .x = 0.0f, .y = 0.0f, .z = -1.0f };
+    XudVector3 zero = { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+    XudRay fromAbove = xudTestRay(above, down);
+    XudRay fromBelow = xudTestRay((XudVector3) { .x = 0.0f, .y = 0.0f, .z = -5.0f }, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 1.0f });
+    XudRay sideways = xudTestRay(above, (XudVector3) { .x = 1.0f, .y = 0.0f, .z = 0.0f });
+    XudRay offCorner = xudTestRay((XudVector3) { .x = 4.0f, .y = 4.0f, .z = 5.0f }, down);
+    XudRay fromSurface = xudTestRay(zero, down);
+    XudRayCollision record;
+
+    xud_get_ray_collision_triangle(&record, fromAbove, v0, v1, v2);
+    xud_check((record.hit == true) && xudTestNear(record.distance, 5.0f) && xudTestVectorNear(record.point, 0.0f, 0.0f, 0.0f)
+            && xudTestVectorNear(record.normal, 0.0f, 0.0f, 1.0f),
+        "collision/triangle-face", "the floor seen from five above is hit at five, with the winding's own normal");
+
+    xud_get_ray_collision_triangle(&record, fromBelow, v0, v1, v2);
+    xud_check((record.hit == true) && xudTestNear(record.distance, 5.0f) && xudTestVectorNear(record.normal, 0.0f, 0.0f, 1.0f),
+        "collision/triangle-backface-hits",
+        "seen from underneath it is still hit, and the normal stays the winding's rather than flipping");
+
+    xud_get_ray_collision_triangle(&record, sideways, v0, v1, v2);
+    xud_check((record.hit == false) && (record.distance == 0.0f), "collision/triangle-parallel",
+        "a ray that lies in the triangle's plane misses, and a miss is the all-zero record");
+
+    xud_get_ray_collision_triangle(&record, offCorner, v0, v1, v2);
+    xud_check(record.hit == false, "collision/triangle-outside",
+        "a ray through the square's corner but outside the triangle's hypotenuse misses: the (u, v) bounds are the triangle");
+
+    xud_get_ray_collision_triangle(&record, fromSurface, v0, v1, v2);
+    xud_check(record.hit == false, "collision/triangle-at-origin",
+        "a cast launched from the surface does not answer that surface: the hit's distance has to clear the component floor");
+
+    xud_get_ray_collision_triangle(&record, fromAbove, v0, v1, v1);
+    xud_check(record.hit == false, "collision/triangle-degenerate", "two corners on one point are a triangle with no inside");
+
+    xud_check(xud_get_ray_collision_triangle(NULL, fromAbove, v0, v1, v2) == XUD_INVALID_ARG, "collision/null-triangle",
+        "the triangle cast refuses a NULL record");
+    xud_check(
+        xud_get_ray_collision_triangle(&record, fromAbove, v0, (XudVector3) { .x = NAN, .y = 0.0f, .z = 0.0f }, v2) == XUD_INVALID_ARG,
+        "collision/triangle-nan-vertex", "and a corner that is not a place");
+
+    xud_get_ray_collision_quad(&record, fromAbove, v0, v1, v2, v3);
+    xud_check((record.hit == true) && xudTestNear(record.distance, 5.0f) && xudTestVectorNear(record.normal, 0.0f, 0.0f, 1.0f),
+        "collision/quad-face", "the square the two triangles make is hit at the same place with the same normal");
+
+    xud_get_ray_collision_quad(&record, xudTestRay((XudVector3) { .x = -0.5f, .y = 0.5f, .z = 5.0f }, down), v0, v1, v2, v3);
+    xud_check((record.hit == true) && xudTestNear(record.distance, 5.0f), "collision/quad-second-triangle",
+        "the corner half of the square belongs to the second of the two triangles, and is still hit");
+
+    xud_get_ray_collision_quad(&record, xudTestRay((XudVector3) { .x = 3.0f, .y = 3.0f, .z = 5.0f }, down), v0, v1, v2, v3);
+    xud_check(record.hit == false, "collision/quad-miss", "and the square's empty corner, outside both, misses");
+
+    /* A quad whose projection overlaps itself, the one shape where the order the two triangles are
+       tried in changes the answer: at this pixel the first triangle's surface is at z = 0 and the
+       second's at z = 1, so "whichever answered first" (rmodels.c 4439, 4442) would be five along where
+       the surface the ray reaches is four.
+    */
+    xud_get_ray_collision_quad(&record, xudTestRay((XudVector3) { .x = 0.0f, .y = -2.0f, .z = 5.0f }, down),
+        (XudVector3) { .x = -4.0f, .y = -4.0f, .z = 0.0f }, (XudVector3) { .x = 4.0f, .y = -4.0f, .z = 0.0f },
+        (XudVector3) { .x = -2.0f, .y = -2.0f, .z = 2.0f }, (XudVector3) { .x = -4.0f, .y = 4.0f, .z = 0.0f });
+    xud_check((record.hit == true) && xudTestNear(record.distance, 4.0f) && xudTestVectorNear(record.point, 0.0f, -2.0f, 1.0f)
+            && (record.normal.z < 0.0f),
+        "collision/quad-nearer-of-two", "of a folded quad's two triangles the nearer surface is answered, whichever was tried first");
+
+    xud_check(xud_get_ray_collision_quad(NULL, fromAbove, v0, v1, v2, v3) == XUD_INVALID_ARG, "collision/null-quad",
+        "the quad cast refuses a NULL record");
+}
+
+/* The mesh description read by the cast and by the bounds: the unit square at z = 0 as its two
+   triangles, and a third triangle lifted a unit above the square's centre. The lifted one is the LAST
+   triangle in the index order and the NEAREST to the eye, so a walk that kept the first hit it found
+   - or the last - answers a different distance from one that keeps the nearest.
+*/
+static void xud_test_collision_cast_mesh(void) {
+    static const float positions[] = { -1.0f, -1.0f, 0.0f, 1.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 1.0f, 0.0f, -1.0f, -1.0f, 1.0f, 1.0f,
+        -1.0f, 1.0f, 0.0f, 1.0f, 1.0f };
+    static const uint32_t index[] = { 0u, 1u, 2u, 0u, 2u, 3u, 4u, 5u, 6u };
+    static const float shift[] = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 10.0f, 0.0f, 0.0f, 1.0f };
+    static const float broken[] = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, NAN, 0.0f, 0.0f, 1.0f };
+    XudMeshData mesh
+        = { .vertexCount = 7u, .indexCount = 9u, .pos = positions, .texcoords = NULL, .color = NULL, .normal = NULL, .index = index };
+    XudMeshData noPositions
+        = { .vertexCount = 7u, .indexCount = 9u, .pos = NULL, .texcoords = NULL, .color = NULL, .normal = NULL, .index = index };
+    XudMeshData noIndices
+        = { .vertexCount = 7u, .indexCount = 9u, .pos = positions, .texcoords = NULL, .color = NULL, .normal = NULL, .index = NULL };
+    XudMeshData shortIndices
+        = { .vertexCount = 7u, .indexCount = 4u, .pos = positions, .texcoords = NULL, .color = NULL, .normal = NULL, .index = index };
+    XudMeshData noVertices
+        = { .vertexCount = 0u, .indexCount = 3u, .pos = positions, .texcoords = NULL, .color = NULL, .normal = NULL, .index = index };
+    XudMeshData outOfRange = { .vertexCount = 7u,
+        .indexCount = 9u,
+        .pos = positions,
+        .texcoords = NULL,
+        .color = NULL,
+        .normal = NULL,
+        .index = (const uint32_t[]) { 0u, 1u, 2u, 0u, 2u, 3u, 4u, 5u, 70u } };
+    XudVector3 min;
+    XudVector3 max;
+    XudVector3 eye = { .x = 0.0f, .y = 0.0f, .z = 5.0f };
+    XudVector3 down = { .x = 0.0f, .y = 0.0f, .z = -1.0f };
+    XudRay fromAbove = xudTestRay(eye, down);
+    XudRay overShifted = xudTestRay((XudVector3) { .x = 10.0f, .y = 0.0f, .z = 5.0f }, down);
+    XudRay intoCorners = xudTestRay((XudVector3) { .x = 3.0f, .y = 3.0f, .z = 5.0f }, down);
+    XudRayCollision record;
+
+    xud_get_ray_collision_mesh(&record, fromAbove, &mesh, NULL);
+    xud_check((record.hit == true) && xudTestNear(record.distance, 4.0f) && xudTestVectorNear(record.point, 0.0f, 0.0f, 1.0f)
+            && xudTestVectorNear(record.normal, 0.0f, 0.0f, 1.0f),
+        "collision/mesh-nearest", "the lifted triangle is answered, though the square is met first and two units nearer the far side");
+
+    xud_get_ray_collision_mesh(&record, intoCorners, &mesh, NULL);
+    xud_check(record.hit == false, "collision/mesh-miss", "a ray past every corner walks all nine indices and answers the zero record");
+
+    xud_get_ray_collision_mesh(&record, overShifted, &mesh, shift);
+    xud_check((record.hit == true) && xudTestNear(record.distance, 4.0f) && xudTestVectorNear(record.point, 10.0f, 0.0f, 1.0f),
+        "collision/mesh-transformed", "the same description under a translation ten along x is met by a ray ten along x");
+
+    xud_get_ray_collision_mesh(&record, fromAbove, &mesh, shift);
+    xud_check(record.hit == false, "collision/mesh-transformed-miss", "and not by the ray that was aimed at the untranslated one");
+
+    xud_get_ray_collision_mesh(&record, fromAbove, &noPositions, NULL);
+    xud_check((record.hit == false), "collision/mesh-no-positions",
+        "a description with no position stream is the documented default of every vertex at the origin, so every triangle is degenerate");
+
+    record.hit = true;
+    record.distance = 1234.5f;
+    xud_check(xud_get_ray_collision_mesh(&record, fromAbove, &noIndices, NULL) == XUD_INVALID_ARG, "collision/mesh-no-index",
+        "a description with no topology has no triangles to walk, which is a refusal and not a miss");
+    xud_check((record.hit == true) && (record.distance == 1234.5f), "collision/mesh-refusal-leaves-record",
+        "and the refused walk leaves the caller's record alone");
+    xud_check(xud_get_ray_collision_mesh(&record, fromAbove, &shortIndices, NULL) == XUD_INVALID_ARG, "collision/mesh-part-triangle",
+        "an index count that is not a whole number of triangles names a triangle that is not there");
+    xud_check(xud_get_ray_collision_mesh(&record, fromAbove, &outOfRange, NULL) == XUD_INVALID_ARG, "collision/mesh-index-past-end",
+        "an index past the last vertex is refused before the walk, because walking it would read past the caller's positions");
+    xud_check(xud_get_ray_collision_mesh(&record, fromAbove, &mesh, broken) == XUD_INVALID_ARG, "collision/mesh-broken-transform",
+        "a transform with a NaN in it would move every vertex to a NaN, which is not a mesh but a silence");
+    xud_check(xud_get_ray_collision_mesh(NULL, fromAbove, &mesh, NULL) == XUD_INVALID_ARG, "collision/mesh-null-record",
+        "the mesh cast refuses a NULL record");
+    xud_check(xud_get_ray_collision_mesh(&record, fromAbove, NULL, NULL) == XUD_INVALID_ARG, "collision/mesh-null-mesh",
+        "and no description at all");
+    xud_check(xud_get_ray_collision_mesh(&record, fromAbove, &noVertices, NULL) == XUD_INVALID_ARG, "collision/mesh-no-vertices",
+        "and a description that names no vertex, which no index could point at anyway");
+
+    min = (XudVector3) { .x = 99.0f, .y = 99.0f, .z = 99.0f };
+    max = (XudVector3) { .x = -99.0f, .y = -99.0f, .z = -99.0f };
+    xud_check((xud_get_mesh_bounding_box(&min, &max, &mesh) == XUD_OK) && xudTestVectorNear(min, -1.0f, -1.0f, 0.0f)
+            && xudTestVectorNear(max, 1.0f, 1.0f, 1.0f),
+        "collision/mesh-bounds", "the seven positions span -1..1 on x and y and 0..1 up: the box the broad-phase test wants");
+
+    min = (XudVector3) { .x = 99.0f, .y = 99.0f, .z = 99.0f };
+    max = (XudVector3) { .x = -99.0f, .y = -99.0f, .z = -99.0f };
+    xud_check(xud_get_mesh_bounding_box(&min, &max, &shortIndices) == XUD_OK, "collision/mesh-bounds-ignores-topology",
+        "the bounds read the positions only, so a partial index count is none of its business");
+    xud_check(xud_get_mesh_bounding_box(&min, &max, &noPositions) == XUD_OK, "collision/mesh-bounds-no-positions",
+        "and a description whose positions all default to the origin has a bounds, which is the origin");
+    xud_check((xudTestVectorNear(min, 0.0f, 0.0f, 0.0f)) && (xudTestVectorNear(max, 0.0f, 0.0f, 0.0f)), "collision/mesh-bounds-at-origin",
+        "that box is the point every default sits at");
+    xud_check(xud_get_mesh_bounding_box(NULL, &max, &mesh) == XUD_INVALID_ARG, "collision/mesh-bounds-null-min",
+        "the bounds refuse a NULL minimum");
+    min = (XudVector3) { .x = 99.0f, .y = 99.0f, .z = 99.0f };
+    max = (XudVector3) { .x = -99.0f, .y = -99.0f, .z = -99.0f };
+    xud_check(xud_get_mesh_bounding_box(&min, NULL, &mesh) == XUD_INVALID_ARG, "collision/mesh-bounds-null-max", "and a NULL maximum");
+    xud_check(xud_get_mesh_bounding_box(&min, &max, &noVertices) == XUD_INVALID_ARG, "collision/mesh-bounds-no-vertices",
+        "and a description with no vertex, which has no bounds to answer");
+    xud_check((min.x == 99.0f) && (max.z == -99.0f), "collision/mesh-bounds-refusal-leaves-records",
+        "a refused bounds call leaves both of the caller's vectors as it found them");
+}
+
 /* The rung read with the camera's fold, which is the pair the picking example is: the fold answers the
    pixel a solid's centre lands at, the trace answers the ray through that pixel, the cast answers where
    along it the solid is, and the fold again answers where that hit lands. The four together are what makes
@@ -457,5 +635,7 @@ void xud_test_collision(void) {
     xud_test_collision_solids();
     xud_test_collision_cast_sphere();
     xud_test_collision_cast_box();
+    xud_test_collision_cast_triangle();
+    xud_test_collision_cast_mesh();
     xud_test_collision_and_the_fold();
 }

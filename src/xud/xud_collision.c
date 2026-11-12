@@ -395,3 +395,313 @@ XudResult xud_get_ray_collision_box(XudRayCollision* outCollision, XudRay ray, X
 
     return XUD_OK;
 }
+
+/*-----------------------------------------------------------------------------------------------
+ * The three casts - ray against a triangle, a quad, and a whole mesh description
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The arithmetic the triangle cast is made of, spelled out here rather than borrowed: the library
+   has no math rung - xud.h hands out float[16] matrices and lets the caller multiply them - so the
+   rung that needs a cross product owns three lines of one instead of a header of helpers.
+*/
+static float xud_collision_dot(XudVector3 left, XudVector3 right) { return (left.x * right.x) + (left.y * right.y) + (left.z * right.z); }
+
+static XudVector3 xud_collision_difference(XudVector3 left, XudVector3 right) {
+    return (XudVector3) { .x = left.x - right.x, .y = left.y - right.y, .z = left.z - right.z };
+}
+
+static XudVector3 xud_collision_cross(XudVector3 left, XudVector3 right) {
+    return (XudVector3) { .x = (left.y * right.z) - (left.z * right.y),
+        .y = (left.z * right.x) - (left.x * right.z),
+        .z = (left.x * right.y) - (left.y * right.x) };
+}
+
+/* Every entry finite: a transform with a NaN in it moves every vertex of the mesh to a NaN, which is
+   a mesh that can never be hit rather than a mesh the caller means, and the refusal costs sixteen
+   comparisons once per cast instead of three per triangle.
+*/
+static uint32_t xud_collision_matrix_is_finite(const float* matrix) {
+    uint32_t element;
+
+    for (element = 0u; element < 16u; ++element) {
+        if (isfinite((double)matrix[element]) == 0) {
+            return 0u;
+        }
+    }
+
+    return 1u;
+}
+
+/* One point through a column-major 4x4 - the layout the batch's push row, the camera's two matrices
+   and xud_draw_mesh_ex() all agree on - with the translation applied and the result's w assumed one:
+   the transforms this library draws with are affine, and a caller that brought a projection would be
+   picking against a clip-space mesh. NULL is the identity, which is what xud_draw_mesh_ex() has no
+   equivalent of because a draw has to place the mesh somewhere.
+*/
+static XudVector3 xud_collision_transform(const float* matrix, XudVector3 point) {
+    if (matrix == NULL) {
+        return point;
+    }
+
+    return (XudVector3) { .x = (matrix[0] * point.x) + (matrix[4] * point.y) + (matrix[8] * point.z) + matrix[12],
+        .y = (matrix[1] * point.x) + (matrix[5] * point.y) + (matrix[9] * point.z) + matrix[13],
+        .z = (matrix[2] * point.x) + (matrix[6] * point.y) + (matrix[10] * point.z) + matrix[14] };
+}
+
+/* One vertex of a description: a NULL position stream is that description's documented default -
+   every vertex at the zero vector, xud.h 461 - rather than a refusal, so the read answers zeros and
+   every triangle of such a mesh comes out degenerate. A mesh with no positions has no surface.
+*/
+static XudVector3 xud_collision_stream_vertex(const float* positions, uint32_t vertex) {
+    if (positions == NULL) {
+        return (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+    }
+
+    return (XudVector3) { .x = positions[vertex * 3u], .y = positions[(vertex * 3u) + 1u], .z = positions[(vertex * 3u) + 2u] };
+}
+
+/* Moller-Trumbore (the algorithm rmodels.c 4374-4433 names in its own comment), with every argument
+   already checked: the mesh walk calls this once per triangle, and re-checking a ray and a
+   description it has already checked would be the same nine comparisons indexCount/3 times over. A
+   hit writes the record and answers one; a miss writes nothing and answers zero, which is what lets
+   the quad and the mesh keep the NEAREST of several hits without clearing anything first.
+*/
+static uint32_t xud_collision_cast_triangle(
+    XudRayCollision* outCollision, XudRay ray, XudVector3 vertex0, XudVector3 vertex1, XudVector3 vertex2) {
+    XudVector3 edge1 = xud_collision_difference(vertex1, vertex0);
+    XudVector3 edge2 = xud_collision_difference(vertex2, vertex0);
+    XudVector3 perpendicular = xud_collision_cross(ray.direction, edge2);
+    XudVector3 toOrigin = xud_collision_difference(ray.position, vertex0);
+    XudVector3 crossSecond;
+    XudVector3 faceNormal;
+    float determinant = xud_collision_dot(edge1, perpendicular);
+    float inverseDeterminant;
+    float alongFirst;
+    float alongSecond;
+    float distance;
+    float faceLength;
+
+    /* Both signs, because a triangle has no front: a cast that refused to hit through the back would
+       pick the near side of a floor and miss the ceiling above it. raylib's "Avoid culling!"
+       (rmodels.c 4394) is the same decision, and a determinant this small is the ray lying in the
+       plane as often as it is a triangle too thin to have an inside.
+    */
+    if (fabsf(determinant) <= XUD_COLLISION_PARALLEL_DETERMINANT) {
+        return 0u;
+    }
+
+    inverseDeterminant = 1.0f / determinant;
+    alongFirst = xud_collision_dot(toOrigin, perpendicular) * inverseDeterminant;
+    if ((alongFirst < 0.0f) || (alongFirst > 1.0f)) {
+        return 0u;
+    }
+
+    crossSecond = xud_collision_cross(toOrigin, edge1);
+    alongSecond = xud_collision_dot(ray.direction, crossSecond) * inverseDeterminant;
+    if ((alongSecond < 0.0f) || ((alongFirst + alongSecond) > 1.0f)) {
+        return 0u;
+    }
+
+    distance = xud_collision_dot(edge2, crossSecond) * inverseDeterminant;
+
+    /* A hit at the origin itself is not a hit: a cast launched FROM a surface - the decal's own
+       placement, a shadow test's second ray - must not answer the surface it started on. raylib's
+       t > EPSILON (rmodels.c 4419) is the same floor, in the direction's own units.
+    */
+    if (distance <= XUD_COLLISION_PARALLEL_COMPONENT) {
+        return 0u;
+    }
+
+    outCollision->hit = true;
+    outCollision->distance = distance;
+    outCollision->point = (XudVector3) { .x = ray.position.x + (ray.direction.x * distance),
+        .y = ray.position.y + (ray.direction.y * distance),
+        .z = ray.position.z + (ray.direction.z * distance) };
+
+    /* The plane's own normal, whose SIGN belongs to the caller's winding: counter-clockwise vertices
+       answer the normal on the side they face, which is raylib's answer as well (rmodels.c 4423). It
+       needs no zero guard: two parallel edges make the determinant exactly zero, and that answer is
+       refused above, so the cross product here is never the zero vector.
+    */
+    faceNormal = xud_collision_cross(edge1, edge2);
+    faceLength = sqrtf(xud_collision_dot(faceNormal, faceNormal));
+    outCollision->normal = (XudVector3) { .x = faceNormal.x / faceLength, .y = faceNormal.y / faceLength, .z = faceNormal.z / faceLength };
+
+    return 1u;
+}
+
+/// See xud.h.
+XudResult xud_get_ray_collision_triangle(
+    XudRayCollision* outCollision, XudRay ray, XudVector3 vertex0, XudVector3 vertex1, XudVector3 vertex2) {
+    if (outCollision == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_collision_ray_is_well_formed(ray) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+    if ((xud_collision_vector_is_finite(vertex0) == 0u) || (xud_collision_vector_is_finite(vertex1) == 0u)
+        || (xud_collision_vector_is_finite(vertex2) == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    if (xud_collision_cast_triangle(outCollision, ray, vertex0, vertex1, vertex2) == 0u) {
+        xud_collision_write_miss(outCollision);
+    }
+
+    return XUD_OK;
+}
+
+/* The diagonal a quad splits on: (0, 1, 3) and (1, 2, 3), which is raylib's pair (rmodels.c 4439,
+   4442) restated with zero-based corners. The other diagonal would split a quad whose four corners
+   are not coplanar differently, and every quad this library draws is a fan or a grid, so the one
+   split is the one a caller can reason about.
+*/
+
+/// See xud.h.
+XudResult xud_get_ray_collision_quad(
+    XudRayCollision* outCollision, XudRay ray, XudVector3 vertex0, XudVector3 vertex1, XudVector3 vertex2, XudVector3 vertex3) {
+    XudRayCollision second;
+    uint32_t firstHit;
+    uint32_t secondHit;
+
+    if (outCollision == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_collision_ray_is_well_formed(ray) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+    if ((xud_collision_vector_is_finite(vertex0) == 0u) || (xud_collision_vector_is_finite(vertex1) == 0u)
+        || (xud_collision_vector_is_finite(vertex2) == 0u) || (xud_collision_vector_is_finite(vertex3) == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    firstHit = xud_collision_cast_triangle(outCollision, ray, vertex0, vertex1, vertex3);
+    secondHit = xud_collision_cast_triangle(&second, ray, vertex1, vertex2, vertex3);
+
+    /* The nearer of the two, where raylib returns whichever triangle it tried first: on a flat quad
+       the two answers are the same point, and on one that is not flat the first-try answer can be the
+       far triangle of the pair, which is not the surface a ray reaches first.
+    */
+    if ((secondHit != 0u) && ((firstHit == 0u) || (second.distance < outCollision->distance))) {
+        *outCollision = second;
+    } else if (firstHit == 0u) {
+        xud_collision_write_miss(outCollision);
+    }
+
+    return XUD_OK;
+}
+
+/// See xud.h.
+XudResult xud_get_ray_collision_mesh(XudRayCollision* outCollision, XudRay ray, const XudMeshData* mesh, const float* transform) {
+    XudRayCollision hit;
+    uint32_t found = 0u;
+    uint32_t triangle;
+    uint32_t index;
+
+    if ((outCollision == NULL) || (mesh == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_collision_ray_is_well_formed(ray) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+    if ((transform != NULL) && (xud_collision_matrix_is_finite(transform) == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((mesh->vertexCount == 0u) || (mesh->index == NULL) || (mesh->indexCount < 3u) || ((mesh->indexCount % 3u) != 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* Every index read before the walk begins: an index at or past vertexCount is not a wrong answer,
+       it is a read of whatever memory follows the caller's position array, so it is refused here
+       rather than dereferenced a triangle later. The mesh rung refuses the same description at the
+       upload (xud_mesh.h 218); this rung never saw that upload and cannot assume it happened.
+    */
+    for (index = 0u; index < mesh->indexCount; ++index) {
+        if (mesh->index[index] >= mesh->vertexCount) {
+            return XUD_INVALID_ARG;
+        }
+    }
+
+    /* Every triangle, the nearest hit kept: raylib's own walk (rmodels.c 4324) is the same loop over
+       the same triangles and stops at nothing either. The transform goes on the vertices rather than
+       the ray being run back through an inverse, because an inverse has a singular case this rung
+       would have to refuse and a flattened mesh would hit - and because it is 48 multiplies a
+       triangle either way, done three times per triangle rather than once per cast.
+    */
+    for (triangle = 0u; triangle < (mesh->indexCount / 3u); ++triangle) {
+        const uint32_t* corner = &mesh->index[triangle * 3u];
+        XudVector3 first = xud_collision_transform(transform, xud_collision_stream_vertex(mesh->pos, corner[0]));
+        XudVector3 second = xud_collision_transform(transform, xud_collision_stream_vertex(mesh->pos, corner[1]));
+        XudVector3 third = xud_collision_transform(transform, xud_collision_stream_vertex(mesh->pos, corner[2]));
+
+        if (xud_collision_cast_triangle(&hit, ray, first, second, third) != 0u) {
+            if ((found == 0u) || (hit.distance < outCollision->distance)) {
+                *outCollision = hit;
+                found = 1u;
+            }
+        }
+    }
+
+    if (found == 0u) {
+        xud_collision_write_miss(outCollision);
+    }
+
+    return XUD_OK;
+}
+
+/// See xud.h.
+XudResult xud_get_mesh_bounding_box(XudVector3* outMin, XudVector3* outMax, const XudMeshData* mesh) {
+    XudVector3 min;
+    XudVector3 max;
+    XudVector3 vertex;
+    uint32_t index;
+
+    if ((outMin == NULL) || (outMax == NULL) || (mesh == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (mesh->vertexCount == 0u) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The scan that finds the bounds is the scan that can see a non-finite vertex, so it refuses one
+       rather than folding it: a NaN compares false against both ends, which would leave the caller
+       with a box that quietly excludes the vertex it should have been widest for. The two vectors are
+       written last, for the reason every other refusal here is written first - a refused call leaves
+       the caller's records exactly as it found them.
+    */
+    min = xud_collision_stream_vertex(mesh->pos, 0u);
+    if (xud_collision_vector_is_finite(min) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+    max = min;
+
+    for (index = 1u; index < mesh->vertexCount; ++index) {
+        vertex = xud_collision_stream_vertex(mesh->pos, index);
+        if (xud_collision_vector_is_finite(vertex) == 0u) {
+            return XUD_INVALID_ARG;
+        }
+        if (vertex.x < min.x) {
+            min.x = vertex.x;
+        }
+        if (vertex.x > max.x) {
+            max.x = vertex.x;
+        }
+        if (vertex.y < min.y) {
+            min.y = vertex.y;
+        }
+        if (vertex.y > max.y) {
+            max.y = vertex.y;
+        }
+        if (vertex.z < min.z) {
+            min.z = vertex.z;
+        }
+        if (vertex.z > max.z) {
+            max.z = vertex.z;
+        }
+    }
+
+    *outMin = min;
+    *outMax = max;
+
+    return XUD_OK;
+}

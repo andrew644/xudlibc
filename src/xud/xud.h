@@ -803,6 +803,15 @@ XudResult xud_draw_point_3d(XudContext* context, XudVector3 position, XudColor c
 /// the batch.
 XudResult xud_draw_cube_wires(XudContext* context, XudVector3 position, float width, float height, float length, XudColor color);
 
+/// Draw a bounding box's wires: raylib's DrawBoundingBox (raylib.h 1623, rmodels.c 4143), which is
+/// itself nothing but the wire cube above over the box's absolute size and midpoint - so this is that
+/// one append, and the box drawn is the box the two corners enclose even when the corners came in the
+/// wrong order. The bbox a picking example draws before it walks a mesh is this call; the box the same
+/// example tests against is xud_get_ray_collision_box(), and the bounds to hand to either come from
+/// xud_get_mesh_bounding_box() or xud_get_model_bounding_box(). The refusals are xud_draw_cube_wires()'
+/// exactly, and a box with no extent on one axis draws the flat rectangle that is all it encloses.
+XudResult xud_draw_bounding_box(XudContext* context, XudBoundingBox box, XudColor color);
+
 /// Draw a sphere's wires in 3D space, raylib's DrawSphereWires (raylib.h 1596, "Draw sphere", whose
 /// arguments are (centerPos, radius, rings, slices, color) - the tessellation is the caller's there,
 /// and here it is the header's, for the reason xud_draw_sphere() above states: a tessellation is a
@@ -1068,6 +1077,48 @@ XudResult xud_get_ray_collision_sphere(XudRayCollision* outCollision, XudRay ray
 /// and an edge approximate. The same refusals as the sphere cast, with a box's corners in place of the
 /// sphere.
 XudResult xud_get_ray_collision_box(XudRayCollision* outCollision, XudRay ray, XudBoundingBox box);
+
+/// Where a ray meets a triangle: raylib's GetRayCollisionTriangle (raylib.h 1674), Moller-Trumbore.
+/// Both windings hit - a triangle has no front, and a cast that culled the back would pick the near
+/// side of a floor and miss the ceiling above it - and the normal carries the SIGN of the caller's
+/// winding: counter-clockwise vertices answer it on the side the vertices face, which is raylib's
+/// answer as well, so this is the one cast here that does not turn its normal to face the ray. A hit
+/// at the origin is not a hit: the distance must clear XUD_COLLISION_PARALLEL_COMPONENT, which is what
+/// keeps a cast launched from a surface from answering the surface it started on. XUD_INVALID_ARG on
+/// the sphere cast's refusals, with three vertices in place of the sphere.
+XudResult xud_get_ray_collision_triangle(
+    XudRayCollision* outCollision, XudRay ray, XudVector3 vertex0, XudVector3 vertex1, XudVector3 vertex2);
+
+/// Where a ray meets a quad: raylib's GetRayCollisionQuad (raylib.h 1675) - the two triangles of the
+/// (0, 1, 3) diagonal, with the NEARER of the two hits answered. raylib returns whichever triangle it
+/// tried first, which is the same answer on a flat quad and can be the far one on a quad whose corners
+/// are not coplanar. The same refusals again, for four vertices.
+XudResult xud_get_ray_collision_quad(
+    XudRayCollision* outCollision, XudRay ray, XudVector3 vertex0, XudVector3 vertex1, XudVector3 vertex2, XudVector3 vertex3);
+
+/// Where a ray meets a mesh: raylib's GetRayCollisionMesh (raylib.h 1673, rmodels.c 4324), over the
+/// caller's OWN description rather than a handle - a mesh this library uploaded keeps no CPU copy of
+/// what it uploaded, so the triangles a cast can read are the ones the caller still holds, which is
+/// also what makes the same description drawable by xud_upload_mesh() and testable by this call with
+/// one set of arrays. Every triangle is walked and the nearest hit kept; the transform, NULL for the
+/// identity, is column-major float[16] as every other matrix here is, and goes onto the vertices
+/// rather than running the ray back through an inverse, so a flattened mesh is a mesh with no hit
+/// rather than a refusal. A miss is the all-zero record. XUD_INVALID_ARG on the ray refusals, on a
+/// NULL out or mesh or index array, a vertexCount of zero, an indexCount that is not a whole number of
+/// triangles, any index at or past vertexCount (that index is a read of the memory after the caller's
+/// positions, so it is refused before the walk rather than dereferenced during it), or a transform
+/// with a non-finite entry.
+XudResult xud_get_ray_collision_mesh(XudRayCollision* outCollision, XudRay ray, const XudMeshData* mesh, const float* transform);
+
+/// A description's bounds: raylib's GetMeshBoundingBox (raylib.h 1634, rmodels.c 3782), the position
+/// stream read and no other - the broad phase the mesh cast above wants, since a box test that misses
+/// costs six comparisons where the walk costs every triangle in the mesh. It lives beside that cast
+/// rather than in the mesh rung because it is the same pure arithmetic over the caller's arrays:
+/// xud_get_model_bounding_box reads the record a loaded model kept, and this reads what the caller is
+/// still holding. XUD_INVALID_ARG on a NULL out or mesh, a vertexCount of zero, or a position with a
+/// non-finite component in it - a NaN compares false against both ends of a bound, which would answer
+/// a box that quietly leaves out the vertex it should have been widest for.
+XudResult xud_get_mesh_bounding_box(XudVector3* outMin, XudVector3* outMax, const XudMeshData* mesh);
 
 /// Put a material in the drawing state, for this frame and the ones that follow: the Begin*/End*
 /// shape of raylib's scoped state calls (BeginBlendMode()/EndBlendMode(), raylib.h 1058-1059), a

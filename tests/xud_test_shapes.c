@@ -270,6 +270,10 @@ static void xud_test_shapes_pure(void) {
         "a public wire box call with no context is refused");
     xud_check(xud_draw_cube_wires(&shell, center, width, height, length, color) == XUD_UNSUPPORTED, "shapes/wire-cube-draw-no-renderer",
         "a context with no renderer has no batch to append into, and the refusal is reported");
+    xud_check(xud_draw_bounding_box(NULL, (XudBoundingBox) { .min = v0, .max = v1 }, color) == XUD_INVALID_ARG,
+        "shapes/bbox-draw-no-context", "a bounding box is the wire cube over two corners, and it is refused without a context as that is");
+    xud_check(xud_draw_bounding_box(&shell, (XudBoundingBox) { .min = v0, .max = v1 }, color) == XUD_UNSUPPORTED,
+        "shapes/bbox-draw-no-renderer", "and by the same code as that, one rung below it, when the context has no batch");
     xud_check(xud_shapes_append_sphere_wires(NULL, center, 0.4f, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color)
             == XUD_INVALID_ARG,
         "shapes/wire-sphere-append-no-batch", "and so is a wire sphere - the guard is the same one");
@@ -3518,6 +3522,31 @@ static void xud_test_shapes_gpu(void) {
                 "68 indices, 24 of them the wire box's, so the frame's LINE row is 26 indices long and its TRIANGLE row 42 - both inside "
                 "the "
                 "initial capacity's headroom");
+
+            /* The same box as two corners rather than a centre and a size - and handed over with the
+               corners the wrong way round, because the one behaviour worth pinning in a frame is that a
+               swapped box is DRAWN rather than refused: the collision rung refuses that pair, and this
+               call is the wire cube over its absolute size, so it has an answer. 8 vertices and 24
+               indices more, on the LINE row the wire cube is already on, inside the headroom the frame
+               has left (the sphere frame below is the one that spends it all).
+            */
+            result = xud_draw_bounding_box(context,
+                (XudBoundingBox) { .min = { .x = cubeCentre.x + 0.4f, .y = cubeCentre.y + 0.4f, .z = cubeCentre.z + 0.4f },
+                    .max = { .x = cubeCentre.x - 0.4f, .y = cubeCentre.y - 0.4f, .z = cubeCentre.z - 0.4f } },
+                white);
+            xud_check(result == XUD_OK, "gpu-shapes/bbox-swapped-draws",
+                "the bounding box whose corners came in the wrong order is appended, not refused");
+            xud_check(xud_batch_stats(context->renderer->batch, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+                "gpu-shapes/stats-after-bbox", "and the counters answer after it");
+            xud_check(vertexCount
+                    == ((XUD_SHAPES_TRIANGLE_VERTEX_COUNT * 2u) + (XUD_SHAPES_CUBE_VERTEX_COUNT + XUD_SHAPES_LINE_VERTEX_COUNT)
+                        + (XUD_SHAPES_WIRE_CUBE_VERTEX_COUNT * 2u)),
+                "gpu-shapes/bbox-costs-eight-vertices", "48 vertices, the box's 8 on top of the wire cube's 8");
+            xud_check(indexCount
+                    == ((XUD_SHAPES_TRIANGLE_INDEX_COUNT * 2u) + (XUD_SHAPES_CUBE_INDEX_COUNT + XUD_SHAPES_LINE_INDEX_COUNT)
+                        + (XUD_SHAPES_WIRE_CUBE_INDEX_COUNT * 2u)),
+                "gpu-shapes/bbox-costs-24-indices", "92 indices, 24 of them the box's, so the box is the wire cube and nothing else");
+            xud_check(drawCount == 1u, "gpu-shapes/bbox-no-extra-row", "and still one row recorded mid-frame, as the wire cube's was");
         } else {
             result = xud_draw_sphere(context, sphereCentre, XUD_TEST_SHAPES_SPHERE_RADIUS, blue);
             xud_check(result == XUD_OK, "gpu-shapes/sphere-draw-ok", "the public sphere call appends into the context's own batch");
