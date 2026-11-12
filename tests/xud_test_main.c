@@ -66,6 +66,7 @@ int main(void) {
     xud_test_shapes();
     xud_test_camera();
     xud_test_collision();
+    xud_test_matrix();
     xud_test_material();
     xud_test_mesh();
     xud_test_generate();

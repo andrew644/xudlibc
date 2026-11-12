@@ -1121,6 +1121,46 @@ XudResult xud_get_ray_collision_mesh(XudRayCollision* outCollision, XudRay ray, 
 XudResult xud_get_mesh_bounding_box(XudVector3* outMin, XudVector3* outMax, const XudMeshData* mesh);
 
 /*-----------------------------------------------------------------------------------------------
+ * The matrix rung - the transforms the _ex draws place their object with
+ *
+ * raymath's Matrix family (raymath.h: MatrixIdentity 988, MatrixTranslate 1941, MatrixScale 1963,
+ * MatrixRotate 1792, MatrixRotateXYZ 1897, MatrixMultiply 968, Vector3Transform 891). raymath keeps
+ * them in a struct of fifteen named floats and multiplies the row vector from the left; this library
+ * hands out the float[16] its vertex stage reads - column-major, the vector a column, the translation
+ * at 12, 13, 14 - so a matrix read out of a glTF file goes in as it came out. Multiplication is
+ * left*right, which spends the RIGHT factor first, so a placement is translate*rotate*scale.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// The transform that moves nothing: raymath's MatrixIdentity (raymath.h 988). XUD_INVALID_ARG on a NULL out.
+XudResult xud_matrix_identity(float* outMatrix);
+
+/// A shift, raymath's MatrixTranslate (raymath.h 1941) - the identity with the caller's point in its fourth column.
+XudResult xud_matrix_translate(float* outMatrix, XudVector3 translation);
+
+/// A stretch about the world's origin: raymath's MatrixScale (raymath.h 1963), three floats on the diagonal.
+XudResult xud_matrix_scale(float* outMatrix, XudVector3 scale);
+
+/// A rotation about an axis through the origin: raymath's MatrixRotate (raymath.h 1792). The axis needs no
+/// normalising; a non-finite angle or an axis with no direction in it is refused.
+XudResult xud_matrix_rotate(float* outMatrix, XudVector3 axis, float radians);
+
+/// Three rotations at once: raymath's MatrixRotateXYZ (raymath.h 1897), the angles in radians, the third
+/// applied first and the first last (roll, then yaw, then pitch).
+XudResult xud_matrix_rotate_xyz(float* outMatrix, XudVector3 radians);
+
+/// left*right, raymath's MatrixMultiply (raymath.h 968) with the factor order the column convention asks
+/// for. The product is built in full before it is written, so outMatrix may be left or right.
+XudResult xud_matrix_multiply(float* outMatrix, const float* left, const float* right);
+
+/// The placement a draw spends: translate*rotate*scale, the three the calls above would take two
+/// multiplies to combine. Radians are the same three xud_matrix_rotate_xyz() takes.
+XudResult xud_matrix_compose(float* outMatrix, XudVector3 translation, XudVector3 radians, XudVector3 scale);
+
+/// A point through a transform: raymath's Vector3Transform (raymath.h 891), affine half only - the
+/// fourth row is not read, so this places and never projects.
+XudResult xud_matrix_transform_point(XudVector3* outPoint, const float* matrix, XudVector3 point);
+
+/*-----------------------------------------------------------------------------------------------
  * The generation rung - the solids raylib's GenMesh* family cuts, as arrays the caller owns
  *-----------------------------------------------------------------------------------------------*/
 

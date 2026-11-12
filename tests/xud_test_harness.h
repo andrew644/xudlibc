@@ -57,6 +57,8 @@ void xud_test_shapes(void); /* the shapes rung and the public drawing API: the a
 void xud_test_camera(void); /* the camera rung and the public camera pair: the basis, the frustum, the matrix's geometry */
 void xud_test_collision(
     void); /* the collision rung's nine calls: the three tests, the five casts, a mesh's bounds, the normals they answer */
+void xud_test_matrix(
+    void); /* the matrix rung's eight builders: where each transform sends a basis vector, the factor order, the alias-free product, the refusals */
 void xud_test_material(void); /* the material rung and the public material API: the record, the scoped state, the teardown order */
 void xud_test_mesh(void); /* the mesh rung and the public mesh API: the arena's layout, the write that fills it, the teardown rung above the
                              table's close */
