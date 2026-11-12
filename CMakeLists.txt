@@ -305,3 +305,15 @@ add_executable(core_world_screen
 )
 
 target_link_libraries(core_world_screen PRIVATE xud)
+
+add_executable(core_3d_picking
+    examples/core_3d_picking.c
+)
+
+target_link_libraries(core_3d_picking PRIVATE xud)
+
+add_executable(models_box_collisions
+    examples/models_box_collisions.c
+)
+
+target_link_libraries(models_box_collisions PRIVATE xud)
