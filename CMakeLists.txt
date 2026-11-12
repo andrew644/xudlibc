@@ -319,3 +319,21 @@ add_executable(models_box_collisions
 )
 
 target_link_libraries(models_box_collisions PRIVATE xud)
+
+add_executable(camera_free
+    examples/camera_free.c
+)
+
+target_link_libraries(camera_free PRIVATE xud)
+
+add_executable(models_mesh_generation
+    examples/models_mesh_generation.c
+)
+
+target_link_libraries(models_mesh_generation PRIVATE xud)
+
+add_executable(models_mesh_picking
+    examples/models_mesh_picking.c
+)
+
+target_link_libraries(models_mesh_picking PRIVATE xud)
