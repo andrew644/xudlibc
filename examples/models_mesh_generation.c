@@ -102,7 +102,6 @@ typedef struct XudMeshGenEntry {
 static uint8_t* xud_mesh_gen_read(const char* path, uint32_t* outBytes);
 static XudResult xud_mesh_gen_text(
     XudContext* context, XudHandle font, int32_t posX, int32_t posY, const char* format, XudColor color, ...);
-static void xud_mesh_gen_place(float* outMatrix, float x, float y, float z);
 static XudResult xud_mesh_gen_hud(XudContext* context, XudHandle font, uint32_t pick, const XudMeshCounts* counts);
 
 /*-----------------------------------------------------------------------------------------------
@@ -193,8 +192,7 @@ static const XudMeshGenEntry xudMeshGenTable[XUD_MESH_GEN_COUNT - 1u] = { { "PLA
             .stacks = 3u } } };
 
 /*-----------------------------------------------------------------------------------------------
- * The machinery the run needs: a file reader, a text call that formats, a placement matrix, and the
- * checked texture
+ * The machinery the run needs: a file reader, a text call that formats, and the checked texture
  *-----------------------------------------------------------------------------------------------*/
 
 /* The font file's bytes: xud_load_font() takes bytes rather than a path, so the public header
@@ -260,30 +258,6 @@ static XudResult xud_mesh_gen_text(
     }
 
     return xud_draw_text_screen(context, font, codepoints, (uint32_t)written, posX, posY, (float)XUD_MESH_GEN_FONT_PIXELS, 0.0f, color);
-}
-
-/* The column-major identity with a translation in it: the matrix xud_draw_mesh_ex() puts on the
-   vertices, and the one the ray of the picking example is thrown back through. A mesh is cut at the
-   origin, so this is the whole of the placement - a solid that also turned would carry the rotation
-   in the same nine leading floats.
-*/
-static void xud_mesh_gen_place(float* outMatrix, float x, float y, float z) {
-    outMatrix[0] = 1.0f;
-    outMatrix[1] = 0.0f;
-    outMatrix[2] = 0.0f;
-    outMatrix[3] = 0.0f;
-    outMatrix[4] = 0.0f;
-    outMatrix[5] = 1.0f;
-    outMatrix[6] = 0.0f;
-    outMatrix[7] = 0.0f;
-    outMatrix[8] = 0.0f;
-    outMatrix[9] = 0.0f;
-    outMatrix[10] = 1.0f;
-    outMatrix[11] = 0.0f;
-    outMatrix[12] = x;
-    outMatrix[13] = y;
-    outMatrix[14] = z;
-    outMatrix[15] = 1.0f;
 }
 
 /* The checked image, in bytes: four checks across, each one texel, in the two colours raylib's
@@ -545,7 +519,7 @@ int main(void) {
         return 1;
     }
 
-    xud_mesh_gen_place(customMatrix, 0.0f, 0.0f, 0.0f);
+    (void)xud_matrix_identity(customMatrix);
     if (xud_set_target_fps(context, 60u) != XUD_OK) {
         printf("models_mesh_generation: xud_set_target_fps -> refused, so the run free-runs\n");
     }
@@ -604,7 +578,7 @@ int main(void) {
            two surfaces at one height are a z-fight the depth buffer settles differently every frame.
            The other eight hang across the floor as they do in the example above, half of them under.
         */
-        xud_mesh_gen_place(place, 0.0f, (pick == 0u) ? 0.01f : 0.0f, 0.0f);
+        (void)xud_matrix_translate(place, (XudVector3) { .x = 0.0f, .y = (pick == 0u) ? 0.01f : 0.0f, .z = 0.0f });
         (void)xud_begin_material(context, materialHandle);
         result = xud_draw_mesh_ex(context, meshes[pick], (pick == (XUD_MESH_GEN_COUNT - 1u)) ? customMatrix : place, xudMeshGenWhite);
         (void)xud_end_material(context);

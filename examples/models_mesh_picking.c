@@ -90,7 +90,6 @@ static const XudColor xudMeshPickWhite = { .r = 255u, .g = 255u, .b = 255u, .a =
 static uint8_t* xud_mesh_pick_read(const char* path, uint32_t* outBytes);
 static XudResult xud_mesh_pick_text(
     XudContext* context, XudHandle font, int32_t posX, int32_t posY, const char* format, XudColor color, ...);
-static void xud_mesh_pick_place(float* outMatrix, float x, float y, float z);
 
 /*-----------------------------------------------------------------------------------------------
  * The machinery: a file reader, a text call that formats, a placement matrix
@@ -158,29 +157,6 @@ static XudResult xud_mesh_pick_text(
     }
 
     return xud_draw_text_screen(context, font, codepoints, (uint32_t)written, posX, posY, (float)XUD_MESH_PICK_FONT_PIXELS, 0.0f, color);
-}
-
-/* The column-major identity with a translation in it: how the tower stands on the floor, and the same
-   matrix the mesh cast is thrown through - the cast and the draw must agree about where the solid is,
-   which is the note raylib's example leaves about its own transform (its file, lines 88 to 90).
-*/
-static void xud_mesh_pick_place(float* outMatrix, float x, float y, float z) {
-    outMatrix[0] = 1.0f;
-    outMatrix[1] = 0.0f;
-    outMatrix[2] = 0.0f;
-    outMatrix[3] = 0.0f;
-    outMatrix[4] = 0.0f;
-    outMatrix[5] = 1.0f;
-    outMatrix[6] = 0.0f;
-    outMatrix[7] = 0.0f;
-    outMatrix[8] = 0.0f;
-    outMatrix[9] = 0.0f;
-    outMatrix[10] = 1.0f;
-    outMatrix[11] = 0.0f;
-    outMatrix[12] = x;
-    outMatrix[13] = y;
-    outMatrix[14] = z;
-    outMatrix[15] = 1.0f;
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -295,7 +271,12 @@ int main(void) {
         free(fontFile);
         return 1;
     }
-    xud_mesh_pick_place(towerMatrix, 0.0f, XUD_MESH_PICK_TOWER_Y, 0.0f);
+
+    /* How the tower stands on the floor, and the same matrix the mesh cast is thrown through: the cast
+       and the draw must agree about where the solid is, which is the note raylib's example leaves about
+       its own transform (its file, lines 88 to 90).
+    */
+    (void)xud_matrix_translate(towerMatrix, (XudVector3) { .x = 0.0f, .y = XUD_MESH_PICK_TOWER_Y, .z = 0.0f });
 
     if (xud_set_target_fps(context, 60u) != XUD_OK) {
         printf("models_mesh_picking: xud_set_target_fps -> refused, so the run free-runs\n");
