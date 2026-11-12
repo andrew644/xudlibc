@@ -590,6 +590,50 @@ static void xud_test_random(void) {
     xud_check(distinct >= 90u, "random/range-whole-int-moves", "and answers something other than zero for it");
 }
 
+/* The two extent getters: the extent a frame renders at is the swapchain's, held on the context,
+   and NOT the size the window record says it asked the compositor for - the two differ the moment a
+   compositor answers a different size, which is the reason the pair exists beside the window's own
+   members. The window record is filled with a DIFFERENT extent than the context so a getter that
+   read the wrong one cannot pass.
+*/
+static void xud_test_screen_extent(void) {
+    XudWindow window;
+    XudContext shell;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+
+    memset(&window, 0, sizeof(window));
+    memset(&shell, 0, sizeof(shell));
+    shell.window = &window;
+    shell.width = 800u;
+    shell.height = 600u;
+    window.width = 1024u;
+    window.height = 768u;
+
+    xud_check(xud_get_screen_width(NULL, &shell) == XUD_INVALID_ARG, "extent/width-no-out-param",
+        "the width getter refuses a place to write nothing to");
+    xud_check(xud_get_screen_height(NULL, &shell) == XUD_INVALID_ARG, "extent/height-no-out-param", "and the height getter the same");
+    xud_check(
+        xud_get_screen_width(&width, NULL) == XUD_INVALID_ARG, "extent/width-no-context", "a missing context has no extent to answer");
+    xud_check(xud_get_screen_height(&height, NULL) == XUD_INVALID_ARG, "extent/height-no-context", "and the same for the rows");
+
+    shell.window = NULL;
+    xud_check(xud_get_screen_width(&width, &shell) == XUD_UNSUPPORTED, "extent/width-no-window",
+        "a context that never completed bring-up has no swapchain extent, which is the state the pair "
+        "refuses rather than answering the asked-for size");
+    xud_check(xud_get_screen_height(&height, &shell) == XUD_UNSUPPORTED, "extent/height-no-window", "and the same on the rows");
+    xud_check((width == 0u) && (height == 0u), "extent/refusals-write-nothing",
+        "and a refusal leaves the caller's own numbers alone rather than writing zeros over them");
+
+    shell.window = &window;
+    width = 0u;
+    height = 0u;
+    xud_check(xud_get_screen_width(&width, &shell) == XUD_OK, "extent/width-answers", "with the window live the pair answers");
+    xud_check(xud_get_screen_height(&height, &shell) == XUD_OK, "extent/height-answers", "on both axes");
+    xud_check((width == 800u) && (height == 600u), "extent/answers-the-rendered-extent",
+        "and the numbers are the context's swapchain extent, not the window record's requested size");
+}
+
 void xud_test_core(void) {
     xud_test_init_arg_validation();
     xud_test_vulkan_supported();
@@ -597,6 +641,7 @@ void xud_test_core(void) {
     xud_test_close();
     xud_test_no_leak();
     xud_test_random();
+    xud_test_screen_extent();
     if (xud_gpu_tests_enabled()) {
         xud_test_gpu_context();
     }

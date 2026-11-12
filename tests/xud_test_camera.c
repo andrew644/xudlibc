@@ -41,6 +41,7 @@
 #include "xud_descriptor.h" /* Required for: XudDescriptor, whose set 0 block xud_camera_apply() writes through the descriptor rung's setter */
 #include "xud_renderer.h" /* Required for: XudRenderer, the record the public pair stores a camera into */
 #include "xud_test_harness.h"
+#include "xud_window.h" /* Required for: XudWindow, the record the fold's two context-taking calls refuse a NULL of */
 
 /* The tolerance every float comparison in this area reads against, and why it is a tolerance at
    all where the batch area's counters are read exactly: every check below crosses a sinf/cosf or
@@ -1063,8 +1064,284 @@ static void xud_test_camera_gpu(void) {
     xud_check(context == NULL, "gpu-camera/close-clears", "and the out-param is cleared");
 }
 
+/*-----------------------------------------------------------------------------------------------
+ * The fold between the frame's pixels and the world - the two public pairs above the camera record
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_camera_fold(void) {
+    XudWindow window;
+    XudContext shell;
+    XudCamera3D camera;
+    XudCamera3D broken;
+    XudVector3 point;
+    XudVector2 screen;
+    XudRay ray;
+    float matrix[XUD_CAMERA_MATRIX_ELEMENT_COUNT];
+    float clip[4];
+    float expected[2];
+    XudResult result = XUD_INVALID_ARG;
+    float toPoint[3];
+    float cross[3];
+    float toLength = 0.0f;
+    float crossLength = 0.0f;
+    float length = 0.0f;
+    uint32_t badMatrix = 0u;
+    uint32_t badLength = 0u;
+    uint32_t bad = 0u;
+    uint32_t ix = 0u;
+    uint32_t iy = 0u;
+    uint32_t iz = 0u;
+
+    memset(&window, 0, sizeof(window));
+    memset(&shell, 0, sizeof(shell));
+    shell.window = &window;
+    shell.width = 200u;
+    shell.height = 100u;
+
+    /* The same camera the matrix checks above use: eye on +Z looking at the origin over up +Y, with
+       a 90-degree aperture so the focal length is exactly 1 and every closed form below is a
+       division and nothing more. The extent is 200x100 rather than a square, because a square one
+       lets a fold that forgets the aspect pass every check the horizontal has.
+    */
+    camera = (XudCamera3D) { .position = { .x = 0.0f, .y = 0.0f, .z = 2.0f },
+        .target = { .x = 0.0f, .y = 0.0f, .z = 0.0f },
+        .up = { .x = 0.0f, .y = 1.0f, .z = 0.0f },
+        .fovy = 90.0f,
+        .near = 1.0f,
+        .far = 4.0f };
+    broken = camera;
+
+    /*--- the refusals ----------------------------------------------------------------------*/
+
+    point = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+    screen = (XudVector2) { .x = 100.0f, .y = 50.0f };
+
+    xud_check(xud_camera_fill_screen_point(NULL, 200.0f, 100.0f, point, &screen) == XUD_INVALID_ARG, "camera/fold-no-camera",
+        "a fold with no camera has no basis to fold through");
+    xud_check(xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, NULL) == XUD_INVALID_ARG, "camera/fold-no-out-param",
+        "and no answer to write");
+    xud_check(xud_camera_fill_world_ray(NULL, 200.0f, 100.0f, screen, &ray) == XUD_INVALID_ARG, "camera/ray-no-camera",
+        "the same two refusals on the way back in");
+    xud_check(xud_camera_fill_world_ray(&camera, 200.0f, 100.0f, screen, NULL) == XUD_INVALID_ARG, "camera/ray-no-out-param",
+        "and the same missing answer");
+
+    xud_check(xud_camera_fill_screen_point(&camera, 0.0f, 100.0f, point, &screen) == XUD_INVALID_ARG, "camera/fold-zero-width",
+        "a viewport with no columns has no fraction of a frame to land on");
+    xud_check(xud_camera_fill_screen_point(&camera, 200.0f, 0.0f, point, &screen) == XUD_INVALID_ARG, "camera/fold-zero-height",
+        "and the same for no rows, which is the division the aspect is");
+    xud_check(xud_camera_fill_screen_point(&camera, NAN, 100.0f, point, &screen) == XUD_INVALID_ARG, "camera/fold-nan-width",
+        "and a NaN extent is refused by the same not-greater test rather than folded into NaN");
+    xud_check(xud_camera_fill_world_ray(&camera, 200.0f, 0.0f, screen, &ray) == XUD_INVALID_ARG, "camera/ray-zero-height",
+        "the trace refuses a zero extent before it divides the pixel by it");
+
+    broken.target = camera.position;
+    xud_check(xud_camera_fill_screen_point(&broken, 200.0f, 100.0f, point, &screen) == XUD_INVALID_ARG, "camera/fold-degenerate-camera",
+        "an eye on its target has no frame to fold into");
+    xud_check(xud_camera_fill_world_ray(&broken, 200.0f, 100.0f, screen, &ray) == XUD_INVALID_ARG, "camera/ray-degenerate-camera",
+        "and no direction to trace");
+    broken = camera;
+    broken.fovy = 0.0f;
+    xud_check(xud_camera_fill_world_ray(&broken, 200.0f, 100.0f, screen, &ray) == XUD_INVALID_ARG, "camera/ray-zero-aperture",
+        "an aperture of zero has no frame at all, so the fold refuses it as the matrix does");
+    broken = camera;
+
+    point = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 2.0f };
+    xud_check(xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, &screen) == XUD_INVALID_ARG, "camera/fold-point-at-eye",
+        "a point AT the eye is the divide by zero the fold refuses rather than a pair of infinities");
+    point = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 4.0f };
+    xud_check(xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, &screen) == XUD_INVALID_ARG, "camera/fold-point-behind-eye",
+        "and a point behind it has no screen position - raylib's blind divide answers the mirrored one here");
+
+    screen = (XudVector2) { .x = NAN, .y = 50.0f };
+    xud_check(xud_camera_fill_world_ray(&camera, 200.0f, 100.0f, screen, &ray) == XUD_INVALID_ARG, "camera/ray-nan-pixel",
+        "a NaN pixel folds to a NaN direction, which the normalisation's floor refuses");
+
+    /* The context-taking halves, over a shell whose window exists and whose extent is the 200x100
+       above: the fold reads the extent and the window's presence and nothing else of either.
+    */
+    screen = (XudVector2) { .x = 100.0f, .y = 50.0f };
+    point = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+    xud_check(xud_get_world_to_screen(NULL, &shell, point, &camera) == XUD_INVALID_ARG, "camera/screen-no-out-param",
+        "the public fold refuses a missing answer");
+    xud_check(xud_get_world_to_screen(&screen, NULL, point, &camera) == XUD_INVALID_ARG, "camera/screen-no-context",
+        "and a missing context, whose extent the fold has nothing to be a fraction of");
+    xud_check(xud_get_world_to_screen(&screen, &shell, point, NULL) == XUD_INVALID_ARG, "camera/screen-no-camera", "and a missing camera");
+
+    shell.window = NULL;
+    xud_check(xud_get_world_to_screen(&screen, &shell, point, &camera) == XUD_UNSUPPORTED, "camera/screen-no-window",
+        "a context that never completed bring-up has no extent a frame rendered at");
+    xud_check(xud_get_screen_to_world_ray(&ray, &shell, screen, &camera) == XUD_UNSUPPORTED, "camera/ray-no-window",
+        "and the trace gives the same answer for the same reason");
+    shell.window = &window;
+
+    xud_check(xud_get_world_to_screen(&screen, &shell, point, &camera) == XUD_OK, "camera/screen-with-extent",
+        "with the window and its extent the fold answers from them");
+    xud_check(xud_get_screen_to_world_ray(&ray, &shell, screen, &camera) == XUD_OK, "camera/ray-with-extent", "and so does the trace");
+
+    /*--- the closed forms ------------------------------------------------------------------*/
+
+    /* The frame's centre pixel traces the eye's own axis, and the origin the eye looks at is the
+       frame's centre: the same fact stated from each end.
+    */
+    screen = (XudVector2) { .x = 100.0f, .y = 50.0f };
+    point = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+    result = xud_camera_fill_world_ray(&camera, 200.0f, 100.0f, screen, &ray);
+    xud_check((result == XUD_OK) && xudTestNear(ray.direction.x, 0.0f) && xudTestNear(ray.direction.y, 0.0f)
+            && xudTestNear(ray.direction.z, -1.0f),
+        "camera/ray-centre-is-forward", "the middle pixel of the frame traces the axis the eye looks along");
+    result = xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, &screen);
+    xud_check((result == XUD_OK) && xudTestNear(screen.x, 100.0f) && xudTestNear(screen.y, 50.0f), "camera/fold-centre-of-frame",
+        "and the target the eye is aimed at lands in the middle of the frame");
+    xud_check((ray.position.x == camera.position.x) && (ray.position.y == camera.position.y) && (ray.position.z == camera.position.z),
+        "camera/ray-originates-at-eye", "and every trace starts at the eye, wherever on the frame it is aimed");
+
+    /* One world unit off the axis, two units in front, at a 90-degree aperture and an aspect of 2:
+       the vertical half of NDC is 1/2 and the horizontal is 1/(2*2), so the four points one unit off
+       the axis land a quarter of the way out from the centre on each axis - 25 pixels along a row of
+       200 and 25 along a column of 100. Y is the flipped one: the unit UP lands ABOVE the centre, at
+       the smaller pixel row.
+    */
+    point = (XudVector3) { .x = 1.0f, .y = 0.0f, .z = 0.0f };
+    result = xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, &screen);
+    xud_check((result == XUD_OK) && xudTestNear(screen.x, 125.0f) && xudTestNear(screen.y, 50.0f), "camera/fold-one-right",
+        "a unit to the eye's right lands a quarter of the half-width out on the right");
+    point = (XudVector3) { .x = -1.0f, .y = 0.0f, .z = 0.0f };
+    result = xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, &screen);
+    xud_check((result == XUD_OK) && xudTestNear(screen.x, 75.0f) && xudTestNear(screen.y, 50.0f), "camera/fold-one-left",
+        "and a unit to its left the same distance in the other direction, which is the sign a fold that forgot the flip would get wrong");
+    point = (XudVector3) { .x = 0.0f, .y = 1.0f, .z = 0.0f };
+    result = xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, &screen);
+    xud_check((result == XUD_OK) && xudTestNear(screen.x, 100.0f) && xudTestNear(screen.y, 25.0f), "camera/fold-one-up",
+        "a unit up lands above the centre, at the SMALLER row - Vulkan's viewport has row zero on top while its NDC has +y up, and this "
+        "is the one place the two are reconciled");
+    point = (XudVector3) { .x = 0.0f, .y = -1.0f, .z = 0.0f };
+    result = xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, &screen);
+    xud_check((result == XUD_OK) && xudTestNear(screen.x, 100.0f) && xudTestNear(screen.y, 75.0f), "camera/fold-one-down",
+        "and a unit down below it");
+
+    /* A square extent over the same camera moves the horizontal point, not the vertical one: half
+       the columns is half the world's width across them, which is the aspect doing its job rather
+       than a stretch.
+    */
+    point = (XudVector3) { .x = 1.0f, .y = 0.0f, .z = 0.0f };
+    result = xud_camera_fill_screen_point(&camera, 100.0f, 100.0f, point, &screen);
+    xud_check((result == XUD_OK) && xudTestNear(screen.x, 75.0f) && xudTestNear(screen.y, 50.0f), "camera/fold-square-extent",
+        "the same point lands 3/4 across a square frame, where it was 5/8 across the wide one");
+
+    /* The four corners of the frame, at 1/focal = 1 unit up and down and aspect/focal = 2 units
+       sideways per unit of depth: the corner rays are the axis plus those offsets, normalised over
+       the same sqrt(6).
+    */
+    screen = (XudVector2) { .x = 0.0f, .y = 0.0f };
+    result = xud_camera_fill_world_ray(&camera, 200.0f, 100.0f, screen, &ray);
+    xud_check((result == XUD_OK) && xudTestNear(ray.direction.x, -2.0f / 2.4494897f) && xudTestNear(ray.direction.y, 1.0f / 2.4494897f)
+            && xudTestNear(ray.direction.z, -1.0f / 2.4494897f),
+        "camera/ray-top-left-corner", "the top-left pixel traces the frustum's top-left edge");
+    screen = (XudVector2) { .x = 200.0f, .y = 100.0f };
+    result = xud_camera_fill_world_ray(&camera, 200.0f, 100.0f, screen, &ray);
+    xud_check((result == XUD_OK) && xudTestNear(ray.direction.x, 2.0f / 2.4494897f) && xudTestNear(ray.direction.y, -1.0f / 2.4494897f)
+            && xudTestNear(ray.direction.z, -1.0f / 2.4494897f),
+        "camera/ray-bottom-right-corner", "and the bottom-right pixel the opposite edge");
+
+    /*--- the fold against the matrix, and against itself -----------------------------------*/
+
+    /* The fold is the CPU's own route from a world point to a pixel; the matrix is the route the
+       shader takes. Two points on the axis, two off it and one above: the two routes have to put
+       the same pixel on the same frame or the box a pick selects is not the box that was drawn.
+    */
+    {
+        const float samples[4][3] = { { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.5f, -1.0f }, { -1.5f, -0.25f, 1.0f }, { 0.75f, 1.0f, -0.5f } };
+        uint32_t sample = 0u;
+
+        if (xud_camera_fill_view_proj(&camera, 2.0f, matrix) != XUD_OK) {
+            badMatrix++;
+        }
+
+        for (sample = 0u; sample < 4u; sample++) {
+            point.x = samples[sample][0];
+            point.y = samples[sample][1];
+            point.z = samples[sample][2];
+
+            if (xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, &screen) != XUD_OK) {
+                badMatrix++;
+                continue;
+            }
+
+            xudTestTransform(matrix, point.x, point.y, point.z, clip);
+            if (clip[3] <= 0.0f) {
+                badMatrix++;
+                continue;
+            }
+
+            expected[0] = ((0.5f * clip[0] / clip[3]) + 0.5f) * 200.0f;
+            expected[1] = (0.5f - (0.5f * clip[1] / clip[3])) * 100.0f;
+            if (!xudTestNear(screen.x, expected[0]) || !xudTestNear(screen.y, expected[1])) {
+                badMatrix++;
+            }
+        }
+    }
+
+    xud_check(badMatrix == 0u, "camera/fold-agrees-with-matrix",
+        "four world points fold to the pixels the shader's own view-projection puts them at, so a pick cannot drift from what was drawn");
+
+    /* Every point of a 3x3x3 block in front of the eye, out and back: the fold's pixel, traced back,
+       has to come along the same line the eye-to-point vector is - the cross product of the two is
+       zero to within the tolerance scaled by how far the point is - and has to point at it rather
+       than away. The directions are unit, which is what the collision rungs below read without
+       normalising them again.
+    */
+    for (iz = 0u; iz < 3u; iz++) {
+        for (iy = 0u; iy < 3u; iy++) {
+            for (ix = 0u; ix < 3u; ix++) {
+                point = (XudVector3) { .x = -1.5f + (1.5f * (float)ix), .y = -1.0f + (1.0f * (float)iy), .z = -1.0f - (2.0f * (float)iz) };
+
+                if (xud_camera_fill_screen_point(&camera, 200.0f, 100.0f, point, &screen) != XUD_OK) {
+                    bad++;
+                    continue;
+                }
+
+                if (xud_camera_fill_world_ray(&camera, 200.0f, 100.0f, screen, &ray) != XUD_OK) {
+                    bad++;
+                    continue;
+                }
+
+                length = sqrtf(
+                    (ray.direction.x * ray.direction.x) + (ray.direction.y * ray.direction.y) + (ray.direction.z * ray.direction.z));
+                if (fabsf(length - 1.0f) > XUD_TEST_CAMERA_TOLERANCE) {
+                    badLength++;
+                }
+
+                toPoint[0] = point.x - camera.position.x;
+                toPoint[1] = point.y - camera.position.y;
+                toPoint[2] = point.z - camera.position.z;
+                toLength = sqrtf((toPoint[0] * toPoint[0]) + (toPoint[1] * toPoint[1]) + (toPoint[2] * toPoint[2]));
+
+                cross[0] = (ray.direction.y * toPoint[2]) - (ray.direction.z * toPoint[1]);
+                cross[1] = (ray.direction.z * toPoint[0]) - (ray.direction.x * toPoint[2]);
+                cross[2] = (ray.direction.x * toPoint[1]) - (ray.direction.y * toPoint[0]);
+                crossLength = sqrtf((cross[0] * cross[0]) + (cross[1] * cross[1]) + (cross[2] * cross[2]));
+
+                if (crossLength > (XUD_TEST_CAMERA_TOLERANCE * toLength)) {
+                    bad++;
+                }
+
+                if (((ray.direction.x * toPoint[0]) + (ray.direction.y * toPoint[1]) + (ray.direction.z * toPoint[2])) <= 0.0f) {
+                    bad++;
+                }
+            }
+        }
+    }
+
+    xud_check(bad == 0u, "camera/fold-round-trip",
+        "27 world points fold to a pixel and the trace back through that pixel comes along the same line the eye-to-point vector is, and "
+        "towards the point rather than away from it");
+    xud_check(badLength == 0u, "camera/ray-directions-are-unit",
+        "and every direction the trace wrote is a unit vector, which is what the collision rungs read without normalising it again");
+}
+
 void xud_test_camera(void) {
     xud_test_camera_pure();
+    xud_test_camera_fold();
     xud_test_camera_moves();
     if (xud_gpu_tests_enabled()) {
         xud_test_camera_gpu();

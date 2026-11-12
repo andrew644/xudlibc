@@ -236,6 +236,41 @@ XudResult xud_get_frame_time(float* outSeconds, XudContext* context) {
     return XUD_OK;
 }
 
+/// See xud.h. The one division the query is: the frame's own span inverted. raylib keeps a ring of
+/// thirty samples taken no closer than 1/60th of a second apart and inverts their average (rcore.c
+/// 1591-1593), which smooths the number at the cost of thirty floats, an index and a last-sample
+/// stamp of process-static state that two contexts would share; this answers the last frame's rate
+/// from the one number the rung already holds, and the difference is stated beside the declaration.
+XudResult xud_get_fps(float* outFramesPerSecond, XudContext* context) {
+    XudTime* time = NULL;
+    double seconds = 0.0;
+    XudResult result = XUD_INVALID_ARG;
+
+    if (outFramesPerSecond == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    *outFramesPerSecond = 0.0f;
+
+    result = xud_time_reach(&time, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    result = xud_time_frame_time(&seconds, time);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The same zero the span answers with, answered with rather than divided by: before the second
+       boundary there is no completed frame, and a rate has no value to take.
+    */
+    if (seconds > 0.0) {
+        *outFramesPerSecond = (float)(1.0 / seconds);
+    }
+
+    return XUD_OK;
+}
+
 /// See xud.h.
 XudResult xud_get_timer_value(uint64_t* outTicks, XudContext* context) {
     XudTime* time = NULL;

@@ -186,6 +186,13 @@ static void xud_test_time_guards(void) {
             xud_get_time(NULL, context) == XUD_INVALID_ARG, "time/public-null-out-refused", "an out-param that is not there is refused");
         xud_check(
             xud_get_time(&seconds, NULL) == XUD_INVALID_ARG, "time/public-null-context-refused", "a context that is not there is refused");
+        xud_check(xud_get_fps(&frameSeconds, context) == XUD_UNSUPPORTED, "time/public-fps-no-rung-unsupported",
+            "the rate query is guarded the same way as the span it divides");
+        xud_check(frameSeconds == 0.0f, "time/public-fps-no-rung-clears", "and it clears its out-param before it refuses");
+        xud_check(
+            xud_get_fps(NULL, context) == XUD_INVALID_ARG, "time/public-fps-null-out-refused", "an out-param that is not there is refused");
+        xud_check(xud_get_fps(&frameSeconds, NULL) == XUD_INVALID_ARG, "time/public-fps-null-context-refused",
+            "a context that is not there is refused");
         free(context);
     }
 }
@@ -196,6 +203,7 @@ static void xud_test_time_gpu(void) {
     double before = 0.0;
     double after = 0.0;
     float frameSeconds = 0.0f;
+    float fps = 0.0f;
     uint64_t ticksBefore = 0u;
     uint64_t ticksAfter = 0u;
     uint64_t frequency = 0u;
@@ -232,6 +240,12 @@ static void xud_test_time_gpu(void) {
     xud_check(xud_get_frame_time(&frameSeconds, context) == XUD_OK, "time/gpu-frame-time-ok", "the span of a real frame read back");
     xud_check(frameSeconds > 0.0f, "time/gpu-frame-time-positive", "three real frames completed, so the span is not the no-frame answer");
     xud_check(frameSeconds < 1.0f, "time/gpu-frame-time-is-a-frame", "one frame of this run is well under a second");
+
+    xud_check(xud_get_fps(&fps, context) == XUD_OK, "time/gpu-fps-ok", "the rate query answers over real frames");
+    xud_check(fps > 0.0f, "time/gpu-fps-positive", "three real frames completed, so the rate is not the no-frame answer");
+    xud_check(((fps * frameSeconds) > 0.98f) && ((fps * frameSeconds) < 1.02f), "time/gpu-fps-is-the-span-inverted",
+        "the rate and the frame it measures multiply back to one, which is the one difference from raylib's smoothed GetFPS stated as a "
+        "check");
 
     xud_check(xud_get_timer_value(&ticksAfter, context) == XUD_OK, "time/gpu-ticks-again-ok", "the passthrough read again");
     xud_check(ticksAfter >= ticksBefore, "time/gpu-ticks-monotonic", "GLFW's tick counter does not go backwards across frames");

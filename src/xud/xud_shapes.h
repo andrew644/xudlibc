@@ -182,6 +182,13 @@ static_assert(XUD_SHAPES_CUBE_FACE_VERTEX_COUNT == 4u,
 #define XUD_SHAPES_LINE_VERTEX_COUNT 2u
 #define XUD_SHAPES_LINE_INDEX_COUNT 2u
 
+/* The stretch a ray is drawn as: raylib's DrawRay ends its line at the ray's origin plus this much
+   of its direction (rmodels.c 1073-1084, "float scale = 10000"), which is long enough that the line
+   leaves every room a scene has and short enough that a unit direction still lands inside the float
+   range a vertex is stored in. Named here because the public call is the only thing that reads it.
+*/
+#define XUD_SHAPES_RAY_LENGTH 10000.0f
+
 /* The point of raylib's DrawPoint3D (reference/raylib/raylib.h 1586, "Draw a point in 3D space",
    "actually a small line", whose arguments are (position, color)): a point in the shape this
    library is modelled on is a short line, so it needs no POINT_LIST row of the pipeline list and

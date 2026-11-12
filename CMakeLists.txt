@@ -297,3 +297,9 @@ add_executable(camera_first_person
 )
 
 target_link_libraries(camera_first_person PRIVATE xud)
+
+add_executable(core_world_screen
+    examples/core_world_screen.c
+)
+
+target_link_libraries(core_world_screen PRIVATE xud)

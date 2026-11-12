@@ -425,6 +425,174 @@ XudResult xud_get_camera_up(XudVector3* outUp, const XudCamera3D* camera) { retu
 XudResult xud_get_camera_right(XudVector3* outRight, const XudCamera3D* camera) { return xud_camera_get_axis(outRight, camera, 2u); }
 
 /*-----------------------------------------------------------------------------------------------
+ * The two ways between the frame's pixels and the world the camera frames
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The fold the two directions below share: the camera's basis, and the two scales a normalised
+   device coordinate is measured in at one world unit of distance. The focal length is the same
+   cotangent xud_camera_fill_view_proj() puts in the projection's diagonal and the vertical is
+   cross(right, forward) rather than the record's up for the same reason: the view matrix takes the
+   tilted up out of the frame's vertical, so a label placed by this fold lands where the geometry
+   went rather than beside it.
+*/
+static XudResult xud_camera_fill_fold(const XudCamera3D* camera, float width, float height, float* forward, float* right, float* vertical,
+    float* halfWidthAtUnit, float* halfHeightAtUnit) {
+    float up[3];
+    float halfAngleRadians = 0.0f;
+    float focalLength = 0.0f;
+
+    /* The not-greater form on both axes: a zero extent is a frame with no pixels to land on, a
+       negative one is a fold that would put the frame's centre off the frame, and a NaN is refused
+       by the same comparison rather than divided by.
+    */
+    if ((!(width > 0.0f)) || (!(height > 0.0f))) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_validate(camera) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_basis(camera, forward, right, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    xud_camera_cross(right, forward, vertical);
+
+    halfAngleRadians = (camera->fovy * 0.5f) / XUD_CAMERA_DEGREES_PER_RADIANS;
+    focalLength = cosf(halfAngleRadians) / sinf(halfAngleRadians);
+    *halfHeightAtUnit = 1.0f / focalLength;
+    *halfWidthAtUnit = (width / height) * (*halfHeightAtUnit);
+
+    return XUD_OK;
+}
+
+XudResult xud_camera_fill_screen_point(const XudCamera3D* camera, float width, float height, XudVector3 position, XudVector2* outScreen) {
+    float forward[3];
+    float right[3];
+    float vertical[3];
+    float toPoint[3];
+    float halfWidthAtUnit = 0.0f;
+    float halfHeightAtUnit = 0.0f;
+    float distance = 0.0f;
+
+    if (outScreen == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    *outScreen = (XudVector2) { .x = 0.0f, .y = 0.0f };
+
+    if (xud_camera_fill_fold(camera, width, height, forward, right, vertical, &halfWidthAtUnit, &halfHeightAtUnit) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    toPoint[0] = position.x - camera->position.x;
+    toPoint[1] = position.y - camera->position.y;
+    toPoint[2] = position.z - camera->position.z;
+
+    /* How far in front of the eye the point is: the view matrix's own w, which is the divisor the
+       two device coordinates are put over. A point at the eye or behind it has no screen position,
+       and the not-greater form refuses it along with a NaN distance - raylib divides blindly there
+       and answers the mirrored position, which is a label drawn on the far side of the frame from
+       the thing it labels.
+    */
+    distance = xud_camera_dot(forward, toPoint);
+    if (!(distance > 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The two device coordinates, then the viewport fold: the horizontal is the sideways offset
+       over how wide the frame is AT THIS DISTANCE, so the distance cancels the way the pinhole's
+       does, and the vertical is flipped on the way in because the frame's rows are counted from the
+       top while the camera's are counted from the middle - the same flip raylib's own NDC fold
+       applies (rcore.c 1543).
+    */
+    outScreen->x = ((xud_camera_dot(right, toPoint) / (distance * halfWidthAtUnit)) + 1.0f) * 0.5f * width;
+    outScreen->y = (1.0f - (xud_camera_dot(vertical, toPoint) / (distance * halfHeightAtUnit))) * 0.5f * height;
+
+    return XUD_OK;
+}
+
+XudResult xud_camera_fill_world_ray(const XudCamera3D* camera, float width, float height, XudVector2 screen, XudRay* outRay) {
+    float forward[3];
+    float right[3];
+    float vertical[3];
+    float halfWidthAtUnit = 0.0f;
+    float halfHeightAtUnit = 0.0f;
+    float deviceX = 0.0f;
+    float deviceY = 0.0f;
+    float direction[3] = { 0.0f, 0.0f, 0.0f };
+
+    if (outRay == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    *outRay = (XudRay) { .position = { .x = 0.0f, .y = 0.0f, .z = 0.0f }, .direction = { .x = 0.0f, .y = 0.0f, .z = 0.0f } };
+
+    if (xud_camera_fill_fold(camera, width, height, forward, right, vertical, &halfWidthAtUnit, &halfHeightAtUnit) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The pixel's own device coordinates, y flipped on the way in for the same reason the fold
+       above flips it on the way out (rcore.c 1412, where raylib builds the same two numbers).
+    */
+    deviceX = ((2.0f * screen.x) / width) - 1.0f;
+    deviceY = 1.0f - ((2.0f * screen.y) / height);
+
+    /* One step along each of the three: the forward by one unit, the sideways pair by how far the
+       frame reaches at that distance. Normalising the sum is what turns the pixel's position in the
+       frame into a direction, and it is the same normalisation the matrix's basis went through, so a
+       ray built here and a frame drawn there agree about the pixel the ray came from.
+    */
+    direction[0] = forward[0] + (right[0] * deviceX * halfWidthAtUnit) + (vertical[0] * deviceY * halfHeightAtUnit);
+    direction[1] = forward[1] + (right[1] * deviceX * halfWidthAtUnit) + (vertical[1] * deviceY * halfHeightAtUnit);
+    direction[2] = forward[2] + (right[2] * deviceX * halfWidthAtUnit) + (vertical[2] * deviceY * halfHeightAtUnit);
+    if (xud_camera_normalize(direction, direction) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The eye is the origin, which is the one case of raylib's two (rcore.c 1454: the eye for a
+       perspective camera, a point on the camera plane for an orthographic one) - this library's one
+       camera is perspective, and xud.h says so beside the mode list.
+    */
+    outRay->position = camera->position;
+    outRay->direction.x = direction[0];
+    outRay->direction.y = direction[1];
+    outRay->direction.z = direction[2];
+
+    return XUD_OK;
+}
+
+XudResult xud_get_screen_to_world_ray_ex(XudRay* outRay, XudVector2 screen, const XudCamera3D* camera, float width, float height) {
+    return xud_camera_fill_world_ray(camera, width, height, screen, outRay);
+}
+
+XudResult xud_get_screen_to_world_ray(XudRay* outRay, XudContext* context, XudVector2 screen, const XudCamera3D* camera) {
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->window == NULL) || (context->width == 0u) || (context->height == 0u)) {
+        /* The extent a frame renders at is what the pixel is a fraction OF, and a context that never
+           completed bring-up - or whose swapchain has no extent yet - has no such fraction.
+        */
+        return XUD_UNSUPPORTED;
+    }
+
+    return xud_camera_fill_world_ray(camera, (float)context->width, (float)context->height, screen, outRay);
+}
+
+XudResult xud_get_world_to_screen_ex(XudVector2* outScreen, XudVector3 position, const XudCamera3D* camera, float width, float height) {
+    return xud_camera_fill_screen_point(camera, width, height, position, outScreen);
+}
+
+XudResult xud_get_world_to_screen(XudVector2* outScreen, XudContext* context, XudVector3 position, const XudCamera3D* camera) {
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->window == NULL) || (context->width == 0u) || (context->height == 0u)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    return xud_camera_fill_screen_point(camera, (float)context->width, (float)context->height, position, outScreen);
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The moves - raylib's CameraMoveForward / MoveUp / MoveRight / MoveToTarget
  *
  * Every one of them moves the EYE and the TARGET together, because the record's direction is the

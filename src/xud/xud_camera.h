@@ -176,4 +176,23 @@ XudResult xud_camera_fill_view_proj(const XudCamera3D* camera, float aspect, flo
 /// at (the framebuffer row's), and a zero or NaN aspect is refused rather than divided by.
 XudResult xud_camera_apply(XudDescriptor* descriptor, const XudCamera3D* camera, float aspect);
 
+/*-----------------------------------------------------------------------------------------------
+ * The fold between the frame's pixels and the world - the two public pairs above the camera record
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Pure: where a world point lands in a viewport of the given extent, in the top-left-anchored
+/// pixels every screen-space call takes. The fold is the camera's own basis and the focal length its
+/// view matrix uses, so the two cannot disagree about a point's position. XUD_INVALID_ARG on a NULL
+/// out-screen, a camera the view matrix would refuse, an extent that is not greater than zero on
+/// either axis, or a point at or behind the eye - which has no screen position rather than a
+/// mirrored one.
+XudResult xud_camera_fill_screen_point(const XudCamera3D* camera, float width, float height, XudVector3 position, XudVector2* outScreen);
+
+/// Pure: the ray from the eye through one pixel of a viewport of the given extent. The direction is
+/// normalised, the origin is the eye, and the refusals are the fold's own - a NULL out-ray, a camera
+/// the view matrix would refuse, an extent that is not greater than zero on either axis, or a pixel
+/// whose fold does not produce a direction (a NaN coordinate, which the normalisation's floor
+/// catches).
+XudResult xud_camera_fill_world_ray(const XudCamera3D* camera, float width, float height, XudVector2 screen, XudRay* outRay);
+
 #endif /* XUD_CAMERA_H_ */

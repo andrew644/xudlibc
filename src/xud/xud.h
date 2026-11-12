@@ -215,6 +215,19 @@ static_assert(sizeof(XudCamera3D) == 48u,
     "planes - align 4 and no padding past a float, so the record a caller declares is the record "
     "the camera rung reads");
 
+/// The one ray a screen point is traced along - raylib's Ray (reference/raylib/raylib.h 445:
+/// position, direction), the direction already normalised. A value type in the same bucket as the
+/// three above: xud_get_screen_to_world_ray() fills one, the collision calls below read one, and it
+/// owns nothing, so it has no lifetime and no close.
+typedef struct XudRay {
+    XudVector3 position; /* the ray's origin, in world units        */
+    XudVector3 direction; /* the ray's direction, normalised          */
+} XudRay;
+
+static_assert(sizeof(XudRay) == 24u,
+    "xud.h: a ray is six floats - an origin and a direction - so the record the camera's fold fills "
+    "is the record the collision rung reads with no conversion between them");
+
 /*-----------------------------------------------------------------------------------------------
  * The handle - the one currency every caller-addressable object is named by
  *
@@ -612,6 +625,19 @@ XudResult xud_set_target_fps(XudContext* context, uint32_t fps);
 /// answer on a completed context.
 XudResult xud_get_target_fps(uint32_t* outFps, XudContext* context);
 
+/// The width a frame renders at, in pixels - raylib's GetScreenWidth (raylib.h 1017). This is the
+/// swapchain's own extent rather than the size GLFW was asked for: a compositor answers a different
+/// size than a request, and this is the extent the frame's pixels, the depth buffer and the camera's
+/// aspect all are. A drag resize or a xud_set_window_size() moves it at the xud_end_drawing()
+/// boundary, so a caller that reads it every frame never divides by an extent that is gone. XUD_
+/// INVALID_ARG on a NULL out-width or context; XUD_UNSUPPORTED on a context that never completed
+/// bring-up.
+XudResult xud_get_screen_width(uint32_t* outWidth, XudContext* context);
+
+/// The height a frame renders at, in pixels - raylib's GetScreenHeight (raylib.h 1018), the same
+/// extent's other axis and the same two refusals.
+XudResult xud_get_screen_height(uint32_t* outHeight, XudContext* context);
+
 /*-----------------------------------------------------------------------------------------------
  * The drawing API - the frame pair and the shapes a frame is made of
  *
@@ -713,6 +739,17 @@ XudResult xud_draw_sphere(XudContext* context, XudVector3 centerPos, float radiu
 /// never completed bring-up; XUD_OUT_OF_MEMORY when the two vertices or the two indices do not fit
 /// the batch.
 XudResult xud_draw_line_3d(XudContext* context, XudVector3 startPos, XudVector3 endPos, XudColor color);
+
+/// Draw a ray as the line it is: raylib's DrawRay (raylib.h 1604, whose arguments are (ray, color)).
+/// The line is the ray's own origin to its origin plus one over ten thousand units along its
+/// direction, which is raylib's length (rmodels.c 1073-1084) and the reason a picked ray reaches past
+/// every wall a scene has: the visible half of a ray is the part in front of the camera, and the
+/// shape has to be long enough that the near-plane crossing is inside the drawn stretch. The append is
+/// the line above's, two vertices and two indices, atomic in the same shape; a ray whose direction is
+/// not normalised draws the same LINE row, just a shorter or longer one. XUD_INVALID_ARG on a NULL
+/// context or a renderer with no batch; XUD_UNSUPPORTED on a context that never completed bring-up;
+/// XUD_OUT_OF_MEMORY when the two vertices or the two indices do not fit the batch.
+XudResult xud_draw_ray(XudContext* context, XudRay ray, XudColor color);
 
 /// Draw a point in 3D space, raylib's DrawPoint3D (raylib.h 1586, "Draw a point in 3D space",
 /// "actually a small line", whose arguments are (position, color)): a point here is a short line
@@ -917,6 +954,47 @@ XudResult xud_update_camera(XudContext* context, XudCamera3D* camera, uint32_t m
 /// own input - a gamepad, a replay, a recorded path - drives. The same refusals as xud_update_
 /// camera()'s, minus the ones that need a context.
 XudResult xud_update_camera_pro(XudCamera3D* camera, XudVector3 movement, XudVector3 rotation, float zoom);
+
+/*-----------------------------------------------------------------------------------------------
+ * The two ways between the frame's pixels and the world the camera frames
+ *
+ * raylib's GetScreenToWorldRay/Ex and GetWorldToScreen/Ex (raylib.h 1083-1086). The four are the
+ * picking and the on-screen-label half of raylib's API: one turns a mouse position into the ray to
+ * trace, the other turns a world point into the pixel a label goes at. Both read the camera by
+ * pointer rather than from the library's state, so a caller can ask about a camera it never began,
+ * and both fold through the same basis and focal length the view matrix is built from, so a label
+ * drawn at the pixel one of these answers sits on the geometry it labels rather than beside it.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Trace the ray from the eye through one of the frame's pixels: raylib's GetScreenToWorldRay
+/// (raylib.h 1083, the function its GetMouseRay became). The pixel is taken in the same top-left-
+/// anchored floats the input rung's position and delta are, the origin is the eye and the direction
+/// is normalised, both in world units. raylib takes the ray's two bounding planes from a global cull
+/// distance because its camera record carries neither; this record carries both, and the ray is built
+/// from the camera the caller holds. The pixel need not be inside the frame - a point outside the
+/// extent traces the ray the frame's edges would extrapolate to, which is what a pointer dragged
+/// past an edge asks for. XUD_INVALID_ARG on a NULL out-ray, context or camera, or a camera the view
+/// matrix would refuse; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_screen_to_world_ray(XudRay* outRay, XudContext* context, XudVector2 screen, const XudCamera3D* camera);
+
+/// The same trace through a viewport of the caller's own extent rather than the context's - raylib's
+/// GetScreenToWorldRayEx (raylib.h 1084), the form a half of a split screen un-projects inside. Pure:
+/// no context, and no extent read from one. XUD_INVALID_ARG on a NULL out-ray or camera, a camera the
+/// view matrix would refuse, or an extent that is not greater than zero on either axis.
+XudResult xud_get_screen_to_world_ray_ex(XudRay* outRay, XudVector2 screen, const XudCamera3D* camera, float width, float height);
+
+/// Where a world point lands on the frame's pixels: raylib's GetWorldToScreen (raylib.h 1085). The
+/// answer is in the top-left-anchored pixels every screen-space call takes, including the y fold
+/// raylib applies on the way out of NDC. A point at or behind the eye is refused rather than answered
+/// with the mirrored position a blind divide gives - a label for a point the camera cannot see has no
+/// pixel to sit at. XUD_INVALID_ARG on a NULL out-screen, context or camera, a camera the view matrix
+/// would refuse, or such a point; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_world_to_screen(XudVector2* outScreen, XudContext* context, XudVector3 position, const XudCamera3D* camera);
+
+/// The same fold into a viewport of the caller's own extent - raylib's GetWorldToScreenEx (raylib.h
+/// 1086), which is also the form a caller uses to place a label in one half of a split screen. Same
+/// refusals as the trace above's, minus the ones that need a context.
+XudResult xud_get_world_to_screen_ex(XudVector2* outScreen, XudVector3 position, const XudCamera3D* camera, float width, float height);
 
 /// Put a material in the drawing state, for this frame and the ones that follow: the Begin*/End*
 /// shape of raylib's scoped state calls (BeginBlendMode()/EndBlendMode(), raylib.h 1058-1059), a
@@ -1733,6 +1811,15 @@ XudResult xud_get_time(double* outSeconds, XudContext* context);
 /// rbage. XUD_INVALID_ARG on a NULL out-seconds or context; XUD_UNSUPPORTED on a context that never c
 /// ompleted bring-up.
 XudResult xud_get_frame_time(float* outSeconds, XudContext* context);
+
+/// Frames a second the last frame ran at - raylib's GetFPS (raylib.h 1096), the number its DrawFPS
+/// prints. The one difference from raylib is the smoothing: raylib keeps a ring of thirty samples
+/// taken no closer than 1/60th of a second apart and inverts their average (rcore.c 1591-1620), where
+/// this inverts xud_get_frame_time() above, so the answer is the frame that just was rather than the
+/// last half second of them, and no state is added to the clock to hold it. 0.0 before the second
+/// boundary, where there is no completed frame to take a rate of. XUD_INVALID_ARG on a NULL
+/// out-frames-per-second or context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_fps(float* outFramesPerSecond, XudContext* context);
 
 /// GLFW's raw tick counter, passed through - glfwGetTimerValue (input.c 1508), the same number the t
 /// wo queries above divide. A caller that wants ticks rather than seconds wants these two: a double s

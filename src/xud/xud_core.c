@@ -726,6 +726,33 @@ XudResult xud_get_target_fps(uint32_t* outFps, XudContext* context) {
     return XUD_OK;
 }
 
+XudResult xud_get_screen_width(uint32_t* outWidth, XudContext* context) {
+    if ((outWidth == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->window == NULL) {
+        /* No window, no swapchain, and so no extent a frame has rendered at: the recorded number
+           would be the one the caller ASKED for at the open rather than the one it draws into.
+        */
+        return XUD_UNSUPPORTED;
+    }
+
+    *outWidth = context->width;
+    return XUD_OK;
+}
+
+XudResult xud_get_screen_height(uint32_t* outHeight, XudContext* context) {
+    if ((outHeight == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->window == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    *outHeight = context->height;
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The public frame pair, above the context
  *

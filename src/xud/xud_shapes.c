@@ -2553,6 +2553,26 @@ XudResult xud_draw_line_3d(XudContext* context, XudVector3 startPos, XudVector3 
     return xud_shapes_append_line(batch, startPos, endPos, color);
 }
 
+XudResult xud_draw_ray(XudContext* context, XudRay ray, XudColor color) {
+    XudBatch* batch = NULL;
+    XudVector3 end;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The line's own append, with the far end where the ray's direction puts it: no normalisation
+       here, because a caller that handed an unnormalised direction asked for that length.
+    */
+    end.x = ray.position.x + (ray.direction.x * XUD_SHAPES_RAY_LENGTH);
+    end.y = ray.position.y + (ray.direction.y * XUD_SHAPES_RAY_LENGTH);
+    end.z = ray.position.z + (ray.direction.z * XUD_SHAPES_RAY_LENGTH);
+
+    return xud_shapes_append_line(batch, ray.position, end, color);
+}
+
 XudResult xud_draw_point_3d(XudContext* context, XudVector3 position, XudColor color) {
     XudBatch* batch = NULL;
     XudVector3 start;

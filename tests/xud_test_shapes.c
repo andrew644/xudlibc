@@ -2216,6 +2216,101 @@ static void xud_test_shapes_pure(void) {
             "and the batch's invariant still holds over the refusal, so nothing half-written is in it");
     }
 
+    /*--- the public ray: the line a screen-to-world trace hands back -------------------------*/
+
+    /* What a pick draws is the ray it computed, so the claim is where the two endpoints land: the
+       ray's own origin, and one over ten thousand units along its direction (raylib's rmodels.c
+       scale = 10000). The direction below is deliberately NOT unit: a normalising implementation
+       would put the far end at 2 + 10000 on y, while the ray as handed puts it at 2 + 5000, and the
+       two are far enough apart for an exact compare to tell them apart. The values are dyadic for
+       the same reason.
+    */
+    {
+        XudRenderer fakeRenderer;
+        XudContext bareShell;
+        XudRay ray;
+
+        memset(&fakeRenderer, 0, sizeof(fakeRenderer));
+        fakeRenderer.batch = &b;
+        memset(&bareShell, 0, sizeof(bareShell));
+
+        memset(&shell, 0, sizeof(shell));
+        shell.renderer = &fakeRenderer;
+        shell.width = 128u;
+        shell.height = 128u;
+
+        ray = (XudRay) { .position = { .x = 1.0f, .y = 2.0f, .z = -3.0f }, .direction = { .x = 0.0f, .y = 0.5f, .z = 0.0f } };
+
+        xud_check(xud_draw_ray(NULL, ray, color) == XUD_INVALID_ARG, "shapes/ray-draw-no-context",
+            "a public ray call with no context is refused");
+        xud_check(xud_draw_ray(&bareShell, ray, color) == XUD_UNSUPPORTED, "shapes/ray-draw-no-renderer",
+            "a context with no renderer has no batch to append into, and the ray is refused as the line it is");
+
+        xud_check(xud_batch_layout(&b, XUD_SHAPES_LINE_VERTEX_COUNT) == XUD_OK, "shapes/ray-layout",
+            "a batch of one line's vertex count lays out - a ray spends exactly what a line spends, so the second one is the refusal "
+            "below");
+        xud_check(xud_batch_reset(&b) == XUD_OK, "shapes/ray-reset", "and the row list and the state are retired with it");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        result = xud_draw_ray(&shell, ray, color);
+        xud_check(result == XUD_OK, "shapes/ray-draw-ok", "the public ray call appends through a context the pure half built itself");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/ray-stats-after-draw", "and the counters answer after it");
+        xud_check((vertexCount == XUD_SHAPES_LINE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_LINE_INDEX_COUNT), "shapes/ray-costs-a-line",
+            "2 vertices and 2 indices: the ray IS the line append, so it costs the line's exactly and no third shape's geometry");
+        xud_check(drawCount == 0u, "shapes/ray-opened-no-row-mid-run",
+            "no row yet: the batch was already on the state the ray asks for, so the append continues the run the reset left rather than "
+            "closing one - the row is the flush's, which is what this area's GPU half watches over a real frame");
+        xud_check(b.currentTopology == XUD_BATCH_TOPOLOGY_LINES, "shapes/ray-moved-the-topology",
+            "and the topology the append moved to is LINES on the OPAQUE variant, the world-space line's pipeline rather than the UI "
+            "column's, because a picked ray is geometry in the scene and not a widget on the screen");
+        xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/ray-invariant", "and the batch's invariant still holds");
+
+        /* The bytes: the origin first, the far end second, both at the ray's own world coordinates. */
+        {
+            const uint8_t* arena = (const uint8_t*)b.stagingMapped;
+            float pos[XUD_SHAPES_LINE_VERTEX_COUNT][3];
+            uint32_t idx[XUD_SHAPES_LINE_INDEX_COUNT];
+            uint32_t row = 0u;
+            uint32_t originRows = 0u;
+            uint32_t farRows = 0u;
+            const float farX = ray.position.x + (ray.direction.x * XUD_SHAPES_RAY_LENGTH);
+            const float farY = ray.position.y + (ray.direction.y * XUD_SHAPES_RAY_LENGTH);
+            const float farZ = ray.position.z + (ray.direction.z * XUD_SHAPES_RAY_LENGTH);
+
+            for (row = 0u; row < XUD_SHAPES_LINE_VERTEX_COUNT; row++) {
+                memcpy(&pos[row][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + (row * XUD_BATCH_STREAM_POS_SIZE),
+                    XUD_BATCH_STREAM_POS_SIZE);
+                if ((pos[row][0] == ray.position.x) && (pos[row][1] == ray.position.y) && (pos[row][2] == ray.position.z)) {
+                    originRows++;
+                }
+                if ((pos[row][0] == farX) && (pos[row][1] == farY) && (pos[row][2] == farZ)) {
+                    farRows++;
+                }
+            }
+            for (row = 0u; row < XUD_SHAPES_LINE_INDEX_COUNT; row++) {
+                memcpy(&idx[row], arena + b.indexOffset + ((size_t)row * XUD_BATCH_INDEX_SIZE), sizeof(idx[row]));
+            }
+
+            xud_check((originRows == 1u) && (farRows == 1u), "shapes/ray-endpoints-are-the-ray",
+                "one vertex at the ray's origin and one at its origin plus the scale times the DIRECTION THE CALLER PASSED, which is the "
+                "difference between drawing the ray and drawing a normalised copy of it");
+            xud_check((pos[0][0] == 1.0f) && (pos[0][1] == 2.0f) && (pos[0][2] == -3.0f), "shapes/ray-origin-first",
+                "and the origin is the first vertex, so the line's own start is the end a collision answer is measured from");
+            xud_check(pos[1][1] == 5002.0f, "shapes/ray-scale-is-ten-thousand",
+                "2 + 0.5 * 10000 on y: the half-length direction stretches half as far, exactly as raylib's scale does");
+            xud_check((idx[0] == 0u) && (idx[1] == 1u), "shapes/ray-index-order", "and the indices run origin to far end");
+        }
+
+        result = xud_draw_ray(&shell, ray, color);
+        xud_check(result == XUD_OUT_OF_MEMORY, "shapes/ray-second-refused", "a second ray does not fit the batch one ray filled");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK,
+            "shapes/ray-stats-after-refusal", "and the counters answer after the refusal");
+        xud_check((vertexCount == XUD_SHAPES_LINE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_LINE_INDEX_COUNT) && (drawCount == 0u),
+            "shapes/ray-refusal-wrote-nothing", "and the refusal wrote no vertex, no index and no row, the atomic append it is");
+    }
+
     /*--- the public pixel: the one-pixel rectangle --------------------------------------------*/
 
     {
