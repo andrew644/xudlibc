@@ -60,6 +60,9 @@ void xud_test_collision(
 void xud_test_material(void); /* the material rung and the public material API: the record, the scoped state, the teardown order */
 void xud_test_mesh(void); /* the mesh rung and the public mesh API: the arena's layout, the write that fills it, the teardown rung above the
                              table's close */
+void xud_test_generate(
+    void); /* the generation rung's two calls: the eight solids' counts, their refusals, the invariants every solid shares, the extents each
+              one states */
 void xud_test_texture(void); /* the texture rung and the public texture API: the chain's arithmetic, the arena's layout, the write that
                                 fills it, the three create-infos, the teardown rung above the table's close */
 void xud_test_model(void); /* the model rung and the public model API: the document walk, the per-primitive gate, the stage's five arrays,

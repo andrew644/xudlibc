@@ -1120,6 +1120,86 @@ XudResult xud_get_ray_collision_mesh(XudRayCollision* outCollision, XudRay ray, 
 /// a box that quietly leaves out the vertex it should have been widest for.
 XudResult xud_get_mesh_bounding_box(XudVector3* outMin, XudVector3* outMax, const XudMeshData* mesh);
 
+/*-----------------------------------------------------------------------------------------------
+ * The generation rung - the solids raylib's GenMesh* family cuts, as arrays the caller owns
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_MESH_KIND_PLANE 0u /* a flat grid on the world's floor: width by length, sliced and stacked */
+#define XUD_MESH_KIND_CUBE 1u /* six quads, 24 vertices, the four unused numbers of the shape ignored */
+#define XUD_MESH_KIND_SPHERE 2u /* rings of latitude and slices of longitude about a radius */
+#define XUD_MESH_KIND_HEMISPHERE 3u /* the same, from a pole to the equator's ring */
+#define XUD_MESH_KIND_CYLINDER 4u /* a tube of slices around a height, capped at both ends */
+#define XUD_MESH_KIND_TORUS 5u /* a tube of tubeRadius swept around a circle of radius */
+#define XUD_MESH_KIND_KNOT 6u /* a trefoil of tubeRadius swept along a curve of radius */
+#define XUD_MESH_KIND_POLY 7u /* a regular polygon of slices sides, fanned from its centre */
+#define XUD_MESH_KIND_COUNT 8u /* the length of this axis */
+
+static_assert(XUD_MESH_KIND_COUNT == (XUD_MESH_KIND_POLY + 1u),
+    "xud.h: the shape axis is contiguous, because xud_gen_mesh() reads a kind as an index into its own table");
+
+/// What to cut: one description for every kind, the way XudMeshData and XudFontData are one
+/// description each. Which numbers a kind reads is stated at the axis above - a kind ignores the
+/// fields it has no use for, so a description is never half-filled by accident. Extents and radii
+/// are world units, and the floors they are refused under are the rung's (XUD_GENERATE_MIN_EXTENT,
+/// XUD_GENERATE_MIN_RADIUS): a solid with a zero extent has no inside, and raylib answers that with
+/// an all-zero Mesh and a log line, which this library answers with a code.
+typedef struct XudMeshShape {
+    uint32_t kind; /* one of XUD_MESH_KIND_*, and the only field every kind reads */
+    float radius; /* sphere, hemisphere, cylinder, torus ring, poly, knot curve */
+    float tubeRadius; /* the torus's tube and the knot's thickness */
+    float width; /* plane and cube, along x */
+    float height; /* cube and cylinder, along y */
+    float length; /* plane and cube, along z */
+    uint32_t slices; /* longitudes, tube rings around a solid, plane columns, poly sides */
+    uint32_t stacks; /* latitudes, plane rows, the knot's segments along its curve */
+} XudMeshShape;
+
+/// What a shape needs: the two counts xud_gen_mesh_count() answers and xud_gen_mesh() writes, in
+/// the one pair the caller sizes its buffers from.
+typedef struct XudMeshCounts {
+    uint32_t vertexCount; /* vertices the shape has, the count every stream is sized from */
+    uint32_t indexCount; /* indices it has, a whole number of triangles */
+} XudMeshCounts;
+
+/// Where the shape lands: the arrays the caller owns and sized from the counts. pos and index are
+/// the two streams a mesh cannot be described without (xud_mesh_count() refuses a shape whose
+/// position or index array is missing, and xud_upload_mesh() refuses the description it makes);
+/// texcoords and normal MAY be NULL, which is the stream left off rather than a stream of zeros -
+/// a mesh with no normals is a mesh the shaders light from +Z, which is the default the mesh rung's
+/// own note gives. A NULL stream is written nothing, so the caller's own content in it (there is
+/// none) is untouched.
+typedef struct XudMeshBuffers {
+    float* pos; /* vertexCount*3, the one stream with no default */
+    float* texcoords; /* vertexCount*2, or NULL */
+    float* normal; /* vertexCount*3, or NULL */
+    uint32_t* index; /* indexCount, the other stream with no default - see the note above */
+} XudMeshBuffers;
+
+/// How big a shape is: the count half of the pair, and the only way to size the buffers the fill
+/// half wants. raylib's GenMesh* family has no half like this because it allocates inside the call
+/// and hands back arrays only UnloadMesh() may free; this library keeps nothing a caller did not
+/// hand it, so the counts are asked for first. The two calls run the same validation and the same
+/// arithmetic, which is what makes the fill's writes provably in bounds - the count it writes to is
+/// this function's answer, not a number the caller guessed. XUD_INVALID_ARG on a NULL out or shape,
+/// a kind outside the axis, an extent or radius under its floor or not finite, a slice, stack or
+/// side count under the rung's floor for that kind, or a shape whose vertex count is past the mesh
+/// rung's ceiling (XUD_MESH_MAX_VERTICES) - which is refused here because a solid the mesh rung
+/// could never upload is not a solid worth cutting.
+XudResult xud_gen_mesh_count(XudMeshCounts* outCounts, const XudMeshShape* shape);
+
+/// Cut a shape into the caller's buffers: the fill half, raylib's GenMeshPlane (rmodels.c 1027),
+/// GenMeshCube (1100), GenMeshSphere (1136), GenMeshHemiSphere (1215), GenMeshCylinder (1287),
+/// GenMeshTorus (1374), GenMeshKnot (1460) and GenMeshPoly (1546) as ONE call over a described
+/// shape. Every triangle is wound counter-clockwise seen from outside, which is the front face the
+/// pipelines name (XUD_PIPELINE_FRONT_FACE) even though nothing is culled today, and every normal it
+/// writes points out of the solid by that same winding. The position stream is the solid at the
+/// origin, untransformed: a placed solid is placed by the matrix beside xud_draw_mesh_ex(), and a
+/// ray is thrown at it through the same matrix (xud_get_ray_collision_mesh's transform). The same
+/// refusals as the count half, and two more: a NULL buffers, or a missing pos or index array in it.
+/// On success *outMesh is the description of what was written - counts, and the stream pointers the
+/// caller handed in, ready for xud_upload_mesh() and for the casts without a second copy.
+XudResult xud_gen_mesh(XudMeshData* outMesh, const XudMeshShape* shape, const XudMeshBuffers* buffers);
+
 /// Put a material in the drawing state, for this frame and the ones that follow: the Begin*/End*
 /// shape of raylib's scoped state calls (BeginBlendMode()/EndBlendMode(), raylib.h 1058-1059), a
 /// bove the material rung. The handle is VALIDATED here - index bounds against the slot array of t
