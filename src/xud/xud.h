@@ -754,6 +754,17 @@ XudResult xud_draw_cube_wires(XudContext* context, XudVector3 position, float wi
 /// bring-up; XUD_OUT_OF_MEMORY when the 17 vertices or the 70 indices do not fit the batch.
 XudResult xud_draw_sphere_wires(XudContext* context, XudVector3 centerPos, float radius, XudColor color);
 
+/// Draw a ground plane, raylib's DrawPlane (raylib.h 1600, "Draw a plane (oriented xz-plane)", whose
+/// arguments are (centerPos, size, color)): the centre is the plane's CENTRE, size.x runs along world
+/// x and size.y along world z, and the plane is always horizontal - the same XZ ground raylib says it
+/// builds (rmodels.c: "NOTE: Plane is always created on XZ ground"). It appends the four corners and
+/// the six indices that close them as two triangles, with the +Y normal raylib hands its own plane
+/// (rmodels.c: rlNormal3f(0, 1, 0)) rather than the flat +Z the shapes with no surface carry, because
+/// this shape does have one and the Lambert term in solid.frag reads it. XUD_INVALID_ARG on a NULL
+/// context or a renderer with no batch; XUD_UNSUPPORTED on a context that never completed bring-up;
+/// XUD_OUT_OF_MEMORY when the 4 vertices or the 6 indices do not fit the batch.
+XudResult xud_draw_plane(XudContext* context, XudVector3 centerPos, XudVector2 size, XudColor color);
+
 /// Put a 3D camera in the scene: the public BeginCamera3D() of raylib's camera pair (reference/ray
 /// lib/rcamera.h 369, raylib.h's BeginCamera3D()), whose camera is a global the library holds and
 /// whose state therefore cannot be validated at the call. Here the record is the caller's and this
@@ -776,6 +787,103 @@ XudResult xud_begin_camera_3d(XudContext* context, const XudCamera3D camera);
 /// frame. XUD_ALREADY when no camera was live (the state is already the one this call asks for);
 /// XUD_INVALID_ARG on a NULL context; XUD_UNSUPPORTED on a context that never completed bring-up.
 XudResult xud_end_camera_3d(XudContext* context);
+
+/*-----------------------------------------------------------------------------------------------
+ * The five modes xud_update_camera() drives a camera with (raylib's CameraMode, rcamera.h 119-125)
+ *
+ * The numbers are raylib's own in raylib's own order, so a caller porting an rcamera call names the
+ * same token for the same behaviour. raylib's CameraProjection (rcamera.h 113: PERSPECTIVE / ORTHO
+ * GRAPHIC) is deliberately NOT mirrored: this library's one camera is perspective, so there is no
+ * projection to toggle and no aperture reading whose meaning would change under the toggle. The four
+ * speeds and the sensitivity the modes are scaled by are the rung's constants (xud_camera.h), because
+ * they are arithmetic the library performs rather than a token a caller chooses.
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_CAMERA_MODE_CUSTOM 0u /* the caller owns the record: xud_update_camera() touches nothing */
+#define XUD_CAMERA_MODE_FREE 1u /* free flight: every move and every rotation, up and down included */
+#define XUD_CAMERA_MODE_ORBITAL 2u /* the eye circles the target at a fixed distance; wheel zooms */
+#define XUD_CAMERA_MODE_FIRST_PERSON 3u /* walks the world plane, looks with the mouse and the arrows */
+#define XUD_CAMERA_MODE_THIRD_PERSON 4u /* the same hand as the first person's, around the target */
+#define XUD_CAMERA_MODE_COUNT 5u /* the length of this axis */
+
+static_assert(XUD_CAMERA_MODE_COUNT == (XUD_CAMERA_MODE_THIRD_PERSON + 1u),
+    "xud.h: the mode count is one past the last token, so xud_update_camera()'s range check is one "
+    "comparison rather than a list of five cases - the same shape XUD_TEXTURE_FILTER_COUNT gives the "
+    "filter and wrap setters");
+
+/// The camera's own forward - raylib's GetCameraForward (rcamera.h 141): normalize(target - position).
+/// XUD_INVALID_ARG on a NULL out-vector or a camera with no basis (an eye on its target, a zero up,
+/// an up parallel to the forward).
+XudResult xud_get_camera_forward(XudVector3* outForward, const XudCamera3D* camera);
+
+/// The camera's own up, normalised - raylib's GetCameraUp (rcamera.h 143). Note that the record's up
+/// is not necessarily perpendicular to the forward (rcamera.h 135 says so of raylib's too); this is
+/// the axis roll and yaw turn over, not the frame's vertical. Same refusals as the forward.
+XudResult xud_get_camera_up(XudVector3* outUp, const XudCamera3D* camera);
+
+/// The camera's own right - raylib's GetCameraRight (rcamera.h 147): normalize(cross(forward, up)),
+/// the same cross the view matrix is built from. Same refusals as the forward.
+XudResult xud_get_camera_right(XudVector3* outRight, const XudCamera3D* camera);
+
+/// Walk the camera along its forward, eye and target together - raylib's CameraMoveForward (rcamera.h
+/// 146). moveInWorldPlane drops the step's component along the axis the camera's up points along
+/// first, so a first-person walk stays on the ground while the eye is looking at the sky. The step
+/// goes into a copy and the copy's basis is asked before anything is stored: a distance that is NaN,
+/// or a step that would leave the eye on its target, answers XUD_INVALID_ARG and leaves the camera
+/// alone. XUD_INVALID_ARG on a NULL camera or a camera with no basis to walk from.
+XudResult xud_camera_move_forward(XudCamera3D* camera, float distance, bool moveInWorldPlane);
+
+/// Slide the camera along its up, eye and target together - raylib's CameraMoveUp (rcamera.h 147).
+/// The same refusal-before-store as xud_camera_move_forward().
+XudResult xud_camera_move_up(XudCamera3D* camera, float distance);
+
+/// Slide the camera along its right, eye and target together - raylib's CameraMoveRight (rcamera.h
+/// 148), the same world-plane option and the same refusals as the forward's.
+XudResult xud_camera_move_right(XudCamera3D* camera, float distance, bool moveInWorldPlane);
+
+/// Move the EYE along the forward until it holds the stated delta more (or less) distance from the
+/// target - raylib's CameraMoveToTarget (rcamera.h 149), which is what the wheel and the keypad's
+/// zoom keys drive. The target does not move, so this is a zoom and not a step. A delta that would
+/// land the eye on or past its target stops at XUD_CAMERA_MIN_TARGET_DISTANCE instead, the same
+/// floor rcamera.h 318 clamps to. Same refusals as the forward's.
+XudResult xud_camera_move_to_target(XudCamera3D* camera, float delta);
+
+/// Turn the camera about its own up - raylib's CameraYaw (rcamera.h 152), angle in RADIANS. With
+/// rotateAroundTarget the eye orbits the target (third person, orbital); without it the target
+/// swings under the eye (first person). The turned copy's basis is asked before anything is stored.
+/// XUD_INVALID_ARG on a NULL camera or a camera with no basis.
+XudResult xud_camera_yaw(XudCamera3D* camera, float angle, bool rotateAroundTarget);
+
+/// Tip the camera about its own right - raylib's CameraPitch (rcamera.h 153), angle in RADIANS.
+/// lockView is the somersault guard: the angle is cut so the view vector stays inside the cone
+/// between the camera's up and its negation, minus this rung's margin. rotateUp tips the record's up
+/// with it, which is what a free-flying camera wants and a walking one does not. Same refusals.
+XudResult xud_camera_pitch(XudCamera3D* camera, float angle, bool lockView, bool rotateAroundTarget, bool rotateUp);
+
+/// Roll the camera about its own forward - raylib's CameraRoll (rcamera.h 154), angle in RADIANS:
+/// the record's up turns, the eye and the target do not, and the up's own length is kept. Refuses
+/// XUD_INVALID_ARG on a NULL camera, a camera with no basis, or an angle that leaves none.
+XudResult xud_camera_roll(XudCamera3D* camera, float angle);
+
+/// Drive a camera from this context's own input and clock for one frame: raylib's UpdateCamera
+/// (rcamera.h 445), including the mouse look, the W/A/S/D walk, the arrow-key turn, the Q/E roll, the
+/// free mode's Space and Left-Ctrl, the middle-button pan and the wheel zoom. The three keys, the
+/// cursor delta and the wheel are read from the input rung and the frame's speed from the clock rung,
+/// so the same walk is the same speed at any frame rate; the first frame's span is zero, so the first
+/// update does nothing. XUD_CAMERA_MODE_CUSTOM touches nothing and answers XUD_OK. raylib's gamepad
+/// half is NOT here - this library owns no gamepad rung - and xud_update_camera_pro() is where a
+/// caller's own axes go. Every step lands on a copy, so a refusal leaves the caller's record as it
+/// was. XUD_INVALID_ARG on a NULL context or camera, a mode outside the five, or a camera the
+/// frustum would refuse; XUD_UNSUPPORTED on a context with no input or clock rung.
+XudResult xud_update_camera(XudContext* context, XudCamera3D* camera, uint32_t mode);
+
+/// The same update with the caller's own movement, rotation and zoom instead of the context's input:
+/// raylib's UpdateCameraPro (rcamera.h 532). movement is forward-back, right-left, up-down in world
+/// units; rotation is yaw, pitch, roll in DEGREES, as raylib takes them; zoom is the change in the
+/// eye-to-target distance. Nothing is read from the context, so this is the half a caller with its
+/// own input - a gamepad, a replay, a recorded path - drives. The same refusals as xud_update_
+/// camera()'s, minus the ones that need a context.
+XudResult xud_update_camera_pro(XudCamera3D* camera, XudVector3 movement, XudVector3 rotation, float zoom);
 
 /// Put a material in the drawing state, for this frame and the ones that follow: the Begin*/End*
 /// shape of raylib's scoped state calls (BeginBlendMode()/EndBlendMode(), raylib.h 1058-1059), a
@@ -1606,6 +1714,31 @@ XudResult xud_get_timer_value(uint64_t* outTicks, XudContext* context);
 XudResult xud_get_timer_frequency(uint64_t* outTicksPerSecond, XudContext* context);
 
 /*-----------------------------------------------------------------------------------------------
+ * The context's own generator - raylib's GetRandomValue / SetRandomSeed
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_RANDOM_DEFAULT_SEED                                                                                                            \
+    0x9E3779B9u /* what every context's generator starts on: the golden-ratio
+                                               constant, nonzero (zero is xorshift32's fixed point) and
+                                               the same number in every run, so a scene built from
+                                               xud_get_random_value() is the same scene tomorrow. */
+
+/// Draw one pseudo-random value in the inclusive range [minValue, maxValue] - raylib's GetRandom
+/// Value (raylib.h 897), including raylib's rule that a range handed the wrong way round is swapped
+/// rather than refused (rcore.c: "Swap minValue and maxValue"). The generator is this context's own
+/// and it starts at the same seed every run, so two runs of the same program lay out the same scene
+/// unless xud_set_random_seed() says otherwise - the repo's determinism rule, which is why the seed
+/// is a constant here rather than the clock raylib seeds from. XUD_INVALID_ARG on a NULL out-value
+/// or context.
+XudResult xud_get_random_value(int* outValue, XudContext* context, int minValue, int maxValue);
+
+/// Replace the context's generator state: raylib's SetRandomSeed (raylib.h 896), with the difference
+/// above stated. A seed of zero is refused rather than stored, because zero is this generator's
+/// fixed point; the default seed a fresh context starts on is XUD_RANDOM_DEFAULT_SEED. XUD_INVALID_ARG
+/// on a NULL context; XUD_ALREADY on a context already holding the seed asked for.
+XudResult xud_set_random_seed(XudContext* context, uint32_t seed);
+
+/*-----------------------------------------------------------------------------------------------
  * The input API - raylib's keyboard and mouse half, above the input rung
  *
  * This is raylib's input surface (reference/raylib/raylib.h 1202-1241: IsKeyPressed, IsKeyPressed
@@ -1886,6 +2019,25 @@ XudResult xud_get_mouse_wheel_move(float* outMove, XudContext* context);
 /// raylib's GetMouseWheelMoveV (raylib.h 1240), for a scroll that can move on either axis. XUD_INV
 /// ALID_ARG on a NULL out-param or a NULL context; XUD_UNSUPPORTED as above.
 XudResult xud_get_mouse_wheel_move_v(XudVector2* outMove, XudContext* context);
+
+/// Hide the cursor and take the window's pointer into relative mode - raylib's HideCursor, which
+/// raylib's own examples call DisableCursor (raylib.h 1245: "Hide cursor and disable cursor
+/// influence on all windows"). The window system is asked to stop showing the cursor and to report
+/// MOTION rather than a position (GLFW_CURSOR_DISABLED: src/external/glfw/src/wl_window.c 3316
+/// locks the pointer through the relative-pointer and pointer-constraints protocols), which is what
+/// keeps xud_get_mouse_delta() answering a look-around after the cursor itself has stopped existing.
+/// The answer says what GLFW could do and not what the compositor agreed to: pointer lock is granted
+/// by the compositor and can be revoked (a focus change, a refusal in some compositors) with no signal
+/// GLFW reads back, so XUD_OK means the request is in and the delta is the proof it landed. XUD_INVA
+/// LID_ARG on a NULL context; XUD_UNSUPPORTED on a context that never completed bring-up or on a
+/// window with no GLFW window behind it; XUD_ALREADY when the cursor is already hidden.
+XudResult xud_hide_cursor(XudContext* context);
+
+/// Give the cursor back: raylib's ShowCursor / EnableCursor (raylib.h 1244). The window system shows
+/// the cursor again and reports a position rather than motion, and the cursor's position and delta
+/// read as they did before xud_hide_cursor(). Same three refusals, XUD_ALREADY when it is already
+/// showing.
+XudResult xud_show_cursor(XudContext* context);
 
 /*-----------------------------------------------------------------------------------------------
  * UI (nuklear) - the immediate-mode gui rung above the batch, the texture and the input

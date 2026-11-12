@@ -92,6 +92,37 @@ static_assert((XUD_SHAPES_TRIANGLE_INDEX_COUNT == XUD_SHAPES_TRIANGLE_VERTEX_COU
     "is what makes the index bound below a count of three rather than a count of one shape");
 
 /*-----------------------------------------------------------------------------------------------
+ * The ground plane: four shared corners, two triangles, one normal
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The plane of raylib's DrawPlane (reference/raylib/raylib.h 1600, "Draw a plane (oriented xz-plane
+   )" - the orientation is in the name, and rmodels.c states it again as "NOTE: Plane is always
+   created on XZ ground"). Four corners and the six indices that close them as two triangles: four
+   corners rather than the eight two separate triangles would need, because the two triangles of one
+   plane share the diagonal they meet along and, unlike a box's face-sharing corner, there is no
+   second face whose normal a shared vertex would have to contradict - one plane, one normal.
+*/
+#define XUD_SHAPES_PLANE_VERTEX_COUNT 4u
+#define XUD_SHAPES_PLANE_INDEX_COUNT 6u
+#define XUD_SHAPES_PLANE_HALF_EXTENT 0.5f /* the corner's own half: size is the plane's FULL extent along each axis, raylib's too */
+
+/* The plane's normal: +Y, the axis the XZ ground lies across. The one shape in this rung NOT given
+   XUD_SHAPES_FLAT_NORMAL_*, and raylib hands its plane the same normal by hand (rmodels.c: rlNormal
+   3f(0.0f, 1.0f, 0.0f)) - which matters now that solid.frag lights by the interpolated normal: a
+   ground plane that answered +Z would be lit as though it faced the camera.
+*/
+#define XUD_SHAPES_GROUND_NORMAL_X 0.0f
+#define XUD_SHAPES_GROUND_NORMAL_Y 1.0f
+#define XUD_SHAPES_GROUND_NORMAL_Z 0.0f
+
+static_assert((XUD_SHAPES_PLANE_VERTEX_COUNT == 4u) && (XUD_SHAPES_PLANE_INDEX_COUNT == 6u),
+    "xud_shapes.h: a plane is four shared corners and two triangles over them, which is the 4/6 the append's two bounds are written "
+    "against");
+static_assert((XUD_SHAPES_PLANE_VERTEX_COUNT <= XUD_BATCH_INITIAL_VERTICES)
+        && (XUD_SHAPES_PLANE_INDEX_COUNT <= XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES)),
+    "xud_shapes.h: one plane fits the batch's INITIAL capacity with no grow asked for");
+
+/*-----------------------------------------------------------------------------------------------
  * The box: six faces, four vertices each, two triangles each
  *-----------------------------------------------------------------------------------------------*/
 
@@ -407,6 +438,17 @@ static_assert(((XUD_BATCH_INITIAL_VERTICES / XUD_SHAPES_GLYPH_VERTEX_COUNT) == 1
 /// has no arena mapped to write into (the same answer xud_batch_append_vertex gives for the same
 /// reason, one rung up); XUD_OK only when all six appends completed.
 XudResult xud_shapes_append_triangle(XudBatch* batch, XudVector3 v0, XudVector3 v1, XudVector3 v2, XudColor color);
+
+/// Pure: append one ground plane - raylib's DrawPlane read as its own code reads it: the centre is
+/// the CENTRE, size.x runs along world x and size.y along world z, and every corner carries the
+/// centre's y because the plane is always the XZ ground. 4 vertices and the 6 indices that close
+/// them as two triangles sharing the 0-2 diagonal, wound so the right-hand rule answers +Y (the
+/// order raylib's own four rlVertex3f calls are in), and the +Y ground normal at every vertex.
+/// A size that is zero or negative is not refused, for the box's reason: a degenerate plane is still
+/// 4 vertices and 6 indices. XUD_INVALID_ARG on a NULL batch; XUD_OUT_OF_MEMORY when the 4 vertices
+/// or the 6 indices do not fit the batch's capacities; XUD_UNSUPPORTED when the batch has no arena
+/// mapped; XUD_OK only when all ten appends completed.
+XudResult xud_shapes_append_plane(XudBatch* batch, XudVector3 center, XudVector2 size, XudColor color);
 
 /// Pure: append one filled box - the caller's centre plus three extents, read as raylib's DrawCube
 /// reads them (the centre is the centre, the extents are full, the box is axis-aligned) - as 24

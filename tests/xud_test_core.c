@@ -18,7 +18,9 @@
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled, the area entry points */
 #include "xud_vulkan.h" /* Required for: xud_name_equal, the dedup check the merged instance list is read with */
 #include "xud_window.h" /* Required for: xud_window_presentation_support, the refusal half of the ladder */
+#include <limits.h> /* Required for: INT_MIN and INT_MAX, the one span too wide for an int subtraction */
 #include <stdio.h> /* Required for: printf, the note this area prints when a guard has nothing to check */
+#include <string.h> /* Required for: memset, the context shell the generator checks run against */
 
 static void xud_test_init_arg_validation(void) {
     XudContext* context = NULL;
@@ -170,6 +172,11 @@ static void xud_test_no_leak(void) {
    o ver the run, and 25 cycles of the whole ladder is 25 chances to catch a leak in it. */
 #define XUD_TEST_GPU_CONTEXT_CYCLES 25
 
+/* The seeded context shell the generator checks run against, defined below with them; declared here
+   because the GPU half reads a fresh context's generator against one too.
+*/
+static void xud_test_random_shell(XudContext* shell, uint32_t seed);
+
 /* GPU-gated: the whole context lifecycle against the real driver - S8's ownership step, grown by
    the swapchain rung. This is the one place in the run that creates a context, so it is the one
    place that can say what a context owns: a loader, a diagnostics struct when validation was asked
@@ -206,6 +213,27 @@ static void xud_test_gpu_context(void) {
         "would draw at the old scale while input names the new one");
     xud_check(context->validate == XUD_VALIDATE, "context/validate-snapshot",
         "the context carries the XUD_VALIDATE build switch it was built with, as a snapshot");
+
+    /* The generator a context is BORN on: the documented default seed, read the only two ways it can
+       be read - the field bring-up wrote, and the sequence the first draw of a fresh context answers
+       against the first draw of a shell put on that seed by hand. A context that never got its seed
+       would answer the shell's number for neither.
+    */
+    xud_check(context->randomSeed == XUD_RANDOM_DEFAULT_SEED, "context/generator-on-default-seed",
+        "bring-up leaves the generator on the seed xud.h states, not on zero");
+    {
+        XudContext shell;
+        int born = 0;
+        int handSeeded = 0;
+
+        xud_test_random_shell(&shell, XUD_RANDOM_DEFAULT_SEED);
+        xud_check(xud_get_random_value(&born, context, INT_MIN, INT_MAX) == XUD_OK, "context/generator-draws",
+            "a live context answers a draw from its own generator");
+        xud_check(xud_get_random_value(&handSeeded, &shell, INT_MIN, INT_MAX) == XUD_OK, "context/generator-shell-draws",
+            "and so does a shell handed the same seed");
+        xud_check(born == handSeeded, "context/generator-sequence-is-the-seeds",
+            "and the two first draws are one number, so a fresh context's sequence is the default seed's sequence");
+    }
 
     xud_check(context->loader != NULL, "context/owns-loader", "the context owns its loader");
     xud_check(
@@ -408,12 +436,167 @@ static void xud_test_gpu_context(void) {
     xud_check(1, "gpu-context/cycles-ran", "the create+destroy cycles completed");
 }
 
+/*-----------------------------------------------------------------------------------------------
+ * The context's own generator: one seed, one sequence, one range
+ *
+ * The generator is host arithmetic on two fields of the context, so every fact about it is
+ * answerable with no device present - which is the same reason the camera and shapes areas keep
+ * their geometry out of the GPU half. The one fact that needs a real context is that a freshly
+ * brought-up context starts on the documented default seed, and that is the GPU half's.
+ *
+ * The checks are stated against the CONTRACT (a seed names one sequence; a value is inside the range
+ * it was asked for; a reversed range is the same range) and never against the numbers one run of
+ * xorshift happened to produce: a check that pinned "seed 7 answers 1937441" would pass a generator
+ * that ignored the range and would fail the day the recurrence is replaced, and neither is a fact
+ * about xud_get_random_value().
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_TEST_RANDOM_DRAWS 200
+
+/* A shell on one seed: the two generator fields are the only ones these checks touch, and the rest
+   of the struct stays zero because nothing below reaches for it. The seed is set rather than written,
+   so the shell arrives on it the way a caller puts a real context on it.
+*/
+static void xud_test_random_shell(XudContext* shell, uint32_t seed) {
+    memset(shell, 0, sizeof(*shell));
+    (void)xud_set_random_seed(shell, seed);
+}
+
+static void xud_test_random(void) {
+    XudContext a;
+    XudContext b;
+    int draw = 0;
+    int first[XUD_TEST_RANDOM_DRAWS];
+    int second[XUD_TEST_RANDOM_DRAWS];
+    int index = 0;
+    int low = 0;
+    uint32_t inRange = 0u;
+    uint32_t distinct = 0u;
+    uint32_t same = 0u;
+    uint32_t seen = 0u;
+
+    xud_check(xud_get_random_value(NULL, &a, 0, 1) == XUD_INVALID_ARG, "random/null-out", "an out-param that cannot be written is refused");
+    xud_check(xud_get_random_value(&draw, NULL, 0, 1) == XUD_INVALID_ARG, "random/null-context", "and so is no context at all");
+    xud_check(xud_set_random_seed(NULL, 7u) == XUD_INVALID_ARG, "random/seed-null-context", "and a seed with nowhere to go");
+
+    xud_test_random_shell(&a, 7u);
+    xud_check(xud_set_random_seed(&a, 7u) == XUD_ALREADY, "random/seed-already-set",
+        "asking for the seed the context is already on is the state-already question, not a restart");
+    xud_check(xud_set_random_seed(&a, 9u) == XUD_OK, "random/seed-changed", "a different seed is accepted");
+
+    /* One seed, two contexts: the whole determinism rule in one comparison. */
+    xud_test_random_shell(&a, 7u);
+    xud_test_random_shell(&b, 7u);
+    for (index = 0; index < XUD_TEST_RANDOM_DRAWS; index++) {
+        (void)xud_get_random_value(&first[index], &a, -7, 13);
+        (void)xud_get_random_value(&second[index], &b, -7, 13);
+    }
+    for (index = 0; index < XUD_TEST_RANDOM_DRAWS; index++) {
+        if (first[index] == second[index]) {
+            same++;
+        }
+        if ((first[index] >= -7) && (first[index] <= 13)) {
+            inRange++;
+        }
+    }
+    xud_check(same == (uint32_t)XUD_TEST_RANDOM_DRAWS, "random/one-seed-one-sequence",
+        "two contexts on one seed answer the same 200 numbers in the same order, which is the rule the seed exists for");
+    xud_check(inRange == (uint32_t)XUD_TEST_RANDOM_DRAWS, "random/values-in-range",
+        "every draw of a [-7, 13] range is inside [-7, 13], the inclusive bound raylib states");
+
+    distinct = 0u;
+    for (index = -7; index <= 13; index++) {
+        for (seen = 0u; seen < (uint32_t)XUD_TEST_RANDOM_DRAWS; seen++) {
+            if (first[seen] == index) {
+                distinct++;
+                break;
+            }
+        }
+    }
+    xud_check(distinct >= 15u, "random/sequence-moves",
+        "at least 15 of the 21 values of the range appear in 200 draws, which is what a stalled or shortened generator fails");
+
+    /* A different seed is a different sequence, or the seed is decoration. */
+    xud_test_random_shell(&a, 7u);
+    xud_test_random_shell(&b, 11u);
+    (void)xud_get_random_value(&draw, &a, 0, 1000000);
+    low = draw;
+    (void)xud_get_random_value(&draw, &b, 0, 1000000);
+    xud_check(low != draw, "random/seeds-differ", "the first draw of seed 7 is not the first draw of seed 11");
+
+    /* Re-seeding back to a seed restarts its sequence - the restart a caller resets a scene with. */
+    xud_test_random_shell(&a, 7u);
+    for (index = 0; index < 50; index++) {
+        (void)xud_get_random_value(&draw, &a, 0, 100);
+    }
+    xud_check(xud_set_random_seed(&a, 9u) == XUD_OK, "random/reseed-away", "the context is moved off 7 ...");
+    xud_check(xud_set_random_seed(&a, 7u) == XUD_OK, "random/reseed-back", "... and back onto it again");
+    (void)xud_get_random_value(&draw, &a, -7, 13);
+    xud_check(draw == first[0], "random/reseed-restarts-sequence",
+        "and the next draw is the first draw of seed 7 again, so the sequence is the seed's and not the context's history");
+
+    /* raylib's swap: the range the wrong way round is the same range, draw for draw. */
+    xud_test_random_shell(&a, 3u);
+    xud_test_random_shell(&b, 3u);
+    same = 0u;
+    for (index = 0; index < 100; index++) {
+        int forward = 0;
+        int reversed = 0;
+        (void)xud_get_random_value(&forward, &a, 2, 9);
+        (void)xud_get_random_value(&reversed, &b, 9, 2);
+        if ((forward == reversed) && (forward >= 2) && (forward <= 9)) {
+            same++;
+        }
+    }
+    xud_check(same == 100u, "random/range-swapped",
+        "(9, 2) answers what (2, 9) answers at the same point of the same sequence - raylib's swap, kept");
+
+    /* A range of one is that number, and a range below zero stays below it. */
+    xud_test_random_shell(&a, 5u);
+    inRange = 0u;
+    for (index = 0; index < 20; index++) {
+        (void)xud_get_random_value(&draw, &a, -4, -4);
+        if (draw == -4) {
+            inRange++;
+        }
+    }
+    xud_check(inRange == 20u, "random/range-of-one", "a range whose ends are equal answers that end every time");
+
+    xud_test_random_shell(&a, 13u);
+    inRange = 0u;
+    for (index = 0; index < 100; index++) {
+        (void)xud_get_random_value(&draw, &a, -5, -1);
+        if ((draw >= -5) && (draw <= -1)) {
+            inRange++;
+        }
+    }
+    xud_check(inRange == 100u, "random/range-below-zero", "a wholly negative range never answers zero or a positive");
+
+    /* The whole int range is the SPAN that overflows an int subtraction on the way to its own size
+       (2^32 values), so it is the case the widening of the endpoints is there for. */
+    xud_test_random_shell(&a, 17u);
+    inRange = 0u;
+    distinct = 0u;
+    for (index = 0; index < 100; index++) {
+        (void)xud_get_random_value(&draw, &a, INT_MIN, INT_MAX);
+        if ((draw >= INT_MIN) && (draw <= INT_MAX)) {
+            inRange++;
+        }
+        if (draw != 0) {
+            distinct++;
+        }
+    }
+    xud_check(inRange == 100u, "random/range-whole-int", "the full INT_MIN..INT_MAX span answers a value inside itself");
+    xud_check(distinct >= 90u, "random/range-whole-int-moves", "and answers something other than zero for it");
+}
+
 void xud_test_core(void) {
     xud_test_init_arg_validation();
     xud_test_vulkan_supported();
     xud_test_init_bringup_boundary();
     xud_test_close();
     xud_test_no_leak();
+    xud_test_random();
     if (xud_gpu_tests_enabled()) {
         xud_test_gpu_context();
     }

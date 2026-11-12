@@ -81,6 +81,17 @@ struct XudContext {
     uint32_t height; /* window extent, pixels: the swapchain's imageExtent, not the requested size */
     uint32_t validate; /* snapshot of XUD_VALIDATE, overridable by VK_INSTANCE_LAYERS */
 
+    /* This context's own pseudo-random generator - raylib's GetRandomValue/SetRandomSeed pair. It is
+       the context's rather than the process's because two contexts in one process must not advance
+       each other's sequence, and because every sequence has to start at the same place (XUD_RANDOM_
+       DEFAULT_SEED, the repo's determinism rule) rather than at the clock raylib seeds from. `random
+       Seed` is the seed last ASKED for, and the row exists so a context already on the seed asked for
+       can answer XUD_ALREADY - the idiom xud_set_window_size() states for a window already that size.
+       The state below it is the generator's, derived from the seed by one fixed rule.
+    */
+    uint32_t randomSeed;
+    uint64_t randomState;
+
     /* Owned from loader bring-up on: opened by xud_init_context(), closed by xud_close_context().
      */
     XudLoader* loader; /* Volk's entry-point tables + the loader-level rows, per context  */

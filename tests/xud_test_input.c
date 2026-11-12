@@ -315,6 +315,10 @@ static void xud_test_input_pure(void) {
     xud_check(xud_input_close(&input) == XUD_OK, "input/close-ok", "the rung closes");
     xud_check(input == NULL, "input/close-clears-handle", "and clears the handle it was given, so a second close is XUD_ALREADY");
     xud_check(xud_input_close(&input) == XUD_ALREADY, "input/close-twice-already", "a rung already gone is not a second teardown");
+
+    /* The cursor pair's guards run on the way to the window, so they answer with no window at all. */
+    xud_check(xud_hide_cursor(NULL) == XUD_INVALID_ARG, "input/hide-cursor-null-context", "hiding the cursor with no context is refused");
+    xud_check(xud_show_cursor(NULL) == XUD_INVALID_ARG, "input/show-cursor-null-context", "and so is showing it");
     free(context);
 }
 
@@ -381,6 +385,26 @@ static void xud_test_input_gpu(void) {
         "GLFW's Wayland half refuses to place a cursor");
     xud_check(xud_get_mouse_x(&token, context) == XUD_OK, "input/gpu-set-cursor-read-back", "the query ran");
     xud_check(token != 5, "input/gpu-cursor-did-not-move", "and nothing moved to where it was asked");
+
+    /* The cursor's visibility, which is the one input state this rung records rather than reads: the
+       Wayland pointer lock is requested and never reported back (wl_window.c 3220, 3316), so the
+       second of a repeated pair is answered from the rung's own row. The window is real here, which is
+       what the headless half cannot be.
+    */
+    {
+        XudVector2 delta;
+
+        xud_check(xud_hide_cursor(context) == XUD_OK, "input/gpu-hide-cursor", "the cursor goes into relative mode");
+        xud_check(xud_hide_cursor(context) == XUD_ALREADY, "input/gpu-hide-cursor-twice",
+            "and asking twice says the state was already what was asked, because GLFW reports the lock through no getter");
+        xud_check(context->input->cursorHidden == 1u, "input/gpu-cursor-hidden-row", "the rung's own row says hidden");
+        xud_check(xud_get_mouse_delta(&delta, context) == XUD_OK, "input/gpu-delta-while-hidden",
+            "the delta query the first-person loop reads still runs while the cursor is gone");
+        xud_check(xud_show_cursor(context) == XUD_OK, "input/gpu-show-cursor", "and the cursor comes back");
+        xud_check(xud_show_cursor(context) == XUD_ALREADY, "input/gpu-show-cursor-twice", "twice answers the way twice did above");
+        xud_check(context->input->cursorHidden == 0u, "input/gpu-cursor-shown-row",
+            "and the row is back to showing, which is the state a window is born on");
+    }
 
     xud_close_context(&context);
     xud_check(context == NULL, "input/gpu-context-closed", "and the teardown cleared it");

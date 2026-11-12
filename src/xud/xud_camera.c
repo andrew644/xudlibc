@@ -32,7 +32,11 @@
  *
  ***********************************************************************************************/
 
-#include "xud_camera.h" /* Required for: XudCamera3D, the rung's constants, the three declarations this file answers */
+/* xud_camera.c answers xud.h's public camera calls as well as the rung's own three, so the public
+   header arrives through xud_camera.h and xud_core.h, not by itself.
+*/
+#include "xud_camera.h" /* Required for: XudCamera3D, the rung's constants and the rung's own three declarations */
+#include "xud_core.h" /* Required for: struct XudContext, whose input and time rungs xud_update_camera() reads - the one public call here above the context, and the reason this file is the one that reaches above itself */
 #include "xud_descriptor.h" /* Required for: XudDescriptor, xud_descriptor_set_view_proj - the setter that owns the block's viewProj member */
 #include <math.h>
 
@@ -287,4 +291,808 @@ XudResult xud_camera_apply(XudDescriptor* descriptor, const XudCamera3D* camera,
     }
 
     return xud_descriptor_set_view_proj(descriptor, viewProj);
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The basis, read as three unit vectors - what every move and rotation below starts from
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The same basis xud_camera_fill_view_proj() builds its view half from, in the same order and by
+   the same three steps, so a move and a matrix can never disagree about which way the camera faces.
+   The three degeneracies are refusals rather than NaNs: an eye on its target has no forward, a zero
+   up has no axis, an up parallel to the forward has no right.
+*/
+static XudResult xud_camera_basis(const XudCamera3D* camera, float* forward, float* right, float* up) {
+    float view[3];
+    float rawUp[3];
+
+    if (camera == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    view[0] = camera->target.x - camera->position.x;
+    view[1] = camera->target.y - camera->position.y;
+    view[2] = camera->target.z - camera->position.z;
+    if (xud_camera_normalize(view, forward) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    rawUp[0] = camera->up.x;
+    rawUp[1] = camera->up.y;
+    rawUp[2] = camera->up.z;
+    if (xud_camera_normalize(rawUp, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    xud_camera_cross(forward, up, view);
+
+    return xud_camera_normalize(view, right);
+}
+
+/* The same question as a yes/no, for the half below that has to know whether the record it is about
+   to WRITE still has a basis: every move and rotation computes its result into a copy and asks this
+   of the copy, so a step that would walk the camera into a degeneracy (a pitch past the vertical with
+   no clamp, a NaN distance) leaves the caller's record exactly as it was.
+*/
+static uint32_t xud_camera_basis_is_usable(const XudCamera3D* camera) {
+    float forward[3];
+    float right[3];
+    float up[3];
+
+    return (xud_camera_basis(camera, forward, right, up) == XUD_OK) ? 1u : 0u;
+}
+
+/* Rotate one vector around an axis by an angle in radians - the Euler-Rodrigues form raymath's Vec
+   tor3RotateByAxisAngle uses (raymath.h), so the yaw, pitch and roll below turn a view vector the
+   same way rcamera's do. The axis is normalised here rather than trusted, and a zero axis is a re
+   fusion rather than the identity raymath silently answers (it substitutes a length of 1, which
+   leaves the vector unchanged and hides the caller's degeneracy).
+*/
+static XudResult xud_camera_rotate_by_axis(const float* in, const float* axis, float angle, float* out) {
+    float unit[3];
+    float quaternion[3];
+    float rotated[3];
+    float twice[3];
+    float sine = 0.0f;
+    float cosine = 0.0f;
+    uint32_t component = 0u;
+
+    if (xud_camera_normalize(axis, unit) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    sine = sinf(angle * 0.5f);
+    cosine = cosf(angle * 0.5f);
+    for (component = 0u; component < 3u; component++) {
+        quaternion[component] = unit[component] * sine;
+    }
+
+    xud_camera_cross(quaternion, in, rotated);
+    xud_camera_cross(quaternion, rotated, twice);
+
+    for (component = 0u; component < 3u; component++) {
+        out[component] = in[component] + (2.0f * cosine * rotated[component]) + (2.0f * twice[component]);
+    }
+
+    return XUD_OK;
+}
+
+/* The unsigned angle between two unit vectors, atan2 of the cross's length over the dot - the form
+   that keeps its accuracy near zero and near pi, which is exactly where the pitch clamp below works.
+*/
+static float xud_camera_angle(const float* left, const float* right) {
+    float cross[3];
+
+    xud_camera_cross(left, right, cross);
+
+    return atan2f(sqrtf(xud_camera_dot(cross, cross)), xud_camera_dot(left, right));
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The basis, read by a caller - raylib's GetCameraForward / GetCameraUp / GetCameraRight
+ *-----------------------------------------------------------------------------------------------*/
+
+/// See xud.h. The three getters share one read: the basis the matrix is built from, in whichever
+/// of its three vectors the caller asked for.
+static XudResult xud_camera_get_axis(XudVector3* outAxis, const XudCamera3D* camera, uint32_t which) {
+    float forward[3];
+    float right[3];
+    float up[3];
+    const float* chosen = NULL;
+
+    if (outAxis == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    *outAxis = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+
+    if (xud_camera_basis(camera, forward, right, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    chosen = (which == 0u) ? forward : ((which == 1u) ? up : right);
+
+    outAxis->x = chosen[0];
+    outAxis->y = chosen[1];
+    outAxis->z = chosen[2];
+
+    return XUD_OK;
+}
+
+XudResult xud_get_camera_forward(XudVector3* outForward, const XudCamera3D* camera) { return xud_camera_get_axis(outForward, camera, 0u); }
+
+XudResult xud_get_camera_up(XudVector3* outUp, const XudCamera3D* camera) { return xud_camera_get_axis(outUp, camera, 1u); }
+
+XudResult xud_get_camera_right(XudVector3* outRight, const XudCamera3D* camera) { return xud_camera_get_axis(outRight, camera, 2u); }
+
+/*-----------------------------------------------------------------------------------------------
+ * The moves - raylib's CameraMoveForward / MoveUp / MoveRight / MoveToTarget
+ *
+ * Every one of them moves the EYE and the TARGET together, because the record's direction is the
+ * pair's difference and a move that touched only the eye would be a turn as well as a step. Each
+ * computes its result into a copy and refuses that copy's basis before storing it, so a refusal -
+ * a NaN distance, a step that degenerates the basis - leaves the caller's record untouched.
+ *-----------------------------------------------------------------------------------------------*/
+
+/* Project a step onto the plane perpendicular to the camera's own up, by dropping the component
+   along the axis up is dominated by (raylib's fabsf(up.z) > 0.7071f ladder, rcamera.h 258) and
+   re-normalising what is left. A step along the up axis itself has nothing left to re-normalise and
+   is a refusal rather than a step of zero length dressed up as one.
+*/
+static XudResult xud_camera_project_on_world_plane(const XudCamera3D* camera, float* step) {
+    const float absoluteX = fabsf(camera->up.x);
+    const float absoluteZ = fabsf(camera->up.z);
+
+    if (absoluteZ > XUD_CAMERA_PLANE_AXIS_DOMINANCE) {
+        step[2] = 0.0f;
+    } else if (absoluteX > XUD_CAMERA_PLANE_AXIS_DOMINANCE) {
+        step[0] = 0.0f;
+    } else {
+        step[1] = 0.0f;
+    }
+
+    return xud_camera_normalize(step, step);
+}
+
+/* forward or right, scaled by the distance and optionally flattened onto the world plane - the one
+   half CameraMoveForward and CameraMoveRight share, rcamera.h 251-307.
+*/
+static XudResult xud_camera_step(const XudCamera3D* camera, const float* axis, float distance, bool moveInWorldPlane, float* outStep) {
+    float step[3];
+    uint32_t component = 0u;
+
+    for (component = 0u; component < 3u; component++) {
+        step[component] = axis[component] * distance;
+    }
+
+    /* A distance of zero is NO STEP, and that has to be said rather than computed: the projection
+       below re-normalises what is left of the step, and a step of zero length has no direction to
+       normalise, so an unguarded projection refuses a caller that asked for nothing - which is what
+       xud_update_camera_pro() would hit on every axis its caller left at zero. A NaN distance is
+       NOT caught here (NaN compares false against zero) and travels on to the basis test.
+    */
+    if (moveInWorldPlane && (distance != 0.0f)) {
+        if (xud_camera_project_on_world_plane(camera, step) != XUD_OK) {
+            return XUD_INVALID_ARG;
+        }
+        for (component = 0u; component < 3u; component++) {
+            step[component] *= distance;
+        }
+    }
+
+    outStep[0] = step[0];
+    outStep[1] = step[1];
+    outStep[2] = step[2];
+
+    return XUD_OK;
+}
+
+XudResult xud_camera_move_forward(XudCamera3D* camera, float distance, bool moveInWorldPlane) {
+    XudCamera3D moved;
+    float forward[3];
+    float right[3];
+    float up[3];
+    float step[3];
+
+    if (camera == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_basis(camera, forward, right, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_step(camera, forward, distance, moveInWorldPlane, step) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    moved = *camera;
+    moved.position.x += step[0];
+    moved.position.y += step[1];
+    moved.position.z += step[2];
+    moved.target.x += step[0];
+    moved.target.y += step[1];
+    moved.target.z += step[2];
+
+    if (xud_camera_basis_is_usable(&moved) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+
+    *camera = moved;
+
+    return XUD_OK;
+}
+
+XudResult xud_camera_move_right(XudCamera3D* camera, float distance, bool moveInWorldPlane) {
+    XudCamera3D moved;
+    float forward[3];
+    float right[3];
+    float up[3];
+    float step[3];
+
+    if (camera == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_basis(camera, forward, right, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_step(camera, right, distance, moveInWorldPlane, step) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    moved = *camera;
+    moved.position.x += step[0];
+    moved.position.y += step[1];
+    moved.position.z += step[2];
+    moved.target.x += step[0];
+    moved.target.y += step[1];
+    moved.target.z += step[2];
+
+    if (xud_camera_basis_is_usable(&moved) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+
+    *camera = moved;
+
+    return XUD_OK;
+}
+
+XudResult xud_camera_move_up(XudCamera3D* camera, float distance) {
+    XudCamera3D moved;
+    float forward[3];
+    float right[3];
+    float up[3];
+
+    if (camera == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_basis(camera, forward, right, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    moved = *camera;
+    moved.position.x += up[0] * distance;
+    moved.position.y += up[1] * distance;
+    moved.position.z += up[2] * distance;
+    moved.target.x += up[0] * distance;
+    moved.target.y += up[1] * distance;
+    moved.target.z += up[2] * distance;
+
+    if (xud_camera_basis_is_usable(&moved) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+
+    *camera = moved;
+
+    return XUD_OK;
+}
+
+XudResult xud_camera_move_to_target(XudCamera3D* camera, float delta) {
+    XudCamera3D moved;
+    float forward[3];
+    float right[3];
+    float up[3];
+    float view[3];
+    float distance = 0.0f;
+
+    if (camera == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_basis(camera, forward, right, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    view[0] = camera->position.x - camera->target.x;
+    view[1] = camera->position.y - camera->target.y;
+    view[2] = camera->position.z - camera->target.z;
+    distance = sqrtf(xud_camera_dot(view, view)) + delta;
+
+    /* The distance is a distance: rcamera.h 318 clamps a delta that reaches zero or past it to a
+       hair above zero rather than letting the eye cross its target, which would put the view vector
+       through the origin and flip the basis. The same floor, stated as this rung's own constant.
+    */
+    if (!(distance > XUD_CAMERA_MIN_TARGET_DISTANCE)) {
+        distance = XUD_CAMERA_MIN_TARGET_DISTANCE;
+    }
+
+    moved = *camera;
+    moved.position.x = camera->target.x - (forward[0] * distance);
+    moved.position.y = camera->target.y - (forward[1] * distance);
+    moved.position.z = camera->target.z - (forward[2] * distance);
+
+    if (xud_camera_basis_is_usable(&moved) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+
+    *camera = moved;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The rotations - raylib's CameraYaw / CameraPitch / CameraRoll
+ *
+ * All three rotate the VIEW VECTOR (target - position) around one of the camera's own axes, and the
+ * rotateAroundTarget flag says which end of the record moves: the eye orbits the target (the third
+ * person's and the orbital's reading) or the target swings under the eye (the first person's). The
+ * angle is in radians, as raylib states it; degrees are the caller's or the mode's to convert.
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_camera_yaw(XudCamera3D* camera, float angle, bool rotateAroundTarget) {
+    XudCamera3D turned;
+    float forward[3];
+    float right[3];
+    float up[3];
+    float view[3];
+    float turnedView[3];
+
+    if (camera == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_basis(camera, forward, right, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    view[0] = camera->target.x - camera->position.x;
+    view[1] = camera->target.y - camera->position.y;
+    view[2] = camera->target.z - camera->position.z;
+
+    if (xud_camera_rotate_by_axis(view, up, angle, turnedView) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    turned = *camera;
+    if (rotateAroundTarget) {
+        turned.position.x = camera->target.x - turnedView[0];
+        turned.position.y = camera->target.y - turnedView[1];
+        turned.position.z = camera->target.z - turnedView[2];
+    } else {
+        turned.target.x = camera->position.x + turnedView[0];
+        turned.target.y = camera->position.y + turnedView[1];
+        turned.target.z = camera->position.z + turnedView[2];
+    }
+
+    if (xud_camera_basis_is_usable(&turned) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+
+    *camera = turned;
+
+    return XUD_OK;
+}
+
+/* See xud.h. The clamp is the lockView half: the angle is cut to what leaves the view vector inside
+   the cone between the camera's own up and its negation, minus this rung's margin, so a pitch held
+   to the ceiling cannot put the view vector ON the up axis - the somersault rcamera.h 365 avoids the
+   same way. Without the clamp a caller can still roll a camera past the vertical, and the resulting
+   basis test below is what refuses it rather than a NaN matrix one call later.
+*/
+XudResult xud_camera_pitch(XudCamera3D* camera, float angle, bool lockView, bool rotateAroundTarget, bool rotateUp) {
+    XudCamera3D turned;
+    float forward[3];
+    float right[3];
+    float up[3];
+    float view[3];
+    float turnedView[3];
+    float turnedUp[3];
+    float maxUp = 0.0f;
+    float maxDown = 0.0f;
+
+    if (camera == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_basis(camera, forward, right, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    view[0] = camera->target.x - camera->position.x;
+    view[1] = camera->target.y - camera->position.y;
+    view[2] = camera->target.z - camera->position.z;
+
+    if (lockView) {
+        const float down[3] = { -up[0], -up[1], -up[2] };
+
+        maxUp = xud_camera_angle(up, view) - XUD_CAMERA_PITCH_CLAMP_MARGIN;
+        if (angle > maxUp) {
+            angle = maxUp;
+        }
+
+        maxDown = -xud_camera_angle(down, view) + XUD_CAMERA_PITCH_CLAMP_MARGIN;
+        if (angle < maxDown) {
+            angle = maxDown;
+        }
+    }
+
+    if (xud_camera_rotate_by_axis(view, right, angle, turnedView) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    turned = *camera;
+    if (rotateAroundTarget) {
+        turned.position.x = camera->target.x - turnedView[0];
+        turned.position.y = camera->target.y - turnedView[1];
+        turned.position.z = camera->target.z - turnedView[2];
+    } else {
+        turned.target.x = camera->position.x + turnedView[0];
+        turned.target.y = camera->position.y + turnedView[1];
+        turned.target.z = camera->position.z + turnedView[2];
+    }
+
+    turnedUp[0] = camera->up.x;
+    turnedUp[1] = camera->up.y;
+    turnedUp[2] = camera->up.z;
+    if (rotateUp) {
+        if (xud_camera_rotate_by_axis(turnedUp, right, angle, turnedUp) != XUD_OK) {
+            return XUD_INVALID_ARG;
+        }
+        turned.up.x = turnedUp[0];
+        turned.up.y = turnedUp[1];
+        turned.up.z = turnedUp[2];
+    }
+
+    if (xud_camera_basis_is_usable(&turned) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+
+    *camera = turned;
+
+    return XUD_OK;
+}
+
+XudResult xud_camera_roll(XudCamera3D* camera, float angle) {
+    XudCamera3D turned;
+    float forward[3];
+    float right[3];
+    float up[3];
+    float turnedUp[3];
+    float rawUp[3];
+
+    if (camera == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_basis(camera, forward, right, up) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The caller's own up, rotated - not the normalised one. raylib's CameraRoll turns camera->up as
+       given (rcamera.h 415), and the record's up LENGTH is the caller's: a camera whose up was
+       handed in at twice a unit would otherwise find its first roll quietly rewriting that.
+    */
+    rawUp[0] = camera->up.x;
+    rawUp[1] = camera->up.y;
+    rawUp[2] = camera->up.z;
+    if (xud_camera_rotate_by_axis(rawUp, forward, angle, turnedUp) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    turned = *camera;
+    turned.up.x = turnedUp[0];
+    turned.up.y = turnedUp[1];
+    turned.up.z = turnedUp[2];
+
+    if (xud_camera_basis_is_usable(&turned) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+
+    *camera = turned;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The two updates above the record
+ *
+ * xud_update_camera_pro() takes its movement, rotation and zoom from the caller and touches
+ * nothing else; xud_update_camera() reads them from the context, which is raylib's UpdateCamera
+ * read literally (GetFrameTime, GetMouseDelta, GetMouseWheelMove, IsKeyDown, IsKeyPressed and one
+ * gamepad axis pair). The gamepad half is NOT here: this library owns no gamepad rung and vendored
+ * GLFW's joystick subsystem is not wired to one (see xud_input.h's "What this layer does NOT own"),
+ * so the axes a pad would supply are the caller's to hand to xud_update_camera_pro() instead.
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_update_camera_pro(XudCamera3D* camera, XudVector3 movement, XudVector3 rotation, float zoom) {
+    XudCamera3D moved;
+
+    if (camera == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The whole record, not only its basis: this call exists to leave a camera that can be drawn
+       with, so the aperture and the two planes are part of the question - and the ask happens on
+       the caller's record BEFORE any of the steps below move it, so a refusal leaves it alone.
+    */
+    if (xud_camera_validate(camera) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    moved = *camera;
+
+    /* The seven steps in raylib's order (rcamera.h 549-559): pitch, yaw, roll, forward, right, up,
+       then the pull toward the target. Every one of them is the rung's own primitive, so the sum is
+       the same arithmetic a caller could write by hand - and every one of them works on the copy,
+       so the caller's record changes only when all seven have landed.
+    */
+    if (xud_camera_pitch(&moved, -rotation.y, true, false, false) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_yaw(&moved, -rotation.x, false) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_roll(&moved, rotation.z) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_move_forward(&moved, movement.x, true) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_move_right(&moved, movement.y, true) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_move_up(&moved, movement.z) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_camera_move_to_target(&moved, zoom) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    *camera = moved;
+
+    return XUD_OK;
+}
+
+/* One key's held state, as a yes/no. A refusal is answered "not held" rather than forwarded: the
+   reach guard in xud_update_camera() has already ruled out the only state the input queries refuse
+   on (a context with no input rung), and a camera mode is not the place to turn a key nobody is
+   holding into an error code a caller would have to branch on four times over.
+*/
+static uint32_t xud_camera_key_held(XudContext* context, int key) {
+    bool held = false;
+
+    return ((xud_is_key_down(&held, context, key) == XUD_OK) && held) ? 1u : 0u;
+}
+
+static uint32_t xud_camera_key_tapped(XudContext* context, int key) {
+    bool tapped = false;
+
+    return ((xud_is_key_pressed(&tapped, context, key) == XUD_OK) && tapped) ? 1u : 0u;
+}
+
+XudResult xud_update_camera(XudContext* context, XudCamera3D* camera, uint32_t mode) {
+    XudCamera3D moved;
+    XudVector2 cursorDelta = { .x = 0.0f, .y = 0.0f };
+    float frameTime = 0.0f;
+    float wheel = 0.0f;
+    float zoom = 0.0f;
+    float moveSpeed = 0.0f;
+    float rotationSpeed = 0.0f;
+    float panSpeed = 0.0f;
+    bool middleHeld = false;
+    bool moveInWorldPlane = false;
+    bool rotateAroundTarget = false;
+    bool lockView = false;
+    XudResult result = XUD_OK;
+
+    if ((context == NULL) || (camera == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (mode >= XUD_CAMERA_MODE_COUNT) {
+        return XUD_INVALID_ARG;
+    }
+    if ((context->input == NULL) || (context->time == NULL)) {
+        /* The two rungs this call reads: a context that never completed bring-up has neither, and
+           the answer is the one every other public call above a missing rung gives.
+        */
+        return XUD_UNSUPPORTED;
+    }
+
+    /* Asked of the caller's record before anything below moves it, so a refused update is the same
+       camera the caller arrived with - and the mode handlers below can then take the basis of the
+       copy they work on for granted.
+    */
+    if (xud_camera_validate(camera) != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    moved = *camera;
+
+    if (mode == XUD_CAMERA_MODE_CUSTOM) {
+        /* The mode whose whole meaning is "the caller is driving" (rcamera.h 460: `if (mode ==
+           CAMERA_CUSTOM) {}`). XUD_OK, because the call did what the mode asks.
+        */
+        return XUD_OK;
+    }
+
+    result = xud_get_frame_time(&frameTime, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_get_mouse_delta(&cursorDelta, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The three flags raylib derives from the mode (rcamera.h 449-451) and the three speeds scaled
+       by the frame that just completed. lockView is true for every mode that reaches here: the one
+       mode it was false for is CUSTOM, which returned above. A first frame's span is zero, so the
+       first update is a no-op rather than a jump - the same answer raylib's first GetFrameTime()
+       gives.
+    */
+    moveInWorldPlane = ((mode == XUD_CAMERA_MODE_FIRST_PERSON) || (mode == XUD_CAMERA_MODE_THIRD_PERSON));
+    rotateAroundTarget = ((mode == XUD_CAMERA_MODE_THIRD_PERSON) || (mode == XUD_CAMERA_MODE_ORBITAL));
+    lockView = true;
+    moveSpeed = XUD_CAMERA_MOVE_SPEED * frameTime;
+    rotationSpeed = XUD_CAMERA_ROTATION_SPEED * frameTime;
+    panSpeed = XUD_CAMERA_PAN_SPEED * frameTime;
+
+    if (mode == XUD_CAMERA_MODE_ORBITAL) {
+        /* The eye circles the target at the distance it already holds: the view vector swung around
+           the camera's own up by the frame's slice of the orbital speed (rcamera.h 463-466). Keys
+           and mouse are NOT read in this mode - the orbital camera has nothing but its own swing and
+           the wheel below.
+        */
+        float forward[3];
+        float right[3];
+        float up[3];
+        float view[3];
+        float swung[3];
+
+        if (xud_camera_basis(&moved, forward, right, up) != XUD_OK) {
+            return XUD_INVALID_ARG;
+        }
+        view[0] = moved.position.x - moved.target.x;
+        view[1] = moved.position.y - moved.target.y;
+        view[2] = moved.position.z - moved.target.z;
+        if (xud_camera_rotate_by_axis(view, up, XUD_CAMERA_ORBITAL_SPEED * frameTime, swung) != XUD_OK) {
+            return XUD_INVALID_ARG;
+        }
+        moved.position.x = moved.target.x + swung[0];
+        moved.position.y = moved.target.y + swung[1];
+        moved.position.z = moved.target.z + swung[2];
+
+        /* Asked of the SWUNG record: the question is whether the eye this frame put somewhere is
+           still off its target and still has an axis to rotate over, not whether the one it came
+           from had - which the validate at the top of this call already knowed.
+        */
+        if (xud_camera_basis_is_usable(&moved) == 0u) {
+            return XUD_INVALID_ARG;
+        }
+    } else {
+        /* The keyboard's rotations, then the mouse's, then the moves - raylib's order (rcamera.h
+           471-499), so a frame that turns and steps in the same frame turns first.
+        */
+        if (xud_camera_key_held(context, XUD_KEY_DOWN) != 0u) {
+            if (xud_camera_pitch(&moved, -rotationSpeed, lockView, rotateAroundTarget, false) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+        if (xud_camera_key_held(context, XUD_KEY_UP) != 0u) {
+            if (xud_camera_pitch(&moved, rotationSpeed, lockView, rotateAroundTarget, false) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+        if (xud_camera_key_held(context, XUD_KEY_RIGHT) != 0u) {
+            if (xud_camera_yaw(&moved, -rotationSpeed, rotateAroundTarget) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+        if (xud_camera_key_held(context, XUD_KEY_LEFT) != 0u) {
+            if (xud_camera_yaw(&moved, rotationSpeed, rotateAroundTarget) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+        if (xud_camera_key_held(context, XUD_KEY_Q) != 0u) {
+            if (xud_camera_roll(&moved, -rotationSpeed) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+        if (xud_camera_key_held(context, XUD_KEY_E) != 0u) {
+            if (xud_camera_roll(&moved, rotationSpeed) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+
+        if ((mode == XUD_CAMERA_MODE_FREE) && (xud_is_mouse_button_down(&middleHeld, context, XUD_MOUSE_BUTTON_MIDDLE) == XUD_OK)
+            && middleHeld) {
+            /* Free flight's pan: the middle button drags the whole camera across the screen plane
+               (rcamera.h 480-487) - the sign of the cursor delta, not its size, so the drag is the
+               pan speed rather than an arbitrary multiple of the hand's jitter.
+            */
+            if (xud_camera_move_right(
+                    &moved, ((cursorDelta.x > 0.0f) ? -panSpeed : ((cursorDelta.x < 0.0f) ? panSpeed : 0.0f)), moveInWorldPlane)
+                != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+            if (xud_camera_move_up(&moved, ((cursorDelta.y > 0.0f) ? -panSpeed : ((cursorDelta.y < 0.0f) ? panSpeed : 0.0f))) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        } else {
+            if (xud_camera_yaw(&moved, -cursorDelta.x * XUD_CAMERA_MOUSE_MOVE_SENSITIVITY, rotateAroundTarget) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+            if (xud_camera_pitch(&moved, -cursorDelta.y * XUD_CAMERA_MOUSE_MOVE_SENSITIVITY, lockView, rotateAroundTarget, false)
+                != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+
+        if (xud_camera_key_held(context, XUD_KEY_W) != 0u) {
+            if (xud_camera_move_forward(&moved, moveSpeed, moveInWorldPlane) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+        if (xud_camera_key_held(context, XUD_KEY_S) != 0u) {
+            if (xud_camera_move_forward(&moved, -moveSpeed, moveInWorldPlane) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+        if (xud_camera_key_held(context, XUD_KEY_A) != 0u) {
+            if (xud_camera_move_right(&moved, -moveSpeed, moveInWorldPlane) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+        if (xud_camera_key_held(context, XUD_KEY_D) != 0u) {
+            if (xud_camera_move_right(&moved, moveSpeed, moveInWorldPlane) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+        if (mode == XUD_CAMERA_MODE_FREE) {
+            if (xud_camera_key_held(context, XUD_KEY_SPACE) != 0u) {
+                if (xud_camera_move_up(&moved, moveSpeed) != XUD_OK) {
+                    return XUD_INVALID_ARG;
+                }
+            }
+            if (xud_camera_key_held(context, XUD_KEY_LEFT_CONTROL) != 0u) {
+                if (xud_camera_move_up(&moved, -moveSpeed) != XUD_OK) {
+                    return XUD_INVALID_ARG;
+                }
+            }
+        }
+    }
+
+    /* The wheel, for the three modes that hold a target at a distance (rcamera.h 521-527). The zoom
+       is summed first and applied once, so a frame that scrolled AND tapped the keypad moves once
+       by the total rather than twice by each half - and a frame with nothing to apply leaves the
+       distance alone instead of rebuilding the position along the forward for a delta of zero.
+    */
+    if ((mode == XUD_CAMERA_MODE_THIRD_PERSON) || (mode == XUD_CAMERA_MODE_ORBITAL) || (mode == XUD_CAMERA_MODE_FREE)) {
+        result = xud_get_mouse_wheel_move(&wheel, context);
+        if (result != XUD_OK) {
+            return result;
+        }
+        zoom = -wheel;
+        if (xud_camera_key_tapped(context, XUD_KEY_KP_SUBTRACT) != 0u) {
+            zoom += 2.0f;
+        }
+        if (xud_camera_key_tapped(context, XUD_KEY_KP_ADD) != 0u) {
+            zoom -= 2.0f;
+        }
+        if (zoom != 0.0f) {
+            if (xud_camera_move_to_target(&moved, zoom) != XUD_OK) {
+                return XUD_INVALID_ARG;
+            }
+        }
+    }
+
+    /* Every step landed: the caller's record is the updated one, and nothing before this line could
+       have written it.
+    */
+    *camera = moved;
+
+    return XUD_OK;
 }

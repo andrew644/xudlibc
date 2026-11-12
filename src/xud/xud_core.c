@@ -61,6 +61,11 @@
 #include "xud_window.h"
 #include <stdlib.h>
 
+/* The generator's state for a seed, defined below with the generator and declared here because a
+   context is BORN on a seed (xud_context_create below) and is re-seeded one rung up the file.
+*/
+static uint64_t xud_core_random_state_from_seed(uint32_t seed);
+
 /* Internal: allocate a zeroed context shell. Not part of the public API - the only way
    user code may obtain a context is xud_init_context(), so xud_close_context() can rely
    on every context it frees being heap-allocated. */
@@ -81,6 +86,11 @@ static XudResult xud_context_create(XudContext** outContext, uint32_t width, uin
     context->width = width;
     context->height = height;
     context->validate = XUD_VALIDATE;
+    /* The generator starts where every context's generator starts, so a program that draws a scene
+       from xud_get_random_value() draws the same scene on the next run of the same binary.
+    */
+    context->randomSeed = XUD_RANDOM_DEFAULT_SEED;
+    context->randomState = xud_core_random_state_from_seed(XUD_RANDOM_DEFAULT_SEED);
 
     *outContext = context;
     return XUD_OK;
@@ -1039,6 +1049,85 @@ XudResult xud_clear_background(XudContext* context, XudColor color) {
     }
 
     context->renderer->background = color;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The context's own generator - raylib's GetRandomValue / SetRandomSeed
+ *
+ * xorshift64*: three register ops, one multiply, no table and no library, and a period of 2^64-1 for
+ * any nonzero state. It is here rather than a thin call over rand() because both of this repo's rules
+ * about random numbers are rules about STATE - the sequence is one context's own, and it starts at
+ * the same number every run - and rand() has exactly one process-wide state, which the C library and
+ * anything else the caller links can move under it. raylib's own mapping from a draw to a range is a
+ * modulo over the span, bias and all (rcore.c: "rand()%(max+1) + minValue"), and that mapping is kept
+ * rather than improved: the point of a fixed seed is that a caller can reproduce the numbers a scene
+ * was built from, and reproducing them needs the same mapping, not a better one.
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_CORE_RANDOM_MULTIPLY                                                                                                           \
+    2685821657736338717ull /* xorshift64*'s output scramble: the recurrence's weakest bits are its lowest, and this is the multiply that moves them */
+
+static_assert(((XUD_CORE_RANDOM_MULTIPLY & 1ull) == 1ull),
+    "xud_core.c: the scramble has to be odd to be invertible, which is what makes the multiply a scramble and not a loss of state");
+
+/* The state a seed becomes: the seed's own 32 bits with the top bit set above them. The recurrence
+   has ONE fixed point - zero answers zero for ever, so a context seeded with zero would answer the
+   same number every draw - and a uint32_t seed leaves the 32 high bits of a uint64_t state unused, so
+   that bit can be set without losing anything the caller named. raylib hands srand() a zero seed
+   happily; this is the one place the two differ, and it differs by never stalling.
+*/
+static uint64_t xud_core_random_state_from_seed(uint32_t seed) { return ((uint64_t)seed) | 0x8000000000000000ull; }
+
+/* One draw, and the state that replaces the one it read. */
+static uint64_t xud_core_random_next(uint64_t* state) {
+    uint64_t x = 0ull;
+
+    x = *state;
+    x ^= (x >> 12u);
+    x ^= (x << 25u);
+    x ^= (x >> 27u);
+    *state = x;
+
+    return x * XUD_CORE_RANDOM_MULTIPLY;
+}
+
+/// See xud.h.
+XudResult xud_get_random_value(int* outValue, XudContext* context, int minValue, int maxValue) {
+    int64_t low = 0;
+    int64_t high = 0;
+    uint64_t span = 0u;
+
+    if ((outValue == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* raylib's swap - a range handed the wrong way round is a range, not an error - read on int64_t
+       rather than on the caller's own int, because the SPAN of the full INT_MIN..INT_MAX range is 2^32
+       and an int subtraction of those two endpoints overflows on the way to it.
+    */
+    low = (int64_t)((minValue <= maxValue) ? minValue : maxValue);
+    high = (int64_t)((minValue <= maxValue) ? maxValue : minValue);
+    span = (uint64_t)(high - low) + 1u;
+
+    *outValue = (int)(low + (int64_t)(xud_core_random_next(&context->randomState) % span));
+
+    return XUD_OK;
+}
+
+/// See xud.h. The seed is recorded and the state derived from it in one move, so the two cannot drift
+/// apart and a seed names the same sequence on the next run.
+XudResult xud_set_random_seed(XudContext* context, uint32_t seed) {
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->randomSeed == seed) {
+        return XUD_ALREADY;
+    }
+
+    context->randomSeed = seed;
+    context->randomState = xud_core_random_state_from_seed(seed);
 
     return XUD_OK;
 }

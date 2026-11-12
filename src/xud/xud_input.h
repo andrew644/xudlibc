@@ -8,10 +8,14 @@
  *          rung's 0 / 1 / 2), the frame-to-frame transitions raylib's IsKeyPressed/IsKeyDown/IsKe
  *          yUp family reads out of a pair of those rows, the key and char queues GLFW's key and ch
  *          ar callbacks fill, the scroll GLFW's scroll callback accumulates between polls, the cu
- *          rsor position plus raylib's offset and scale above it - plus the rungs that bring it up (xud_input_open(), which registers GLF
- *          W's char and scroll callbacks on the window) and down (xud_input_close()), and the one
- *          pure half the whole rung's correctness lives in: xud_input_advance(), which moves the
- *          state machine one frame given a snapshot of what the window answers.
+ *          rsor position plus raylib's offset and scale above it, and the cursor's VISIBILITY - the
+ *          row raylib's HideCursor/ShowCursor pair (this library's xud_hide_cursor()/xud_show_cur
+ *          sor(), which ask GLFW for GLFW_CURSOR_DISABLED and GLFW_CURSOR_NORMAL) moves, and the
+ *          row that has to exist because GLFW answers the Wayland pointer lock through no getter.
+ *          Plus the rungs that bring it up (xud_input_open(), which registers GLFW's char and scroll
+ *          callbacks on the window) and down (xud_input_close()), and the one pure half the whole
+ *          rung's correctness lives in: xud_input_advance(), which moves the state machine one frame
+ *          given a snapshot of what the window answers.
  *   Layer: above the window (it reads that window's GLFW state and nothing else - no Vulkan symb
  *          ol, no loader row, no Vk anything) and below xud.h's public input calls, which are thi
  *          s rung's state machine plus the one context guard. It is the input half of the design
@@ -194,6 +198,14 @@ typedef struct XudInput {
     double cursorY;
     double deltaCursorX;
     double deltaCursorY;
+
+    /* The cursor's visibility, as the last xud_hide_cursor()/xud_show_cursor() left it. GLFW has no
+       getter for what it last put the cursor mode to on this platform, so the rung's own row is what
+       makes the pair able to answer XUD_ALREADY for a state already in effect - the same idiom xud_
+       end_camera_3d() states for a camera that was not live. 0 is "showing", which is what a window
+       starts on and what memset opens the rung with.
+    */
+    uint32_t cursorHidden;
 
     /* Scroll, in the two halves of a frame: what the callbacks accumulated since the poll below it
        (still arriving while a frame is drawn) and what the poll above it saw, which is what a cal

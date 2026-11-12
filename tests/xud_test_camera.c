@@ -452,6 +452,396 @@ static void xud_test_camera_pure(void) {
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The moves and the turns: the primitives xud_update_camera() drives a mode with
+ *
+ * Stated as GEOMETRY - where the eye ends up, which way it looks, how far the target is - and never
+ * as the rotation algebra the implementation runs, for the reason the matrix checks above give: a
+ * check that re-implements Rodrigues' formula asserts the same formula twice rather than asserting
+ * that a right turn looks right. The expected numbers are the ones a hand states about a hand-built
+ * camera: a camera looking down a diagonal walks flat when its step is flattened, and a quarter turn
+ * of a camera looking down -Z looks along +X.
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_camera_moves(void) {
+    const XudCamera3D eye = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, -1.0f }, { 0.0f, 1.0f, 0.0f }, 60.0f, 0.5f, 100.0f };
+    const float pi = 4.0f * atanf(1.0f);
+    XudVector3 axis;
+
+    /*--- the basis: forward is the view, right is the cross, and a view of no length is refused --*/
+
+    xud_check(xud_get_camera_forward(&axis, &eye) == XUD_OK, "camera/basis-forward-ok", "a posed camera answers its forward");
+    xud_check(xudTestNear(axis.x, 0.0f) && xudTestNear(axis.y, 0.0f) && xudTestNear(axis.z, -1.0f), "camera/basis-forward-is-the-view",
+        "forward is target - position, which is the direction the eye looks");
+    xud_check(xud_get_camera_right(&axis, &eye) == XUD_OK, "camera/basis-right-ok", "and it answers its right");
+    xud_check(xudTestNear(axis.x, 1.0f) && xudTestNear(axis.y, 0.0f) && xudTestNear(axis.z, 0.0f), "camera/basis-right-is-the-cross",
+        "right is forward x up, which for an eye looking down -Z with +Y up is +X - the handedness every strafe in the example depends on");
+    xud_check(xud_get_camera_up(&axis, &eye) == XUD_OK, "camera/basis-up-ok", "and its up");
+    xud_check(xudTestNear(axis.x, 0.0f) && xudTestNear(axis.y, 1.0f) && xudTestNear(axis.z, 0.0f), "camera/basis-up-is-the-axes-third",
+        "and the third axis completes the frame");
+
+    /* A view two axes long is still one direction: the caller's numbers are not the basis. */
+    {
+        XudCamera3D longEye = eye;
+
+        longEye.target = (XudVector3) { .x = 3.0f, .y = 0.0f, .z = -4.0f };
+        xud_check(xud_get_camera_forward(&axis, &longEye) == XUD_OK, "camera/basis-long-view-ok", "a view of length 5 answers");
+        xud_check(xudTestNear(axis.x, 0.6f) && xudTestNear(axis.y, 0.0f) && xudTestNear(axis.z, -0.8f), "camera/basis-view-normalised",
+            "as the unit direction, not as the caller's (3, 0, -4)");
+    }
+
+    /* An eye looking at itself has no direction, and the rung says so rather than dividing by zero. */
+    {
+        XudCamera3D collapsed = eye;
+
+        collapsed.target = collapsed.position;
+        xud_check(xud_get_camera_forward(&axis, &collapsed) == XUD_INVALID_ARG, "camera/basis-collapsed-refused",
+            "a camera whose target IS its position has no forward to hand out, and is refused");
+        xud_check(xud_get_camera_right(&axis, &collapsed) == XUD_INVALID_ARG, "camera/basis-collapsed-right-refused", "and no right");
+        xud_check(xud_get_camera_forward(NULL, &eye) == XUD_INVALID_ARG, "camera/basis-null-out",
+            "an out-param that cannot be written is refused");
+        xud_check(xud_get_camera_forward(&axis, NULL) == XUD_INVALID_ARG, "camera/basis-null-camera", "and no camera at all");
+    }
+
+    /* A posed camera's axes: forward and right are perpendicular whatever the pose was, and right is
+       perpendicular to the record's up too - which is the whole cross-product claim. The up the getter
+       hands out is the CALLER'S up at unit length, the vector raylib's GetCameraUp answers; it is the
+       matrix that squares the frame, by re-deriving its own third row from that cross (the framing
+       checks above are where that is proved), and a tilted up therefore shears nothing.
+    */
+    {
+        const XudCamera3D posed = { { 1.0f, 2.0f, 3.0f }, { -2.0f, 0.5f, 1.0f }, { 0.3f, 0.9f, -0.2f }, 50.0f, 0.1f, 40.0f };
+        XudVector3 forward;
+        XudVector3 right;
+        XudVector3 up;
+        float dotFR = 0.0f;
+        float dotRU = 0.0f;
+
+        xud_check(xud_get_camera_forward(&forward, &posed) == XUD_OK, "camera/basis-posed-forward", "a posed camera answers its forward");
+        xud_check(xud_get_camera_right(&right, &posed) == XUD_OK, "camera/basis-posed-right", "its right");
+        xud_check(xud_get_camera_up(&up, &posed) == XUD_OK, "camera/basis-posed-up", "and its up");
+        dotFR = (forward.x * right.x) + (forward.y * right.y) + (forward.z * right.z);
+        dotRU = (right.x * up.x) + (right.y * up.y) + (right.z * up.z);
+        xud_check(xudTestNear(dotFR, 0.0f), "camera/basis-square", "forward and right are perpendicular, whatever the pose was");
+        xud_check(xudTestNear(dotRU, 0.0f), "camera/basis-right-perpendicular-to-up",
+            "and right is perpendicular to the record's up as well, so a tilted up tilts the frame instead of skewing it");
+        xud_check(xudTestNear((up.x * up.x) + (up.y * up.y) + (up.z * up.z), 1.0f), "camera/basis-up-unit",
+            "and the up the rung hands out is a unit, whichever length the caller's was");
+    }
+
+    /*--- the three moves: a step along an axis, optionally flattened onto the world plane --------*/
+
+    /* The 45-degree camera is the one that separates the two halves of the plane flag: its forward
+       has as much y as z, so a flattened step and a free step part company at once.
+    */
+    {
+        const XudCamera3D sloped = { { 0.0f, 5.0f, 5.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 60.0f, 0.5f, 100.0f };
+        XudCamera3D walked = sloped;
+        XudCamera3D flew = sloped;
+        XudVector3 before;
+        XudVector3 after;
+
+        xud_check(xud_get_camera_forward(&before, &sloped) == XUD_OK, "camera/move-sloped-basis", "the sloped camera has a forward");
+        xud_check(xud_camera_move_forward(&walked, 2.0f, true) == XUD_OK, "camera/move-forward-plane-ok",
+            "walking it forward in the plane answers OK");
+        xud_check(
+            xud_camera_move_forward(&flew, 2.0f, false) == XUD_OK, "camera/move-forward-free-ok", "and flying it forward answers OK too");
+        xud_check(xudTestNear(walked.position.y, 5.0f), "camera/move-forward-plane-stays-level",
+            "the walked eye is still 5 up: the flag flattens the step, which is the difference between walking and flying");
+        xud_check(xudTestNear(walked.position.z, 3.0f), "camera/move-forward-plane-step",
+            "and it moved the whole distance along z, because a flattened diagonal step is the full distance in the plane");
+        xud_check(!xudTestNear(flew.position.y, 5.0f) && (flew.position.y < 5.0f), "camera/move-forward-free-descends",
+            "the flown eye, on the other hand, comes down as it goes forward");
+
+        xud_check(
+            xud_get_camera_forward(&after, &walked) == XUD_OK, "camera/move-forward-direction-ok", "the walked camera still has a forward");
+        xud_check(xudTestNear(after.x, before.x) && xudTestNear(after.y, before.y) && xudTestNear(after.z, before.z),
+            "camera/move-forward-keeps-direction", "and it looks the same way it did: a step moves the whole frame, it does not steer it");
+        xud_check(xudTestNear(walked.target.z, -2.0f) && xudTestNear(walked.target.y, 0.0f), "camera/move-forward-moves-target",
+            "the target moves with the eye, so a walk does not quietly tilt the view the way moving only the eye would");
+
+        /* A step sideways is perpendicular to the view and as long as the caller asked for. */
+        {
+            XudCamera3D strafed = sloped;
+            float dx = 0.0f;
+            float dy = 0.0f;
+            float dz = 0.0f;
+            float drift = 0.0f;
+            float length = 0.0f;
+
+            xud_check(xud_camera_move_right(&strafed, 1.5f, true) == XUD_OK, "camera/move-right-ok", "a step right answers OK");
+            dx = strafed.position.x - sloped.position.x;
+            dy = strafed.position.y - sloped.position.y;
+            dz = strafed.position.z - sloped.position.z;
+            drift = (dx * before.x) + (dy * before.y) + (dz * before.z);
+            length = sqrtf((dx * dx) + (dy * dy) + (dz * dz));
+            xud_check(xudTestNear(drift, 0.0f), "camera/move-right-perpendicular", "and it is perpendicular to where the camera looks");
+            xud_check(
+                xudTestNear(dy, 0.0f), "camera/move-right-stays-level", "and level, because the step was asked for in the world plane");
+            xud_check(xudTestNear(length, 1.5f), "camera/move-right-step-length", "and it is exactly the distance asked for");
+        }
+
+        /* The plane's dominant axis is the one that gets dropped, so a camera whose up is the z axis
+           walks a step of no z at all - the ladder's other branch, which a +Y camera never reaches.
+        */
+        {
+            const XudCamera3D uprightZ = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.866f, -0.5f }, { 0.0f, 0.5f, 0.866f }, 60.0f, 0.5f, 100.0f };
+            XudCamera3D moved = uprightZ;
+
+            xud_check(xud_camera_move_forward(&moved, 1.0f, true) == XUD_OK, "camera/move-plane-z-up-ok",
+                "a camera whose up is z-dominated walks too");
+            xud_check(xudTestNear(moved.position.z, 0.0f) && xudTestNear(moved.position.y, 1.0f), "camera/move-plane-drops-dominant-axis",
+                "and its flattened step drops z rather than y, which is the axis its own up is dominated by");
+        }
+
+        /* A distance of zero asks for nothing and gets nothing - including no refusal from the
+           flattening, which has no direction to normalise out of a step of no length.
+        */
+        {
+            XudCamera3D still = sloped;
+
+            xud_check(xud_camera_move_forward(&still, 0.0f, true) == XUD_OK, "camera/move-zero-ok", "a step of zero answers OK");
+            xud_check(xudTestNear(still.position.x, sloped.position.x) && xudTestNear(still.position.y, sloped.position.y)
+                    && xudTestNear(still.position.z, sloped.position.z),
+                "camera/move-zero-changes-nothing",
+                "and leaves the eye exactly where it was, rather than refusing a caller that asked for nothing");
+        }
+
+        /* Straight up the camera's own up, which for +Y-up is the world's up: the mode that flies. */
+        {
+            XudCamera3D risen = sloped;
+
+            xud_check(xud_camera_move_up(&risen, 3.0f) == XUD_OK, "camera/move-up-ok", "a step up answers OK");
+            xud_check(xudTestNear(risen.position.y, 8.0f) && xudTestNear(risen.position.x, 0.0f) && xudTestNear(risen.position.z, 5.0f),
+                "camera/move-up-is-along-up", "and it is 3 higher and nothing else, along the record's own up");
+            xud_check(xudTestNear(risen.target.y, 3.0f), "camera/move-up-moves-target", "the target rises with it, so the view holds");
+        }
+    }
+
+    /*--- the distance and the three turns -------------------------------------------------------*/
+
+    {
+        const XudCamera3D orbit = { { 0.0f, 0.0f, 5.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 60.0f, 0.5f, 100.0f };
+        XudCamera3D closer = orbit;
+        XudCamera3D crossed = orbit;
+        float distance = 0.0f;
+
+        xud_check(xud_camera_move_to_target(&closer, -3.0f) == XUD_OK, "camera/move-to-target-ok", "pulling the eye in answers OK");
+        distance = sqrtf(
+            (closer.position.x * closer.position.x) + (closer.position.y * closer.position.y) + (closer.position.z * closer.position.z));
+        xud_check(xudTestNear(distance, 2.0f), "camera/move-to-target-distance", "and the eye is 3 closer to the target than it was");
+        xud_check(xudTestNear(closer.position.x, 0.0f) && xudTestNear(closer.position.y, 0.0f) && (closer.position.z > 0.0f),
+            "camera/move-to-target-along-view", "along the view, not off it, and still on the same side of what it looks at");
+        xud_check(xudTestNear(closer.target.x, 0.0f) && xudTestNear(closer.target.y, 0.0f) && xudTestNear(closer.target.z, 0.0f),
+            "camera/move-to-target-target-fixed", "the target does not move: zooming is the eye's half of a third-person rig");
+
+        /* The clamp: an eye pulled past its target would have its view vector through the origin, and
+           the basis would flip. The floor is the rung's own distance, not zero.
+        */
+        xud_check(xud_camera_move_to_target(&crossed, -100.0f) == XUD_OK, "camera/move-to-target-clamped",
+            "a pull past the target is answered, not refused");
+        distance = sqrtf((crossed.position.x * crossed.position.x) + (crossed.position.y * crossed.position.y)
+            + (crossed.position.z * crossed.position.z));
+        xud_check(xudTestNear(distance, XUD_CAMERA_MIN_TARGET_DISTANCE), "camera/move-to-target-floor",
+            "and the eye stops at the rung's floor above the target instead of crossing it");
+        xud_check(xud_get_camera_forward(&axis, &crossed) == XUD_OK, "camera/move-to-target-basis-alive",
+            "so the camera it leaves behind still has a basis to be drawn with");
+    }
+
+    /* A yaw of a quarter turn, from an eye looking down -Z with +Y up, looks along +X: the direction
+       a rightward mouse move must send it, which is the sign the first-person example lives or dies by.
+    */
+    {
+        XudCamera3D turned = eye;
+        const XudCamera3D orbit = { { 0.0f, 0.0f, 5.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 60.0f, 0.5f, 100.0f };
+        XudCamera3D orbiting = orbit;
+
+        xud_check(xud_camera_yaw(&turned, -(pi / 2.0f), false) == XUD_OK, "camera/yaw-ok", "a yaw about the camera's up answers OK");
+        xud_check(xud_get_camera_forward(&axis, &turned) == XUD_OK, "camera/yaw-forward-ok", "and the turned camera has a forward");
+        xud_check(xudTestNear(axis.x, 1.0f) && xudTestNear(axis.y, 0.0f) && xudTestNear(axis.z, 0.0f), "camera/yaw-turns-right",
+            "a negative yaw turns an eye looking down -Z to look along +X, which is to its own right");
+        xud_check(xudTestNear(turned.position.x, 0.0f) && xudTestNear(turned.position.y, 0.0f) && xudTestNear(turned.position.z, 0.0f),
+            "camera/yaw-eye-fixed", "and the eye did not move: the first-person reading turns the head, not the body");
+        xud_check(xudTestNear(sqrtf((turned.target.x * turned.target.x) + (turned.target.y * turned.target.y)
+                                  + (turned.target.z * turned.target.z)),
+                      1.0f),
+            "camera/yaw-keeps-distance", "the target is still one unit out, so a turn is a rotation and not a slide");
+
+        /* The other reading: the eye circles a target that stays put - third person and orbital. */
+        xud_check(xud_camera_yaw(&orbiting, pi / 2.0f, true) == XUD_OK, "camera/yaw-around-target-ok", "the orbiting reading answers OK");
+        xud_check(xudTestNear(orbiting.target.x, 0.0f) && xudTestNear(orbiting.target.z, 0.0f), "camera/yaw-around-target-target-fixed",
+            "the target is where it was");
+        xud_check(xudTestNear(orbiting.position.x, 5.0f) && xudTestNear(orbiting.position.z, 0.0f), "camera/yaw-around-target-eye-orbits",
+            "and the eye has moved a quarter of the way round it, from +Z to +X, at the same distance");
+
+        /* One whole turn is the camera back where it started: the trig is the only place this can fail. */
+        {
+            XudCamera3D full = eye;
+
+            xud_check(xud_camera_yaw(&full, 2.0f * pi, false) == XUD_OK, "camera/yaw-full-turn-ok", "a whole turn answers OK");
+            xud_check(xudTestNear(full.target.x, eye.target.x) && xudTestNear(full.target.y, eye.target.y)
+                    && xudTestNear(full.target.z, eye.target.z),
+                "camera/yaw-full-turn-identity", "and leaves the record on the view it started with");
+        }
+
+        /* A camera whose up is its own view has no axis to turn about, and is refused instead of being
+           turned into a NaN one call later.
+        */
+        {
+            XudCamera3D parallel = eye;
+
+            parallel.up = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = -1.0f };
+            xud_check(xud_camera_yaw(&parallel, 0.3f, false) == XUD_INVALID_ARG, "camera/yaw-parallel-up-refused",
+                "an up that IS the view gives no turn, and the record is refused rather than rewritten");
+            xud_check(xudTestNear(parallel.target.x, eye.target.x) && xudTestNear(parallel.target.z, eye.target.z),
+                "camera/yaw-refusal-leaves-record", "and the refused camera is the camera that was handed in");
+            xud_check(xud_camera_yaw(NULL, 0.3f, false) == XUD_INVALID_ARG, "camera/yaw-null-camera", "no camera is refused");
+        }
+    }
+
+    /*--- the pitch's clamp, the roll's axis, and the update that strings them together -----------*/
+
+    {
+        XudCamera3D locked = eye;
+        XudCamera3D free = eye;
+
+        /* The same angle, the flag on and off: with the lock the view stops short of the camera's own
+           up, without it the view carries on past the vertical. A first-person camera is the lock and
+           nothing else - the somersault is the bug the clamp exists to stop.
+        */
+        xud_check(xud_camera_pitch(&locked, 3.0f, true, false, false) == XUD_OK, "camera/pitch-locked-ok", "a pitched camera answers OK");
+        xud_check(
+            xud_camera_pitch(&free, 3.0f, false, false, false) == XUD_OK, "camera/pitch-free-ok", "and so is one pitched without the lock");
+        xud_check(xud_get_camera_forward(&axis, &locked) == XUD_OK, "camera/pitch-locked-forward", "the locked camera has a forward");
+        xud_check(xudTestNear(axis.y, 1.0f), "camera/pitch-locked-stops-short",
+            "and it is stopped just short of straight up: the clamp, not the caller's 3 radians");
+        xud_check(xud_get_camera_forward(&axis, &free) == XUD_OK, "camera/pitch-free-forward", "the unlocked one has one too");
+        xud_check(xudTestNear(axis.y, sinf(3.0f)) && !xudTestNear(axis.y, 1.0f), "camera/pitch-free-passes-vertical",
+            "and it went the whole 3 radians, which is past the vertical and back down the far side");
+
+        /* Past the ceiling the clamp saturates rather than folding: a second identical pitch is the
+           nothing the first one became, and not a rotation back down.
+        */
+        {
+            XudCamera3D again = locked;
+
+            xud_check(
+                xud_camera_pitch(&again, 3.0f, true, false, false) == XUD_OK, "camera/pitch-saturated-ok", "the second pitch is answered");
+            xud_check(xudTestNear(again.target.x, locked.target.x) && xudTestNear(again.target.y, locked.target.y)
+                    && xudTestNear(again.target.z, locked.target.z),
+                "camera/pitch-saturated-stops", "and stops the view where the first one stopped it, instead of folding it back down");
+        }
+
+        /* The record's up: held by default, carried along by the flag that says rotate it. */
+        {
+            XudCamera3D held = eye;
+            XudCamera3D carried = eye;
+
+            xud_check(
+                xud_camera_pitch(&held, 0.5f, false, false, false) == XUD_OK, "camera/pitch-holds-up", "a pitch with no up flag answers");
+            xud_check(xudTestNear(held.up.x, 0.0f) && xudTestNear(held.up.y, 1.0f) && xudTestNear(held.up.z, 0.0f),
+                "camera/pitch-up-untouched", "and leaves the record's +Y up exactly as it was");
+            xud_check(xud_camera_pitch(&carried, 0.5f, false, false, true) == XUD_OK, "camera/pitch-rotates-up", "the up flag answers too");
+            xud_check(!xudTestNear(carried.up.y, 1.0f), "camera/pitch-up-rotated",
+                "and there the up turns with the view, as a free camera's does");
+        }
+
+        /* Roll turns the record's up about the view and nothing else: the eye stays, the direction
+           stays, and the up's LENGTH is the caller's - the one place the rung rotates a caller's
+           vector without quietly normalising it first.
+        */
+        {
+            XudCamera3D rolled = eye;
+            float length = 0.0f;
+
+            rolled.up = (XudVector3) { .x = 0.0f, .y = 2.0f, .z = 0.0f };
+            xud_check(xud_camera_roll(&rolled, pi / 2.0f) == XUD_OK, "camera/roll-ok", "a roll answers OK");
+            xud_check(xudTestNear(rolled.up.x, 2.0f) && xudTestNear(rolled.up.y, 0.0f) && xudTestNear(rolled.up.z, 0.0f),
+                "camera/roll-turns-up", "and the up has turned a quarter of the way round the view");
+            length = sqrtf((rolled.up.x * rolled.up.x) + (rolled.up.y * rolled.up.y) + (rolled.up.z * rolled.up.z));
+            xud_check(xudTestNear(length, 2.0f), "camera/roll-keeps-up-length",
+                "at the length the caller gave it, not at one the rung decided on");
+            xud_check(xud_get_camera_forward(&axis, &rolled) == XUD_OK, "camera/roll-forward-ok", "the rolled camera has a forward");
+            xud_check(xudTestNear(axis.x, 0.0f) && xudTestNear(axis.y, 0.0f) && xudTestNear(axis.z, -1.0f), "camera/roll-keeps-view",
+                "and it still looks down -Z: a roll tilts the frame, it does not steer it");
+        }
+    }
+
+    /* xud_update_camera_pro(): the seven steps in raylib's order over a caller's three numbers, with
+       nothing read from a context. The checks are the same facts again, because the point of the call
+       is that a caller can write the mode it wants out of the primitives above.
+    */
+    {
+        const XudCamera3D orbit = { { 0.0f, 0.0f, 5.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 60.0f, 0.5f, 100.0f };
+        XudCamera3D idle = orbit;
+        XudCamera3D walked = orbit;
+        XudCamera3D spun = orbit;
+        XudCamera3D zoomed = orbit;
+        XudCamera3D broken = orbit;
+        XudVector3 none = { .x = 0.0f, .y = 0.0f, .z = 0.0f };
+        XudVector3 forwardMove = { .x = 1.0f, .y = 0.0f, .z = 0.0f };
+        XudVector3 spin = { .x = pi / 2.0f, .y = 0.0f, .z = 0.0f };
+        XudVector3 nanMove = { .x = NAN, .y = 0.0f, .z = 0.0f };
+        XudVector3 lookDown = { .x = 0.0f, .y = 3.0f, .z = 0.0f };
+        XudResult result = XUD_OK;
+
+        xud_check(xud_update_camera_pro(NULL, none, none, 0.0f) == XUD_INVALID_ARG, "camera/pro-null-camera", "no camera is refused");
+
+        broken.fovy = 0.0f;
+        result = xud_update_camera_pro(&broken, forwardMove, none, 0.0f);
+        xud_check(result == XUD_INVALID_ARG, "camera/pro-invalid-record-refused",
+            "a record that could not be drawn with is refused before any of the seven steps runs");
+        xud_check(xudTestNear(broken.position.z, 5.0f) && xudTestNear(broken.target.x, 0.0f), "camera/pro-refusal-leaves-record",
+            "and the refusal left the record exactly as it was handed in");
+
+        xud_check(
+            xud_update_camera_pro(&idle, none, none, 0.0f) == XUD_OK, "camera/pro-idle-ok", "an update that asks for nothing answers OK");
+        xud_check(xudTestNear(idle.position.x, 0.0f) && xudTestNear(idle.position.y, 0.0f) && xudTestNear(idle.position.z, 5.0f),
+            "camera/pro-idle-leaves-eye", "and leaves the eye where it was");
+
+        xud_check(xud_update_camera_pro(&walked, forwardMove, none, 0.0f) == XUD_OK, "camera/pro-move-ok",
+            "a movement along the view answers OK");
+        xud_check(xudTestNear(walked.position.y, 0.0f), "camera/pro-move-is-a-walk",
+            "and the x movement is a WALK: the eye is still at the height it started at, because the step is flattened");
+        xud_check(walked.position.z < 4.5f, "camera/pro-move-moves", "and it moved toward what it looks at");
+
+        xud_check(
+            xud_update_camera_pro(&spun, none, spin, 0.0f) == XUD_OK, "camera/pro-spin-ok", "a rotation about the vertical answers OK");
+        xud_check(xud_get_camera_forward(&axis, &spun) == XUD_OK, "camera/pro-spin-forward-ok", "and the spun camera has a forward");
+        xud_check(xudTestNear(axis.x, 1.0f) && xudTestNear(axis.z, 0.0f), "camera/pro-spin-turns-right",
+            "a positive rotation.x turns the view to the right, which is what a mouse moving right means");
+
+        xud_check(xud_update_camera_pro(&zoomed, none, none, -1.0f) == XUD_OK, "camera/pro-zoom-ok", "a zoom in answers OK");
+        xud_check(xudTestNear(zoomed.position.z, 4.0f), "camera/pro-zoom-distance", "and the eye is one unit closer to the target");
+
+        /* The lock the first-person mode runs on, reached through the update: a look past straight
+           down stops at straight down and leaves a camera that can still be drawn with.
+        */
+        {
+            XudCamera3D down = orbit;
+
+            xud_check(
+                xud_update_camera_pro(&down, none, lookDown, 0.0f) == XUD_OK, "camera/pro-look-down-ok", "a hard look down answers OK");
+            xud_check(xud_get_camera_forward(&axis, &down) == XUD_OK, "camera/pro-look-down-forward", "and has a forward");
+            xud_check(axis.y < -0.999f, "camera/pro-look-down-clamped", "straight down, and no further");
+            xud_check(xud_camera_validate(&down) == XUD_OK, "camera/pro-look-down-still-drawable",
+                "and the record that comes back is one the renderer will take");
+        }
+
+        /* One non-finite number anywhere in the ask refuses the WHOLE update: the caller's record is
+           either moved or untouched, never half a step.
+        */
+        {
+            XudCamera3D nanCamera = orbit;
+
+            result = xud_update_camera_pro(&nanCamera, nanMove, none, 0.0f);
+            xud_check(result == XUD_INVALID_ARG, "camera/pro-nan-refused", "a NaN distance refuses the whole update");
+            xud_check(memcmp(&nanCamera, &orbit, sizeof(orbit)) == 0, "camera/pro-nan-leaves-record",
+                "and the record that comes back is byte for byte the one that went in, so a refused update is not a half-taken step");
+        }
+    }
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The GPU half: the camera that reaches the shader, through a real context
  *-----------------------------------------------------------------------------------------------*/
 
@@ -566,6 +956,108 @@ static void xud_test_camera_gpu(void) {
             "two frames drew a real box through a real pipeline with a real camera and the messenger heard nothing");
     }
 
+    /* xud_update_camera() against the context it reads: the mode's two rungs are bring-up's, so the
+       call answers OK here, and the guards are the same ones every other public call above a context
+       gives. With nothing pressed and the pointer still, a mode is a turn of the frame clock and
+       nothing else - the eye stays where it is, which is the property a first-person loop needs before
+       it trusts any of the input below it.
+    */
+    xud_check(xud_update_camera(NULL, &camera, XUD_CAMERA_MODE_FREE) == XUD_INVALID_ARG, "gpu-camera/update-no-context",
+        "an update with no context is refused");
+    xud_check(xud_update_camera(context, NULL, XUD_CAMERA_MODE_FREE) == XUD_INVALID_ARG, "gpu-camera/update-no-camera",
+        "and one with no camera to move");
+    xud_check(xud_update_camera(context, &camera, XUD_CAMERA_MODE_COUNT) == XUD_INVALID_ARG, "gpu-camera/update-mode-past-list",
+        "and a mode past the list, which is the number a caller's enum would run off the end at");
+
+    /* CUSTOM is the mode that hands the record back exactly as it came: the caller is driving. */
+    {
+        XudCamera3D driven = camera;
+
+        xud_check(xud_update_camera(context, &driven, XUD_CAMERA_MODE_CUSTOM) == XUD_OK, "gpu-camera/update-custom-ok",
+            "the custom mode answers OK, because it did what the mode asks");
+        xud_check(memcmp(&driven, &camera, sizeof(camera)) == 0, "gpu-camera/update-custom-touches-nothing",
+            "and leaves every one of the twelve floats to the caller");
+    }
+
+    /* Every mode that drives from the window holds the record when the window has nothing to report:
+       no key is held and the pointer is still, so an update is a frame's input rather than a frame's
+       drift. The orbital mode is NOT in this list - its swing is the mode itself, checked on its own
+       below - and CUSTOM returned above.
+    */
+    {
+        const uint32_t idle[XUD_CAMERA_MODE_COUNT - 2u]
+            = { XUD_CAMERA_MODE_FREE, XUD_CAMERA_MODE_FIRST_PERSON, XUD_CAMERA_MODE_THIRD_PERSON };
+        uint32_t which = 0u;
+
+        for (which = 0u; which < (XUD_CAMERA_MODE_COUNT - 2u); which++) {
+            XudCamera3D updated = camera;
+
+            result = xud_update_camera(context, &updated, idle[which]);
+            xud_check(result == XUD_OK, "gpu-camera/update-each-mode", "every mode the library drives runs against a real context");
+            xud_check(xud_camera_validate(&updated) == XUD_OK, "gpu-camera/update-leaves-drawable-camera",
+                "and the record it leaves is one the renderer takes");
+            xud_check(xudTestNear(updated.position.x, camera.position.x) && xudTestNear(updated.position.y, camera.position.y)
+                    && xudTestNear(updated.position.z, camera.position.z) && xudTestNear(updated.target.x, camera.target.x)
+                    && xudTestNear(updated.target.y, camera.target.y) && xudTestNear(updated.target.z, camera.target.z),
+                "gpu-camera/update-idle-holds-record",
+                "with no key held and the pointer still, the eye and what it looks at are the pair that went in");
+        }
+    }
+
+    /* The orbital mode is the one mode whose eye moves while the window reports nothing, because the
+       swing IS the mode: rcamera.h 463-466 turns the eye-to-target vector by cameraOrbitSpeed every
+       frame. This library's copy is per SECOND, so the angle a frame turns is the constant times that
+       frame's own span and the angle over a run of frames is the constant times the SUM of their spans
+       - the chord below is measured against exactly that. The eye circles and never drifts: the radius
+       and the target are untouched by any of it. The eye is put far out so the chord is thousands of
+       floats wide rather than a few, which is what makes the comparison below a fact rather than noise.
+    */
+    {
+        const XudCamera3D wide = { { 0.0f, 0.0f, 200.0f }, { 0.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, 60.0f, 0.5f, 1000.0f };
+        XudCamera3D orbited = wide;
+        float span = 0.0f;
+        float seconds = 0.0f;
+        float chord = 0.0f;
+        float expected = 0.0f;
+        float chordSquared = 0.0f;
+        float radiusSquared = 0.0f;
+        float radius = 0.0f;
+        uint32_t frame = 0u;
+
+        for (frame = 0u; frame < 8u; frame++) {
+            xud_begin_drawing(context);
+            xud_end_drawing(context);
+            /* The span the update below is about to read: the clock answers the frame that just
+               completed and nothing polls between here and there, so the two readings are one number.
+            */
+            result = xud_get_frame_time(&span, context);
+            xud_check(
+                result == XUD_OK, "gpu-camera/update-orbital-span", "the frame's span reads back, which is what the swing is scaled by");
+            seconds += span;
+            xud_check(xud_update_camera(context, &orbited, XUD_CAMERA_MODE_ORBITAL) == XUD_OK, "gpu-camera/update-orbital-ok",
+                "and the orbital update runs against the real context");
+        }
+
+        chordSquared = ((orbited.position.x - wide.position.x) * (orbited.position.x - wide.position.x))
+            + ((orbited.position.y - wide.position.y) * (orbited.position.y - wide.position.y))
+            + ((orbited.position.z - wide.position.z) * (orbited.position.z - wide.position.z));
+        radiusSquared = ((orbited.position.x - orbited.target.x) * (orbited.position.x - orbited.target.x))
+            + ((orbited.position.y - orbited.target.y) * (orbited.position.y - orbited.target.y))
+            + ((orbited.position.z - orbited.target.z) * (orbited.position.z - orbited.target.z));
+        chord = sqrtf(chordSquared);
+        expected = 2.0f * 200.0f * sinf(0.5f * XUD_CAMERA_ORBITAL_SPEED * seconds);
+        radius = sqrtf(radiusSquared);
+        xud_check(fabsf(chord - expected) <= ((0.01f * expected) + 1e-3f), "gpu-camera/update-orbital-sweeps-per-second",
+            "eight frames sweep the constant times the eight frames' spans, which is the difference between a per-second speed and "
+            "raylib's "
+            "per-frame one: the same walk at 30 frames a second and at 144");
+        xud_check(fabsf(radius - 200.0f) <= 0.01f, "gpu-camera/update-orbital-holds-radius",
+            "and eight frames on, the eye is still exactly as far out of the target as it started");
+        xud_check((orbited.target.x == 0.0f) && (orbited.target.y == 0.0f) && (orbited.target.z == 0.0f),
+            "gpu-camera/update-orbital-holds-target",
+            "and the target never stirred: the eye goes around it rather than it going with the eye");
+    }
+
     result = xud_close_context(&context);
     xud_check(result == XUD_OK, "gpu-camera/close-clean", "the whole ladder tears back down with nothing refused");
     xud_check(context == NULL, "gpu-camera/close-clears", "and the out-param is cleared");
@@ -573,6 +1065,7 @@ static void xud_test_camera_gpu(void) {
 
 void xud_test_camera(void) {
     xud_test_camera_pure();
+    xud_test_camera_moves();
     if (xud_gpu_tests_enabled()) {
         xud_test_camera_gpu();
     }

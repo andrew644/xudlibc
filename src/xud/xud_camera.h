@@ -5,15 +5,22 @@
  *   Owns : XudCamera3D, the camera a caller asks for (raylib's Camera3D - reference/raylib/
  *          rcamera.h 102: position, target, up, fovy - plus the two frustum planes this rung needs
  *          and raylib's Camera carries in its Camera aggregate (rcore.h, not in reference/)), and
- *          the pure arithmetic above it: xud_camera_fill_view_proj(), which turns the camera and
- *          the extent a frame renders at into the one matrix set 0's block carries, and
- *          xud_camera_apply(), which places that matrix in the block.
+ *          the arithmetic above it: xud_camera_fill_view_proj(), which turns the camera and
+ *          the extent a frame renders at into the one matrix set 0's block carries, xud_camera_app
+ *          ly(), which places that matrix in the block, and the rcamera movement + rotation half
+ *          (the three basis getters, the four moves, yaw/pitch/roll and the two update calls rayl
+ *          ib's UpdateCamera/UpdateCameraPro are) - the record's ORIENTATION and PLACE, as opposed
+ *          to its matrix.
  *   Layer: above the descriptor (it writes the block through the descriptor rung's own setter) and
- *          below the renderer, which is the owner that holds the camera and the extent. The whole
- *          rung is host arithmetic on the caller's floats - no driver call, no loader row, no
- *          Vulkan or GLFW symbol the linker could see - so the default test run asserts the
- *          matrices against hand-computed rows with no device present, and a machine with no
- *          Vulkan loader answers the same refusals as one with a loader and no window open.
+ *          below the renderer, which is the owner that holds the camera and the extent. All of it
+ *          but xud_update_camera() is host arithmetic on the caller's floats - no driver call, no
+ *          loader row, no Vulkan or GLFW symbol the linker could see - so the default test run as
+ *          serts the matrices, the basis and every one of the moves against hand-computed values
+ *          with no device present, and a machine with no Vulkan loader answers the same refusals as
+ *          one with a loader and no window open. xud_update_camera() is the one call that reads the
+ *          context - the input rung's keys, cursor delta and wheel, and the clock rung's frame span
+ *          - because raylib's UpdateCamera reads GetMouseDelta, IsKeyDown and GetFrameTime, and in
+ *          this library those three are per-context rungs rather than globals.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -81,20 +88,63 @@
             what makes a NaN length a refusal too (NaN compares false against the floor).                                                  \
          */
 
+/* The five modes xud_update_camera() drives a camera with (XUD_CAMERA_MODE_*) and the range check
+   they give are in xud.h, next to the declaration that takes one: a token a caller chooses is public
+   vocabulary, the speeds below are arithmetic the library performs.
+*/
+
+/* The four speeds and the sensitivity, raylib's (rcamera.h 200-208), in world units per second and
+   radians per second rather than per frame: each is multiplied by the frame's own span, which is
+   what makes the same walk the same speed at 30 frames a second and at 144. A per-frame speed would
+   make the machine's frame rate a rule of the scene.
+*/
+#define XUD_CAMERA_MOVE_SPEED 5.4f /* world units per second, raylib's CAMERA_MOVE_SPEED */
+#define XUD_CAMERA_ROTATION_SPEED 0.03f /* radians per second of a held key, raylib's CAMERA_ROTATION_SPEED */
+#define XUD_CAMERA_PAN_SPEED 2.0f /* world units per second of a held middle button, raylib's CAMERA_PAN_SPEED */
+#define XUD_CAMERA_MOUSE_MOVE_SENSITIVITY 0.003f /* radians per pixel of cursor delta, raylib's CAMERA_MOUSE_MOVE_SENSITIVITY */
+#define XUD_CAMERA_ORBITAL_SPEED 0.5f /* radians per second about the target, raylib's CAMERA_ORBITAL_SPEED */
+
+/* The axis the world-plane projection drops: the component of a move vector along the axis the cam
+   era's own up points along, which is the axis whose removal puts the move in the plane PERPENDICU
+   LAR to up. 0.7071 is raylib's (rcamera.h 258, 294: fabsf(camera->up.z) > 0.7071f) - the sine of
+   45 degrees, the point past which one component has to count as the dominant one. A unit axis is
+   dominated by exactly one axis, because two components above 0.7071 each would make the squared
+   length greater than one.
+*/
+#define XUD_CAMERA_PLANE_AXIS_DOMINANCE 0.7071f
+
+/* The pitch clamp's margin, in radians: the angle the view vector is kept this far away from the
+   camera's own up and from its negation, so a pitch held to the ceiling leaves a view vector that is
+   NOT exactly parallel to up - the one degeneracy the basis cannot survive (XUD_CAMERA_AXIS_MIN_LE
+   NGTH above). raylib's own margin (rcamera.h 372, 378: "avoid numerical errors").
+*/
+#define XUD_CAMERA_PITCH_CLAMP_MARGIN 0.001f
+
+/* The floor on the eye-to-target distance, and the same number raylib's CameraMoveToTarget clamps
+   to (rcamera.h 318: 0.001f, "Distance must be greater than 0"). A wheel pull that reaches the
+   target has to stop this side of it: an eye ON its target has no forward vector at all, and the
+   distance is what the next frame's basis is built from.
+*/
+#define XUD_CAMERA_MIN_TARGET_DISTANCE 0.001f
+
 /*-----------------------------------------------------------------------------------------------
  * The camera a caller asks for
  *
  * The record itself is xud.h's - XudCamera3D sits in the public header beside XudVector3 and XudCol
  * or, in the bucket of value types a caller hands DOWN, because raylib's Camera3D is public API and
  * this rung's job is the arithmetic over it rather than the record's shape. What this header owns is
- * the constants the arithmetic is stated against and the two functions below.
+ * the constants the arithmetic is stated against and the functions below the record.
  *-----------------------------------------------------------------------------------------------*/
 
 static_assert(XUD_CAMERA_MATRIX_ELEMENT_COUNT == 16u,
     "the block's viewProj member is float[16] (xud_descriptor.h) and the two matrices this rung produces are the same shape");
 
 /*-----------------------------------------------------------------------------------------------
- * The rung's own pure arithmetic
+ * The three rung-internal steps below: the well-formedness test, the matrix and the block write.
+ * The rcamera half this file also answers - the basis getters, the four moves, yaw/pitch/roll and
+ * the two update calls - is PUBLIC API and so is declared in xud.h beside the camera record, the
+ * same split xud_shapes.h makes between its appends and xud.h's draws: what a caller names lives in
+ * one header, what the library's own rungs call lives here.
  *-----------------------------------------------------------------------------------------------*/
 
 /// Pure: the camera record's own well-formedness, independent of the extent a frame renders at -

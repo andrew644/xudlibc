@@ -291,3 +291,9 @@ add_executable(breakout_3d
 )
 
 target_link_libraries(breakout_3d PRIVATE xud)
+
+add_executable(camera_first_person
+    examples/camera_first_person.c
+)
+
+target_link_libraries(camera_first_person PRIVATE xud)

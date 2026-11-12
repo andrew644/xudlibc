@@ -136,6 +136,8 @@ static void xud_test_shapes_pure(void) {
     XudVector3 glyph1;
     XudVector2 glyphUv0;
     XudVector2 glyphUv1;
+    XudVector3 planeCenter;
+    XudVector2 planeSize;
     XudColor color;
     float width = 0.0f;
     float height = 0.0f;
@@ -161,6 +163,14 @@ static void xud_test_shapes_pure(void) {
     center = (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f };
     width = 1.0f;
     height = 0.5f;
+
+    /* The plane's centre and size: a centre OFF the origin and two DIFFERENT extents, so a corner
+       table that ignored the centre, or that read size.x along z instead of along x, shows up as a
+       wrong corner rather than as a symmetric shape that happened to look right. Every number is
+       dyadic, so every corner of the plane is compared exactly below.
+    */
+    planeCenter = (XudVector3) { .x = 1.0f, .y = 2.0f, .z = -3.0f };
+    planeSize = (XudVector2) { .x = 4.0f, .y = 2.0f };
     length = 2.0f;
 
     /* The glyph quad's box and its uv box, both in the top-down spelling the append takes: corner
@@ -237,6 +247,12 @@ static void xud_test_shapes_pure(void) {
         "a public draw call with no context is refused");
     xud_check(xud_draw_sphere(&shell, center, 0.4f, color) == XUD_UNSUPPORTED, "shapes/sphere-draw-no-renderer",
         "a context with no renderer has no batch to append into, and the refusal is reported");
+    xud_check(xud_shapes_append_plane(NULL, center, (XudVector2) { .x = 4.0f, .y = 2.0f }, color) == XUD_INVALID_ARG,
+        "shapes/plane-append-no-batch", "and so is a ground plane - the guard is the same one, one rung above the same two codes");
+    xud_check(xud_draw_plane(NULL, center, (XudVector2) { .x = 4.0f, .y = 2.0f }, color) == XUD_INVALID_ARG, "shapes/plane-draw-no-context",
+        "a public draw call with no context is refused");
+    xud_check(xud_draw_plane(&shell, center, (XudVector2) { .x = 4.0f, .y = 2.0f }, color) == XUD_UNSUPPORTED,
+        "shapes/plane-draw-no-renderer", "a context with no renderer has no batch to append into, and the refusal is reported");
     xud_check(xud_shapes_append_line(NULL, v0, v1, color) == XUD_INVALID_ARG, "shapes/line-append-no-batch",
         "and so is a line - the guard is the same one, one rung above the same two codes");
     xud_check(xud_draw_line_3d(NULL, v0, v1, color) == XUD_INVALID_ARG, "shapes/line-draw-no-context",
@@ -671,6 +687,176 @@ static void xud_test_shapes_pure(void) {
         "39 indices, 36 of them the box's at 1.5 per vertex and 3 of them the triangle's at 1 per vertex");
     xud_check(
         xud_batch_check_invariant(&b) == XUD_OK, "shapes/cube-mixed-invariant", "and the batch's invariant still holds over two shapes");
+
+    /*--- the ground plane: four shared corners, one normal, and the winding that answers +Y ------*/
+
+    /* A plane whose centre is NOT the origin and whose two extents DIFFER, so a corner table that
+       ignored the centre, or that read size.x along z instead of x, shows up as a wrong corner rather
+       than as a symmetric shape that happened to look right. Every number is dyadic, so every corner
+       below is compared exactly: the plane is the one shape in this rung whose vertices are a sum of
+       halves and needs no tolerance.
+    */
+    {
+        const uint8_t* arena = NULL;
+        float pos[XUD_SHAPES_PLANE_VERTEX_COUNT][3];
+        float nrm[XUD_SHAPES_PLANE_VERTEX_COUNT][3];
+        uint32_t idx[XUD_SHAPES_PLANE_INDEX_COUNT];
+        uint32_t named[XUD_SHAPES_PLANE_VERTEX_COUNT];
+        uint32_t cornerSeen[XUD_SHAPES_PLANE_VERTEX_COUNT];
+        uint32_t v = 0u;
+        uint32_t row = 0u;
+        uint32_t onPlaneY = 0u;
+        uint32_t atOwnCorner = 0u;
+        uint32_t groundNormal = 0u;
+        uint32_t colourRows = 0u;
+        uint32_t zeroUvRows = 0u;
+        uint32_t cornersDistinct = 0u;
+        uint32_t indicesInRange = 0u;
+        uint32_t cornersNamed = 0u;
+        uint32_t trianglesUp = 0u;
+
+        xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "shapes/plane-layout",
+            "a batch at the capacity a context opens at lays out for a plane");
+        b.stagingMapped = xudTestArena;
+        b.stagingMappedLive = 1u;
+
+        result = xud_shapes_append_plane(&b, planeCenter, planeSize, color);
+        xud_check(result == XUD_OK, "shapes/plane-append-ok", "a ground plane appends into it");
+        xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "shapes/plane-stats-ok",
+            "and the counters answer after it");
+        xud_check((vertexCount == XUD_SHAPES_PLANE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_PLANE_INDEX_COUNT), "shapes/plane-cost",
+            "4 vertices and 6 indices: the two triangles share their diagonal, so a plane costs one quad and not two separate triangles");
+
+        arena = (const uint8_t*)b.stagingMapped;
+        for (v = 0u; v < XUD_SHAPES_PLANE_VERTEX_COUNT; v++) {
+            float uvRow[2];
+            float dx = 0.0f;
+            float dz = 0.0f;
+            uint32_t key = 0u;
+
+            memcpy(&pos[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_POS] + ((size_t)v * XUD_BATCH_STREAM_POS_SIZE), sizeof(pos[v]));
+            memcpy(
+                &nrm[v][0], arena + b.streamOffset[XUD_BATCH_STREAM_NORMAL] + ((size_t)v * XUD_BATCH_STREAM_NORMAL_SIZE), sizeof(nrm[v]));
+            memcpy(uvRow, arena + b.streamOffset[XUD_BATCH_STREAM_UV] + ((size_t)v * XUD_BATCH_STREAM_UV_SIZE), sizeof(uvRow));
+            if (memcmp(arena + b.streamOffset[XUD_BATCH_STREAM_COLOR] + ((size_t)v * XUD_BATCH_STREAM_COLOR_SIZE), &color,
+                    XUD_BATCH_STREAM_COLOR_SIZE)
+                == 0) {
+                colourRows++;
+            }
+            if ((uvRow[0] == XUD_SHAPES_UV_S) && (uvRow[1] == XUD_SHAPES_UV_T)) {
+                zeroUvRows++;
+            }
+
+            /* The plane is the XZ ground at the centre's height: no corner has any other height, and
+               no corner is anywhere but half the caller's extent out along x and z from the centre.
+            */
+            if (pos[v][1] == planeCenter.y) {
+                onPlaneY++;
+            }
+            dx = pos[v][0] - planeCenter.x;
+            dz = pos[v][2] - planeCenter.z;
+            if ((fabsf(dx) == (planeSize.x * XUD_SHAPES_PLANE_HALF_EXTENT))
+                && (fabsf(dz) == (planeSize.y * XUD_SHAPES_PLANE_HALF_EXTENT))) {
+                atOwnCorner++;
+            }
+            key = (((dx > 0.0f) ? 1u : 0u) * 2u) + ((dz > 0.0f) ? 1u : 0u);
+            cornerSeen[key]++;
+
+            if ((nrm[v][0] == XUD_SHAPES_GROUND_NORMAL_X) && (nrm[v][1] == XUD_SHAPES_GROUND_NORMAL_Y)
+                && (nrm[v][2] == XUD_SHAPES_GROUND_NORMAL_Z)) {
+                groundNormal++;
+            }
+        }
+        for (v = 0u; v < XUD_SHAPES_PLANE_VERTEX_COUNT; v++) {
+            if (cornerSeen[v] >= 1u) {
+                cornersDistinct++;
+            }
+        }
+        for (v = 0u; v < XUD_SHAPES_PLANE_INDEX_COUNT; v++) {
+            memcpy(&idx[v], arena + b.indexOffset + ((size_t)v * XUD_BATCH_INDEX_SIZE), sizeof(idx[v]));
+            if (idx[v] < XUD_SHAPES_PLANE_VERTEX_COUNT) {
+                indicesInRange++;
+                named[idx[v]]++;
+            }
+        }
+        for (v = 0u; v < XUD_SHAPES_PLANE_VERTEX_COUNT; v++) {
+            if (named[v] >= 1u) {
+                cornersNamed++;
+            }
+        }
+        for (row = 0u; row < 2u; row++) {
+            const float* a = &pos[idx[(row * 3u) + 0u]][0];
+            const float* bb = &pos[idx[(row * 3u) + 1u]][0];
+            const float* c = &pos[idx[(row * 3u) + 2u]][0];
+            const float crossY = ((bb[2] - a[2]) * (c[0] - a[0])) - ((bb[0] - a[0]) * (c[2] - a[2]));
+
+            /* The y component of (b-a) x (c-a): the winding claim, stated as the sign of the cross
+               product's y rather than as a remembered index order, so a corner table written in the
+               reverse walk fails it - and the plane is lit by this normal, so a reversed plane is a
+               ground the shader lights as a ceiling.
+            */
+            if (crossY > 0.0f) {
+                trianglesUp++;
+            }
+        }
+
+        xud_check(onPlaneY == XUD_SHAPES_PLANE_VERTEX_COUNT, "shapes/plane-corners-at-centre-height",
+            "all four corners carry the centre's y: the plane has no thickness and no slope");
+        xud_check(atOwnCorner == XUD_SHAPES_PLANE_VERTEX_COUNT, "shapes/plane-corners-at-half-extent",
+            "every corner is half the caller's size out from the centre along x and along z, which is size read as the FULL extent it is");
+        xud_check(cornersDistinct == XUD_SHAPES_PLANE_VERTEX_COUNT, "shapes/plane-four-corners",
+            "and the four are the four SIGN COMBINATIONS of those halves, not two corners doubled");
+        xud_check(groundNormal == XUD_SHAPES_PLANE_VERTEX_COUNT, "shapes/plane-normal-is-up",
+            "the +Y ground normal at every corner, which is the axis the XZ ground lies across and the one the fragment stage lights by");
+        xud_check(colourRows == XUD_SHAPES_PLANE_VERTEX_COUNT, "shapes/plane-colour-at-every-vertex",
+            "the caller's four bytes, in the caller's order, at all four vertices");
+        xud_check(zeroUvRows == XUD_SHAPES_PLANE_VERTEX_COUNT, "shapes/plane-zero-uv-at-every-vertex",
+            "the header's zero uv at all four: a plane has no texture to unwrap yet");
+        xud_check(indicesInRange == XUD_SHAPES_PLANE_INDEX_COUNT, "shapes/plane-indices-in-range",
+            "all six indices name a vertex of this plane and none reaches past it");
+        xud_check(cornersNamed == XUD_SHAPES_PLANE_VERTEX_COUNT, "shapes/plane-indices-name-every-corner",
+            "and every one of the four corners is named, so the quad is closed - the diagonal's two ends twice, the other two once");
+        xud_check(trianglesUp == 2u, "shapes/plane-wound-upward",
+            "both triangles' cross products point along +Y, which is the counter-clockwise-from-above claim the flat-shaded light reads");
+    }
+
+    /* The plane at its OWN capacity: a batch laid out at four vertices gets the 3n/2 headroom's six
+       indices, which is exactly one quad, so the second plane is refused against both bounds at once
+       and the atomicity claim is read at the plane's own size rather than at a box-sized batch.
+    */
+    xud_check(xud_batch_layout(&b, XUD_SHAPES_PLANE_VERTEX_COUNT) == XUD_OK, "shapes/plane-tight-layout",
+        "a batch at the plane's own vertex count lays out");
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+    result = xud_shapes_append_plane(&b, planeCenter, planeSize, color);
+    xud_check(result == XUD_OK, "shapes/plane-tight-first-fits", "one plane fits it on both bounds");
+    result = xud_shapes_append_plane(&b, planeCenter, planeSize, color);
+    xud_check(result == XUD_OUT_OF_MEMORY, "shapes/plane-tight-second-refused", "and the second is refused");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "shapes/plane-tight-stats",
+        "and the counters still answer after the refusal");
+    xud_check((vertexCount == XUD_SHAPES_PLANE_VERTEX_COUNT) && (indexCount == XUD_SHAPES_PLANE_INDEX_COUNT),
+        "shapes/plane-refusal-wrote-nothing", "the refused plane wrote no vertex and no index, so the shape boundary held");
+    xud_check(xud_batch_check_invariant(&b) == XUD_OK, "shapes/plane-invariant-after-refusal",
+        "and the batch's invariant still holds, which says nothing half-written is in it");
+
+    /* A plane beside a box in one batch: the counts add per shape, and the plane spends 1.5 indices
+       per vertex like the box does, so a frame of planes and boxes spends the same 3n/2. */
+    xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES) == XUD_OK, "shapes/plane-mixed-layout",
+        "a batch at the capacity a context opens at lays out");
+    b.stagingMapped = xudTestArena;
+    b.stagingMappedLive = 1u;
+    xud_check(
+        xud_shapes_append_cube(&b, center, width, height, length, color) == XUD_OK, "shapes/plane-mixed-cube", "the box appends first");
+    result = xud_shapes_append_plane(&b, planeCenter, planeSize, color);
+    xud_check(result == XUD_OK, "shapes/plane-mixed-plane", "and the plane appends beside it, into the same open batch");
+    xud_check(xud_batch_stats(&b, &vertexCount, &indexCount, &capacity, &drawCount, &stagingBytes) == XUD_OK, "shapes/plane-mixed-stats",
+        "and the counters answer after both");
+    xud_check(vertexCount == (XUD_SHAPES_CUBE_VERTEX_COUNT + XUD_SHAPES_PLANE_VERTEX_COUNT), "shapes/plane-mixed-vertex-count",
+        "28 vertices, which is the append being per shape rather than per frame");
+    xud_check(indexCount == (XUD_SHAPES_CUBE_INDEX_COUNT + XUD_SHAPES_PLANE_INDEX_COUNT), "shapes/plane-mixed-index-count",
+        "and 42 indices, the plane's six landing after the box's thirty-six and naming the plane's own four corners");
+    xud_check(
+        xud_batch_check_invariant(&b) == XUD_OK, "shapes/plane-mixed-invariant", "and the batch's invariant still holds over two shapes");
 
     /*--- the sphere: the shape whose vertices are SHARED, and the first whose index spend is above
        the batch's own headroom ----------------------------------------------------------*/

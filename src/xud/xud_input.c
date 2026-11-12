@@ -848,3 +848,46 @@ XudResult xud_get_mouse_wheel_move_v(XudVector2* outMove, XudContext* context) {
     outMove->y = (float)input->wheelY;
     return XUD_OK;
 }
+
+/*-----------------------------------------------------------------------------------------------
+ * The cursor's visibility - raylib's HideCursor / ShowCursor
+ *
+ * The two calls are one pair over one row of the rung, and the row is the answer to the question
+ * GLFW cannot answer: glfwSetInputMode returns void, and this vendored tree's Wayland backend acts
+ * on GLFW_CURSOR_DISABLED by locking the pointer through the pointer-constraints protocol (wl_win
+ * dow.c 3316, 3220), a request the compositor grants or revokes asynchronously and GLFW never repo
+ * rts. So the rung records what it ASKED for - which is what makes the second of a repeated pair
+ * XUD_ALREADY rather than a second request nobody can see the effect of - and the proof the lock
+ * landed is xud_get_mouse_delta() still answering while the cursor itself has stopped existing.
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The one move both calls make, so the two cannot drift apart on the guard order. */
+static XudResult xud_input_set_cursor_hidden(XudContext* context, uint32_t hidden) {
+    XudInput* input = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_input_reach(&input, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if ((input->window == NULL) || (input->window->glfwWindow == NULL)) {
+        /* The same answer xud_set_mouse_position() gives for the same reason: the mode is a question
+           about a GLFW window, and a rung whose window is gone has nothing to ask.
+        */
+        return XUD_UNSUPPORTED;
+    }
+    if (input->cursorHidden == hidden) {
+        return XUD_ALREADY;
+    }
+
+    glfwSetInputMode(input->window->glfwWindow, GLFW_CURSOR, (hidden != 0u) ? GLFW_CURSOR_DISABLED : GLFW_CURSOR_NORMAL);
+    input->cursorHidden = hidden;
+
+    return XUD_OK;
+}
+
+/// See xud.h.
+XudResult xud_hide_cursor(XudContext* context) { return xud_input_set_cursor_hidden(context, 1u); }
+
+/// See xud.h.
+XudResult xud_show_cursor(XudContext* context) { return xud_input_set_cursor_hidden(context, 0u); }

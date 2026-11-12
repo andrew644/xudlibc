@@ -310,6 +310,108 @@ XudResult xud_shapes_append_triangle(XudBatch* batch, XudVector3 v0, XudVector3 
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The plane: four corners, then the six indices that close them as two triangles
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The four corners as their (x, z) SIGNS, in the order raylib's DrawPlane emits them (rmodels.c:
+   -0.5,-0.5 then -0.5,+0.5 then +0.5,+0.5 then +0.5,-0.5). The order is load-bearing the way a
+   face's winding is: it is what makes the right-hand rule answer +Y for both triangles, and +Y is
+   the normal the plane carries and the axis the XZ ground lies across. The y of every corner is the
+   centre's own - the plane has no thickness and no slope.
+*/
+static const float XUD_SHAPES_PLANE_CORNER[XUD_SHAPES_PLANE_VERTEX_COUNT][2] = {
+    { -1.0f, -1.0f },
+    { -1.0f, 1.0f },
+    { 1.0f, 1.0f },
+    { 1.0f, -1.0f },
+};
+
+/* The two triangles over those four corners, sharing the diagonal from corner 0 to corner 2 - the
+   quad's own diagonal, not a fourth corner: a plane is one surface, so the diagonal is a tessellation
+   of it and not one of its edges, and the two triangles' normals agree because both are the plane.
+*/
+static const uint32_t XUD_SHAPES_PLANE_INDEX[XUD_SHAPES_PLANE_INDEX_COUNT] = { 0u, 1u, 2u, 0u, 2u, 3u };
+
+static_assert(sizeof(XUD_SHAPES_PLANE_CORNER) / (sizeof(XUD_SHAPES_PLANE_CORNER[0][0]) * 2u) == XUD_SHAPES_PLANE_VERTEX_COUNT,
+    "xud_shapes.c: the corner table has one row per corner of one plane, which is the 4 the append's vertex bound is written against");
+static_assert((sizeof(XUD_SHAPES_PLANE_INDEX) / sizeof(XUD_SHAPES_PLANE_INDEX[0])) == XUD_SHAPES_PLANE_INDEX_COUNT,
+    "xud_shapes.c: the index table has one entry per index of one quad, which is the 6 the append's index bound is written against");
+
+XudResult xud_shapes_append_plane(XudBatch* batch, XudVector3 center, XudVector2 size, XudColor color) {
+    float pos[3];
+    float uv[2];
+    float normal[3];
+    uint8_t rgba[4];
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t first = 0u;
+    uint32_t row = 0u;
+
+    if (batch == NULL) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    if ((vertexCount + XUD_SHAPES_PLANE_VERTEX_COUNT) > vertexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_PLANE_VERTEX_COUNT, indexCount + XUD_SHAPES_PLANE_INDEX_COUNT);
+        return XUD_OUT_OF_MEMORY;
+    }
+    if ((indexCount + XUD_SHAPES_PLANE_INDEX_COUNT) > batch->indexCapacity) {
+        xud_shapes_note_refused(batch, vertexCount + XUD_SHAPES_PLANE_VERTEX_COUNT, indexCount + XUD_SHAPES_PLANE_INDEX_COUNT);
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    result = xud_batch_set_topology(batch, XUD_BATCH_TOPOLOGY_TRIANGLES);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    uv[0] = XUD_SHAPES_UV_S;
+    uv[1] = XUD_SHAPES_UV_T;
+    normal[0] = XUD_SHAPES_GROUND_NORMAL_X;
+    normal[1] = XUD_SHAPES_GROUND_NORMAL_Y;
+    normal[2] = XUD_SHAPES_GROUND_NORMAL_Z;
+    rgba[0] = color.r;
+    rgba[1] = color.g;
+    rgba[2] = color.b;
+    rgba[3] = color.a;
+
+    /* The four corners, each at the centre plus its own signs times half the caller's size - the
+       half because size is the plane's FULL extent along each axis, which is how raylib's own scale
+       (rlScalef(size.x, 1, size.y) over a -0.5..+0.5 quad) reads it too.
+    */
+    first = vertexCount;
+
+    for (row = 0u; row < XUD_SHAPES_PLANE_VERTEX_COUNT; row++) {
+        pos[0] = center.x + (XUD_SHAPES_PLANE_HALF_EXTENT * XUD_SHAPES_PLANE_CORNER[row][0] * size.x);
+        pos[1] = center.y;
+        pos[2] = center.z + (XUD_SHAPES_PLANE_HALF_EXTENT * XUD_SHAPES_PLANE_CORNER[row][1] * size.y);
+
+        result = xud_batch_append_vertex(batch, pos, uv, rgba, normal);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    for (row = 0u; row < XUD_SHAPES_PLANE_INDEX_COUNT; row++) {
+        result = xud_batch_append_index(batch, first + XUD_SHAPES_PLANE_INDEX[row]);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The box: 24 vertices, then the 36 indices that name them
  *-----------------------------------------------------------------------------------------------*/
 
@@ -1564,6 +1666,18 @@ XudResult xud_draw_sphere_wires(XudContext* context, XudVector3 centerPos, float
     }
 
     return xud_shapes_append_sphere_wires(batch, centerPos, radius, XUD_SHAPES_SPHERE_RING_COUNT, XUD_SHAPES_SPHERE_SLICE_COUNT, color);
+}
+
+XudResult xud_draw_plane(XudContext* context, XudVector3 centerPos, XudVector2 size, XudColor color) {
+    XudBatch* batch = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_shapes_context_batch(&batch, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_shapes_append_plane(batch, centerPos, size, color);
 }
 
 /* The plain half of the 2D surface: the caller's own rectangle as one screen-space quad at the
