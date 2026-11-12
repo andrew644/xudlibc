@@ -228,6 +228,33 @@ static_assert(sizeof(XudRay) == 24u,
     "xud.h: a ray is six floats - an origin and a direction - so the record the camera's fold fills "
     "is the record the collision rung reads with no conversion between them");
 
+/// The axis-aligned box a collision test is about - raylib's BoundingBox (reference/raylib/raylib.h
+/// 459: min, max). The two corners rather than a centre and a size: the corners are what the slab casts
+/// divide by, and a caller holding a centre and a size - every DrawCube-shaped call in the picking and
+/// the player examples - writes the two halves out once at the call.
+typedef struct XudBoundingBox {
+    XudVector3 min; /* the corner with the least of every axis */
+    XudVector3 max; /* the corner with the most of every axis  */
+} XudBoundingBox;
+
+static_assert(sizeof(XudBoundingBox) == 24u,
+    "xud.h: a box is six floats - two corners - so the record a caller builds from a centre and a size "
+    "is the record the collision rung reads with no conversion between them");
+
+/// What one cast hit - raylib's RayCollision (reference/raylib/raylib.h 451: hit, distance, point,
+/// normal). A value type, filled whether or not anything was hit: the two casts write all-zero for a
+/// miss, so a caller that declares one outside its loop and reads it every frame needs no clearing.
+typedef struct XudRayCollision {
+    bool hit; /* did the ray meet the solid?            */
+    float distance; /* how far along the direction it met it */
+    XudVector3 point; /* the hit, in world units                */
+    XudVector3 normal; /* the surface's outward normal, unit length */
+} XudRayCollision;
+
+static_assert(sizeof(XudRayCollision) == 32u,
+    "xud.h: a hit is a flag, a distance and two vectors - the flag and the distance share one eight-byte "
+    "row and nothing pads past that - so the record the cast fills is the record a caller declares");
+
 /*-----------------------------------------------------------------------------------------------
  * The handle - the one currency every caller-addressable object is named by
  *
@@ -995,6 +1022,52 @@ XudResult xud_get_world_to_screen(XudVector2* outScreen, XudContext* context, Xu
 /// 1086), which is also the form a caller uses to place a label in one half of a split screen. Same
 /// refusals as the trace above's, minus the ones that need a context.
 XudResult xud_get_world_to_screen_ex(XudVector2* outScreen, XudVector3 position, const XudCamera3D* camera, float width, float height);
+
+/*-----------------------------------------------------------------------------------------------
+ * The five collision tests over the world the camera frames
+ *
+ * raylib's CheckCollisionSpheres/Boxes/BoxSphere and GetRayCollisionSphere/Box (raylib.h 1668-1672),
+ * the picking half and the player-versus-enemy half of its collision API. None of the five reads the
+ * context, the camera or the batch: they are host arithmetic on the caller's own floats, which is why
+ * an answer arrives through an out-parameter beside an XudResult rather than as the bare bool raylib
+ * can afford - a NaN centre, a swapped box or a negative radius is a refusal here and a silent false
+ * there.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Do two spheres overlap: raylib's CheckCollisionSpheres (raylib.h 1668) - the squared distance between
+/// the centres against the squared sum of the radii, no square root taken. Touching surfaces count as
+/// overlap. XUD_INVALID_ARG on a NULL out-hit, a non-finite component of either centre, or a radius not
+/// greater than zero.
+XudResult xud_check_collision_spheres(bool* outHit, XudVector3 center1, float radius1, XudVector3 center2, float radius2);
+
+/// Do two boxes overlap: raylib's CheckCollisionBoxes (raylib.h 1669) - overlap on all three axes, faces
+/// sharing a plane counting as overlap on every axis. raylib is inconsistent here: its x test is inclusive
+/// while its y and z tests are strict, so two crates resting on one another answer false there and true
+/// here. XUD_INVALID_ARG on a NULL out-hit, corners that are not finite, or a box whose minimum is past its
+/// maximum on any axis.
+XudResult xud_check_collision_boxes(bool* outHit, XudBoundingBox box1, XudBoundingBox box2);
+
+/// Does a box meet or contain a sphere: raylib's CheckCollisionBoxSphere (raylib.h 1670) - the box's point
+/// nearest the centre, against the radius. The same refusals as the two tests above, for one box and one
+/// radius.
+XudResult xud_check_collision_box_sphere(bool* outHit, XudBoundingBox box, XudVector3 center, float radius);
+
+/// Where a ray meets a sphere: raylib's GetRayCollisionSphere (raylib.h 1671). The record is written
+/// whether or not anything was hit - a miss answers all-zero - so the picking example's click-to-select-
+/// again is one assignment rather than a clearing. A ray that begins inside answers the far side of the
+/// sphere with the normal pointing back at the origin, which is the surface the ray leaves through. The
+/// distance is a multiple of the direction the ray carries, so the normalised direction the fold answers
+/// makes it world units. XUD_INVALID_ARG on a NULL out-collision, a ray with no direction long enough to
+/// trace, a non-finite component of either, or a radius not greater than zero.
+XudResult xud_get_ray_collision_sphere(XudRayCollision* outCollision, XudRay ray, XudVector3 center, float radius);
+
+/// Where a ray meets a box: raylib's GetRayCollisionBox (raylib.h 1672), by the slab method. A ray that
+/// begins inside answers the face it leaves through at a positive distance - what raylib arrives at by
+/// tracing a negated ray and negating the distance and the normal back - and the normal is the exact axis
+/// unit of the face hit, where raylib's integer projection of the centre-to-hit vector gets a face right
+/// and an edge approximate. The same refusals as the sphere cast, with a box's corners in place of the
+/// sphere.
+XudResult xud_get_ray_collision_box(XudRayCollision* outCollision, XudRay ray, XudBoundingBox box);
 
 /// Put a material in the drawing state, for this frame and the ones that follow: the Begin*/End*
 /// shape of raylib's scoped state calls (BeginBlendMode()/EndBlendMode(), raylib.h 1058-1059), a
@@ -2158,6 +2231,16 @@ XudResult xud_hide_cursor(XudContext* context);
 /// read as they did before xud_hide_cursor(). Same three refusals, XUD_ALREADY when it is already
 /// showing.
 XudResult xud_show_cursor(XudContext* context);
+
+/// Whether this library has asked for the cursor to be hidden: raylib's IsCursorHidden (raylib.h 1041),
+/// the query a first-person camera update opens with so that a cursor the player gave back stops turning
+/// the view. The answer is the library's own request and not the compositor's verdict: the pointer lock
+/// xud_hide_cursor() asks for is granted and revoked asynchronously on Wayland and GLFW never reports
+/// either way, so a true is "hidden as far as this rung knows" and the mouse delta stays the proof. The
+/// state belongs to the context, not to the machine: two windows of one program each carry their own.
+/// XUD_INVALID_ARG on a NULL out-hidden or a NULL context; XUD_UNSUPPORTED on a context that never
+/// completed bring-up.
+XudResult xud_is_cursor_hidden(bool* outHidden, XudContext* context);
 
 /*-----------------------------------------------------------------------------------------------
  * UI (nuklear) - the immediate-mode gui rung above the batch, the texture and the input

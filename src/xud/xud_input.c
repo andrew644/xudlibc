@@ -891,3 +891,28 @@ XudResult xud_hide_cursor(XudContext* context) { return xud_input_set_cursor_hid
 
 /// See xud.h.
 XudResult xud_show_cursor(XudContext* context) { return xud_input_set_cursor_hidden(context, 0u); }
+
+/// See xud.h.
+XudResult xud_is_cursor_hidden(bool* outHidden, XudContext* context) {
+    XudInput* input = NULL;
+    XudResult result = XUD_INVALID_ARG;
+
+    if (outHidden == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    *outHidden = false;
+
+    result = xud_input_reach(&input, context);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The rung's own record rather than a question to GLFW: glfwGetCursorPos answers for a locked pointer
+       and glfwGetInputMode answers what was set on THIS window, which the Wayland backend's asynchronous
+       lock can disagree with. What the caller wants to know is what the library asked for, which is the
+       same number xud_hide_cursor() and xud_show_cursor() compared to answer XUD_ALREADY.
+    */
+    *outHidden = (input->cursorHidden != 0u);
+
+    return XUD_OK;
+}

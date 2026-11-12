@@ -24,6 +24,10 @@
  *          font rung's atlas IS a TEXTURE slot, so the area that checks the rung above that one runs
  *          above it, and its pure half is complete with no driver present because a bake is stb writi
  *          ng into a heap buffer.
+ *          The collision area runs above the camera area and below the core, which is the layer order: its
+ *          two casts read the same XudRay the camera's fold fills. It is the one area with no GPU half, and
+ *          that is the rung rather than an omission - none of the five calls reads a context, so a check
+ *          about which solids touch is as answerable here as it is on a machine with a window open.
  *
  *   Deterministic: fixed loop counts, no time, no randomness, no filesystem.
  *
@@ -61,6 +65,7 @@ int main(void) {
     xud_test_batch();
     xud_test_shapes();
     xud_test_camera();
+    xud_test_collision();
     xud_test_material();
     xud_test_mesh();
     xud_test_texture();
