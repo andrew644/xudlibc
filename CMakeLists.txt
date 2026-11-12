@@ -339,3 +339,27 @@ add_executable(models_mesh_picking
 )
 
 target_link_libraries(models_mesh_picking PRIVATE xud)
+
+add_executable(models_geometric_shapes
+    examples/models_geometric_shapes.c
+)
+
+target_link_libraries(models_geometric_shapes PRIVATE xud)
+
+add_executable(models_waving_cubes
+    examples/models_waving_cubes.c
+)
+
+target_link_libraries(models_waving_cubes PRIVATE xud)
+
+add_executable(models_yaw_pitch_roll
+    examples/models_yaw_pitch_roll.c
+)
+
+target_link_libraries(models_yaw_pitch_roll PRIVATE xud)
+
+add_executable(models_heightmap_rendering
+    examples/models_heightmap_rendering.c
+)
+
+target_link_libraries(models_heightmap_rendering PRIVATE xud)
