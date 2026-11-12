@@ -26,19 +26,24 @@
  *
  *   Cloned : GenMeshPlane (rmodels.c 1027), GenMeshCube (1100), GenMeshSphere (1136),
  *          GenMeshHemiSphere (1215), GenMeshCylinder (1287), GenMeshTorus (1374), GenMeshKnot
- *          (1460) and GenMeshPoly (1546). NOT cloned, each for a reason the shape itself gives:
+ *          (1460), GenMeshPoly (1546) and GenMeshHeightmap - the one generator that reads samples
+ *          the caller already holds. NOT cloned, each for a reason the shape itself gives:
  *          GenMeshGrid (a grid has no inside, and the shapes rung already draws one), GenMeshQuad
- *          and GenMeshTriangle (a flat sheet the shapes rung already draws), GenMeshCubicmap and
- *          GenMeshHeightmap (both read a caller's pixel array, which is the texture rung's input and
- *          a rung this one does not have), GenMeshBezierPatch (no caller asks for one yet), and
- *          GenMeshTangents (a fourth stream for a shader this library has no row for).
+ *          and GenMeshTriangle (a flat sheet the shapes rung already draws), GenMeshCubicmap (its
+ *          input is a pixel mask, and this rung's input is floats: a caller with an image has the
+ *          texture rung's array, and a caller with a maze has a heightmap of zeros and ones),
+ *          GenMeshCone (a cylinder with a zero top radius, which is what raylib's own cone builds),
+ *          GenMeshBezierPatch (no caller asks for one yet), and GenMeshTangents (a fourth stream for
+ *          a shader this library has no row for).
  *
  *   Where this is not raylib. GenMeshKnot builds a trefoil with par_shapes'
  *   par_shapes_create_trefoil_knot and FLATTENS it - no index array, three vertices per triangle
  *   with the shared corners duplicated (rmodels.c 1478: vertexCount = ntriangles*3); the knot here
  *   is built with a transported frame along the same curve and keeps its index array, so its
- *   corners are shared and its vertex count is radSeg*sides rather than radSeg*sides*6. And every
- *   generator here answers XUD_INVALID_ARG for a description the shape has no answer to, where
+ *   corners are shared and its vertex count is radSeg*sides rather than radSeg*sides*6.
+ *   GenMeshHeightmap reads a pixel's RED byte and scales it by the size it is given; the samples here
+ *   are floats the caller measured in world units, so no scale is applied and none is needed. And
+ *   every generator here answers XUD_INVALID_ARG for a description the shape has no answer to, where
  *   raylib leaves the Mesh all-zero and logs a warning the caller cannot read.
  *
  *   Copyright (c) 2026 xudlibc authors.
@@ -82,6 +87,13 @@
     2u /* A sphere's first ring is the north pole and its last is the south, so one stack is a                                               \
          ring of coincident vertices and a mesh with no volume; raylib's own arithmetic                                                       \
          divides by (stacks - 1) implicitly in its fan and gets an empty mesh for stacks of 1.                                               \
+     */
+
+#define XUD_GENERATE_MIN_SAMPLES                                                                                                           \
+    2u /* A grid of samples needs two on each axis before it has a quad: one sample is a point                                            \
+         and a heightmap of one column is a line, which is a mesh with no triangles rather than                                            \
+         a flat one. raylib's heightmap has no floor of its own - its image's dimensions are                                                \
+         whatever LoadImage answered - so this is the rung's, stated where the caller can read it.                                          \
      */
 
 #define XUD_GENERATE_PI                                                                                                                    \

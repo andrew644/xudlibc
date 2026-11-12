@@ -1172,9 +1172,10 @@ XudResult xud_matrix_transform_point(XudVector3* outPoint, const float* matrix, 
 #define XUD_MESH_KIND_TORUS 5u /* a tube of tubeRadius swept around a circle of radius */
 #define XUD_MESH_KIND_KNOT 6u /* a trefoil of tubeRadius swept along a curve of radius */
 #define XUD_MESH_KIND_POLY 7u /* a regular polygon of slices sides, fanned from its centre */
-#define XUD_MESH_KIND_COUNT 8u /* the length of this axis */
+#define XUD_MESH_KIND_HEIGHTMAP 8u /* a grid of the CALLER's own samples: width by length, one vertex per sample */
+#define XUD_MESH_KIND_COUNT 9u /* the length of this axis */
 
-static_assert(XUD_MESH_KIND_COUNT == (XUD_MESH_KIND_POLY + 1u),
+static_assert(XUD_MESH_KIND_COUNT == (XUD_MESH_KIND_HEIGHTMAP + 1u),
     "xud.h: the shape axis is contiguous, because xud_gen_mesh() reads a kind as an index into its own table");
 
 /// What to cut: one description for every kind, the way XudMeshData and XudFontData are one
@@ -1187,11 +1188,14 @@ typedef struct XudMeshShape {
     uint32_t kind; /* one of XUD_MESH_KIND_*, and the only field every kind reads */
     float radius; /* sphere, hemisphere, cylinder, torus ring, poly, knot curve */
     float tubeRadius; /* the torus's tube and the knot's thickness */
-    float width; /* plane and cube, along x */
+    float width; /* plane, cube and heightmap, along x */
     float height; /* cube and cylinder, along y */
-    float length; /* plane and cube, along z */
+    float length; /* plane, cube and heightmap, along z */
     uint32_t slices; /* longitudes, tube rings around a solid, plane columns, poly sides */
     uint32_t stacks; /* latitudes, plane rows, the knot's segments along its curve */
+    const float* heights; /* heightmap only: heightColumns*heightRows samples, row-major, in WORLD units */
+    uint32_t heightColumns; /* heightmap only: samples along x, and so the mesh's vertex columns; at least 2 */
+    uint32_t heightRows; /* heightmap only: samples along z, and so the mesh's vertex rows; at least 2 */
 } XudMeshShape;
 
 /// What a shape needs: the two counts xud_gen_mesh_count() answers and xud_gen_mesh() writes, in
@@ -1222,9 +1226,10 @@ typedef struct XudMeshBuffers {
 /// arithmetic, which is what makes the fill's writes provably in bounds - the count it writes to is
 /// this function's answer, not a number the caller guessed. XUD_INVALID_ARG on a NULL out or shape,
 /// a kind outside the axis, an extent or radius under its floor or not finite, a slice, stack or
-/// side count under the rung's floor for that kind, or a shape whose vertex count is past the mesh
-/// rung's ceiling (XUD_MESH_MAX_VERTICES) - which is refused here because a solid the mesh rung
-/// could never upload is not a solid worth cutting.
+/// side count under the rung's floor for that kind, a heightmap with no samples, with fewer than two
+/// samples on an axis, or with a sample that is not finite (one NaN height is a vertex at NaN and two
+/// NaN normals), or a shape whose vertex count is past the mesh rung's ceiling (XUD_MESH_MAX_VERTICES)
+/// - which is refused here because a solid the mesh rung could never upload is not a solid worth cutting.
 XudResult xud_gen_mesh_count(XudMeshCounts* outCounts, const XudMeshShape* shape);
 
 /// Cut a shape into the caller's buffers: the fill half, raylib's GenMeshPlane (rmodels.c 1027),

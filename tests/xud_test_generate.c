@@ -52,10 +52,31 @@ static uint32_t xudTestIndex[XUD_TEST_GENERATE_INDICES];
 static const XudMeshBuffers xudTestBuffers
     = { .pos = xudTestPosition, .texcoords = xudTestTexcoord, .normal = xudTestNormal, .index = xudTestIndex };
 
+/* The samples every heightmap check reads: a tilted plane, 0.5x + 0.25z over the extent the shared
+   shape spans (2 wide by 2 long), sampled on 5 columns by 3 rows so that every sample, every slope
+   and every normal this area states is an exact binary number rather than one the tolerance has to
+   forgive. Row 0 is the +z edge, the way a plane's rows run.
+*/
+static const float xudTestHeights[15]
+    = { -0.25f, 0.0f, 0.25f, 0.5f, 0.75f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, -0.75f, -0.5f, -0.25f, 0.0f, 0.25f };
+
+/* A writable copy of the grid, for the refusals that poison one sample: the const grid above is what
+   every geometry check reads, and it must stay readable after the poisoning.
+*/
+static float xudTestHeightsPoison[15];
+
 static XudMeshShape xudTestShape(uint32_t kind) {
-    return (XudMeshShape) {
-        .kind = kind, .radius = 1.0f, .tubeRadius = 0.25f, .width = 2.0f, .height = 1.0f, .length = 2.0f, .slices = 8u, .stacks = 6u
-    };
+    return (XudMeshShape) { .kind = kind,
+        .radius = 1.0f,
+        .tubeRadius = 0.25f,
+        .width = 2.0f,
+        .height = 1.0f,
+        .length = 2.0f,
+        .slices = 8u,
+        .stacks = 6u,
+        .heights = xudTestHeights,
+        .heightColumns = 5u,
+        .heightRows = 3u };
 }
 
 static uint32_t xudTestNear(float value, float expected) {
@@ -140,6 +161,30 @@ static void xud_test_generate_refusals(void) {
     shape.slices = 2u;
     xud_check(xud_gen_mesh_count(&counts, &shape) == XUD_INVALID_ARG, "generate/count-two-sided-poly", "a polygon of two sides is a line");
 
+    shape = xudTestShape(XUD_MESH_KIND_HEIGHTMAP);
+    shape.heights = NULL;
+    xud_check(xud_gen_mesh_count(&counts, &shape) == XUD_INVALID_ARG, "generate/count-heightmap-no-samples",
+        "a heightmap with no samples has no surface, and no array to read a count out of");
+    shape = xudTestShape(XUD_MESH_KIND_HEIGHTMAP);
+    shape.heightColumns = 1u;
+    xud_check(xud_gen_mesh_count(&counts, &shape) == XUD_INVALID_ARG, "generate/count-heightmap-one-column",
+        "one column of samples is a line, which has no triangles to name");
+    shape = xudTestShape(XUD_MESH_KIND_HEIGHTMAP);
+    shape.heightRows = 0u;
+    xud_check(xud_gen_mesh_count(&counts, &shape) == XUD_INVALID_ARG, "generate/count-heightmap-no-rows", "and no rows is nothing at all");
+    shape = xudTestShape(XUD_MESH_KIND_HEIGHTMAP);
+    shape.heightColumns = 65535u;
+    shape.heightRows = 65535u;
+    xud_check(xud_gen_mesh_count(&counts, &shape) == XUD_INVALID_ARG, "generate/count-heightmap-past-ceiling",
+        "a sample grid past the mesh rung's vertex ceiling is refused before its samples are walked, rather than read");
+    shape = xudTestShape(XUD_MESH_KIND_HEIGHTMAP);
+    xudTestHeightsPoison[7] = NAN; /* the rest of the grid stays zero: finite, and not the point */
+    shape.heights = xudTestHeightsPoison;
+    xud_check(xud_gen_mesh_count(&counts, &shape) == XUD_INVALID_ARG, "generate/count-heightmap-nan-sample",
+        "one NaN sample is refused: it is a vertex at NaN and six NaN normals around it");
+    xud_check(xud_gen_mesh(&mesh, &shape, &xudTestBuffers) == XUD_INVALID_ARG, "generate/fill-heightmap-nan-sample",
+        "and the fill half runs the same walk, so it cannot write the NaN the count refused");
+
     counts.vertexCount = 1234u;
     counts.indexCount = 5678u;
     shape = xudTestShape(XUD_MESH_KIND_CUBE);
@@ -157,10 +202,11 @@ static void xud_test_generate_refusals(void) {
 /* Every solid the area cuts is the default shape with its own kind, so the counts below are one
    hand-computed pair apiece: radius 1, tube 0.25, 2 x 1 x 2, 8 slices, 6 stacks.
 */
-static const uint32_t xudTestKind[XUD_MESH_KIND_COUNT] = { XUD_MESH_KIND_PLANE, XUD_MESH_KIND_CUBE, XUD_MESH_KIND_SPHERE,
-    XUD_MESH_KIND_HEMISPHERE, XUD_MESH_KIND_CYLINDER, XUD_MESH_KIND_TORUS, XUD_MESH_KIND_KNOT, XUD_MESH_KIND_POLY };
-static const uint32_t xudTestVertices[XUD_MESH_KIND_COUNT] = { 63u, 24u, 63u, 63u, 38u, 63u, 48u, 10u };
-static const uint32_t xudTestIndices[XUD_MESH_KIND_COUNT] = { 288u, 36u, 240u, 264u, 96u, 288u, 288u, 24u };
+static const uint32_t xudTestKind[XUD_MESH_KIND_COUNT]
+    = { XUD_MESH_KIND_PLANE, XUD_MESH_KIND_CUBE, XUD_MESH_KIND_SPHERE, XUD_MESH_KIND_HEMISPHERE, XUD_MESH_KIND_CYLINDER,
+          XUD_MESH_KIND_TORUS, XUD_MESH_KIND_KNOT, XUD_MESH_KIND_POLY, XUD_MESH_KIND_HEIGHTMAP };
+static const uint32_t xudTestVertices[XUD_MESH_KIND_COUNT] = { 63u, 24u, 63u, 63u, 38u, 63u, 48u, 10u, 15u };
+static const uint32_t xudTestIndices[XUD_MESH_KIND_COUNT] = { 288u, 36u, 240u, 264u, 96u, 288u, 288u, 24u, 48u };
 
 static void xud_test_generate_counts(void) {
     XudMeshCounts counts;
@@ -339,10 +385,75 @@ static void xud_test_generate_streams(void) {
         "and the caller's description is left exactly as it was, so a failed call cannot half-install a mesh");
 }
 
+/* The heightmap's own geometry: what one caller-supplied sample grid must be, vertex by vertex. The
+   grid is a tilted plane, so every coordinate, texture coordinate and normal here is a number stated
+   by the plane's equation rather than one read back out of the writer.
+*/
+static void xud_test_generate_heightmap(void) {
+    XudMeshData mesh;
+    XudMeshShape shape = xudTestShape(XUD_MESH_KIND_HEIGHTMAP);
+    XudVector3 min;
+    XudVector3 max;
+    const float inverse = 1.0f / sqrtf(1.3125f); /* (-0.5, 1, -0.25) normalised: the tilt's own normal */
+    uint32_t vertex = 0u;
+    uint32_t rows = 1u;
+    uint32_t triangles = 0u;
+
+    xud_check(xud_gen_mesh(&mesh, &shape, &xudTestBuffers) == XUD_OK, "generate/heightmap-cut", "the tilted grid is cut");
+    xud_check((mesh.vertexCount == 15u) && (mesh.indexCount == 48u), "generate/heightmap-counts",
+        "5 columns by 3 rows is 15 vertices and 8 quads, one vertex per sample and none duplicated");
+    xud_check(xud_mesh_check(&mesh, &triangles) == XUD_OK, "generate/heightmap-check", "and the mesh rung uploads the description");
+
+    for (vertex = 0u; vertex < 15u; vertex++) {
+        const uint32_t column = vertex % 5u;
+        const uint32_t row = vertex / 5u;
+        const float x = (((float)column / 4.0f) - 0.5f) * 2.0f;
+        const float z = (0.5f - ((float)row / 2.0f)) * 2.0f;
+        const float* point = &xudTestPosition[vertex * 3u];
+        const float* texcoord = &xudTestTexcoord[vertex * 2u];
+        const float* normal = &xudTestNormal[vertex * 3u];
+
+        if (!xudTestNear(point[0], x) || !xudTestNear(point[1], xudTestHeights[vertex]) || !xudTestNear(point[2], z)) {
+            rows = 0u;
+        }
+        if (!xudTestNear(texcoord[0], (float)column / 4.0f) || !xudTestNear(texcoord[1], (float)row / 2.0f)) {
+            rows = 0u;
+        }
+        if (!xudTestNear(normal[0], -0.5f * inverse) || !xudTestNear(normal[1], inverse) || !xudTestNear(normal[2], -0.25f * inverse)) {
+            rows = 0u;
+        }
+    }
+    xud_check(rows == 1u, "generate/heightmap-vertices",
+        "every vertex is its sample's height at its grid corner, its texture coordinate the grid position, and its normal the tilt's");
+
+    /* The samples are world units: the shape's `height`, which no other kind uses for this, must not
+       scale them, or a caller's measured terrain would be resized by a field it never filled.
+    */
+    shape.height = 7.0f;
+    xud_check(
+        xud_gen_mesh(&mesh, &shape, &xudTestBuffers) == XUD_OK, "generate/heightmap-height-setup", "the same grid, a taller height field");
+    rows = 1u;
+    for (vertex = 0u; vertex < 15u; vertex++) {
+        if (!xudTestNear(xudTestPosition[(vertex * 3u) + 1u], xudTestHeights[vertex])) {
+            rows = 0u;
+        }
+    }
+    xud_check(rows == 1u, "generate/heightmap-height-unused", "and the y of every vertex is still the sample the caller wrote");
+
+    shape.height = 1.0f;
+    xud_check(xud_gen_mesh(&mesh, &shape, &xudTestBuffers) == XUD_OK, "generate/heightmap-bounds-setup", "and the bounds of the grid");
+    xud_check(xud_get_mesh_bounding_box(&min, &max, &mesh) == XUD_OK, "generate/heightmap-bounds", "answer");
+    xud_check(xudTestNear(min.y, -0.75f) && xudTestNear(max.y, 0.75f), "generate/heightmap-bounds-y",
+        "the tilt reaches its lowest sample at (-1, -1) and its highest at (1, 1)");
+    xud_check(xudTestNear(min.x, -1.0f) && xudTestNear(max.x, 1.0f) && xudTestNear(min.z, -1.0f) && xudTestNear(max.z, 1.0f),
+        "generate/heightmap-bounds-plan", "and the grid still spans the width and length the shape states");
+}
+
 void xud_test_generate(void) {
     xud_test_generate_refusals();
     xud_test_generate_counts();
     xud_test_generate_invariants();
     xud_test_generate_bounds();
+    xud_test_generate_heightmap();
     xud_test_generate_streams();
 }

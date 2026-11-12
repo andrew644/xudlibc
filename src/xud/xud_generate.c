@@ -93,6 +93,18 @@ static uint32_t xud_generate_count(uint64_t* outVertices, uint64_t* outIndices, 
         vertices = slices + 2u;
         indices = slices * 3u;
         break;
+    case XUD_MESH_KIND_HEIGHTMAP: {
+        const uint64_t sampleColumns = (uint64_t)shape->heightColumns;
+        const uint64_t sampleRows = (uint64_t)shape->heightRows;
+
+        floors = ((shape->heights != NULL) && (shape->width >= XUD_GENERATE_MIN_EXTENT) && (shape->length >= XUD_GENERATE_MIN_EXTENT)
+                     && (sampleColumns >= XUD_GENERATE_MIN_SAMPLES) && (sampleRows >= XUD_GENERATE_MIN_SAMPLES))
+            ? 1u
+            : 0u;
+        vertices = sampleColumns * sampleRows;
+        indices = ((sampleColumns - 1u) * (sampleRows - 1u)) * 6u;
+        break;
+    }
     default:
         floors = 0u;
         break;
@@ -119,6 +131,24 @@ static uint32_t xud_generate_shape_is_finite(const XudMeshShape* shape) {
     if ((isfinite(shape->radius) == 0) || (isfinite(shape->tubeRadius) == 0) || (isfinite(shape->width) == 0)
         || (isfinite(shape->height) == 0) || (isfinite(shape->length) == 0)) {
         return 0u;
+    }
+
+    return 1u;
+}
+
+/* The heightmap's samples, every one finite. The count has already met the two floors by the time
+   this runs, so the length of the walk is the number the count computed rather than one the caller
+   asserted - and one NaN sample would be a vertex at NaN, two NaN normals, and a mesh whose bounding
+   box leaves out everything it should have covered.
+*/
+static uint32_t xud_generate_heights_are_finite(const XudMeshShape* shape) {
+    const uint64_t samples = (uint64_t)shape->heightColumns * (uint64_t)shape->heightRows;
+    uint64_t sample = 0u;
+
+    for (sample = 0u; sample < samples; ++sample) {
+        if (isfinite((double)shape->heights[sample]) == 0) {
+            return 0u;
+        }
     }
 
     return 1u;
@@ -166,6 +196,62 @@ static void xud_generate_plane(const XudMeshShape* shape, const XudMeshBuffers* 
 
     for (row = 0u; row < shape->stacks; row++) {
         for (column = 0u; column < shape->slices; column++) {
+            uint32_t a = (row * columns) + column;
+            uint32_t b = a + 1u;
+            uint32_t c = a + columns + 1u;
+            uint32_t d = a + columns;
+
+            buffers->index[quad * 6u] = a;
+            buffers->index[(quad * 6u) + 1u] = b;
+            buffers->index[(quad * 6u) + 2u] = d;
+            buffers->index[(quad * 6u) + 3u] = b;
+            buffers->index[(quad * 6u) + 4u] = c;
+            buffers->index[(quad * 6u) + 5u] = d;
+            quad++;
+        }
+    }
+}
+
+/* A caller's samples as a surface: the plane's grid with a y of its own at every vertex. The normal
+   is the height field's own - the two tangents the grid defines are (1, dh/dx, 0) and (0, dh/dz, 1),
+   and their cross product, read against this grid's z falling as its rows rise, is (-dh/dx, 1, -dh/dz)
+   normalised. The grid's edge samples have no neighbour outside themselves, so their difference is
+   one-sided there: the normal at an edge points where the one row it can see says, which is what keeps
+   it finite without inventing a sample the caller never had.
+*/
+static void xud_generate_heightmap(const XudMeshShape* shape, const XudMeshBuffers* buffers) {
+    const uint32_t columns = shape->heightColumns;
+    const uint32_t rows = shape->heightRows;
+    const float stepX = shape->width / (float)(columns - 1u);
+    const float stepZ = shape->length / (float)(rows - 1u);
+    uint32_t row = 0u;
+    uint32_t column = 0u;
+    uint32_t quad = 0u;
+
+    for (row = 0u; row < rows; row++) {
+        const float v = (float)row / (float)(rows - 1u);
+        const uint32_t back = (row > 0u) ? (row - 1u) : row;
+        const uint32_t front = (row + 1u < rows) ? (row + 1u) : row;
+        const float spanZ = ((row > 0u) ? 1.0f : 0.0f) + ((row + 1u < rows) ? 1.0f : 0.0f);
+
+        for (column = 0u; column < columns; column++) {
+            const float u = (float)column / (float)(columns - 1u);
+            const uint32_t vertex = (row * columns) + column;
+            const uint32_t left = (column > 0u) ? (column - 1u) : column;
+            const uint32_t right = (column + 1u < columns) ? (column + 1u) : column;
+            const float spanX = ((column > 0u) ? 1.0f : 0.0f) + ((column + 1u < columns) ? 1.0f : 0.0f);
+            const float slopeX = (shape->heights[(row * columns) + right] - shape->heights[(row * columns) + left]) / (spanX * stepX);
+            const float slopeZ = (shape->heights[(back * columns) + column] - shape->heights[(front * columns) + column]) / (spanZ * stepZ);
+            const float inverse = 1.0f / sqrtf((slopeX * slopeX) + 1.0f + (slopeZ * slopeZ));
+
+            xud_generate_vertex(&buffers->pos[vertex * 3u], (buffers->texcoords != NULL) ? &buffers->texcoords[vertex * 2u] : NULL,
+                (buffers->normal != NULL) ? &buffers->normal[vertex * 3u] : NULL, (u - 0.5f) * shape->width, shape->heights[vertex],
+                (0.5f - v) * shape->length, u, v, -slopeX * inverse, inverse, -slopeZ * inverse);
+        }
+    }
+
+    for (row = 0u; (row + 1u) < rows; row++) {
+        for (column = 0u; (column + 1u) < columns; column++) {
             uint32_t a = (row * columns) + column;
             uint32_t b = a + 1u;
             uint32_t c = a + columns + 1u;
@@ -560,7 +646,19 @@ static uint32_t xud_generate_plan(uint64_t* outVertices, uint64_t* outIndices, c
         return 0u;
     }
 
-    return xud_generate_count(outVertices, outIndices, shape);
+    if (xud_generate_count(outVertices, outIndices, shape) == 0u) {
+        return 0u;
+    }
+
+    /* The one kind with an array argument walks its samples after its floors, because the walk's
+       length comes from the floors: a shape with four billion columns is refused by the count rather
+       than read four billion floats past the caller's buffer.
+    */
+    if ((shape->kind == XUD_MESH_KIND_HEIGHTMAP) && (xud_generate_heights_are_finite(shape) == 0u)) {
+        return 0u;
+    }
+
+    return 1u;
 }
 
 XudResult xud_gen_mesh_count(XudMeshCounts* outCounts, const XudMeshShape* shape) {
@@ -615,6 +713,9 @@ XudResult xud_gen_mesh(XudMeshData* outMesh, const XudMeshShape* shape, const Xu
         break;
     case XUD_MESH_KIND_KNOT:
         xud_generate_knot(shape, buffers);
+        break;
+    case XUD_MESH_KIND_HEIGHTMAP:
+        xud_generate_heightmap(shape, buffers);
         break;
     default:
         xud_generate_poly(shape, buffers);
