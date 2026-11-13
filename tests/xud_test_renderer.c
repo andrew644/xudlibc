@@ -55,6 +55,8 @@ static void xud_test_renderer_pure(void) {
     XudRenderPass pass;
     XudRenderPass hdrPass;
     XudFramebuffer hdrFb;
+    XudRenderPass prepassPass;
+    XudFramebuffer prepassFb;
     XudFramebufferArray rows;
     XudFrame frame;
     XudLoader loader;
@@ -100,6 +102,8 @@ static void xud_test_renderer_pure(void) {
     memset(&pass, 0, sizeof pass);
     memset(&hdrPass, 0, sizeof hdrPass);
     memset(&hdrFb, 0, sizeof hdrFb);
+    memset(&prepassPass, 0, sizeof prepassPass);
+    memset(&prepassFb, 0, sizeof prepassFb);
     memset(&rows, 0, sizeof rows);
     memset(&frame, 0, sizeof frame);
     memset(&loader, 0, sizeof loader);
@@ -127,6 +131,8 @@ static void xud_test_renderer_pure(void) {
     whole.pipeline = &pipeline;
     whole.hdrPass = &hdrPass;
     whole.hdrFramebuffer = &hdrFb;
+    whole.prepassPass = &prepassPass;
+    whole.hdrPrepassFramebuffer = &prepassFb;
     whole.descriptor = &descriptor;
     whole.renderPass = &pass;
     whole.framebuffers = &rows;

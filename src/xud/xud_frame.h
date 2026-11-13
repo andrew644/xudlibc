@@ -426,11 +426,17 @@ XudResult xud_frame_open(
    sampler-array size names no slot, so a real slot (0 .. size-1) says "this pass ends by drawing the
    full-screen triangle from that slot's image" - see xud_frame_record_pass in xud_frame.c. */
 #define XUD_FRAME_NO_RESOLVE 0xFFFFFFFFu
-
+/// One pass sequence among the recordings is the DEPTH PRE-PASS (S2.4): `prepassPass` and its own
+/// `prepassFramebuffer` are recorded once before `hdrPass`/`hdrFramebuffer` - the same scene batch
+/// drawn through the pipeline's colorless pre-pass row into the scratch pass's own depth buffer -
+/// and the scratch pass then LOADs that depth and rejects the fragments behind it at the
+/// rasterizer. The clear, the sort and the replay are one sequence owned at this level; the caller
+/// above hands over the pair and the pipeline list and knows nothing of the order.
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
-    const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, uint32_t hdrSlot, const XudFramePassScope* scopes,
-    uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
+    const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, const XudRenderPass* prepassPass,
+    const XudFramebuffer* prepassFramebuffer, uint32_t hdrSlot, const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch,
+    XudDescriptor* descriptor, uint32_t* outImageIndex);
 
 /// Driver: retire everything this rung owns, in the one order that is correct - vkWaitForFences on
 /// every fence still bounding a submission, then vkFreeCommandBuffers, vkDestroySemaphore, vkDestroyFence for ever

@@ -170,18 +170,36 @@ static void xud_test_pipeline_pure(void) {
         "the SAME ON pair at the transparent and textured rows, so depth stays on under a blended draw rather than off: "
         "what turns off is the write, and the write at those rows stays on because the swapchain is what the"
         " overlap artifacts go with are raylib's own; turning it off there would be a later knob, not this row");
-    xud_check((pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].depthCompareOp == XUD_PIPELINE_DEPTH_COMPARE_OP)
+    xud_check((pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].depthCompareOp == XUD_PIPELINE_DEPTH_REPLAY_COMPARE_OP)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_TEXTURED].depthCompareOp == XUD_PIPELINE_DEPTH_REPLAY_COMPARE_OP)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_TRANSPARENT].depthCompareOp == XUD_PIPELINE_DEPTH_COMPARE_OP)
+            && (pipeline.depthStencil[XUD_BATCH_VARIANT_UI].depthCompareOp == XUD_PIPELINE_DEPTH_COMPARE_OP)
             && (pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].stencilTestEnable == VK_FALSE)
             && (pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].minDepthBounds == 0.0f)
             && (pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].maxDepthBounds == 1.0f),
         "pipeline/depth-row-values",
-        "at the opaque row: GREATER, and it is the rule the enabled test above actually uses now:"
-        " the pass clears the buffer to XUD_RENDERPASS_CLEAR_DEPTH 0.0, the far value of this very"
-        " rule under the reversed 1/z projection, so the first fragment of a frame always wins"
-        " against a defined buffer rather than against whatever the a"
-        "llocator handed back; no stencil anywhere in this library, and both stencil rows are written as t"
-        "he disabled set; and the full depth bounds, which is what a disabled depth-bounds test has to say"
-        " beside it");
+        "the compare op is the per-column table the depth pre-pass (S2.4) demands: GREATER_OR_EQUAL "
+        "at the OPAQUE and TEXTURED rows, whose fragments replay the very depth values the pre-pass "
+        "stored - equality is a fragment meeting its own surface, and rejecting it would erase the "
+        "scene - while the TRANSPARENT and UI rows, which the pre-pass skips, keep GREATER against "
+        "whatever the opaque columns left (the UI row's test is off anyway, and the op it names is "
+        "never asked). The pass clears the buffer to XUD_RENDERPASS_CLEAR_DEPTH 0.0, the far value "
+        "under the reversed 1/z projection, so even at the pre-passed rows the first fragment of a "
+        "frame always wins against a defined buffer rather than against whatever the allocator "
+        "handed back; no stencil anywhere in this library, and both stencil rows are written as the "
+        "disabled set; and the full depth bounds, which is what a disabled depth-bounds test has to "
+        "say beside it");
+    xud_check((pipeline.prepassDepthStencil.sType == VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO)
+            && (pipeline.prepassDepthStencil.depthTestEnable == VK_TRUE) && (pipeline.prepassDepthStencil.depthWriteEnable == VK_TRUE)
+            && (pipeline.prepassDepthStencil.depthCompareOp == XUD_PIPELINE_DEPTH_COMPARE_OP)
+            && (pipeline.prepassBlending.sType == VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
+            && (pipeline.prepassBlending.attachmentCount == 0u) && (pipeline.prepassBlending.pAttachments == NULL),
+        "pipeline/prepass-rows-stamped",
+        "the pre-pass's own two rows come out of fill_state beside the variant table: depth test and "
+        "write ON with the plain GREATER contest (the pre-pass draws each surface once per pixel, so "
+        "a tie there is the same triangle twice), and a blend row that names ZERO colour attachments "
+        "- the count is the subpass's colour count, and the pre-pass subpass references no colour, "
+        "which is the whole pipeline in one field");
     xud_check((pipeline.depthStencil[XUD_BATCH_VARIANT_UI].depthTestEnable == VK_FALSE)
             && (pipeline.depthStencil[XUD_BATCH_VARIANT_UI].depthWriteEnable == VK_FALSE),
         "pipeline/depth-pair-off-ui",

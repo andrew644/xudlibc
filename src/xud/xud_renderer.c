@@ -213,6 +213,20 @@ static XudResult xud_renderer_hdr_open(XudRenderer* renderer, XudLoader* loader,
         xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
         return result;
     }
+    /* The pre-pass pass pairs with the scratch pass (and flips its depth row to LOAD in the one
+       call), and its framebuffer is the second row over the same two views: the subpass shapes
+       differ, so render-pass compatibility says two rows. */
+    result = xud_renderpass_open_prepass(&renderer->prepassPass, loader, device, renderer->hdrPass);
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+    result = xud_framebuffer_open(&renderer->hdrPrepassFramebuffer, loader, device, renderer->prepassPass, renderer->hdrColorImage,
+        renderer->hdrFormat, width, height);
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
 
     result = xud_descriptor_bind_texture_slot(descriptor, loader, device, renderer->hdrColorView, renderer->hdrSampler,
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->hdrSlot);
@@ -239,6 +253,15 @@ static void xud_renderer_hdr_retire(
     if ((renderer->hdrSlotLive != 0u) && (descriptor != NULL)) {
         (void)xud_descriptor_release_texture_slot(descriptor, loader, device, renderer->hdrSlot);
         renderer->hdrSlotLive = 0u;
+    }
+    if (renderer->hdrPrepassFramebuffer != NULL) {
+        (void)xud_framebuffer_close(&renderer->hdrPrepassFramebuffer, device, loader);
+    }
+    if (renderer->prepassPass != NULL) {
+        /* Before hdrPass, whose depth row it borrows - and the borrow's retire touches no depth
+           handle (xud_renderpass_retire_depth stops at ownsDepth), so the ordering is about the
+           VkRenderPass objects the pipeline named, not about the image. */
+        (void)xud_renderpass_close(&renderer->prepassPass, device, loader, alloc);
     }
     if (renderer->hdrFramebuffer != NULL) {
         (void)xud_framebuffer_close(&renderer->hdrFramebuffer, device, loader);
@@ -432,8 +455,8 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
        bove the allocator and below this rung, and closes it after this rung's teardown has retired
        the pipeline that names those handles.
      */
-    result = xud_pipeline_open(
-        &renderer->pipeline, loader, device, descriptor, renderer->batch, renderer->hdrPass->renderPass, renderer->renderPass->renderPass);
+    result = xud_pipeline_open(&renderer->pipeline, loader, device, descriptor, renderer->batch, renderer->hdrPass->renderPass,
+        renderer->renderPass->renderPass, renderer->prepassPass->renderPass);
     if (result != XUD_OK) {
         xud_renderer_retire(renderer, device, loader, alloc);
         free(renderer);
@@ -484,7 +507,8 @@ XudResult xud_renderer_draw(
         return XUD_INVALID_ARG;
     }
     if ((renderer->pipeline == NULL) || (renderer->renderPass == NULL) || (renderer->hdrPass == NULL) || (renderer->hdrFramebuffer == NULL)
-        || (renderer->framebuffers == NULL) || (renderer->frame == NULL) || (renderer->descriptor == NULL)) {
+        || (renderer->prepassPass == NULL) || (renderer->hdrPrepassFramebuffer == NULL) || (renderer->framebuffers == NULL)
+        || (renderer->frame == NULL) || (renderer->descriptor == NULL)) {
         return XUD_INVALID_ARG;
     }
 
@@ -561,8 +585,8 @@ XudResult xud_renderer_draw(
     }
 
     result = xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
-        renderer->framebufferCount, renderer->hdrPass, renderer->hdrFramebuffer, renderer->hdrSlot, renderer->scopes, renderer->scopeCount,
-        renderer->screenBatch, renderer->descriptor, outImageIndex);
+        renderer->framebufferCount, renderer->hdrPass, renderer->hdrFramebuffer, renderer->prepassPass, renderer->hdrPrepassFramebuffer,
+        renderer->hdrSlot, renderer->scopes, renderer->scopeCount, renderer->screenBatch, renderer->descriptor, outImageIndex);
     if (result == XUD_OK) {
         renderer->drawCount++;
     }
@@ -614,7 +638,8 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
         return XUD_INVALID_ARG;
     }
     if ((renderer->frame == NULL) || (renderer->framebuffers == NULL) || (renderer->renderPass == NULL) || (renderer->pipeline == NULL)
-        || (renderer->hdrPass == NULL) || (renderer->hdrFramebuffer == NULL) || (renderer->batch == NULL)) {
+        || (renderer->hdrPass == NULL) || (renderer->hdrFramebuffer == NULL) || (renderer->prepassPass == NULL)
+        || (renderer->hdrPrepassFramebuffer == NULL) || (renderer->batch == NULL)) {
         /* A renderer missing any rung this rebuilds is a renderer that was never brought up whole,
            and xud_renderer_open() is the call for that - a rebuild would otherwise have nothing to
            rebuild. */
@@ -692,6 +717,9 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
        still reads the colour image below), and the pair is re-bound into a slot of its own after
        the new view exists. */
     (void)xud_framebuffer_close(&renderer->hdrFramebuffer, device, loader);
+    (void)xud_framebuffer_close(&renderer->hdrPrepassFramebuffer, device, loader); /* its depth
+                                       attachment view is the OLD depth view from the row below,
+                                       and both rows die before that view does */
     if (renderer->hdrSlotLive != 0u) {
         (void)xud_descriptor_release_texture_slot(renderer->descriptor, loader, device, renderer->hdrSlot);
         renderer->hdrSlotLive = 0u;
@@ -700,6 +728,12 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
     if ((result != XUD_OK) && (result != XUD_ALREADY)) {
         return result;
     }
+    /* The pre-pass SURVIVES the resize - an attachment description carries a format, not an
+       extent, and its VkRenderPass handle is what the pre-pass pipeline is bound to - but its
+       BORROWED depth row is stale the moment the recreate lands: re-state the handles from the
+       source before anything reads the pre-pass's own depthImage field again (the frame loop's
+       opening barrier does exactly that). */
+    (void)xud_renderpass_borrow_depth(renderer->prepassPass, renderer->hdrPass);
     if ((renderer->hdrColorImage != VK_NULL_HANDLE) && (renderer->layout != NULL)) {
         (void)xud_layout_forget(renderer->layout, renderer->hdrColorImage);
     }
@@ -749,6 +783,11 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
         return XUD_VULKAN_ERROR;
     }
     result = xud_framebuffer_open(&renderer->hdrFramebuffer, loader, device, renderer->hdrPass, renderer->hdrColorImage,
+        renderer->hdrFormat, renderer->hdrWidth, renderer->hdrHeight);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_framebuffer_open(&renderer->hdrPrepassFramebuffer, loader, device, renderer->prepassPass, renderer->hdrColorImage,
         renderer->hdrFormat, renderer->hdrWidth, renderer->hdrHeight);
     if (result != XUD_OK) {
         return result;

@@ -514,6 +514,20 @@ static void xud_renderpass_retire_depth(XudRenderPass* pass, const XudDevice* de
         return;
     }
 
+    if (pass->ownsDepth == 0u) {
+        /* The row is borrowed - a depth PRE-PASS (xud_renderpass_open_prepass) draws into the
+           source pass's depth image and owns none of it. Clearing the handles here (rather than
+           destroying anything) is what makes a retire of the borrower a no-op that still leaves a
+           record naming nothing dead; the source pass tears the row down through this same
+           function, where ownsDepth is 1 and every step below runs. */
+        pass->depthView = VK_NULL_HANDLE;
+        pass->depthImage = VK_NULL_HANDLE;
+        pass->depthRange.memory = VK_NULL_HANDLE;
+        pass->depthRange.size = 0u;
+        pass->depthRange.offset = 0u;
+        return;
+    }
+
     if (pass->depthView != VK_NULL_HANDLE) {
         if (loader->deviceTable.vkDestroyImageView != NULL) {
             VkImageView view = pass->depthView;
@@ -629,6 +643,8 @@ static XudResult xud_renderpass_open_sized(XudRenderPass** outPass, XudLoader* l
         return XUD_OUT_OF_MEMORY;
     }
     pass->layout = layout;
+    pass->ownsDepth = 1u; /* this pass brought the depth row up and retires it; only a
+                             xud_renderpass_open_prepass() borrow clears the flag */
 
     /* 1. the pass's rows, then its create-info: the attachment description is what says an image of
        that format and that extent exists, so it is filled before the image is asked for rather tha
@@ -782,6 +798,107 @@ XudResult xud_renderpass_open_offscreen(XudRenderPass** outPass, XudLoader* load
     XudAllocator* alloc, VkFormat colorFormat, uint32_t width, uint32_t height, XudLayoutTracker* layout) {
     return xud_renderpass_open_sized(
         outPass, loader, device, caps, alloc, colorFormat, width, height, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, layout);
+}
+
+XudResult xud_renderpass_fill_prepass_state(XudRenderPass* pass, VkFormat colorFormat) {
+    XudResult result = xud_renderpass_fill_state(pass, colorFormat);
+    if (result != XUD_OK) {
+        return result;
+    }
+    /* The colour row steps out of the subpass but stays in the list: the framebuffer this pass
+       will be begin-rendered against is the SCRATCH pass's own two-view row, and VUID-
+       VkGraphicsPipelineCreateInfo-renderPass-0603 wants the pipeline's render pass compatible
+       with the framebuffer's - the same number, type and format of attachments - so the pass that
+       draws no colour must still NAME the colour attachment and simply not reference it. An
+       unreferenced attachment whose initial and final layouts differ is what the framebuffer
+       compatibility rules reject outright, so the row's pair is READ_ONLY/READ_ONLY: the layout
+       the scratch colour already sits in between the resolve and the next frame's pre-pass, and
+       a row that neither transitions nor is read transitions nothing. The depth row keeps
+       fill_state's CLEAR/STORE/OPTIMAL whole - the pre-pass is the depth clearer now. */
+    pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    pass->subpasses[XUD_RENDERPASS_FIRST_SUBPASS].colorAttachmentCount = 0u;
+    pass->subpasses[XUD_RENDERPASS_FIRST_SUBPASS].pColorAttachments = NULL;
+    return XUD_OK;
+}
+
+XudResult xud_renderpass_borrow_depth(XudRenderPass* pass, const XudRenderPass* source) {
+    if ((pass == NULL) || (source == NULL) || (source->depthImage == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    /* The whole depth row, handle to teardown half: the image and its view, both create-infos the
+       extent was built from, the allocator's range and the tracker that names the image's layout.
+       The frame loop reads the BORROWER's depthImage field when it builds the pass-opening depth
+       barrier, so a stale copy here is a barrier naming a retired image - which is exactly why a
+       resize re-syncs through this function rather than hoping nobody looks. */
+    pass->depthImage = source->depthImage;
+    pass->depthView = source->depthView;
+    pass->depthImageInfo = source->depthImageInfo;
+    pass->depthViewInfo = source->depthViewInfo;
+    pass->depthRange = source->depthRange;
+    pass->layout = source->layout;
+    pass->ownsDepth = 0u; /* the source retires what is copied here; this pass only names it */
+    return XUD_OK;
+}
+
+XudResult xud_renderpass_open_prepass(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, XudRenderPass* source) {
+    XudRenderPass* pass = NULL;
+    XudResult result = XUD_OUT_OF_MEMORY;
+    VkRenderPassCreateInfo createInfo;
+    VkRenderPass created = VK_NULL_HANDLE;
+
+    if ((outPass == NULL) || (*outPass != NULL) || (loader == NULL) || (device == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((source == NULL) || (source->renderPass == VK_NULL_HANDLE) || (source->depthImage == VK_NULL_HANDLE) || (source->ownsDepth == 0u)) {
+        /* The source must be a pass that OWNS its depth: borrowing a borrow would chain a teardown
+           that nothing orders. */
+        return XUD_INVALID_ARG;
+    }
+    if (!loader->open) {
+        return XUD_UNSUPPORTED;
+    }
+    if (device->device == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((loader->deviceTable.vkCreateRenderPass == NULL) || (loader->deviceTable.vkDestroyRenderPass == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    pass = calloc(1u, sizeof(*pass));
+    if (pass == NULL) {
+        return XUD_OUT_OF_MEMORY;
+    }
+    result = xud_renderpass_fill_prepass_state(pass, source->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].format);
+    if (result != XUD_OK) {
+        free(pass);
+        return result;
+    }
+    (void)xud_renderpass_borrow_depth(pass, source);
+    xud_renderpass_fill_create_info(pass, &createInfo);
+
+    /* The pairing's other half, applied to the SOURCE: the scratch pass stops CLEARing the depth
+       the pre-pass has just sorted. The row is the same memory the create-info was stamped from
+       and the record is the same bytes the driver already read (the create-info is by-value), so
+       this flips the recorded row too - the rule xud_renderpass_fill_state() states for its own
+       clearValues. LOAD, not DONT_CARE: the pre-pass's writes are the contents this pass reads. */
+    source->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+
+    result = xud_result_from_vk(loader->deviceTable.vkCreateRenderPass(device->device, &createInfo, NULL, &created));
+    if (result != XUD_OK) {
+        /* The pairing never happened; un-say the flip rather than leaving a source that clears
+           under a pre-pass nobody created. */
+        source->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        free(pass);
+        return result;
+    }
+    pass->renderPass = created;
+
+    *outPass = pass;
+    return XUD_OK;
 }
 
 XudResult xud_renderpass_close(XudRenderPass** ioPass, const XudDevice* device, XudLoader* loader, XudAllocator* alloc) {

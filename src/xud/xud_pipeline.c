@@ -126,6 +126,28 @@ XudResult xud_pipeline_fill_vertex_input(XudPipeline* pipeline, const XudBatch* 
     return XUD_OK;
 }
 
+XudResult xud_pipeline_fill_prepass_vertex_input(XudPipeline* pipeline, const XudBatch* batch) {
+    if ((pipeline == NULL) || (batch == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    /* Stream 0 - the position stream - is the whole input: the pre-pass vertex module declares
+       one attribute at location 0 and reads nothing else. The same "filled rows only" check the
+       four-stream fill above makes, narrowed to the row this pipeline points at: a batch whose
+       row 0 names binding 0 location 0 is a batch whose position buffer vkCmdBindVertexBuffers
+       binds at 0, which is the binding the pre-pass pipeline's single declaration claims. */
+    if ((batch->bindings[0].binding != 0u) || (batch->attributes[0].location != 0u)) {
+        return XUD_INVALID_ARG;
+    }
+
+    pipeline->prepassVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    pipeline->prepassVertexInput.pNext = NULL;
+    pipeline->prepassVertexInput.pVertexBindingDescriptions = (const VkVertexInputBindingDescription*)&batch->bindings[0];
+    pipeline->prepassVertexInput.pVertexAttributeDescriptions = (const VkVertexInputAttributeDescription*)&batch->attributes[0];
+    pipeline->prepassVertexInput.vertexBindingDescriptionCount = 1u;
+    pipeline->prepassVertexInput.vertexAttributeDescriptionCount = 1u;
+    return XUD_OK;
+}
+
 XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     /* The per-variant blend state, in the BATCH's variant order - a table rather than a switch
        because the variant IS the batch's index (todo.md's D1, 2026-10-26: raylib's blending is an
@@ -237,9 +259,16 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
        fragment replace a farther one, which is what a depth buffer is for - nearer meaning the
        LARGER depth, because the camera's projection writes the reversed 1/z map (xud_camera.c)
        and the pass clears to 0.0 (xud_renderpass.h), so the buffer starts at the far side of the
-       frustum. depthCompareOp is the rule the test uses, and XUD_PIPELINE_DEPTH_COMPARE_OP is
-       GREATER, the one form that reversed-1/z clear-to-0.0 convention needs: a nearer fragment has
-       the LARGER depth, so it passes against the smaller one already in the buffer. The UI
+       frustum. depthCompareOp is the rule the test uses, and it is PER COLUMN since the depth
+       pre-pass (S2.4): the OPAQUE and TEXTURED columns replay geometry the pre-pass already
+       rasterized into the very buffer they test against, so their rule is
+       XUD_PIPELINE_DEPTH_REPLAY_COMPARE_OP - GEQUAL, because the fragment that owns a stored
+       depth value IS that surface and equality is its own win, while a strictly smaller depth
+       is a fragment behind a nearer surface and the rasterizer throws it before any fragment
+       shader runs. The TRANSPARENT column, which the pre-pass does not draw, keeps
+       XUD_PIPELINE_DEPTH_COMPARE_OP - GREATER, the reversed-1/z form (xud_camera.c writes the
+       1/z map, the pass clears to 0.0): nearer is LARGER, so a nearer fragment passes against
+       the smaller one already in the buffer. The UI
        column's off pair is the screen-space half of the overlay's contract: a quad that wrote its
        depth back would be entered into the same GREATER contest as the 3D fragments - winning or
        losing the glyph by an accident of the depth map where it should simply always win - and
@@ -253,6 +282,8 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     {
         static const VkBool32 depthTestEnable[XUD_BATCH_VARIANT_COUNT] = { VK_TRUE, VK_TRUE, VK_TRUE, VK_FALSE };
         static const VkBool32 depthWriteEnable[XUD_BATCH_VARIANT_COUNT] = { VK_TRUE, VK_TRUE, VK_TRUE, VK_FALSE };
+        static const VkCompareOp depthCompare[XUD_BATCH_VARIANT_COUNT] = { XUD_PIPELINE_DEPTH_REPLAY_COMPARE_OP,
+            XUD_PIPELINE_DEPTH_COMPARE_OP, XUD_PIPELINE_DEPTH_REPLAY_COMPARE_OP, XUD_PIPELINE_DEPTH_COMPARE_OP };
         uint32_t depthVariant = 0u;
 
         for (depthVariant = 0u; depthVariant < XUD_BATCH_VARIANT_COUNT; depthVariant++) {
@@ -260,7 +291,7 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
             pipeline->depthStencil[depthVariant].pNext = NULL;
             pipeline->depthStencil[depthVariant].depthTestEnable = depthTestEnable[depthVariant];
             pipeline->depthStencil[depthVariant].depthWriteEnable = depthWriteEnable[depthVariant];
-            pipeline->depthStencil[depthVariant].depthCompareOp = XUD_PIPELINE_DEPTH_COMPARE_OP;
+            pipeline->depthStencil[depthVariant].depthCompareOp = depthCompare[depthVariant];
             pipeline->depthStencil[depthVariant].depthBoundsTestEnable = VK_FALSE;
             pipeline->depthStencil[depthVariant].stencilTestEnable = VK_FALSE;
             pipeline->depthStencil[depthVariant].front.compareOp = VK_COMPARE_OP_ALWAYS;
@@ -335,6 +366,40 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
         pipeline->blending[variant].blendConstants[2] = 0.0f;
         pipeline->blending[variant].blendConstants[3] = 0.0f;
     }
+
+    /* --- the depth pre-pass's own two state rows. The depth row is the plain GREATER contest -
+       the pre-pass draws each surface exactly once per pixel today, so a tie would be the same
+       triangle twice and either answer stores the same bits; the GEQUAL subtlety belongs to the
+       SHADED columns, which is where the variant table above carries it. The blend row is the
+       pre-pass's whole point said in pipeline state: attachmentCount 0, because its subpass
+       references no colour attachment, and VUID-VkPipelineColorBlendStateCreateInfo-
+       attachmentCount-00605 wants the count to be the subpass's colour count - a row naming one
+       attachment for a zero-colour subpass is the exact bug the pre-pass exists to un-pay. The
+       blend constants are written because the row must be complete even when it names nothing,
+       the same completeness rule the resolve row beside it follows. --- */
+    pipeline->prepassDepthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    pipeline->prepassDepthStencil.pNext = NULL;
+    pipeline->prepassDepthStencil.flags = 0u;
+    pipeline->prepassDepthStencil.depthTestEnable = VK_TRUE;
+    pipeline->prepassDepthStencil.depthWriteEnable = VK_TRUE;
+    pipeline->prepassDepthStencil.depthCompareOp = XUD_PIPELINE_DEPTH_COMPARE_OP;
+    pipeline->prepassDepthStencil.depthBoundsTestEnable = VK_FALSE;
+    pipeline->prepassDepthStencil.stencilTestEnable = VK_FALSE;
+    pipeline->prepassDepthStencil.front = pipeline->depthStencil[XUD_BATCH_VARIANT_UI].front;
+    pipeline->prepassDepthStencil.back = pipeline->depthStencil[XUD_BATCH_VARIANT_UI].front;
+    pipeline->prepassDepthStencil.minDepthBounds = 0.0f;
+    pipeline->prepassDepthStencil.maxDepthBounds = 1.0f;
+
+    pipeline->prepassBlending.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    pipeline->prepassBlending.pNext = NULL;
+    pipeline->prepassBlending.logicOpEnable = VK_FALSE;
+    pipeline->prepassBlending.logicOp = XUD_PIPELINE_LOGIC_OP;
+    pipeline->prepassBlending.attachmentCount = 0u;
+    pipeline->prepassBlending.pAttachments = NULL;
+    pipeline->prepassBlending.blendConstants[0] = 0.0f;
+    pipeline->prepassBlending.blendConstants[1] = 0.0f;
+    pipeline->prepassBlending.blendConstants[2] = 0.0f;
+    pipeline->prepassBlending.blendConstants[3] = 0.0f;
 
     /* --- dynamic state: the viewport and the scissor, set per frame by the frame loop below. --- */
     pipeline->dynamicStates[XUD_PIPELINE_VIEWPORT_STATE] = VK_DYNAMIC_STATE_VIEWPORT;
@@ -560,6 +625,60 @@ XudResult xud_pipeline_fill_resolve_create_info(const XudPipeline* pipeline, VkG
     return XUD_OK;
 }
 
+XudResult xud_pipeline_fill_prepass_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo) {
+    if (outCreateInfo == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((pipeline == NULL) || (pipeline->layout == VK_NULL_HANDLE) || (pipeline->prepassRenderPass == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if (pipeline->prepassShaderStage.module == VK_NULL_HANDLE) {
+        /* The one stage the pre-pass has: assembled before the module was opened is this layer's
+           own ordering error, and creating it would build a pipeline whose stage names nothing. */
+        return XUD_INVALID_ARG;
+    }
+    /* The shared rows must be stamped, the same rule the resolve fill applies to its own; the
+       pre-pass's vertex-input, depth-stencil and blend rows are its own and are checked beside
+       them - the three rows that say what makes this pipeline a pre-pass at all. */
+    if ((pipeline->prepassVertexInput.sType != VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO)
+        || (pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES].sType != VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO)
+        || (pipeline->viewportState.sType != VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO)
+        || (pipeline->rasterizer.sType != VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO)
+        || (pipeline->multisample.sType != VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO)
+        || (pipeline->prepassBlending.sType != VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
+        || (pipeline->dynamicState.sType != VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO)
+        || (pipeline->prepassDepthStencil.sType != VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    outCreateInfo->sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    outCreateInfo->pNext = NULL;
+    outCreateInfo->flags = 0u;
+    outCreateInfo->stageCount = 1u; /* one stage, the vertex stage: a pre-pass with a fragment
+                                        stage is the shaded pass again, which is what this
+                                        pipeline exists to not-be */
+    outCreateInfo->pStages = &pipeline->prepassShaderStage;
+    outCreateInfo->pTessellationState = NULL;
+    outCreateInfo->pVertexInputState = &pipeline->prepassVertexInput; /* the batch's position
+                                                                          stream alone */
+    outCreateInfo->pInputAssemblyState = &pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES];
+    outCreateInfo->pViewportState = &pipeline->viewportState;
+    outCreateInfo->pRasterizationState = &pipeline->rasterizer;
+    outCreateInfo->pMultisampleState = &pipeline->multisample;
+    outCreateInfo->pDepthStencilState = &pipeline->prepassDepthStencil;
+    outCreateInfo->pColorBlendState = &pipeline->prepassBlending; /* attachmentCount 0: the
+                                                                      subpass it runs in has no
+                                                                      colour reference */
+    outCreateInfo->pDynamicState = &pipeline->dynamicState;
+    outCreateInfo->layout = pipeline->layout;
+    outCreateInfo->renderPass = pipeline->prepassRenderPass;
+    outCreateInfo->subpass = XUD_PIPELINE_FIRST_SUBPASS;
+    outCreateInfo->basePipelineHandle = VK_NULL_HANDLE;
+    outCreateInfo->basePipelineIndex = -1;
+
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * Retiring the variant rows that got made - file-local, the ladder below and xud_pipeline_close()
  * both call it
@@ -604,7 +723,7 @@ static void xud_pipeline_close_modules(XudShader** vertexShader, XudShader** fra
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
-    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass) {
+    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass, VkRenderPass prepassRenderPass) {
     XudPipeline* pipeline = NULL;
     XudShader* vertexShader = NULL;
     XudShader* fragModule[XUD_PIPELINE_FRAG_MODULE_COUNT] = { NULL }; /* one per entry of the FRAG axis,
@@ -619,6 +738,9 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     XudShader* presentFragmentShader = NULL;
     VkPipeline resolveCreated = VK_NULL_HANDLE; /* the resolve row, created last and recorded into
                             the struct only when it exists, the ladder shape the batch list uses */
+    XudShader* prepassVertexShader = NULL; /* the pre-pass pipeline's one module, opened after the
+                            resolve row exists - like the present pair, it is only ever its stage */
+    VkPipeline prepassCreated = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
@@ -652,6 +774,12 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
        pipeline to the SCREEN pass at create, and a handle-less one is as bad an argument as a
        handle-less batch pass. */
     if (resolveRenderPass == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    /* The pre-pass pass is the third of the same trio: the pre-pass row is bound to it at create
+       exactly as the batch list is bound to the scratch pass and the resolve row to the screen
+       pass, and a handle-less third is as bad an argument as a handle-less first. */
+    if (prepassRenderPass == VK_NULL_HANDLE) {
         return XUD_INVALID_ARG;
     }
 
@@ -691,6 +819,15 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
         return result;
     }
 
+    /* The pre-pass's own vertex-input row beside the four-stream one: one binding, the position
+       stream, because the pre-pass module reads one attribute and a row naming four would be a
+       declaration its only stage does not honor. */
+    result = xud_pipeline_fill_prepass_vertex_input(pipeline, batch);
+    if (result != XUD_OK) {
+        free(pipeline);
+        return result;
+    }
+
     /* Borrowed, not owned: the pass belongs to the render-pass rung above, which destroys it after
        this rung's xud_pipeline_close() has retired the pipeline that names it - the one teardown
        order xud_renderer.c states. */
@@ -698,6 +835,8 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     pipeline->resolveRenderPass = resolveRenderPass; /* the screen pass, borrowed exactly as the
                             batch pass above is: the resolve row names it at create and outlives
                             this rung's teardown into that pass's destroy */
+    pipeline->prepassRenderPass = prepassRenderPass; /* and the third of the trio, borrowed the
+                            same way: the pre-pass row names it at create */
 
     /* The modules first: one vertex module for the whole list and one module per entry of the FRAG
        axis, so the two untextured columns share one VkShaderModule and only the textured column
@@ -876,6 +1015,69 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     }
     pipeline->resolvePipeline = resolveCreated;
 
+    /* The depth pre-pass's pipeline, last beside the resolve's: its one module opens now, its one
+       stage row is stamped from it (a single xud_pipeline_fill_shader_stages() pair would name a
+       fragment stage the pre-pass must not have, so the row is written whole here), and the create
+       binds the row to the PRE-PASS pass - the pass whose depth it writes and whose colour it
+       references nowhere. The ladder retires everything before it in the order the resolve rung
+       established. */
+    result = xud_shader_open(&prepassVertexShader, loader, device, xudPrepassVertSpv, sizeof(xudPrepassVertSpv));
+    if (result != XUD_OK) {
+        xud_pipeline_destroy_rows(loader, device, pipeline->pipeline);
+        (void)loader->deviceTable.vkDestroyPipeline(device->device, pipeline->resolvePipeline, NULL);
+        pipeline->resolvePipeline = VK_NULL_HANDLE;
+        (void)xud_shader_close(&pipeline->presentFragmentShader, device, loader);
+        (void)xud_shader_close(&pipeline->presentVertexShader, device, loader);
+        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, pipeline->layout, NULL);
+        pipeline->layout = VK_NULL_HANDLE;
+        xud_pipeline_close_modules(&pipeline->vertexShader, pipeline->fragmentShader, device, loader);
+        free(pipeline);
+        return result;
+    }
+    pipeline->prepassShaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipeline->prepassShaderStage.pNext = NULL;
+    pipeline->prepassShaderStage.flags = 0u;
+    pipeline->prepassShaderStage.stage = VK_SHADER_STAGE_VERTEX_BIT; /* the one stage: a pre-pass
+                                                                          with a fragment stage is
+                                                                          the shaded pass again */
+    pipeline->prepassShaderStage.module = prepassVertexShader->module;
+    pipeline->prepassShaderStage.pName = XUD_PIPELINE_ENTRY_POINT;
+    pipeline->prepassShaderStage.pSpecializationInfo = NULL;
+    result = xud_pipeline_fill_prepass_create_info(pipeline, &pipeline->prepassCreateInfo);
+    if (result != XUD_OK) {
+        (void)xud_shader_close(&prepassVertexShader, device, loader);
+        pipeline->prepassShaderStage.module = VK_NULL_HANDLE;
+        xud_pipeline_destroy_rows(loader, device, pipeline->pipeline);
+        (void)loader->deviceTable.vkDestroyPipeline(device->device, pipeline->resolvePipeline, NULL);
+        pipeline->resolvePipeline = VK_NULL_HANDLE;
+        (void)xud_shader_close(&pipeline->presentFragmentShader, device, loader);
+        (void)xud_shader_close(&pipeline->presentVertexShader, device, loader);
+        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, pipeline->layout, NULL);
+        pipeline->layout = VK_NULL_HANDLE;
+        xud_pipeline_close_modules(&pipeline->vertexShader, pipeline->fragmentShader, device, loader);
+        free(pipeline);
+        return result;
+    }
+    vk = loader->deviceTable.vkCreateGraphicsPipelines(
+        device->device, VK_NULL_HANDLE, 1u, &pipeline->prepassCreateInfo, NULL, &prepassCreated);
+    result = xud_result_from_vk(vk);
+    if (result != XUD_OK) {
+        (void)xud_shader_close(&prepassVertexShader, device, loader);
+        pipeline->prepassShaderStage.module = VK_NULL_HANDLE;
+        xud_pipeline_destroy_rows(loader, device, pipeline->pipeline);
+        (void)loader->deviceTable.vkDestroyPipeline(device->device, pipeline->resolvePipeline, NULL);
+        pipeline->resolvePipeline = VK_NULL_HANDLE;
+        (void)xud_shader_close(&pipeline->presentFragmentShader, device, loader);
+        (void)xud_shader_close(&pipeline->presentVertexShader, device, loader);
+        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, pipeline->layout, NULL);
+        pipeline->layout = VK_NULL_HANDLE;
+        xud_pipeline_close_modules(&pipeline->vertexShader, pipeline->fragmentShader, device, loader);
+        free(pipeline);
+        return result;
+    }
+    pipeline->prepassVertexShader = prepassVertexShader;
+    pipeline->prepassPipeline = prepassCreated;
+
     *outPipeline = pipeline;
     return XUD_OK;
 }
@@ -924,7 +1126,16 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
             return XUD_UNSUPPORTED;
         }
     }
+    if (victim->prepassPipeline != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroyPipeline == NULL) {
+            return XUD_UNSUPPORTED;
+        }
+    }
     xud_pipeline_destroy_rows(loader, device, victim->pipeline);
+    if (victim->prepassPipeline != VK_NULL_HANDLE) {
+        loader->deviceTable.vkDestroyPipeline(device->device, victim->prepassPipeline, NULL);
+        victim->prepassPipeline = VK_NULL_HANDLE;
+    }
     if (victim->resolvePipeline != VK_NULL_HANDLE) {
         loader->deviceTable.vkDestroyPipeline(device->device, victim->resolvePipeline, NULL);
         victim->resolvePipeline = VK_NULL_HANDLE;
@@ -960,6 +1171,12 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
     }
     if (victim->presentVertexShader != NULL) {
         closedModule = xud_shader_close(&victim->presentVertexShader, device, loader);
+        if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
+            first = closedModule;
+        }
+    }
+    if (victim->prepassVertexShader != NULL) {
+        closedModule = xud_shader_close(&victim->prepassVertexShader, device, loader);
         if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
             first = closedModule;
         }

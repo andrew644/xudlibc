@@ -200,6 +200,37 @@ struct XudPipeline {
                     scratch pass answered */
     VkGraphicsPipelineCreateInfo resolveCreateInfo; /* what vkCreateGraphicsPipelines was handed for
                     the resolve row, same record-as-created-bytes rule as createInfo above */
+
+    /* --- the depth pre-pass's own pipeline: the colorless draw of the same geometry that fills
+         the HDR depth buffer before the shaded pass replays it. One pipeline rather than a copy of
+         the list: the pre-pass draws TRIANGLES only (the frame loop skips the TRANSPARENT and UI
+         columns and line geometry never wins a depth race it would otherwise lose), reads ONE
+         attribute stream, writes no colour and needs no texture - and it shares the ONE layout,
+         because the draw's push row is pushed the same way and set 0 is the same frame block --- */
+    VkPipeline prepassPipeline; /* owned: created against the PRE-PASS render pass below */
+    VkRenderPass prepassRenderPass; /* BORROWED, like the other two pass fields: the pass
+                    xud_renderpass_open_prepass() builds over the scratch pass's depth - an
+                    unreferenced colour attachment, a depth reference, and the depth cleared. It is
+                    NOT the scratch pass even though both draw into the same images: the shaded
+                    pass writes colour and LOADs the depth the pre-pass sorted, and writing colour
+                    is precisely what the pre-pass exists to avoid paying twice for */
+    XudShader* prepassVertexShader; /* owned: the position-only module - a third vertex module,
+                    because the batch's reads four streams and computes uv/normal/world outputs the
+                    pre-pass has no fragment stage to receive */
+    VkPipelineShaderStageCreateInfo prepassShaderStage; /* its ONE stage row: a pre-pass with a
+                    fragment stage would be the shaded pass again */
+    VkPipelineVertexInputStateCreateInfo prepassVertexInput; /* one binding and one attribute: the
+                    batch's position stream alone, filled by xud_pipeline_fill_prepass_vertex_input
+                    () from the batch's own row 0 */
+    VkPipelineColorBlendStateCreateInfo prepassBlending; /* attachmentCount 0: the pre-pass
+                    subpass references no colour attachment, and a blend attachment row for
+                    attachment 0 of a subpass that has none is VUID 05722 territory */
+    VkPipelineDepthStencilStateCreateInfo prepassDepthStencil; /* test ON, write ON, GREATER - the
+                    pre-pass rasterizes each surface exactly once per pixel today, so a tie there
+                    is the same surface drawn twice and either answer is the same number; the
+                    GEQUAL subtlety belongs to the SHADED pass, which is where the table lives */
+    VkGraphicsPipelineCreateInfo prepassCreateInfo; /* what vkCreateGraphicsPipelines was handed for
+                    the pre-pass row, same record-as-created-bytes rule */
 };
 
 /*-----------------------------------------------------------------------------------------------
@@ -234,8 +265,17 @@ struct XudPipeline {
              attachment is a decision the render-pass step                                                                                 \
              takes, not one here */
 #define XUD_PIPELINE_DEPTH_COMPARE_OP                                                                                                      \
-    VK_COMPARE_OP_GREATER /* the depth buffer's own rule, and the one the reversed 1/z                                                     \
-           projection writes against: nearer is LARGER, clear is 0.0 */
+    VK_COMPARE_OP_GREATER /* the depth buffer's rule for the two variant columns the depth                                                    \
+           pre-pass does NOT replay (transparent sorts against the nearest real surface, the                                          \
+           UI ignores depth entirely) and for the pre-pass row itself; the reversed 1/z                                                     \
+           projection writes against it: nearer is LARGER, clear is 0.0 */
+#define XUD_PIPELINE_DEPTH_REPLAY_COMPARE_OP                                                                                               \
+    VK_COMPARE_OP_GREATER_OR_EQUAL /* the rule for the OPAQUE and TEXTURED columns, which replay what the                                            \
+           pre-pass already rasterized: the fragment that owns a stored depth value IS that                                                \
+           surface, so EQUAL must pass - GREATER would discard every pre-passed fragment and                                              \
+           erase the scene - while a strictly smaller depth is a fragment behind the surface                                              \
+           the pre-pass already credited, which is exactly the occluded work S2.4 exists to skip                                           \
+           at the rasterizer */
 #define XUD_PIPELINE_LOGIC_OP                                                                                                              \
     VK_LOGIC_OP_COPY /* the enum's value with logicOpEnable VK_FALSE,                                                                      \
                         written because the field must be a valid                                                                          \
@@ -313,9 +353,14 @@ static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_LINE_
 /// que variant of the plan's opaque/transparent pair needs: the spec makes the depth contents of a
 /// subpass with no depth attachment implementation-dependent, so the same two flags were VK_FALSE
 /// for the first-triangle step and are VK_TRUE against an attachment cleared to XUD_RENDERPASS_CLE
-/// AR_DEPTH; XUD_PIPELINE_DEPTH_COMPARE_OP is GREATER, the one form the reversed 1/z projection
-/// needs, because a nearer fragment has the LARGER depth and so passes against the smaller one
-/// already in the buffer; and stencil does not exist in this library at all); one blend attachment with blen
+/// AR_DEPTH; the compare OP is a per-variant table (S2.4): XUD_PIPELINE_DEPTH_REPLAY_COMPARE_OP
+/// GEQUAL for the OPAQUE and TEXTURED columns, which replay what the depth pre-pass already
+/// rasterized - the fragment that owns a stored depth IS that surface, so EQUAL must pass - and
+/// XUD_PIPELINE_DEPTH_COMPARE_OP GREATER for the TRANSPARENT and UI columns, which the pre-pass
+/// skips and whose depth answer stays the nearest surface drawn before them; and stencil does not
+/// exist in this library at all). The struct's own prepassDepthStencil (GREATER, test and write
+/// ON) and prepassBlending (attachmentCount 0 - the pre-pass subpass references no colour) are
+/// stamped here too, beside the resolve row; one blend attachment with blen
 /// d DISABLED and both factor
 /// pairs ONE/ZERO - these headers spell the row as the core-1.0 form (srcColorBlendFactor
 /// / dstColorBlendFactor / colorBlendOp and the same three for the alpha half; grepped,
@@ -344,6 +389,16 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline);
 /// that passed it; a batch whose rows are still the zero row is refused here rather than built a
 /// pipeline that reads nothing. XUD_INVALID_ARG on a NULL pipeline or batch.
 XudResult xud_pipeline_fill_vertex_input(XudPipeline* pipeline, const XudBatch* batch);
+
+/// Pure: overwrite the pipeline's prepassVertexInput row with the batch's ONE position stream -
+/// binding 0 and attribute 0 of the batch's own arrays, count 1 and 1. The shared vertexInput row
+/// above already carries the batch's four streams for the shaded list and cannot be reused: the
+/// pre-pass pipeline that declared four attributes but ran a module that reads one would be a
+/// pipeline whose declared input is a lie about its own stage. The row points at the BATCH's rows
+/// like the four-stream fill above, so the same outlives rule applies. Refuses the same way: a
+/// batch whose rows are still the zero row is refused here rather than built a pipeline that
+/// reads nothing. XUD_INVALID_ARG on a NULL pipeline or batch.
+XudResult xud_pipeline_fill_prepass_vertex_input(XudPipeline* pipeline, const XudBatch* batch);
 
 /// Pure: the two shader-stage rows, from the two module handles in hand. Stamped, pName
 /// XUD_PIPELINE_ENTRY_POINT (named, not NULL: the validation layer on this machine reports a
@@ -420,20 +475,34 @@ XudResult xud_pipeline_fill_create_info(
 /// Pass handle is not live.
 XudResult xud_pipeline_fill_resolve_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo);
 
-/// Driver: as before, and additionally the resolve pipeline: the two present modules opened after
-/// the batch's modules, and one more vkCreateGraphicsPipelines call against the RESOLVE pass handle
-/// (the screen pass) after the batch list is complete. `renderPass` binds the batch list's rows and
-/// `resolveRenderPass` binds the resolve row, and both must be live handles: the two passes differ
-/// in the format of their colour attachment, and pass compatibility - the rule that lets one
-/// pipeline serve two passes - is format-for-format, so the scene pipelines belong to the scratch
-/// pass and the tonemap pipeline to the screen pass, and no third option is legal without
+/// Pure: the VkGraphicsPipelineCreateInfo the DEPTH PRE-PASS pipeline will be created with. Its
+/// rows are the rung's own prepassShaderStage (the one vertex stage), prepassVertexInput (the
+/// position stream), the triangle row of inputAssembly, the shared viewport/rasterizer/multisample/
+/// dynamic rows, its own prepassDepthStencil and prepassBlending, the shared layout, and
+/// prepassRenderPass - the pass whose depth it writes and whose unreferenced colour it must not
+/// paint. Refuses XUD_UNSUPPORTED when any shared row is unstamped, and XUD_INVALID_ARG on a NULL
+/// out-create-info or pipeline, a pipeline whose layout or prepassRenderPass handle is not live,
+/// or a prepassPipeline-stage row naming no module - the one difference from the resolve fill,
+/// which shares the batch vertex row's stamping: a pre-pass assembled before its module was opened
+/// is this layer's own ordering error.
+XudResult xud_pipeline_fill_prepass_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo);
+
+/// Driver: as before, and additionally the resolve pipeline and the depth pre-pass pipeline: the
+/// two present modules and the pre-pass's position-only module opened after the batch's modules,
+/// and two more vkCreateGraphicsPipelines calls - the resolve row against the RESOLVE pass handle
+/// and the pre-pass row against the PRE-PASS handle - after the batch list is complete. `renderPass`
+/// binds the batch list's rows, `resolveRenderPass` binds the resolve row and `prepassRenderPass`
+/// binds the pre-pass row, and all three must be live handles: the passes differ in the format and
+/// the references of their attachments - the scene pipelines write the float scratch colour, the
+/// tonemap pipeline writes the swapchain colour, and the pre-pass writes nothing but depth - and
+/// pass compatibility is attachment-for-attachment, so no two of the three share a pass without
 /// dynamic rendering.
 XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
-    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass);
+    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass, VkRenderPass prepassRenderPass);
 
-/// Driver: the teardown - vkDestroyPipeline for the resolve row and every row of the list, then
-/// vkDestroyPipelineLayout, then every module of the frag-module axis, the vertex module and the
-/// two present modules through xud_shader_close(), then
+/// Driver: the teardown - vkDestroyPipeline for the pre-pass row, the resolve row and every row
+/// of the list, then vkDestroyPipelineLayout, then every module of the frag-module axis, the
+/// vertex module, the two present modules and the pre-pass module through xud_shader_close(), then
 /// free. That order is load-bearing: the pipelines name their layout and the layout's modules are
 /// the only thing keeping them alive, so anything else leaves a handle whose owner is already gone. XUD_ALREADY when the pointer
 /// owns no pipeline; XUD_INVALID_ARG on a NULL pointer-to-pointer, a NULL loader/device or

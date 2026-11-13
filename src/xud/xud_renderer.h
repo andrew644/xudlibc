@@ -134,6 +134,21 @@ struct XudRenderer {
                                        view above and the scratch pass's own depth view - one row
                                        because the scratch image is one image, recreated (with the
                                        pass) at the swapchain's extent whenever the swapchain is */
+    XudRenderPass* prepassPass; /* owned: the depth pre-pass paired with the scratch pass above -
+                                   the same two attachments, the same extent, but a subpass that
+                                   references only the depth and a depth loadOp of CLEAR while the
+                                   scratch pass's row reads LOAD (xud_renderpass_open_prepass()
+                                   pairs the two at one call): the pre-pass sorts the depth buffer,
+                                   the scratch pass shades against the sort. Its depth image, view
+                                   and range are the scratch pass's, borrowed; it is closed before
+                                   hdrPass and after the pipeline that names it. */
+    XudFramebuffer* hdrPrepassFramebuffer; /* owned: the pre-pass's own framebuffer row over the
+                                              SAME scratch colour image and the SAME depth view - a
+                                              second row rather than a reuse of hdrFramebuffer,
+                                              because render-pass compatibility counts the number
+                                              of colour references per subpass, and a framebuffer
+                                              built against the scratch pass is not compatible with
+                                              the pre-pass's zero-colour subpass */
     VkImage hdrColorImage; /* owned: the scratch image itself - COLOR_ATTACHMENT | SAMPLED, the two
                               uses the two passes give it */
     VkImageView hdrColorView; /* owned: the view the framebuffer attaches AND the sampler-array

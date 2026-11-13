@@ -535,11 +535,15 @@ static XudResult xud_frame_flush_batch(XudBatch* batch, uint32_t* outHasContent)
    buffer - an execution and memory dependency between the two passes, which no subpass
    dependency of either pass covers on its own. A failure after the begins ends the command
    buffer before returning, which keeps the rung's claim that a begun buffer is always ended
-   checkable rather than a promise.
+   checkable rather than a promise. `prepass` is the depth pre-pass (S2.4): the same batch rows,
+   the same buffers and the same push rows replayed through the colorless pipeline, with the
+   columns that write no depth (TRANSPARENT, UI) and the topology with no pre-pass row (LINES)
+   stepped over, and no slot-set bind - the pre-pass pipeline reads set 0 and the push row and
+   nothing else.
 */
 static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudPipeline* pipeline,
     const XudRenderPass* pass, const XudFramebuffer* row, XudBatch* batch, XudDescriptor* descriptor, uint32_t hasContent,
-    uint32_t sampledAfter, uint32_t resolveSlot) {
+    uint32_t sampledAfter, uint32_t resolveSlot, uint32_t prepass) {
     XudBatchDraw drawRow;
     XudBatchGeometry geometryRow;
     XudPushRow pushRow;
@@ -684,6 +688,16 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
         if ((drawRow.topology >= XUD_BATCH_TOPOLOGY_COUNT) || (drawRow.variant >= XUD_BATCH_VARIANT_COUNT)) {
             break;
         }
+        if ((prepass != 0u)
+            && ((drawRow.topology != XUD_BATCH_TOPOLOGY_TRIANGLES) || (drawRow.variant == XUD_BATCH_VARIANT_TRANSPARENT)
+                || (drawRow.variant == XUD_BATCH_VARIANT_UI))) {
+            /* The pre-pass is TRIANGLES-only and depth-only: the transparent and screen-space
+               columns write no depth the sort would keep (and the UI's clip-space positions
+               would poison it), and line geometry has no colorless pipeline to replay
+               through - a line list read as a triangle list is the one thing worse than
+               skipping it. Lines still depth-TEST in the shaded pass, against this sort. */
+            continue;
+        }
         if (drawRow.geometryIndex != boundGeometry) {
             if (xud_batch_geometry_get(batch, drawRow.geometryIndex, &geometryRow) != XUD_OK) {
                 break;
@@ -694,15 +708,15 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
                 geometryRow.offset[XUD_BATCH_STREAM_COUNT], XUD_FRAME_INDEX_TYPE);
             boundGeometry = drawRow.geometryIndex;
         }
-        loader->deviceTable.vkCmdBindPipeline(
-            frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline[XUD_PIPELINE_ROW(drawRow.topology, drawRow.variant)]);
+        loader->deviceTable.vkCmdBindPipeline(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            (prepass != 0u) ? pipeline->prepassPipeline : pipeline->pipeline[XUD_PIPELINE_ROW(drawRow.topology, drawRow.variant)]);
         if (xud_frame_fill_push_row(&pushRow, &drawRow) != XUD_OK) {
             break;
         }
         if (pushRow.textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
             break;
         }
-        if (pushRow.textureIndex != boundTexture) {
+        if ((prepass == 0u) && (pushRow.textureIndex != boundTexture)) {
             const VkDescriptorSet slotSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(pushRow.textureIndex)];
             loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
                 XUD_DESCRIPTOR_SET_MATERIAL, 1u, &slotSet, 0u, NULL);
@@ -737,8 +751,9 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
 
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
-    const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, uint32_t hdrSlot, const XudFramePassScope* scopes,
-    uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex) {
+    const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, const XudRenderPass* prepassPass,
+    const XudFramebuffer* prepassFramebuffer, uint32_t hdrSlot, const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch,
+    XudDescriptor* descriptor, uint32_t* outImageIndex) {
     XudQueue graphicsQueue;
     XudQueue presentQueue;
     XudFramebuffer* row = NULL;
@@ -782,11 +797,15 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     if ((device->device == VK_NULL_HANDLE) || (swapchain->swapchain == VK_NULL_HANDLE) || (pipeline->layout == VK_NULL_HANDLE)
         || (pass->renderPass == VK_NULL_HANDLE) || (frame->commandPool == VK_NULL_HANDLE) || (frame->commandBuffer == VK_NULL_HANDLE)
         || (hdrPass == NULL) || (hdrPass->renderPass == VK_NULL_HANDLE) || (hdrFramebuffer == NULL)
-        || (hdrFramebuffer->framebuffer == VK_NULL_HANDLE) || (pipeline->resolvePipeline == VK_NULL_HANDLE)
+        || (hdrFramebuffer->framebuffer == VK_NULL_HANDLE) || (pipeline->resolvePipeline == VK_NULL_HANDLE) || (prepassPass == NULL)
+        || (prepassPass->renderPass == VK_NULL_HANDLE) || (prepassFramebuffer == NULL)
+        || (prepassFramebuffer->framebuffer == VK_NULL_HANDLE) || (pipeline->prepassPipeline == VK_NULL_HANDLE)
         || (hdrSlot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
         /* The scratch pass, its framebuffer and its slot are as load-bearing as the screen pass's
            own three: the frame draws the scene into them BEFORE the screen pass exists to show it,
-           and the resolve triangle names the slot by number. */
+           and the resolve triangle names the slot by number. The pre-pass pair and the pre-pass
+           pipeline are the fourth load-bearing row: the scratch pass LOADs a depth buffer someone
+           has to have cleared and sorted, and that someone is this frame's first recording. */
         return XUD_INVALID_ARG;
     }
     /* Every row of the pipeline list has to be live, not just the two the variant axis names: a draw
@@ -1066,31 +1085,48 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     */
     for (scope = 0u; scope < scopeCount; scope++) {
         result = xud_frame_record_pass(frame, loader, device, pipeline, scopes[scope].pass, scopes[scope].framebuffer, scopes[scope].batch,
-            descriptor, scopeContent[scope], 1u, XUD_FRAME_NO_RESOLVE);
+            descriptor, scopeContent[scope], 1u, XUD_FRAME_NO_RESOLVE, 0u);
         if (result != XUD_OK) {
             return result;
         }
     }
 
-    /* --- 5d. the scratch pass: the scene, at the swapchain's extent into the float image, through
-       the same recording helper with no swapchain image to wait on - the scratch image's and its
-       depth's opening barriers come from the tracker exactly as a target scope's do. The sampled-
-       sync barrier fires after the pass (sampledAfter on): the resolve pass one recording later
-       samples this very image, and the barrier is the same write-before-read guarantee an off-screen
-       target gets before the screen pass samples it. The pass ends in SAMPLED - its own finalLayout
-       - and the tracker keeps that honest for next frame.
+    /* --- 5d. the depth pre-pass: the same scene batch, colorless, into the scratch pass's own
+       depth buffer, before the shaded pass runs. The upload rides HERE (hasContent on this call
+       only): the batch's buffers are copied, readied for vertex-index reads and bulk-bound once,
+       and the scratch recording that follows binds its geometry rows through the per-row path -
+       xud_batch_geometry_get() serves the batch's own arena from the live stream rows, so the
+       shaded pass re-binds rather than re-uploads. The pass clears the depth (its own loadOp)
+       and the scratch pass one recording later LOADs it - the pairing xud_renderpass_open_prepass
+       struck when the two passes were built. No sampled-sync barrier: this pass writes no colour.
     */
     result = xud_frame_record_pass(
-        frame, loader, device, pipeline, hdrPass, hdrFramebuffer, batch, descriptor, hasContent, 1u, XUD_FRAME_NO_RESOLVE);
+        frame, loader, device, pipeline, prepassPass, prepassFramebuffer, batch, descriptor, hasContent, 0u, XUD_FRAME_NO_RESOLVE, 1u);
     if (result != XUD_OK) {
         return result;
     }
 
-    /* --- 5e. the screen pass, the same recording through the same helper, with the resolve
+    /* --- 5e. the scratch pass: the scene, at the swapchain's extent into the float image, through
+       the same recording helper with no swapchain image to wait on - the scratch image's and its
+       depth's opening barriers come from the tracker exactly as a target scope's do. The depth it
+       LOADs is the pre-pass's sort; the GEQUAL/colored pipelines reject fragments behind it before
+       any fragment shader runs. The sampled-sync barrier fires after the pass (sampledAfter on):
+       the resolve pass one recording later samples this very image, and the barrier is the same
+       write-before-read guarantee an off-screen target gets before the screen pass samples it. The
+       pass ends in SAMPLED - its own finalLayout - and the tracker keeps that honest for next
+       frame.
+    */
+    result = xud_frame_record_pass(
+        frame, loader, device, pipeline, hdrPass, hdrFramebuffer, batch, descriptor, 0u, 1u, XUD_FRAME_NO_RESOLVE, 0u);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* --- 5f. the screen pass, the same recording through the same helper, with the resolve
        triangle as its only content: it names the scratch image's slot, so set 1 is bound to the
        scratch pair rather than to a batch draw's, and no batch row is replayed here - the scene is
-       already drawn, into the scratch image, one pass ago. */
-    result = xud_frame_record_pass(frame, loader, device, pipeline, pass, row, batch, descriptor, 0u, 0u, hdrSlot);
+       already drawn, into the scratch image, two passes ago. */
+    result = xud_frame_record_pass(frame, loader, device, pipeline, pass, row, batch, descriptor, 0u, 0u, hdrSlot, 0u);
     if (result != XUD_OK) {
         return result;
     }

@@ -4,7 +4,6 @@ Renderer roadmap: each item only depends on items above it.
 
 ## Stage 2 - how the picture is built
 
-- **S2.4** A cheap "who's in front" pass first, so hidden surfaces aren't shaded twice.
 - **S2.5** Shadows.
 - **S2.6** Glow/bloom and edge-smoothing.
 
