@@ -4,8 +4,6 @@ Renderer roadmap: each item only depends on items above it.
 
 ## Stage 2 - how the picture is built
 
-- **S2.2** Real lights: point, spotlight, sun. Until now the shader just fakes one fixed
-  light.
 - **S2.3** Fix depth precision so nearby and distant objects both sort correctly. Do this
   before shadows - shadows compare against depth, so the depth format has to be settled
   first.
