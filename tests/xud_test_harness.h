@@ -50,6 +50,7 @@ void xud_test_pipeline(void);
 void xud_test_renderpass(void);
 void xud_test_frame(void);
 void xud_test_renderer(void); /* the renderer rung's resize: the recreate ask, the framebuffer extent, the rebuild */
+void xud_test_layout(void); /* the layout tracker: the map contract, the grow, the barrier filler */
 void xud_test_allocator(void);
 void xud_test_descriptor(void);
 void xud_test_batch(void);

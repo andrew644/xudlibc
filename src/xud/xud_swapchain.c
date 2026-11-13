@@ -412,8 +412,10 @@ static XudResult xud_swapchain_query_images(
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader, const XudPhysicalDevice* physicalDevice,
-    const XudWindow* window, const XudDevice* device) {
+    const XudWindow* window, const XudDevice* device, XudLayoutTracker* layout) {
     XudSwapchain* swapchain;
+    uint32_t index = 0u;
+    uint32_t tracked = 0u;
     VkSwapchainCreateInfoKHR createInfo;
     VkSwapchainKHR created = VK_NULL_HANDLE;
     VkImage* images = NULL;
@@ -422,7 +424,8 @@ XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader, con
     VkResult vk;
     XudResult guard;
 
-    if ((outSwapchain == NULL) || (loader == NULL) || (window == NULL) || (physicalDevice == NULL) || (device == NULL)) {
+    if ((outSwapchain == NULL) || (loader == NULL) || (window == NULL) || (physicalDevice == NULL) || (device == NULL)
+        || (layout == NULL)) {
         return XUD_INVALID_ARG;
     }
     /* The slot must be empty before the call, not after a failure: a struct this rung frees on a
@@ -472,6 +475,7 @@ XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader, con
     if (swapchain == NULL) {
         return XUD_OUT_OF_MEMORY;
     }
+    swapchain->layout = layout;
 
     guard = xud_swapchain_query_surface(&swapchain->surfaceCaps, loader, physicalDevice->physicalDevice, window->surface);
     if (guard != XUD_OK) {
@@ -510,6 +514,24 @@ XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader, con
     swapchain->imageCount = imageCount;
     swapchain->imageCapacity = imageCapacity;
 
+    /* Every image the driver made enters the context's layout map with the one word the spec gi
+       ves it: presentable images are in UNDEFINED until something transitions them, and this tree
+       's only transitions are the frame's opening pair and the pass's own. A map entry per image
+       is what lets the frame ask "which image is this" at every acquire without a second per-ima
+       ge record living anywhere else. */
+    for (index = 0u; index < imageCount; index++) {
+        guard = xud_layout_track(layout, images[index], VK_IMAGE_LAYOUT_UNDEFINED);
+        if (guard != XUD_OK) {
+            for (tracked = index; tracked > 0u; tracked--) {
+                (void)xud_layout_forget(layout, images[tracked - 1u]);
+            }
+            loader->deviceTable.vkDestroySwapchainKHR(device->device, created, NULL);
+            free(images);
+            free(swapchain);
+            return guard;
+        }
+    }
+
     /* The record of what the swapchain IS, with the retired-handle field cleared in it: the
        handle named there was destroyed by the create that replaced it, and storing a handle to
        a destroyed object is exactly what this tree forbids. */
@@ -534,6 +556,8 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader, 
     VkImage* images = NULL;
     uint32_t imageCount = 0u;
     uint32_t imageCapacity = 0u;
+    uint32_t index = 0u;
+    uint32_t tracked = 0u;
     VkResult vk;
     XudResult guard;
 
@@ -633,6 +657,15 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader, 
        record's handle is cleared at the same moment, because the handle it named is gone: every
        path below either fills it with the new swapchain or leaves the struct in the no-swapchain
        state, and no path may leave a destroyed handle in a live record. */
+
+    /* The old images leave the map BEFORE the handle that owns them dies: after the destroy the
+       driver may recycle every one of those handle values for a different object, and a stale ma
+       p entry would answer a future barrier with the dead image's layout. */
+    if (swapchain->layout != NULL) {
+        for (index = 0u; index < swapchain->imageCount; index++) {
+            (void)xud_layout_forget(swapchain->layout, swapchain->images[index]);
+        }
+    }
     loader->deviceTable.vkDestroySwapchainKHR(device->device, old, NULL);
     swapchain->swapchain = VK_NULL_HANDLE;
 
@@ -648,6 +681,22 @@ XudResult xud_swapchain_recreate(XudSwapchain** ioSwapchain, XudLoader* loader, 
            refuses a struct whose handle is cleared. */
         loader->deviceTable.vkDestroySwapchainKHR(device->device, created, NULL);
         return guard;
+    }
+
+    /* The new images enter the map before the record swap: an unwind below must not leave the t
+       racker naming images the destroyed swapchain owned. */
+    if (swapchain->layout != NULL) {
+        for (index = 0u; index < imageCount; index++) {
+            guard = xud_layout_track(swapchain->layout, images[index], VK_IMAGE_LAYOUT_UNDEFINED);
+            if (guard != XUD_OK) {
+                for (tracked = index; tracked > 0u; tracked--) {
+                    (void)xud_layout_forget(swapchain->layout, images[tracked - 1u]);
+                }
+                loader->deviceTable.vkDestroySwapchainKHR(device->device, created, NULL);
+                free(images);
+                return guard;
+            }
+        }
     }
 
     /* The record swap: the new surface answer, the new create-info (with the retired-handle field
@@ -695,6 +744,7 @@ XudResult xud_swapchain_close(XudSwapchain** swapchain, const XudDevice* device,
     XudSwapchain* victim;
     VkSwapchainKHR handle;
     XudResult guard;
+    uint32_t index = 0u;
 
     if ((swapchain == NULL) || (device == NULL) || (loader == NULL)) {
         return XUD_INVALID_ARG;
@@ -716,6 +766,16 @@ XudResult xud_swapchain_close(XudSwapchain** swapchain, const XudDevice* device,
         free(victim);
         *swapchain = NULL;
         return XUD_OK;
+    }
+
+    /* The images leave the map with their swapchain. A struct that reaches here with its handle
+       already cleared (the recreate's no-swapchain failure state) named no tracked images: the r
+       ecreate forgets the old set the moment it destroys the old handle, and unwinds the new set
+       the moment a track of it fails. */
+    if (victim->layout != NULL) {
+        for (index = 0u; index < victim->imageCount; index++) {
+            (void)xud_layout_forget(victim->layout, victim->images[index]);
+        }
     }
 
     /* The destroy call takes the device, and the rows must be that device's rows - a handle-less

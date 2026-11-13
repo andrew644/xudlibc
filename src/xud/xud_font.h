@@ -442,7 +442,7 @@ XudResult xud_font_get(const XudHandleTable* table, XudHandle handle, const XudF
 /// the atlas's block cannot be carved, or when set 1's array holds no free entry; XUD_OUT_OF_MEMORY when the record,
 /// the rows or the atlas cannot be allocated; XUD_VULKAN_ERROR or XUD_LOST when the driver refuses for its own reason.
 XudResult xud_font_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudDescriptor* descriptor, XudAllocator* alloc, const XudFontData* data);
+    XudDescriptor* descriptor, XudAllocator* alloc, const XudFontData* data, XudLayoutTracker* layout);
 
 /// Driver: release one live FONT slot and retire everything its record owns, in the reverse of the order above: the
 /// wait-idle guard runs inside the texture rung's own close rather than here, because this rung owns no driver object

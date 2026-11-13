@@ -131,7 +131,7 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain) {
+    XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout) {
     XudRenderer* renderer = NULL;
     XudResult result = XUD_INVALID_ARG;
 
@@ -148,6 +148,10 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
            this one, and closes them after this rung's teardown has released the range - which is th
            e same shape the descriptor record below is already borrowed in. */
         return XUD_UNSUPPORTED;
+    }
+    if (layout == NULL) {
+        return XUD_INVALID_ARG; /* the render pass's depth image and the frame's barriers both speak
+                                   through the context's map */
     }
     if (!loader->open) {
         return XUD_UNSUPPORTED;
@@ -172,6 +176,7 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
     if (renderer == NULL) {
         return XUD_OUT_OF_MEMORY;
     }
+    renderer->layout = layout;
 
     /* The default background, quantized to the byte grid the public XudColor lives on: the
        render pass's own default clear colour, each channel times 255 and rounded to the nearest
@@ -191,7 +196,7 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
        is checked by the rung itself before its create - a pass this layer cannot destroy is a pas
        s it must not create, the rule xud_window.c applies to a surface and xud_swapchain.c to a
        swapchain, one rung below. */
-    result = xud_renderpass_open(&renderer->renderPass, loader, device, caps, alloc, swapchain);
+    result = xud_renderpass_open(&renderer->renderPass, loader, device, caps, alloc, swapchain, layout);
     if (result != XUD_OK) {
         free(renderer);
         return result;
@@ -244,7 +249,7 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
     /* 5. the frame loop, last: it owns the fences that bound a presentation of THESE images and
        the command buffer that records a draw naming the pipeline, the pass and a row of the arra
        y above, so it needs all three. */
-    result = xud_frame_open(&renderer->frame, loader, device, swapchain);
+    result = xud_frame_open(&renderer->frame, loader, device, swapchain, renderer->layout);
     if (result != XUD_OK) {
         xud_renderer_retire(renderer, device, loader, alloc);
         free(renderer);
@@ -456,7 +461,7 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
     if ((result != XUD_OK) && (result != XUD_ALREADY)) {
         return result;
     }
-    result = xud_frame_open(&renderer->frame, loader, device, swapchain);
+    result = xud_frame_open(&renderer->frame, loader, device, swapchain, renderer->layout);
     if ((result != XUD_OK) && (result != XUD_ALREADY)) {
         return result;
     }

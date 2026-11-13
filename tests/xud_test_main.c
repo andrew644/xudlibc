@@ -57,6 +57,7 @@ int main(void) {
     xud_test_handle();
     xud_test_shader();
     xud_test_pipeline();
+    xud_test_layout();
     xud_test_renderpass();
     xud_test_frame();
     xud_test_renderer();

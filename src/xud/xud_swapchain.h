@@ -43,6 +43,7 @@
 #include "volk.h" /* Required for: VK_NO_PROTOTYPES - must precede <vulkan/vulkan.h>, see xud_loader.h */
 #include "xud.h" /* Required for: XudResult - the swapchain layer's own error codes */
 #include "xud_device.h" /* Required for: XudDevice - the device a swapchain is created on, and teardown's guard */
+#include "xud_layout.h" /* Required for: XudLayoutTracker - the context's layout map every image this layer hands out is registered with */
 #include "xud_loader.h" /* Required for: XudLoader - the Volk rows every call here is made through */
 #include "xud_physical.h" /* Required for: XudPhysicalDevice - the handle the three surface queries are asked of */
 #include "xud_vulkan.h" /* Required for: xud_result_from_vk - every VkResult here goes through that one funnel */
@@ -229,6 +230,11 @@ struct XudSwapchain {
                         settled out, see AGENTS.md). Freed here, never destroyed here. */
     uint32_t imageCount; /* how many rows above are live */
     uint32_t imageCapacity; /* rows allocated for it, a step of the doubling sequence above */
+    XudLayoutTracker* layout; /* NOT owned: the context's layout tracker. Every image vkGetSwapchain
+                                ImagesKHR wrote is registered with it at open (and re-registered by
+                                recreate, the old set forgotten when the old handle dies), so the f
+                                rame's per-acquire barrier answers oldLayout from the map and no r
+                                ung above keeps a second per-image layout record. */
 };
 
 /*-----------------------------------------------------------------------------------------------
@@ -368,8 +374,8 @@ XudResult xud_swapchain_query_surface(
 /// - the caller above checks that with xud_window_presentation_support(), and this layer refuses
 /// rather than creating a swapchain for a window it cannot present to, which is the plan's
 /// "a graphics-only family must not be chosen" carried one rung up. XUD_INVALID_ARG on a NULL
-/// out-pointer or one that already owns a swapchain, a NULL loader/window/physical/device, a
-/// window with no surface (there is no surface to create a swapchain for), a handle-less
+/// out-pointer or one that already owns a swapchain, a NULL loader/window/physical/device/track
+/// er, a window with no surface (there is no surface to create a swapchain for), a handle-less
 /// physical device or device, or a closed loader; XUD_OUT_OF_MEMORY/XUD_OUT_OF_RESOURCES when
 /// an allocation or a query at a bound cannot be satisfied; XUD_VULKAN_ERROR/XUD_LOST/
 /// XUD_UNSUPPORTED when the driver refuses vkCreateSwapchainKHR (VK_ERROR_NATIVE_WINDOW_IN_USE_KHR
@@ -377,7 +383,7 @@ XudResult xud_swapchain_query_surface(
 /// over - maps through xud_result_from_vk to XUD_VULKAN_ERROR, and
 /// VK_ERROR_INCOMPATIBLE_DRIVER/VK_ERROR_EXTENSION_NOT_PRESENT map to XUD_UNSUPPORTED).
 XudResult xud_swapchain_open(XudSwapchain** outSwapchain, XudLoader* loader, const XudPhysicalDevice* physicalDevice,
-    const XudWindow* window, const XudDevice* device);
+    const XudWindow* window, const XudDevice* device, XudLayoutTracker* layout);
 
 /// Driver: the resize path - recreate the swapchain at a new extent and never leak the one
 /// this replaces. The order is the spec's and it is the whole point of the signature: the

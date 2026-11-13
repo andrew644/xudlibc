@@ -4,9 +4,6 @@ Renderer roadmap: each item only depends on items above it.
 
 ## Stage 1 - plumbing (invisible, but everything later pays for skipping it)
 
-- **S1.3** One central place that tracks what each image is being used for right now (a
-  target? a source? being copied?). Every new effect needs this, and hand-writing it per
-  effect causes rare crashes that are miserable to trace later.
 - **S1.4** Allow drawing into off-screen images, not just the window. Shadows, glow, motion
   blur and reflections all need scratch images. This is the single biggest unlock.
 

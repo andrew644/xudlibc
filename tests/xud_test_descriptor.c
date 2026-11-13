@@ -449,8 +449,8 @@ static void xud_test_descriptor_pure(void) {
 
     /* The bring-up's guards, headless: no loader, no device, so the rung refuses before it calls.
      */
-    xud_check(xud_descriptor_open(NULL, NULL, NULL, NULL, NULL) == XUD_INVALID_ARG, "descriptor/open-null", "is refused");
-    xud_check(xud_descriptor_open(&desc, NULL, NULL, NULL, NULL) == XUD_INVALID_ARG, "descriptor/open-nothing-else",
+    xud_check(xud_descriptor_open(NULL, NULL, NULL, NULL, NULL, NULL) == XUD_INVALID_ARG, "descriptor/open-null", "is refused");
+    xud_check(xud_descriptor_open(&desc, NULL, NULL, NULL, NULL, NULL) == XUD_INVALID_ARG, "descriptor/open-nothing-else",
         "is refused, because a bring-up with no loader, no device, no caps and no allocator has not"
         "hing to gate on");
     xud_check(desc == NULL, "descriptor/open-refusal-leaves-out", "and the out-pointer stays NULL");

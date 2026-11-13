@@ -37,6 +37,7 @@
 #include "xud_handle.h" /* Required for: XudHandleTable, the per-kind slot arrays behind the public XudHandle currency - the context owns one from the handle step on, and it is the FIRST rung torn down because a handle records an object of every rung below it */
 #include "xud_input.h" /* Required for: XudInput, the input rung the context owns above the window it reads - GLFW's char and scroll callbacks are registered on that window, so the teardown order below makes this rung die before the window it was registered on */
 #include "xud_instance.h" /* Required for: XudInstance, the VkInstance the context owns from the instance layer on */
+#include "xud_layout.h" /* Required for: XudLayoutTracker, the layout rung the context owns beside the allocator - the ONE place that knows which image is in which layout, opened before every rung that tracks an image and closed after the last of them forgets */
 #include "xud_loader.h" /* Required for: XudLoader, the loader the context owns from bring-up on */
 #include "xud_physical.h" /* Required for: XudPhysicalDevice, the chosen handle plus the caps the context owns from the physical layer on */
 #include "xud_renderer.h" /* Required for: XudRenderer, the renderer rung - the pipeline, the render pass, the framebuffer per swapchain image and the frame loop the context owns from the first-triangle step on, and the rung that goes SECOND in the teardown order */
@@ -226,6 +227,18 @@ struct XudContext {
        - the last sentinel this struct had.
      */
     XudAllocator* allocator; /* the single GPU-memory allocator (buffers + images)         */
+
+    /* Owned from the layout step on: opened by xud_init_context() through xud_layout_tracker_ope
+      n() right ABOVE the allocator and closed by xud_close_context() through xud_layout_tracker_cl
+      ose() right BELOW the descriptor - the two rungs it is bracketed by are the two host rungs, w
+      hich is the point: this rung holds no driver object, only host memory, but it must OUTLIVE ev
+      ery rung that registers an image with it (the descriptor's white image, every texture, the sw
+      apchain's images and the pass's depth image as tracked by the frame and the pass) because a f
+      orget that lands in a freed tracker is the use-after-free this bracketing prevents, and it mu
+      st EXIST before the first of them opens because a created image with nowhere to record its fi
+      rst layout is the drift this rung exists to make impossible.
+     */
+    XudLayoutTracker* layout; /* the image-to-layout map and the choke point every transition runs through */
 
     /* Owned from the descriptor-layout step on: opened by xud_init_context() through xud_descrip
        tor_open() AFTER the allocator and closed by xud_close_context() through xud_descriptor_clos

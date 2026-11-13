@@ -59,6 +59,7 @@
 #include "xud_batch.h" /* Required for: XudBatch, the four SoA streams this rung uploads, binds and draws */
 #include "xud_descriptor.h" /* Required for: XudDescriptor, set 0's block this rung uploads and binds */
 #include "xud_device.h"
+#include "xud_layout.h" /* Required for: XudLayoutTracker - the context's layout map this rung reads its two opening barriers' oldLayouts from */
 #include "xud_loader.h"
 #include "xud_physical.h"
 #include "xud_pipeline.h"
@@ -221,24 +222,16 @@ struct XudFrame {
                                                       fence again: what tells the teardown which fences may still bound work,
                                                       because waiting a fence nothing ever submitted would hang the close */
     uint32_t currentFrame; /* the slot the next xud_frame_draw() records into; advances after every submit */
-    VkImageLayout*
-        imageLayouts; /* the layout each swapchain image is in as this rung LEFT it, index-correspondent with the swapchain's image array. It
-                                    is state, not decoration: the render pass this rung begins requires its attachment to be in the
-                                    attachment's initialLayout from the first sample, and the spec requires the image to have been in that
-                                    layout when the pass begins, so a barrier has to run before the pass and a barrier names the layout the
-                                    image is in NOW. The array is per image because acquire chooses the image, not this rung. */
-    uint32_t imageLayoutCount; /* how many layout rows are live - always the swapchain's imageCount, allocated exactly */
-    VkImageLayout depthLayout; /* the layout the pass's ONE depth image is in as this rung LEFT it, same
-                                  shape as the array above but one field rather than an array: the colour
-                                  images are one per swapchain image and acquire chooses among them, whi
-                                  le the depth image is one image the pass owns and every framebuffer ro
-                                  w attaches the same view of. It starts at VK_IMAGE_LAYOUT_UNDEFINED, th
-                                  e layout xud_renderpass_fill_depth_info() declares the image created in
-                                  , and the first frame's barrier is what moves it out of that layout an
-                                  d every later frame's is a no-op because the pass's initialLayout and f
-                                  inalLayout for a depth attachment are the same layout - a depth attachm
-                                  ent is never presented, so it has no PRESENT_SRC_KHR half to move back
-                                  out to. */
+    XudLayoutTracker* layout; /* NOT owned: the context's layout tracker, held here because the tw
+                                 o opening barriers read their oldLayout from the map rather than
+                                 from rows this rung used to keep, and because the map's two post
+                                 -pass moves - the colour image to its finalLayout, the depth ima
+                                 ge to its own - are recorded here, after the submit that runs th
+                                 em answered success. The colour image is never UNDEFINED in the
+                                 map: the swapchain registers every image it creates, the recreat
+                                 e registers the new set and forgets the old, so the frame's firs
+                                 t barrier of a fresh image still names a real layout. The depth
+                                 image is registered by the pass. */
 
     /* --- the create-infos and the rows the driver calls were handed, kept beside the handles the
        same way every layer above keeps its own - the rule xud_device.c states for a queue row poin
@@ -276,9 +269,9 @@ struct XudFrame {
                                 on it. Sticky rather than rewritten every frame, because "a recrea
                                 te is wanted" stays true until someone acts: a clean acquire answer
                                 on the next frame does not un-want the recreate the previous one
-                                asked for. Written at open rather than left to calloc's zero, the
-                                same way xud_frame_open() writes the depth layout row -
-                                this is state a caller above reads, not a numeric coincidence. */
+                                on it asked for. Written at open rather than left to calloc's ze
+                                ro: this is state a caller above reads, not a numeric coincidenc
+                                e. */
     uint32_t framesDrawn; /* how many frames completed - the counter a test can read to know the lo
                             op ran more than once, which is what exercises a reused command buffer a
                             nd a reused acquire semaphore rather than asserting about them */
@@ -359,10 +352,11 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
 /// the wait-stage row names the vertex stage (the stage the acquire semaphore is waited AT, which i
 /// s where the draw's work begins). On any error it stays NULL and everything created so far is des
 /// troyed in reverse order. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a frame,
-/// a NULL loader/device/swapchain, a handle-less device, or a swapchain with no handle or no images
-/// ; XUD_UNSUPPORTED when the loader is closed, its rows are not this device's, or a row this rung
-/// needs is nil.
-XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain);
+/// a NULL loader/device/swapchain/tracker, a handle-less device, or a swapchain with no handle or
+/// no images; XUD_UNSUPPORTED when the loader is closed, its rows are not this device's, or a row
+/// this rung needs is nil.
+XudResult xud_frame_open(
+    XudFrame** outFrame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain, XudLayoutTracker* layout);
 
 /// Driver: one frame, end to end - wait the slot's fence if the slot still bounds work, acquire, reset + record the slot's command buffer (begin, viewport, scissor, bind pipeline, begin render pass with the pass's clear values, draw, end pass, end), submit to the graphics queue with the slot's own fence, present on the present queue. The CPU does NOT wait its own frame at the end: the next use of the same slot waits the fence, which is what lets frame N+1 record while frame N still runs. The framebuffer is picked by the
 /// index acquire wrote, through the array accessor, so a recreate that replaced the array is a caught error rather than a stale row (the r

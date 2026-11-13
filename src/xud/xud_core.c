@@ -345,6 +345,18 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         goto fail;
 
+    /* The layout tracker, first of the rungs that name an image and above every producer: the O
+       NE map from VkImage to the layout it is in right now (xud_layout.h states why a hand-carri
+       ed oldLayout is the bug and this map is the cure). It holds no driver object - one host ma
+       p, and the one vkCmdPipelineBarrier row of the recording helper - so it costs nothing here
+       , and its position is all of its contract: opened before the swapchain that registers its
+       first images with it, and closed after the last forget anywhere in the ladder below. A re
+       fusal here is XUD_OUT_OF_MEMORY only, the same reason xud_handle_table_open() gives.
+     */
+    result = xud_layout_tracker_open(&context->layout, 0u);
+    if (result != XUD_OK)
+        goto fail;
+
     /* The swapchain, last of the ladder and the only rung that needs a device AND a surface: it is
        created for the surface the window owns and on the device the ladder above opened, so it is
        the one bring-up step that sits below both. Its inputs are the three surface queries' answers
@@ -357,7 +369,8 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        instance is one of the reasons. The presentation check above already refused a window system
        this physical device cannot present to, which is the gate this rung would otherwise have had
        to restate. */
-    result = xud_swapchain_open(&context->swapchain, context->loader, context->physicalDevice, context->window, context->device);
+    result = xud_swapchain_open(
+        &context->swapchain, context->loader, context->physicalDevice, context->window, context->device, context->layout);
     if (result != XUD_OK)
         goto fail;
 
@@ -406,8 +419,8 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
         here is a driver refusal (a nil row, a
        refused create) or the caps gate above refusing a layout this machine's limits cannot have.
      */
-    result
-        = xud_descriptor_open(&context->descriptor, context->loader, context->device, &context->physicalDevice->caps, context->allocator);
+    result = xud_descriptor_open(
+        &context->descriptor, context->loader, context->device, &context->physicalDevice->caps, context->allocator, context->layout);
     if (result != XUD_OK)
         goto fail;
 
@@ -424,7 +437,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        h no chosen format.
      */
     result = xud_renderer_open(&context->renderer, context->loader, context->device, &context->physicalDevice->caps, context->descriptor,
-        context->allocator, context->swapchain);
+        context->allocator, context->swapchain, context->layout);
     if (result != XUD_OK)
         goto fail;
 
@@ -592,6 +605,9 @@ XudResult xud_close_context(XudContext** context) {
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
     rung = xud_swapchain_close(&victim->swapchain, victim->device, victim->loader);
+    if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
+        first = rung;
+    rung = xud_layout_tracker_close(&victim->layout);
     if ((rung != XUD_OK) && (rung != XUD_ALREADY) && (first == XUD_OK))
         first = rung;
     rung = xud_device_close(&victim->device, victim->loader);

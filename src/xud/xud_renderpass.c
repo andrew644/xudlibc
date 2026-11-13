@@ -527,6 +527,10 @@ static void xud_renderpass_retire_depth(XudRenderPass* pass, const XudDevice* de
             VkImage image = pass->depthImage;
             pass->depthImage = VK_NULL_HANDLE;
             (void)loader->deviceTable.vkDestroyImage(device->device, image, NULL);
+            if (pass->layout != NULL) {
+                (void)xud_layout_forget(pass->layout, image); /* the handle is recycled once destroy
+                                                                 ed: the record must not outlive it */
+            }
         }
     }
 
@@ -565,7 +569,7 @@ static void xud_renderpass_retire(XudRenderPass* pass, const XudDevice* device, 
 }
 
 XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudAllocator* alloc, const XudSwapchain* swapchain) {
+    XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout) {
     XudRenderPass* pass = NULL;
     VkRenderPassCreateInfo createInfo;
     VkMemoryRequirements needs;
@@ -587,6 +591,9 @@ XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const 
         return XUD_UNSUPPORTED;
     }
     if (device->device == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (layout == NULL) {
         return XUD_INVALID_ARG;
     }
     if ((swapchain->swapchain == VK_NULL_HANDLE) || (swapchain->images == NULL) || (swapchain->imageCount == 0u)) {
@@ -624,6 +631,7 @@ XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const 
     if (pass == NULL) {
         return XUD_OUT_OF_MEMORY;
     }
+    pass->layout = layout;
 
     /* 1. the pass's rows, then its create-info: the attachment description is what says an image of
        that format and that extent exists, so it is filled before the image is asked for rather tha
@@ -662,6 +670,18 @@ XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const 
         return result;
     }
     pass->depthImage = image;
+
+    /* The depth image's first word at the tracker: the frame's opening barrier reads its oldLay
+       out from there, and the render pass's own initial/final transitions - invisible to any barr
+       ier because they happen inside the subpass - are noted there by the frame after each submit
+       . The forget lives in the depth teardown below, which every failure path above also runs.
+     */
+    result = xud_layout_track(layout, image, pass->depthImageInfo.initialLayout);
+    if (result != XUD_OK) {
+        xud_renderpass_retire(pass, device, loader, alloc);
+        free(pass);
+        return result;
+    }
 
     /* 3. what the image needs before anything asks the allocator for it: vkGetImageMemoryRequirements
        is the question the image asks of the driver, and the allocator's job is the answer, not the
@@ -911,6 +931,18 @@ XudResult xud_renderpass_recreate_depth(XudRenderPass** ioPass, XudLoader* loade
         return result;
     }
     pass->depthImage = newImage;
+
+    if (pass->layout != NULL) {
+        /* The new image enters the map the old one is about to leave; both are members for the s
+           tep between, which is the only reason the tracker's ceiling counts images and not swap
+           s. */
+        result = xud_layout_track(pass->layout, newImage, imageInfo.initialLayout);
+        if (result != XUD_OK) {
+            xud_renderpass_retire_depth(pass, device, loader, alloc);
+            *pass = oldRow;
+            return result;
+        }
+    }
 
     /* What the new image needs before anything asks the allocator for it, and the same zero-the-re
        cord-before-the-call discipline xud_renderpass_open() states for this row: the row returns VO

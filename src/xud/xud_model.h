@@ -322,7 +322,7 @@ XudResult xud_model_get(const XudHandleTable* table, XudHandle handle, const Xud
 /// can hold, or on a URI image whose path does not fit; XUD_MALFORMED when a decode refuses the
 /// bytes; the mesh, texture, descriptor and handle layers' own codes on the rows they run.
 XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudDescriptor* descriptor, XudAllocator* alloc, const cgltf_data* data, const char* dir);
+    XudDescriptor* descriptor, XudAllocator* alloc, XudLayoutTracker* layout, const cgltf_data* data, const char* dir);
 
 /// Driver: release one live MODEL slot - close every MESH slot this load created through the mesh
 /// rung below, close every MATERIAL slot it created through the material rung, retire every TEXT

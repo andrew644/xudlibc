@@ -328,7 +328,8 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
  * The bring-up - the driver half
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain) {
+XudResult xud_frame_open(
+    XudFrame** outFrame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain, XudLayoutTracker* layout) {
     XudFrame* frame = NULL;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
@@ -348,6 +349,9 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
         return XUD_INVALID_ARG;
     }
     if ((swapchain->imageCount == 0u) || (swapchain->images == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (layout == NULL) {
         return XUD_INVALID_ARG;
     }
 
@@ -375,19 +379,7 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
         return XUD_OUT_OF_MEMORY;
     }
 
-    /* The per-image layout record: the pass requires its attachment in the attachment's
-       initialLayout, a barrier is the only way across, and a barrier names the layout the image
-       is in NOW. Images start UNDEFINED; every frame leaves its image in the pass's finalLayout. */
-    frame->imageLayouts = calloc(swapchain->imageCount, sizeof(*frame->imageLayouts));
-    if (frame->imageLayouts == NULL) {
-        free(frame);
-        return XUD_OUT_OF_MEMORY;
-    }
-    frame->imageLayoutCount = swapchain->imageCount;
-    for (index = 0u; index < swapchain->imageCount; index++) {
-        frame->imageLayouts[index] = VK_IMAGE_LAYOUT_UNDEFINED;
-    }
-    frame->depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    frame->layout = layout;
 
     /* The fence and the semaphore create-infos are the empty forms: a fence that started already
        signalled is the opposite of a fence that has to bound a submission. */
@@ -404,14 +396,12 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
 
     result = xud_frame_fill_pool_info(&frame->poolInfo, device->queueRows[0].queueFamilyIndex);
     if (result != XUD_OK) {
-        free(frame->imageLayouts);
         free(frame);
         return result;
     }
 
     vk = loader->deviceTable.vkCreateCommandPool(device->device, &frame->poolInfo, NULL, &frame->commandPool);
     if (vk != VK_SUCCESS) {
-        free(frame->imageLayouts);
         free(frame);
         return xud_result_from_vk(vk);
     }
@@ -503,7 +493,6 @@ fail:
     }
     (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
     frame->commandPool = VK_NULL_HANDLE;
-    free(frame->imageLayouts);
     free(frame);
     return result;
 }
@@ -527,6 +516,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     VkRect2D scissor;
     VkRenderPassBeginInfo passBegin;
     VkImageMemoryBarrier imageBarriers[XUD_RENDERPASS_ATTACHMENT_COUNT];
+    VkImageMemoryBarrier filledBarriers[XUD_RENDERPASS_ATTACHMENT_COUNT];
     VkSubmitInfo submit;
     VkPresentInfoKHR present;
     VkSubmitInfo presentWaitSubmit;
@@ -599,9 +589,12 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        is is the rule the plan states as "the framebuffer array is recreated with the swapchain", read her
        e as a refusal rather than as a rebuild this rung cannot do without a resize to act on. */
     if ((frame->frameFenceCount != XUD_FRAME_IN_FLIGHT_COUNT) || (frame->presentedSwapchain != swapchain->swapchain)
-        || (framebuffers->count != swapchain->imageCount) || (framebufferCount != swapchain->imageCount)
-        || (frame->imageLayoutCount != swapchain->imageCount)) {
+        || (framebuffers->count != swapchain->imageCount) || (framebufferCount != swapchain->imageCount)) {
         return XUD_UNSUPPORTED;
+    }
+    if (frame->layout == NULL) {
+        return XUD_UNSUPPORTED; /* the two opening barriers read their oldLayouts from the context's
+                                   map; a frame assembled without one cannot answer them */
     }
 
     /* Every row this frame needs, checked before any of them is called through - the check-before-you-us
@@ -854,7 +847,8 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
                                               real family, and an unset pair is garbage the validation
                                               layer reads as an invalid family index */
     imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].dstQueueFamilyIndex = 0u;
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].oldLayout = frame->imageLayouts[imageIndex];
+    /* oldLayout is NOT filled here: the tracker answers it at the fill below, which is the only
+       source a barrier's oldLayout has in this tree. */
     imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].newLayout = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].initialLayout;
     imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].image = row->image; /* the swapchain's own image, borrowed into the framebuffer row - the
                                         view of it and the framebuffer of it were built for this same image */
@@ -878,7 +872,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].dstAccessMask
         = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].oldLayout = frame->depthLayout;
+    /* oldLayout again comes from the map at the fill, never from a row kept beside the handles. */
     imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].newLayout = pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].initialLayout;
     imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].image = pass->depthImage; /* the pass's OWN image, not a row's:
                                         one depth image for every framebuffer row, which is the reason th
@@ -886,14 +880,25 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
                                         of the array */
     imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].subresourceRange = pass->depthViewInfo.subresourceRange;
 
-    loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, XUD_FRAME_BARRIER_STAGES, XUD_FRAME_BARRIER_STAGES, 0u, 0u, NULL, 0u,
-        NULL, XUD_RENDERPASS_ATTACHMENT_COUNT, imageBarriers);
+    if ((xud_layout_barrier_fill(&filledBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT], frame->layout,
+             imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].image, &imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT])
+            != XUD_OK)
+        || (xud_layout_barrier_fill(&filledBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT], frame->layout,
+                imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].image, &imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT])
+            != XUD_OK)) {
+        (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
+        return XUD_INTERNAL_ERROR; /* an image the map does not name: the swapchain and the pass reg
+                                     ister every attachment they create, so this is a handle that dr
+                                     ifted out of the map, not a layout question */
+    }
 
-    /* The layout this frame LEAVES the image in is recorded below, once the submission has run - see the
-       note there. Nothing is recorded here, because a barrier that was recorded into a command buffer is
-       not a transition that happened yet: the image is still in frame->imageLayouts[imageIndex] until
-       vkQueueSubmit has run the commands, and a barrier that names the wrong oldLayout is a validation
-       error on the NEXT frame rather than on this one. */
+    loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, XUD_FRAME_BARRIER_STAGES, XUD_FRAME_BARRIER_STAGES, 0u, 0u, NULL, 0u,
+        NULL, XUD_RENDERPASS_ATTACHMENT_COUNT, filledBarriers);
+
+    /* The layout record moves AFTER the submit, below - see the note there. The fill above read t
+       he map but wrote nothing to it: a barrier that was recorded into a command buffer is not a
+       transition that happened yet, and a map that moved at record time would name the wrong old
+       Layout for the next frame if this frame's submit never ran. */
     /* --- 5a. set 0's block is uploaded EVERY frame, whether or not the batch has content in it: the
        pipeline's fragment stage reads this block, so a frame that never uploaded it is a frame whose
        shader reads a buffer that was never written. The write is the descriptor rung's (a memcpy into
@@ -1159,13 +1164,14 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     }
     frame->inFlight[slot] = 1u;
 
-    /* The layout record moves HERE, after a submit that answered success: the barrier above is what
-       transitions the image, the barrier runs only inside the submitted commands, so the layout the
-       image is in from here on is the pass's finalLayout and nothing before here may claim it. A
-       refused submit leaves the record at the layout the image really is still in, which is what keeps
-       the next frame's barrier's oldLayout a fact rather than a guess. */
-    frame->imageLayouts[imageIndex] = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout;
-    frame->depthLayout = pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].finalLayout;
+    /* The layout record moves HERE, after a submit that answered success: the barrier above is wh
+       at transitions the image into the pass's initialLayout, the pass's own initial/final transi
+       tions happen inside the subpass where no barrier sees them, and the submission is what runs
+       all of it - so the map moves once, to the pass's finalLayout, and nothing before here may
+       claim it. A refused submit leaves the map at the layout the images really are still in, wh
+       ich is what keeps the next frame's barrier's oldLayout a fact rather than a guess. */
+    (void)xud_layout_set(frame->layout, row->image, pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout);
+    (void)xud_layout_set(frame->layout, pass->depthImage, pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].finalLayout);
 
     /* --- 5b. the present queue's no-command wait submit, BEFORE the present itself. This is the render
        -finished boundary spelled as a queue-side submit rather than as the present's own wait pair, and
@@ -1335,11 +1341,6 @@ XudResult xud_frame_close(XudFrame** ioFrame, const XudDevice* device, XudLoader
         victim->inFlight[index] = 0u;
     }
     victim->currentFrame = 0u;
-    if (victim->imageLayouts != NULL) {
-        free(victim->imageLayouts);
-        victim->imageLayouts = NULL;
-    }
-    victim->imageLayoutCount = 0u;
     victim->frameFenceCount = 0u;
     victim->presentedSwapchain = VK_NULL_HANDLE;
     victim->recreateWanted = 0u;

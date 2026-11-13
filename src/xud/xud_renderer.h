@@ -69,6 +69,7 @@
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_frame.h"
+#include "xud_layout.h" /* Required for: XudLayoutTracker - the context's map the pass's depth image and the frame's barriers speak through */
 #include "xud_loader.h"
 #include "xud_physical.h"
 #include "xud_pipeline.h"
@@ -84,6 +85,10 @@
 
 typedef struct XudRenderer XudRenderer;
 struct XudRenderer {
+    XudLayoutTracker* layout; /* NOT owned: the context's layout tracker, held here because the RESI
+                                ZE path reopens the frame loop, and the reopened frame needs the map
+                                the old one read its barriers from - the swapchain hands the map to
+                                no one else. */
     XudBatch* batch; /* owned: the batch rung's four SoA attribute streams and the one index
                         buffer, carved out of the allocator's memory, plus the one mapped staging
                         arena the CPU-side bytes are written into. Opened BEFORE the pipeline sits
@@ -170,13 +175,13 @@ struct XudRenderer {
 /// the allocator, the context does, one rung below, and closes it after this rung's teardown has
 /// released the range. On XUD_OK the five fields above are live and framebufferCount == swapcha
 /// in->imageCount. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a renderer, a
-/// NULL loader/device/swapchain, a handle-less device, or a swapchain with no handle and no imag
-/// es; XUD_UNSUPPORTED when the loader is closed, its device rows are not this device's, a row o
-/// ne of the five rungs needs is nil, the caps cannot hold the batch's four vertex-input bindings
-/// and four attributes, or the swapchain has no chosen format. XUD_OUT_OF_MEMORY when a host
-/// allocation of one of the rungs fails.
+/// NULL loader/device/swapchain/tracker, a handle-less device, or a swapchain with no handle and
+/// no images; XUD_UNSUPPORTED when the loader is closed, its device rows are not this device's,
+/// a row of one of the five rungs needs is nil, the caps cannot hold the batch's four vertex-inp
+/// ut bindings and four attributes, or the swapchain has no chosen format. XUD_OUT_OF_MEMORY whe
+/// n a host allocation of one of the rungs fails.
 XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain);
+    XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout);
 
 /// Driver: one frame through the four rungs this rung owns - the caller above names no pipeline,
 /// no pass, no framebuffer array and no fence, which is what keeps the whole Vulkan half of the

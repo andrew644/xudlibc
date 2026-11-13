@@ -698,7 +698,7 @@ XudResult xud_font_get(const XudHandleTable* table, XudHandle handle, const XudF
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_font_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudDescriptor* descriptor, XudAllocator* alloc, const XudFontData* data) {
+    XudDescriptor* descriptor, XudAllocator* alloc, const XudFontData* data, XudLayoutTracker* layout) {
     XudFontRecord* record = NULL;
     XudGlyphRow* rows = NULL;
     uint8_t* coverage = NULL;
@@ -814,7 +814,7 @@ XudResult xud_font_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* 
     atlas.rgba = rgba;
     atlas.filter = XUD_TEXTURE_FILTER_LINEAR;
     atlas.addressMode = XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE;
-    result = xud_texture_open(&atlasHandle, table, loader, device, caps, alloc, &atlas);
+    result = xud_texture_open(&atlasHandle, table, loader, device, caps, alloc, &atlas, layout);
     free(rgba);
     if (result != XUD_OK) {
         free(rows);
@@ -1024,11 +1024,11 @@ XudResult xud_load_font(XudHandle* outHandle, XudContext* context, const XudFont
         return XUD_INVALID_ARG;
     }
     if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->physicalDevice == NULL)
-        || (context->allocator == NULL) || (context->descriptor == NULL)) {
+        || (context->allocator == NULL) || (context->descriptor == NULL) || (context->layout == NULL)) {
         return XUD_UNSUPPORTED;
     }
     return xud_font_open(outHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps,
-        context->descriptor, context->allocator, font);
+        context->descriptor, context->allocator, font, context->layout);
 }
 
 XudResult xud_close_font(XudContext* context, XudHandle handle) {

@@ -898,18 +898,18 @@ static void xud_test_model_gpu(void) {
     }
 
     result = xud_model_open(&modelHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps,
-        context->descriptor, context->allocator, document, NULL);
+        context->descriptor, context->allocator, context->layout, document, NULL);
     xud_check(result == XUD_OK, "gpu-model/open", "the fixed document opens against a real device");
     xud_check(xud_model_open(&answeredHandle, NULL, context->loader, context->device, &context->physicalDevice->caps, context->descriptor,
-                  context->allocator, document, NULL)
+                  context->allocator, context->layout, document, NULL)
             == XUD_INVALID_ARG,
         "gpu-model/null-table", "and a table with no slots is refused before the gate spends anything");
     xud_check(xud_model_open(&answeredHandle, context->handleTable, NULL, context->device, &context->physicalDevice->caps,
-                  context->descriptor, context->allocator, document, NULL)
+                  context->descriptor, context->allocator, context->layout, document, NULL)
             == XUD_INVALID_ARG,
         "gpu-model/null-loader", "and so is a loader with no state to open through");
     xud_check(xud_model_open(&answeredHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps, NULL,
-                  context->allocator, document, NULL)
+                  context->allocator, context->layout, document, NULL)
             == XUD_INVALID_ARG,
         "gpu-model/null-descriptor", "and so is a descriptor array the map's sampler entry has nowhere to be bound into");
     if (result != XUD_OK) {

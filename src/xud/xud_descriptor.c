@@ -122,6 +122,11 @@ static void xud_descriptor_retire(XudDescriptor* descriptor, const XudDevice* de
             VkImage image = descriptor->whiteImage;
             descriptor->whiteImage = VK_NULL_HANDLE;
             (void)loader->deviceTable.vkDestroyImage(device->device, image, NULL);
+            if (descriptor->layout != NULL) {
+                (void)xud_layout_forget(descriptor->layout, image); /* the handle is recycled by the
+                                                                       driver once destroyed: the record
+                                                                       must not outlive it */
+            }
         }
     }
 
@@ -992,6 +997,10 @@ XudResult xud_descriptor_upload(XudDescriptor* descriptor, XudLoader* loader, co
     if (descriptor->whiteImage == VK_NULL_HANDLE) {
         return XUD_INVALID_ARG;
     }
+    if (descriptor->layout == NULL) {
+        return XUD_INVALID_ARG; /* the white pair records through the tracker; a descriptor assembl
+                                   ed without one is not one this step can fill honestly */
+    }
     if ((loader->deviceTable.vkCmdCopyBuffer == NULL) || (loader->deviceTable.vkCmdClearColorImage == NULL)
         || (loader->deviceTable.vkCmdPipelineBarrier == NULL)) {
         return XUD_UNSUPPORTED;
@@ -1026,13 +1035,19 @@ XudResult xud_descriptor_upload(XudDescriptor* descriptor, XudLoader* loader, co
     */
     if (descriptor->whiteFilled == 0u) {
         descriptor->whiteToUpload.image = descriptor->whiteImage;
-        loader->deviceTable.vkCmdPipelineBarrier(commandBuffer, XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE, XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE,
-            VK_SUBPASS_CONTENTS_INLINE, 0u, NULL, 0u, NULL, 1u, &descriptor->whiteToUpload);
+        if (xud_layout_barrier(descriptor->layout, loader, commandBuffer, &descriptor->whiteToUpload, XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE,
+                XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE)
+            != XUD_OK) {
+            return XUD_INTERNAL_ERROR;
+        }
         loader->deviceTable.vkCmdClearColorImage(commandBuffer, descriptor->whiteImage, XUD_DESCRIPTOR_WHITE_UPLOAD_LAYOUT,
             &descriptor->whiteClearColor, XUD_DESCRIPTOR_WHITE_CLEAR_COUNT, &descriptor->whiteSubresourceRange);
         descriptor->whiteToSampled.image = descriptor->whiteImage;
-        loader->deviceTable.vkCmdPipelineBarrier(commandBuffer, XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE, XUD_DESCRIPTOR_WHITE_SAMPLED_STAGE,
-            VK_SUBPASS_CONTENTS_INLINE, 0u, NULL, 0u, NULL, 1u, &descriptor->whiteToSampled);
+        if (xud_layout_barrier(descriptor->layout, loader, commandBuffer, &descriptor->whiteToSampled, XUD_DESCRIPTOR_WHITE_TRANSFER_STAGE,
+                XUD_DESCRIPTOR_WHITE_SAMPLED_STAGE)
+            != XUD_OK) {
+            return XUD_INTERNAL_ERROR;
+        }
         descriptor->whiteFilled = 1u;
     }
 
@@ -1043,8 +1058,8 @@ XudResult xud_descriptor_upload(XudDescriptor* descriptor, XudLoader* loader, co
  * The bring-up - driver
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_descriptor_open(
-    XudDescriptor** outDescriptor, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps, XudAllocator* alloc) {
+XudResult xud_descriptor_open(XudDescriptor** outDescriptor, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, XudLayoutTracker* layout) {
     XudDescriptor* descriptor = NULL;
     XudResult result = XUD_INVALID_ARG;
     VkMemoryRequirements needs;
@@ -1058,7 +1073,7 @@ XudResult xud_descriptor_open(
     if ((outDescriptor == NULL) || (*outDescriptor != NULL)) {
         return XUD_INVALID_ARG;
     }
-    if ((loader == NULL) || (device == NULL) || (caps == NULL) || (alloc == NULL)) {
+    if ((loader == NULL) || (device == NULL) || (caps == NULL) || (alloc == NULL) || (layout == NULL)) {
         return XUD_INVALID_ARG;
     }
     if (!loader->open) {
@@ -1099,6 +1114,7 @@ XudResult xud_descriptor_open(
     if (descriptor == NULL) {
         return XUD_OUT_OF_MEMORY;
     }
+    descriptor->layout = layout;
 
     /* The rows of this layout, assembled before any of them is handed to a driver. The assembly is
        one block rather than interleaved with the creates because the headless run calls the pure h
@@ -1295,6 +1311,18 @@ XudResult xud_descriptor_open(
     descriptor->whiteViewInfo.image = descriptor->whiteImage;
     result = xud_result_from_vk(
         loader->deviceTable.vkCreateImageView(device->device, &descriptor->whiteViewInfo, NULL, &descriptor->whiteImageView));
+    if (result != XUD_OK) {
+        xud_descriptor_retire(descriptor, device, loader, alloc);
+        free(descriptor);
+        return result;
+    }
+
+    /* The white image's first word, at the tracker the context owns: from here on, every barrier
+       about this image - including the pair the upload records on the first frame - answers its o
+       ldLayout from the map rather than from a hand-carried field, and the image's last transitio
+       n out of this world (the forget in the retire ladder) is this rung's too.
+     */
+    result = xud_layout_track(layout, descriptor->whiteImage, descriptor->whiteImageInfo.initialLayout);
     if (result != XUD_OK) {
         xud_descriptor_retire(descriptor, device, loader, alloc);
         free(descriptor);

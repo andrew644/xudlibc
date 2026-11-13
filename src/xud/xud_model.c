@@ -926,8 +926,8 @@ static void xud_model_retire_texture(
    texture being usable rather than a step beside it. Every refusal leaves the slot free and the
    entry unbound, which is what the retire above retires twice over without a double free. */
 static XudResult xud_model_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device,
-    const XudDeviceCaps* caps, XudDescriptor* descriptor, XudAllocator* alloc, uint32_t width, uint32_t height, const uint8_t* rgba,
-    uint32_t filter, uint32_t addressMode) {
+    const XudDeviceCaps* caps, XudDescriptor* descriptor, XudAllocator* alloc, XudLayoutTracker* layout, uint32_t width, uint32_t height,
+    const uint8_t* rgba, uint32_t filter, uint32_t addressMode) {
     XudTextureRecord* record = NULL;
     XudTextureData data;
     XudResult result;
@@ -937,7 +937,7 @@ static XudResult xud_model_texture_open(XudHandle* outHandle, XudHandleTable* ta
     data.rgba = rgba;
     data.filter = filter;
     data.addressMode = addressMode;
-    result = xud_texture_open(outHandle, table, loader, device, caps, alloc, &data);
+    result = xud_texture_open(outHandle, table, loader, device, caps, alloc, &data, layout);
     if (result != XUD_OK) {
         return result;
     }
@@ -980,7 +980,7 @@ static void xud_model_retire(XudHandleTable* table, XudModelRecord* record, XudL
 }
 
 XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudDescriptor* descriptor, XudAllocator* alloc, const cgltf_data* data, const char* dir) {
+    XudDescriptor* descriptor, XudAllocator* alloc, XudLayoutTracker* layout, const cgltf_data* data, const char* dir) {
     XudModelRecord* record = NULL;
     XudModelStage stage;
     XudMeshData mesh;
@@ -1065,8 +1065,8 @@ XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader*
         uint8_t* rgba = NULL;
         result = xud_model_image_decode(data, textureImage[t], dir, &width, &height, &rgba);
         if (result == XUD_OK) {
-            result = xud_model_texture_open(
-                &texture[t], table, loader, device, caps, descriptor, alloc, width, height, rgba, textureFilter[t], textureAddress[t]);
+            result = xud_model_texture_open(&texture[t], table, loader, device, caps, descriptor, alloc, layout, width, height, rgba,
+                textureFilter[t], textureAddress[t]);
         }
         stbi_image_free(rgba);
         if (result != XUD_OK) {
@@ -1400,7 +1400,7 @@ XudResult xud_load_model(XudHandle* outHandle, XudContext* context, const char* 
         return xud_model_result_from_cgltf(cgResult);
     }
     result = xud_model_open(outHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps,
-        context->descriptor, context->allocator, document, dir);
+        context->descriptor, context->allocator, context->layout, document, dir);
     cgltf_free(document);
     return result;
 }

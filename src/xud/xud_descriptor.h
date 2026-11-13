@@ -55,6 +55,7 @@
 #include "xud.h" /* Required for: XudResult - the descriptor layer's own error codes */
 #include "xud_allocator.h" /* Required for: XudAllocator, XudMemoryRange - the GPU memory this rung's one VkBuffer sits in */
 #include "xud_device.h" /* Required for: XudDevice - the handle every row of this rung is asked of, and the wait-idle guard */
+#include "xud_layout.h" /* Required for: XudLayoutTracker - the context's layout map the white image is registered with, and the rows the white pair of transitions records through */
 #include "xud_loader.h" /* Required for: XudLoader - the Volk rows every call here is made through */
 #include "xud_physical.h" /* Required for: XudDeviceCaps - the limits every gate below is read off */
 #include "xud_vulkan.h" /* Required for: xud_result_from_vk - every VkResult here goes through that one funnel */
@@ -496,6 +497,10 @@ struct XudDescriptor {
     VkImageView whiteImageView; /* owned: the view the samplerRows above all name */
     VkSampler whiteSampler; /* owned: the view they all sample with */
     VkImageCreateInfo whiteImageInfo; /* what vkCreateImage was handed for it */
+    XudLayoutTracker* layout; /* NOT owned: the context's layout tracker, held here because the white image's pair of
+                                 transitions is recorded by the upload step below - which is handed a command buffer, not
+                                 a tracker - and because the registration at open and the forget at close are this rung's
+                                 own bookkeeping. The tracker outlives this rung by the context's own order. */
     VkImageViewCreateInfo whiteViewInfo; /* what vkCreateImageView was handed for it */
     VkSamplerCreateInfo whiteSamplerInfo; /* what vkCreateSampler was handed for it */
     XudMemoryRange whiteRange; /* BORROWED: the allocator owns the block this sits in, the same rule a
@@ -809,8 +814,8 @@ XudResult xud_descriptor_upload(XudDescriptor* descriptor, XudLoader* loader, co
 /// is device's, a row this rung needs is nil, the caps gate above refused, or no host-visible memory t
 /// ype exists to bind the arena to; XUD_OUT_OF_MEMORY when a host allocation fails; XUD_OUT_OF_RESOUR
 /// CES/XUD_LOST/XUD_VULKAN_ERROR when the driver refuses for its own reason.
-XudResult xud_descriptor_open(
-    XudDescriptor** outDescriptor, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps, XudAllocator* alloc);
+XudResult xud_descriptor_open(XudDescriptor** outDescriptor, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, XudLayoutTracker* layout);
 
 /// Driver: the teardown, in the reverse of the order above and for the reasons the order above gives.
 /// The guard runs first and is not decoration: a command buffer of the frame loop above may still be r

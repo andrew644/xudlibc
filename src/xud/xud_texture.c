@@ -534,7 +534,12 @@ static void xud_texture_retire_objects(XudTextureRecord* record, const XudDevice
         (void)loader->deviceTable.vkDestroyImageView(device->device, record->view, NULL);
     }
     if ((loader->deviceTable.vkDestroyImage != NULL) && (record->image != VK_NULL_HANDLE)) {
-        (void)loader->deviceTable.vkDestroyImage(device->device, record->image, NULL);
+        VkImage image = record->image;
+        (void)loader->deviceTable.vkDestroyImage(device->device, image, NULL);
+        if (record->layout != NULL) {
+            (void)xud_layout_forget(record->layout, image); /* the handle is recycled once destroyed:
+                                                               the record must not outlive it */
+        }
     }
     if (record->imageRange.memory != VK_NULL_HANDLE) {
         (void)xud_allocator_release(alloc, &record->imageRange);
@@ -586,7 +591,7 @@ static void xud_texture_retire_staging(XudTextureRecord* record, const XudDevice
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device,
-    const XudDeviceCaps* caps, XudAllocator* alloc, const XudTextureData* data) {
+    const XudDeviceCaps* caps, XudAllocator* alloc, const XudTextureData* data, XudLayoutTracker* layout) {
     XudTextureRecord* record = NULL;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
@@ -605,7 +610,7 @@ XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoade
     VkFence uploadFence = VK_NULL_HANDLE;
 
     if ((outHandle == NULL) || (table == NULL) || (loader == NULL) || (device == NULL) || (caps == NULL) || (alloc == NULL)
-        || (data == NULL)) {
+        || (data == NULL) || (layout == NULL)) {
         return XUD_INVALID_ARG;
     }
     if (!xud_loader_is_open(loader)) {
@@ -686,6 +691,7 @@ XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoade
     record->stagingMapped = NULL;
     record->stagingMappedLive = 0u;
     record->imageLayout = XUD_TEXTURE_INITIAL_LAYOUT;
+    record->layout = layout;
 
     /* The layout, this library's own arithmetic rather than the driver's: it gives the staging
        arena's total and the per-level offsets, sizes and pitches the write below uses and the copy
@@ -885,6 +891,15 @@ XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoade
         }
     }
 
+    /* The image's first word at the map the context owns: the two upload barriers below answer t
+       heir oldLayouts from there rather than from the create-time constant, the sampler's layout
+       is the map's final answer, and this record's own teardown forgets the row.
+    */
+    result = xud_layout_track(layout, record->image, record->imageInfo.initialLayout);
+    if (result != XUD_OK) {
+        goto fail;
+    }
+
     /* The view's create-info, stamped BEFORE the upload rather than at the view's own create below:
        the upload's transition barrier names the image's subresource range, and the view names the same
        range of the same image, so the two are stamped from one record field rather than written twice.
@@ -941,33 +956,37 @@ XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoade
         }
     }
 
-    /* ONE barrier, carrying two things: the HOST_WRITE to TRANSFER_READ memory barrier over the staging
-       writes (the same pair the frame's own batch upload runs over its arenas) and the image's transition
-       out of the create-time layout into the upload layout. The two share a call because a barrier is a
-       scope, not a buffer, and the copies below read the staging bytes AND write the image - one call
-       whose srcStageMask names HOST and TRANSFER and whose dstStageMask names TRANSFER orders both.
-       The image starts in XUD_TEXTURE_INITIAL_LAYOUT, which is UNDEFINED: the transition is what makes
-       the copies' dstImageLayout a layout the image is actually in, and VUID-vkCmdPipelineBarrier-image-0407
-       ("oldLayout must be the current layout of the image") is the rule the validation layer answers when
-       it is not, which is the error this step fixes. srcAccessMask is 0 on the image half because UNDEFINED
-       promises nothing about what was there before, so no prior access is being ordered.
+    /* TWO barriers where the recording once used one: the HOST_WRITE to TRANSFER_READ memory bar
+       rier over the staging writes (the same pair the frame's own batch upload runs over its are
+       nas), and the image's transition out of the layout the map names into the upload layout. T
+       hey share the recording rule but not the call because the image half speaks through the tr
+       acker - its oldLayout is the map's answer, never the create-time constant - and the tracke
+       r records one image at a time. Splitting the calls costs nothing here: this command buffer
+       is submitted and waited before this rung returns.
     */
     {
         const VkMemoryBarrier hostToTransfer = (VkMemoryBarrier) { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = NULL,
             .srcAccessMask = XUD_TEXTURE_STAGING_SRC_ACCESS,
             .dstAccessMask = XUD_TEXTURE_STAGING_DST_ACCESS };
+        loader->deviceTable.vkCmdPipelineBarrier(
+            uploadBuffer, XUD_TEXTURE_STAGING_SRC_STAGE, XUD_TEXTURE_STAGING_DST_STAGE, 0u, 1u, &hostToTransfer, 0u, NULL, 0u, NULL);
+    }
+    {
         VkImageMemoryBarrier toUpload = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .pNext = NULL };
         toUpload.srcAccessMask = 0u;
         toUpload.dstAccessMask = XUD_TEXTURE_UPLOAD_DST_ACCESS;
-        toUpload.oldLayout = XUD_TEXTURE_INITIAL_LAYOUT;
         toUpload.newLayout = XUD_TEXTURE_UPLOAD_LAYOUT;
         toUpload.srcQueueFamilyIndex = 0u;
         toUpload.dstQueueFamilyIndex = 0u;
         toUpload.image = record->image;
         toUpload.subresourceRange = record->viewInfo.subresourceRange;
-        loader->deviceTable.vkCmdPipelineBarrier(uploadBuffer, XUD_TEXTURE_STAGING_SRC_STAGE | XUD_TEXTURE_TRANSITION_SRC_STAGE,
-            XUD_TEXTURE_STAGING_DST_STAGE, 0u, 1u, &hostToTransfer, 0u, NULL, 1u, &toUpload);
+        if (xud_layout_barrier(layout, loader, uploadBuffer, &toUpload, XUD_TEXTURE_TRANSITION_SRC_STAGE, XUD_TEXTURE_STAGING_DST_STAGE)
+            != XUD_OK) {
+            (void)loader->deviceTable.vkEndCommandBuffer(uploadBuffer);
+            result = XUD_INTERNAL_ERROR;
+            goto fail;
+        }
     }
 
     /* One copy per mip level, each from the level's own compact run in the staging staging into the
@@ -997,24 +1016,31 @@ XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoade
             uploadBuffer, record->stagingBuffer, record->image, XUD_TEXTURE_UPLOAD_LAYOUT, 1u, &region);
     }
 
-    /* The transition that leaves the image in the layout a sampler needs: the copies wrote it in the
-       upload layout, and a combined image sampler descriptor requires a layout a shader may read.
-       TRANSFER_WRITE to SHADER_READ at the two shader stages is the pair the spec's supported-access-
-       type table puts those two access types at, and the subresource range is the view's own range
-       below, so a transition and the view that names the same image cannot drift apart.
+    /* The transition that leaves the image in the layout a sampler needs: the copies wrote it in
+       the upload layout the map now says the image is in, and a combined image sampler descripto
+       r requires a layout a shader may read. TRANSFER_WRITE to SHADER_READ at the two shader sta
+       ges is the pair the spec's supported-access-type table puts those two access types at, and
+       the subresource range is the view's own range below, so a transition and the view that nam
+       es the same image cannot drift apart. The helper moves the map to the sampled layout as it
+       records, which is what makes the record's own imageLayout row below a copy of the map's an
+       swer rather than a second source.
     */
     {
         VkImageMemoryBarrier transition = { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER, .pNext = NULL };
         transition.srcAccessMask = XUD_TEXTURE_TRANSITION_SRC_ACCESS;
         transition.dstAccessMask = XUD_TEXTURE_TRANSITION_DST_ACCESS;
-        transition.oldLayout = XUD_TEXTURE_UPLOAD_LAYOUT;
         transition.newLayout = XUD_TEXTURE_SAMPLED_LAYOUT;
         transition.srcQueueFamilyIndex = 0u;
         transition.dstQueueFamilyIndex = 0u;
         transition.image = record->image;
         transition.subresourceRange = record->viewInfo.subresourceRange;
-        loader->deviceTable.vkCmdPipelineBarrier(
-            uploadBuffer, XUD_TEXTURE_TRANSITION_SRC_STAGE, XUD_TEXTURE_TRANSITION_DST_STAGE, 0u, 0u, NULL, 0u, NULL, 1u, &transition);
+        if (xud_layout_barrier(
+                layout, loader, uploadBuffer, &transition, XUD_TEXTURE_TRANSITION_SRC_STAGE, XUD_TEXTURE_TRANSITION_DST_STAGE)
+            != XUD_OK) {
+            (void)loader->deviceTable.vkEndCommandBuffer(uploadBuffer);
+            result = XUD_INTERNAL_ERROR;
+            goto fail;
+        }
     }
 
     vk = loader->deviceTable.vkEndCommandBuffer(uploadBuffer);
@@ -1395,8 +1421,8 @@ XudResult xud_create_texture(XudHandle* outHandle, XudContext* context, const Xu
         return XUD_UNSUPPORTED;
     }
 
-    result = xud_texture_open(
-        outHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps, context->allocator, texture);
+    result = xud_texture_open(outHandle, context->handleTable, context->loader, context->device, &context->physicalDevice->caps,
+        context->allocator, texture, context->layout);
     if (result != XUD_OK) {
         return result;
     }

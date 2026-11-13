@@ -41,6 +41,7 @@
 #include "volk.h"
 #include "xud_allocator.h"
 #include "xud_device.h"
+#include "xud_layout.h"
 #include "xud_loader.h"
 #include "xud_physical.h"
 #include "xud_swapchain.h"
@@ -165,6 +166,11 @@ struct XudRenderPass {
                               closed - the renderer's teardown order */
     VkImageCreateInfo depthImageInfo; /* what vkCreateImage was handed */
     VkImageViewCreateInfo depthViewInfo; /* what vkCreateImageView was handed */
+    XudLayoutTracker* layout; /* NOT owned: the context's layout tracker. The depth image is regis
+                                tered with it the moment vkCreateImage answers, retired from it wh
+                                en the image dies (whole teardown AND recreate), and the frame rea
+                                ds the image's current layout from there when it builds the openin
+                                g barrier - the reason the barrier's oldLayout is never a guess */
     XudMemoryRange depthRange; /* BORROWED from the allocator: (memory, offset, size) plus the
                                 { blockIndex, rangeIndex, generation } triple that makes a stale
                                 borrow a caught error. The allocator owns the VkDeviceMemory; this
@@ -343,14 +349,14 @@ XudResult xud_framebuffer_fill_create_info(
 /// h AND a live depth image in allocator memory; on any error it stays NULL and everything crea
 /// ted so far is retired in the one reverse order (xud_renderpass_retire(), the same shape xud
 /// _descriptor.c's failure path uses). XUD_INVALID_ARG on a NULL out-pointer or one that alrea
-/// dy owns a pass, a NULL loader/device/caps/allocator/swapchain, a handle-less device, a swap
+/// dy owns a pass, a NULL loader/device/caps/allocator/swapchain/tracker, a handle-less device, a s
 /// chain with no handle or no images, or a zero extent; XUD_UNSUPPORTED when the loader is clo
 /// sed, its rows are not this device's, a row is nil, the format is VK_FORMAT_UNDEFINED, or the
 ///  driver refuses this (format, tiling, usage) tuple at vkCreateImage; XUD_OUT_OF_RESOURCES wh
 /// en the allocator cannot serve the image's requirements (reported, not grown past the block c
 /// eiling - see xud_allocator.h).
 XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudAllocator* alloc, const XudSwapchain* swapchain);
+    XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout);
 
 /// Driver: vkDestroyRenderPass, then vkDestroyImageView, then vkDestroyImage, then the alloca
 /// tor's release of the image's range, then free. That order is the only one that is correct

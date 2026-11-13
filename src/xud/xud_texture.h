@@ -50,6 +50,7 @@
 #include "xud_descriptor.h" /* Required for: XudDescriptor - set 1's sampler array this record's slot lives in, the parameter of the close-all rung */
 #include "xud_device.h" /* Required for: XudDevice, xud_device_wait_idle - the handle every row here is asked of, and the destroy guard */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
+#include "xud_layout.h" /* Required for: XudLayoutTracker - the context's map the image is registered with and the upload barriers answer their oldLayouts from */
 #include "xud_loader.h" /* Required for: XudLoader, xud_loader_device_bound, xud_loader_is_open - the Volk rows every call here is made through */
 #include "xud_physical.h" /* Required for: XudDeviceCaps - the image limits every gate below is read off */
 #include "xud_vulkan.h" /* Required for: xud_result_from_vk - every VkResult here goes through that one funnel */
@@ -371,6 +372,10 @@ typedef struct XudTextureRecord {
     VkImageView view; /* owned: the only thing a descriptor may name of the two above */
     VkSampler sampler; /* owned: the sampling state that pairs with it */
     VkImageLayout imageLayout; /* the layout the upload left the image in, which is the layout a descriptor must name */
+    XudLayoutTracker* layout; /* NOT owned: the context's layout tracker. The image is registered with
+                                 it the moment it is bound to memory, the two upload barriers read a
+                                 nd move the row through the tracker's own recording, and the retir
+                                 e forgets it when the image is destroyed. */
 
     uint32_t samplerSlot; /* the entry of set 1's sampler array that holds this record's view and sampler, XUD_TEXTURE_SAMPLER_SLOT_NONE
                              when the record holds no entry of the array */
@@ -566,26 +571,30 @@ XudResult xud_texture_get(const XudHandleTable* table, XudHandle handle, const X
 ///  (these headers' VkImageCreateInfo has no size member, so the block's size is the driver's answer),
 ///  then the image's own block acquired at that requirement (NOT host-visible: the image is never
 ///  mapped, and the staging block above is the only mapping this rung takes), then the image bound into
-///  it, then ONE command buffer recorded with the upload - a HOST_WRITE to TRANSFER_READ barrier over
-///  the staging writes, one vkCmdCopyBufferToImage per mip level (the staging arena's compact bytes at
-///  each level's offset into the image's own level, the destination layout XUD_TEXTURE_UPLOAD_LAYOUT),
-///  then a barrier that transitions the image to XUD_TEXTURE_SAMPLED_LAYOUT - then submitted on the
+///  it, then ONE command buffer recorded with the upload - a HOST_WRITE to TRANSFER_READ barrier
+///  over the staging writes, then the image's transition into XUD_TEXTURE_UPLOAD_LAYOUT recorded
+///  through the tracker (its oldLayout is the map's answer, never the create-time constant), one
+///  vkCmdCopyBufferToImage per mip level (the staging arena's compact bytes at each level's offse
+///  t into the image's own level, the destination layout XUD_TEXTURE_UPLOAD_LAYOUT), then a barri
+///  er through the tracker that transitions the image to XUD_TEXTURE_SAMPLED_LAYOUT - then submit
+///  ted on the
 ///  graphics queue behind a fence this rung creates, waits on and destroys, then the command buffer
 ///  freed, then the staging mapping unmapped and the staging buffer destroyed (the copy has run by
 ///  then, which is what the wait is for: an unmapped-while-still-read staging buffer is a use after
 ///  the mapping that made it), then the view and the sampler created from the image that is now in
 ///  its sampled layout, then the record written into the slot through the handle layer's own accessor.
 ///  On any error everything created so far is retired in reverse order and *outHandle is left naming
-///  nothing live. XUD_INVALID_ARG on a NULL out-handle, table, loader, device, caps or description, or
-///  a handle-less device; XUD_UNSUPPORTED on a closed loader, on a loader whose rows this rung needs
-///  are not there, on a device that is not this loader's, on a caps gate that refused, on a caps that
+///  nothing live. XUD_INVALID_ARG on a NULL out-handle, table, loader, device, caps, tracker or
+///  description, or a handle-less device; XUD_UNSUPPORTED on a closed loader, on a loader whose
+///  rows this rung needs are not there, on a device that is not this loader's, on a caps gate that
+///  refused, on a caps that
 ///  advertises no host-visible memory type for the staging block, or on a driver whose staging requirement
 ///  cannot hold this rung's chain; XUD_OUT_OF_RESOURCES at the handle layer's slot bound or when either
 ///  block cannot be carved; XUD_OUT_OF_MEMORY when the record cannot be allocated; XUD_VULKAN_ERROR or
 ///  the device's own code when the driver refuses for its own reason.
 
 XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device,
-    const XudDeviceCaps* caps, XudAllocator* alloc, const XudTextureData* data);
+    const XudDeviceCaps* caps, XudAllocator* alloc, const XudTextureData* data, XudLayoutTracker* layout);
 
 /// Driver: release one live TEXTURE-kind slot and retire everything its record owns, in the reverse
 ///  of the order above: the wait-idle guard first (a texture's image is read by a submission the moment

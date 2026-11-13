@@ -47,6 +47,7 @@ static void xud_test_swapchain_pure(void) {
     XudWindow* window = NULL;
     XudDevice* device = NULL;
     XudPhysicalDevice* physical = NULL;
+    XudLayoutTracker* layout = NULL;
     VkSwapchainCreateInfoKHR info;
     VkSurfaceFormatKHR formatRow;
     VkPresentModeKHR modeRow;
@@ -324,15 +325,19 @@ static void xud_test_swapchain_pure(void) {
             xud_check(queried.surfaceFormatCount == 0u, "swapchain/query-refusal-clears-caps",
                 "and a refused query leaves the caps at their zero state, not half-filled");
 
-            xud_check(xud_swapchain_open(&swapchain, NULL, physical, window, device) == XUD_INVALID_ARG, "swapchain/open-null-loader",
-                "no table to call through");
-            xud_check(xud_swapchain_open(&swapchain, openLoader, NULL, window, device) == XUD_INVALID_ARG, "swapchain/open-null-physical",
-                "no surface to query");
-            xud_check(xud_swapchain_open(&swapchain, openLoader, physical, NULL, device) == XUD_INVALID_ARG, "swapchain/open-null-window",
-                "no surface to create for");
-            xud_check(xud_swapchain_open(&swapchain, openLoader, physical, window, NULL) == XUD_INVALID_ARG, "swapchain/open-null-device",
-                "no device to create on");
-            xud_check(xud_swapchain_open(&swapchain, openLoader, physical, window, device) == XUD_UNSUPPORTED, "swapchain/open-not-bound",
+            xud_layout_tracker_open(&layout, 0u);
+            xud_check(xud_swapchain_open(&swapchain, NULL, physical, window, device, layout) == XUD_INVALID_ARG,
+                "swapchain/open-null-loader", "no table to call through");
+            xud_check(xud_swapchain_open(&swapchain, openLoader, NULL, window, device, layout) == XUD_INVALID_ARG,
+                "swapchain/open-null-physical", "no surface to query");
+            xud_check(xud_swapchain_open(&swapchain, openLoader, physical, NULL, device, layout) == XUD_INVALID_ARG,
+                "swapchain/open-null-window", "no surface to create for");
+            xud_check(xud_swapchain_open(&swapchain, openLoader, physical, window, NULL, layout) == XUD_INVALID_ARG,
+                "swapchain/open-null-device", "no device to create on");
+            xud_check(xud_swapchain_open(&swapchain, openLoader, physical, window, device, NULL) == XUD_INVALID_ARG,
+                "swapchain/open-null-tracker", "the images this rung creates have nowhere to be registered");
+            xud_check(xud_swapchain_open(&swapchain, openLoader, physical, window, device, layout) == XUD_UNSUPPORTED,
+                "swapchain/open-not-bound",
                 "the loader's rows are not this window's instance's and not this device's, so the "
                 "rung refuses rather than calling through a nil row");
             xud_check(swapchain == NULL, "swapchain/open-refusal-null", "and a refused create hands back nothing");
@@ -390,6 +395,7 @@ static void xud_test_swapchain_pure(void) {
             free(physical);
         xud_check(xud_loader_close(&openLoader) == XUD_OK, "swapchain/loader-close", "the loader closes");
         xud_check(openLoader == NULL, "swapchain/loader-null", "and cleared");
+        (void)xud_layout_tracker_close(&layout);
     }
 
     if (synthetic != NULL) {
@@ -418,6 +424,7 @@ static void xud_test_gpu_swapchain(void) {
     XudWindow* window = NULL;
     XudDevice* device = NULL;
     XudSwapchain* swapchain = NULL;
+    XudLayoutTracker* layout = NULL;
     const char* required[XUD_INSTANCE_EXTRA_MAX] = { NULL };
     uint32_t requiredCount = 0u;
     bool supports = false;
@@ -499,8 +506,10 @@ static void xud_test_gpu_swapchain(void) {
     xud_check(xud_loader_instance_bound(loader, window->surfaceInstance), "gpu-swapchain/instance-bound",
         "the instance rows are the surface's instance's rows");
     xud_check(xud_loader_device_bound(loader, device->device), "gpu-swapchain/device-bound", "and the device rows are this device's rows");
+    xud_layout_tracker_open(&layout, 0u);
+    xud_check(layout != NULL, "gpu-swapchain/tracker", "the map the images are registered with");
 
-    result = xud_swapchain_open(&swapchain, loader, physical, window, device);
+    result = xud_swapchain_open(&swapchain, loader, physical, window, device, layout);
     xud_check(result == XUD_OK, "gpu-swapchain/open", "the three queries, the three selection rules and the create all completed");
     if (swapchain == NULL) {
         (void)xud_device_close(&device, loader);
@@ -509,6 +518,7 @@ static void xud_test_gpu_swapchain(void) {
         (void)xud_window_close(&window);
         (void)xud_instance_destroy(&instance, loader, NULL);
         (void)xud_loader_close(&loader);
+        (void)xud_layout_tracker_close(&layout);
         return;
     }
 
@@ -617,6 +627,7 @@ static void xud_test_gpu_swapchain(void) {
     xud_check(swapchain == NULL, "gpu-swapchain/close-clears", "and the slot is cleared");
     xud_check(xud_swapchain_close(&swapchain, device, loader) == XUD_ALREADY, "gpu-swapchain/close-twice",
         "a second teardown is reported, not a double free");
+    (void)xud_layout_tracker_close(&layout);
 
     xud_check(xud_device_close(&device, loader) == XUD_OK, "gpu-swapchain/device-close",
         "the device goes next, and nothing of the swapchain is still in flight against it");

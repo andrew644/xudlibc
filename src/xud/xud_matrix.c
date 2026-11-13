@@ -209,7 +209,7 @@ XudResult xud_matrix_rotate(float* outMatrix, XudVector3 axis, float radians) {
        over (0, 0, 2) gets the rotation about +z they meant, the way raymath's MatrixRotate
        normalises internally (raymath.h 1792's Vector3Normalize) instead of refusing.
     */
-    xud_matrix_fill_rotation_axis(outMatrix, (XudVector3){ axis.x / length, axis.y / length, axis.z / length }, radians);
+    xud_matrix_fill_rotation_axis(outMatrix, (XudVector3) { axis.x / length, axis.y / length, axis.z / length }, radians);
 
     return XUD_OK;
 }
@@ -231,7 +231,6 @@ XudResult xud_matrix_rotate_xyz(float* outMatrix, XudVector3 radians) {
 
     return XUD_OK;
 }
-
 
 XudResult xud_matrix_multiply(float* outMatrix, const float* left, const float* right) {
     float product[XUD_MATRIX_ELEMENT_COUNT];
@@ -312,7 +311,7 @@ XudResult xud_matrix_transform_point(XudVector3* outPoint, const float* matrix, 
     }
 
     if ((xud_matrix_is_finite(matrix) == 0u) || (xud_matrix_vector_is_finite(point) == 0u)) {
-        *outPoint = (XudVector3){ 0.0f, 0.0f, 0.0f };
+        *outPoint = (XudVector3) { 0.0f, 0.0f, 0.0f };
         return XUD_INVALID_ARG;
     }
 
@@ -321,10 +320,9 @@ XudResult xud_matrix_transform_point(XudVector3* outPoint, const float* matrix, 
        view-projection run through here answers the clip position without the divide, which is a
        number with no world meaning. xud_get_world_to_screen() is that other question.
     */
-    *outPoint = (XudVector3){ (matrix[0] * point.x) + (matrix[4] * point.y) + (matrix[8] * point.z) + matrix[12],
+    *outPoint = (XudVector3) { (matrix[0] * point.x) + (matrix[4] * point.y) + (matrix[8] * point.z) + matrix[12],
         (matrix[1] * point.x) + (matrix[5] * point.y) + (matrix[9] * point.z) + matrix[13],
         (matrix[2] * point.x) + (matrix[6] * point.y) + (matrix[10] * point.z) + matrix[14] };
 
     return XUD_OK;
 }
-

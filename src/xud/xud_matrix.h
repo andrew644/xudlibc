@@ -43,7 +43,8 @@
 
 #include "xud.h" /* Required for: XudResult, XudVector3 */
 
-#define XUD_MATRIX_ELEMENT_COUNT 16u /* The length of every matrix this rung writes, in ONE place \
+#define XUD_MATRIX_ELEMENT_COUNT                                                                                                           \
+    16u /* The length of every matrix this rung writes, in ONE place \
                                        rather than as a 16 at every loop bound and every guard. It \
                                        is the same 16 xud.h's XUD_CAMERA_MATRIX_ELEMENT_COUNT names \
                                        and the same float[16] the descriptor's block and the _ex    \
@@ -51,7 +52,7 @@
                                        than a choice.                                             \
                                     */
 
-#define XUD_MATRIX_AXIS_MIN_LENGTH_SQUARED                                                 \
+#define XUD_MATRIX_AXIS_MIN_LENGTH_SQUARED                                                                                                 \
     1e-12f /* An axis whose SQUARED length is this small or smaller has no direction: the  \
              normalise divides by a length that a float got to by cancelling nearly equal  \
              components, so the rotation it would build is a spin about an axis that is  \
