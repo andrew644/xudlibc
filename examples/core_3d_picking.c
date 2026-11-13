@@ -281,9 +281,9 @@ int main(void) {
         return 1;
     }
 
-    step = xud_init_context(&context, XUD_PICKING_WIDTH, XUD_PICKING_HEIGHT);
-    printf("core_3d_picking: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_PICKING_WIDTH, XUD_PICKING_HEIGHT, xud_result_name(step),
-        XUD_VERSION);
+    step = xud_init_context(&context, XUD_PICKING_WIDTH, XUD_PICKING_HEIGHT, "core_3d_picking");
+    printf("core_3d_picking: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_PICKING_WIDTH, XUD_PICKING_HEIGHT,
+        "core_3d_picking", xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         free(fontFile);
         return (step == XUD_UNSUPPORTED) ? 0 : 1;

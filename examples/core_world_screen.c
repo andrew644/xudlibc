@@ -239,9 +239,9 @@ int main(void) {
         return 1;
     }
 
-    step = xud_init_context(&context, XUD_WORLD_SCREEN_WIDTH, XUD_WORLD_SCREEN_HEIGHT);
-    printf("core_world_screen: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_WORLD_SCREEN_WIDTH, XUD_WORLD_SCREEN_HEIGHT,
-        xud_result_name(step), XUD_VERSION);
+    step = xud_init_context(&context, XUD_WORLD_SCREEN_WIDTH, XUD_WORLD_SCREEN_HEIGHT, "core_world_screen");
+    printf("core_world_screen: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_WORLD_SCREEN_WIDTH, XUD_WORLD_SCREEN_HEIGHT,
+        "core_world_screen", xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         free(fontFile);
         return (step == XUD_UNSUPPORTED) ? 0 : 1;

@@ -470,7 +470,7 @@ static void xud_test_gpu_allocator(void) {
     memset(&ringWrap, 0, sizeof(ringWrap));
     memset(&ringAgain, 0, sizeof(ringAgain));
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-alloc/context-completes", "the ladder has to complete before anything can be allocated");
     if (context == NULL) {
         return;

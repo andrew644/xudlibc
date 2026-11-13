@@ -157,7 +157,7 @@ XudResult xud_vulkan_supported(void) {
     return XUD_OK;
 }
 
-XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height) {
+XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height, const char* title) {
     XudContext* context = NULL;
     XudResult result = XUD_INVALID_ARG;
     /* GLFW's own required instance names, read off the window this bring-up opens and handed to th
@@ -174,8 +174,9 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
      */
     bool presents = false;
 
-    if (outContext == NULL || *outContext != NULL)
+    if ((outContext == NULL) || (*outContext != NULL) || (title == NULL)) {
         return XUD_INVALID_ARG;
+    }
 
     result = xud_context_create(&context, width, height);
     if (result != XUD_OK)
@@ -214,7 +215,7 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        shown on, which is a fourth reason to tell apart from "no lo ader", "no instance" and "no
        device".
      */
-    result = xud_window_open(&context->window, width, height);
+    result = xud_window_open(&context->window, width, height, title);
     if (result != XUD_OK)
         goto fail;
     result = xud_window_required_instance_extensions(context->window, requiredNames, &requiredCount);

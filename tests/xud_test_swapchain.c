@@ -430,7 +430,7 @@ static void xud_test_gpu_swapchain(void) {
     if (loader == NULL)
         return;
 
-    result = xud_window_open(&window, 320u, 240u);
+    result = xud_window_open(&window, 320u, 240u, "xud_test");
     xud_check(result == XUD_OK, "gpu-swapchain/window-open", "the surface needs a real window");
     if (window == NULL) {
         (void)xud_loader_close(&loader);

@@ -37,9 +37,9 @@
 
 int main(void) {
     XudContext* context = NULL;
-    XudResult step = xud_init_context(&context, 480, 320);
+    XudResult step = xud_init_context(&context, 480, 320, "hello_triangle");
 
-    printf("xud_init_context(480, 320) -> %s (xudlibc %s)\n", xud_result_name(step), XUD_VERSION);
+    printf("xud_init_context(480, 320, \"hello_triangle\") -> %s (xudlibc %s)\n", xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         return (step == XUD_UNSUPPORTED) ? 0 : 1;
     }

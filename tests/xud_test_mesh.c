@@ -397,7 +397,7 @@ static void xud_test_mesh_gpu(void) {
     uint32_t element = 0u;
     uint32_t mismatched = 0u;
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-mesh/bringup-completes",
         "this machine has a Vulkan loader and a window system, so the ladder must complete");
     if (context == NULL) {

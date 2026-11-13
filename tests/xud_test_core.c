@@ -25,15 +25,16 @@
 static void xud_test_init_arg_validation(void) {
     XudContext* context = NULL;
 
-    xud_check(
-        xud_init_context(NULL, 640, 480) == XUD_INVALID_ARG, "init/null-out-param", "a null out-param must be rejected, not dereferenced");
+    xud_check(xud_init_context(NULL, 640, 480, "xud_test") == XUD_INVALID_ARG, "init/null-out-param",
+        "a null out-param must be rejected, not dereferenced");
 
-    xud_check(xud_init_context(&context, 0, 480) == XUD_INVALID_ARG, "init/zero-width", "zero width must be rejected");
-    xud_check(xud_init_context(&context, 640, 0) == XUD_INVALID_ARG, "init/zero-height", "zero height must be rejected");
-    xud_check(xud_init_context(&context, XUD_MAX_WINDOW_EXTENT + 1u, 480) == XUD_INVALID_ARG, "init/extent-too-large",
+    xud_check(xud_init_context(&context, 0, 480, "xud_test") == XUD_INVALID_ARG, "init/zero-width", "zero width must be rejected");
+    xud_check(xud_init_context(&context, 640, 0, "xud_test") == XUD_INVALID_ARG, "init/zero-height", "zero height must be rejected");
+    xud_check(xud_init_context(&context, XUD_MAX_WINDOW_EXTENT + 1u, 480, "xud_test") == XUD_INVALID_ARG, "init/extent-too-large",
         "an absurd extent must be rejected host-side");
-    xud_check(xud_init_context(&context, 0, XUD_MAX_WINDOW_EXTENT + 1u) == XUD_INVALID_ARG, "init/zero-height-over-limit",
+    xud_check(xud_init_context(&context, 0, XUD_MAX_WINDOW_EXTENT + 1u, "xud_test") == XUD_INVALID_ARG, "init/zero-height-over-limit",
         "both halves bad at once is still one bad argument");
+    xud_check(xud_init_context(&context, 640, 480, NULL) == XUD_INVALID_ARG, "init/null-title", "a null title must be rejected");
 
     /* The limit itself is not checked here: it is inside the argument bound, so it reaches the
        windo w layer and a real window is opened, which is the boundary test's job, not this one's.
@@ -66,7 +67,7 @@ static void xud_test_vulkan_supported(void) {
 static void xud_test_init_bringup_boundary(void) {
     XudContext* context = NULL;
     XudResult smallest = XUD_INVALID_ARG;
-    const XudResult result = xud_init_context(&context, 640, 480);
+    const XudResult result = xud_init_context(&context, 640, 480, "xud_test");
 
     xud_check((result == XUD_OK) || (result == XUD_UNSUPPORTED), "init/complete-or-refused",
         "a valid request either completes to a context or is refused outright, never a"
@@ -84,7 +85,7 @@ static void xud_test_init_bringup_boundary(void) {
        comp letion must close back to nothing; a refusal must hand back nothing. Both are the same
        contract the 640x480 call above is checking, at the other end of the accepted range.
      */
-    smallest = xud_init_context(&context, 1, 1);
+    smallest = xud_init_context(&context, 1, 1, "xud_test");
     xud_check(smallest != XUD_INVALID_ARG, "init/min-extent-accepted", "1x1 is inside the argument bound, so it is not a bad argument");
     if (smallest == XUD_OK) {
         xud_check(context != NULL, "init/min-extent-hands-context", "a 1x1 window the compositor accepted comes back as a context");
@@ -101,7 +102,7 @@ static void xud_test_init_bringup_boundary(void) {
      */
     xud_check(XUD_MAX_WINDOW_EXTENT <= XUD_WINDOW_MAX_EXTENT, "init/extent-limit-inside-glfw-bound",
         "the accepted limit must be inside GLFW's own int bound");
-    xud_check(xud_init_context(&context, XUD_MAX_WINDOW_EXTENT + 1u, XUD_MAX_WINDOW_EXTENT) == XUD_INVALID_ARG,
+    xud_check(xud_init_context(&context, XUD_MAX_WINDOW_EXTENT + 1u, XUD_MAX_WINDOW_EXTENT, "xud_test") == XUD_INVALID_ARG,
         "init/limit-extent-rejected", "one above the limit is a bad argument");
     xud_check(context == NULL, "init/limit-extent-null", "and nothing was handed back");
 
@@ -155,11 +156,11 @@ static void xud_test_close(void) {
 static void xud_test_no_leak(void) {
     for (int i = 0; i < 1000; i++) {
         XudContext* context = NULL;
-        (void)xud_init_context(&context, 0u, 480u);
+        (void)xud_init_context(&context, 0u, 480u, "xud_test");
         (void)xud_close_context(&context);
-        (void)xud_init_context(&context, XUD_MAX_WINDOW_EXTENT + 1u, 480u);
+        (void)xud_init_context(&context, XUD_MAX_WINDOW_EXTENT + 1u, 480u, "xud_test");
         (void)xud_close_context(&context);
-        (void)xud_init_context(&context, 480u, XUD_MAX_WINDOW_EXTENT + 1u);
+        (void)xud_init_context(&context, 480u, XUD_MAX_WINDOW_EXTENT + 1u, "xud_test");
         xud_check(context == NULL, "no-leak/rejected-hands-nothing", "a refused init must leave the out-param NULL, on every iteration");
         (void)xud_close_context(&context);
     }
@@ -196,7 +197,7 @@ static void xud_test_gpu_context(void) {
     XudResult result = XUD_OK;
     int cycle = 0;
 
-    result = xud_init_context(&context, 320u, 240u);
+    result = xud_init_context(&context, 320u, 240u, "xud_test");
     xud_check(result == XUD_OK, "gpu-context/bringup-completes",
         "this machine has a Vulkan loader and a Wayland session, so the ladder must complete");
     if (context == NULL)
@@ -408,7 +409,7 @@ static void xud_test_gpu_context(void) {
                 "gpu-context/set-size-over-device-bound", "above the device's 2D image limit is a machine refusal, not a bad argument");
             xud_check(context->window->width == 160u, "gpu-context/set-size-refusal-untouched",
                 "and the refusal moved nothing: the window record still names the extent the resize above left");
-            xud_check(xud_init_context(&oversized, deviceLimit + 1u, deviceLimit + 1u) == XUD_UNSUPPORTED,
+            xud_check(xud_init_context(&oversized, deviceLimit + 1u, deviceLimit + 1u, "xud_test") == XUD_UNSUPPORTED,
                 "gpu-context/init-over-device-bound",
                 "and the same refusal at bring-up: the extent gate answers before the swapchain would have");
             xud_check(oversized == NULL, "gpu-context/init-over-device-bound-null", "and nothing was handed back");
@@ -427,7 +428,7 @@ static void xud_test_gpu_context(void) {
      */
     for (cycle = 0; cycle < XUD_TEST_GPU_CONTEXT_CYCLES; cycle++) {
         XudContext* once = NULL;
-        (void)xud_init_context(&once, 64u, 64u);
+        (void)xud_init_context(&once, 64u, 64u, "xud_test");
         if (once != NULL)
             (void)xud_close_context(&once);
         xud_check(once == NULL, "gpu-context/cycle-hands-nothing-back",

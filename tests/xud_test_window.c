@@ -25,10 +25,10 @@
 /*-----------------------------------------------------------------------------------------------
  * The window layer, headless half: every guard that runs before GLFW is called, plus the pure
  * accessors and the loader-row checks. xud_window_open() is only ever called here with bad argum
- * ents: this machine has a Wayland session, so a valid call would create a real window and the
- * default run would stop being device-free. The window that is allocated here is the synthetic st
- * ate every other layer tests - no GLFW window, no surface - which is what makes the handleless t
- * eardown rule of this layer testable without a window system.
+ * ents, which is what keeps the default run device-free; the real window a valid call would crea
+ * te is opened below the gate, where its title is read back off the window system. The window al
+ * located here is the synthetic state every other layer tests - no GLFW window, no surface - whic
+ * h is what makes the handleless teardown rule of this layer testable without a window system.
  *-----------------------------------------------------------------------------------------------*/
 
 static void xud_test_window_pure(void) {
@@ -63,15 +63,19 @@ static void xud_test_window_pure(void) {
     synthetic->glfwWindow = NULL;
 
     /* open: the argument guards, all of them ahead of any GLFW call. */
-    xud_check(xud_window_open(NULL, 640u, 480u) == XUD_INVALID_ARG, "window/open-null-out", "a null out-param must be rejected");
-    xud_check(xud_window_open(&window, 0u, 480u) == XUD_INVALID_ARG, "window/open-zero-width", "an extent of 0 is not a window");
-    xud_check(xud_window_open(&window, 640u, 0u) == XUD_INVALID_ARG, "window/open-zero-height", "an extent of 0 is not a window");
-    xud_check(xud_window_open(&window, XUD_WINDOW_MAX_EXTENT + 1u, 480u) == XUD_INVALID_ARG, "window/open-over-int-width",
+    xud_check(
+        xud_window_open(NULL, 640u, 480u, "xud_test") == XUD_INVALID_ARG, "window/open-null-out", "a null out-param must be rejected");
+    xud_check(
+        xud_window_open(&window, 0u, 480u, "xud_test") == XUD_INVALID_ARG, "window/open-zero-width", "an extent of 0 is not a window");
+    xud_check(
+        xud_window_open(&window, 640u, 0u, "xud_test") == XUD_INVALID_ARG, "window/open-zero-height", "an extent of 0 is not a window");
+    xud_check(xud_window_open(&window, XUD_WINDOW_MAX_EXTENT + 1u, 480u, "xud_test") == XUD_INVALID_ARG, "window/open-over-int-width",
         "an extent above glfwCreateWindow's int bound is a bad argument, not a wrap");
-    xud_check(xud_window_open(&window, 640u, XUD_WINDOW_MAX_EXTENT + 1u) == XUD_INVALID_ARG, "window/open-over-int-height",
+    xud_check(xud_window_open(&window, 640u, XUD_WINDOW_MAX_EXTENT + 1u, "xud_test") == XUD_INVALID_ARG, "window/open-over-int-height",
         "the same bound on the other axis");
+    xud_check(xud_window_open(&window, 640u, 480u, NULL) == XUD_INVALID_ARG, "window/open-null-title", "a null title must be rejected");
     xud_check(window == NULL, "window/open-refusals-null", "a refused open leaves the slot empty");
-    xud_check(xud_window_open(&synthetic, 640u, 480u) == XUD_INVALID_ARG, "window/open-slot-taken",
+    xud_check(xud_window_open(&synthetic, 640u, 480u, "xud_test") == XUD_INVALID_ARG, "window/open-slot-taken",
         "a slot that already owns a window is not filled twice");
     xud_check(synthetic != NULL, "window/open-slot-taken-leaves-it", "the refusal must not have freed or cleared the window in hand");
 
@@ -259,7 +263,7 @@ static void xud_test_gpu_window(void) {
     if (loader == NULL)
         return;
 
-    result = xud_window_open(&window, 320u, 240u);
+    result = xud_window_open(&window, 320u, 240u, "xud_test");
     xud_check(result == XUD_OK, "gpu-window/open", "this machine has a Wayland session, so GLFW must create a window");
     if (window == NULL) {
         (void)xud_loader_close(&loader);
@@ -271,6 +275,8 @@ static void xud_test_gpu_window(void) {
         (window->width == 320u) && (window->height == 240u), "gpu-window/extent-recorded", "the extent asked for is the extent recorded");
     xud_check(window->surface == VK_NULL_HANDLE, "gpu-window/surface-null-at-open", "opening a window creates no surface");
     xud_check(window->surfaceInstance == VK_NULL_HANDLE, "gpu-window/surface-instance-null", "and records no instance for one");
+    xud_check((glfwGetWindowTitle(window->glfwWindow) != NULL) && (strcmp(glfwGetWindowTitle(window->glfwWindow), "xud_test") == 0),
+        "gpu-window/open-title-reaches-window", "the title handed to the open is the title the window system holds");
 
     /* The window system's own close flag: false on a fresh window, and GLFW's own setter is what fl
        ips it - the deterministic stand-in for a window manager's close button that no test can as
@@ -383,9 +389,9 @@ static void xud_test_gpu_window(void) {
 
     /* Two windows alive at once: GLFW's state is process-level, and the count that decides when g
        lwfTerminate runs is the one thing that makes the second window's teardown safe. */
-    result = xud_window_open(&first, 64u, 64u);
+    result = xud_window_open(&first, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-window/open-first", "a second run opens one more window");
-    result = xud_window_open(&second, 64u, 64u);
+    result = xud_window_open(&second, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-window/open-second", "and a third at the same time");
     xud_check((first != NULL) && (second != NULL), "gpu-window/two-live", "both windows are alive together");
     if ((first != NULL) && (second != NULL)) {
@@ -421,7 +427,7 @@ static void xud_test_gpu_window_fps(void) {
     xud_check(
         xud_get_target_fps(NULL, &empty) == XUD_INVALID_ARG, "gpu-fps/get-null-out", "and a target with nowhere to be written is refused");
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-fps/bringup-completes", "a real context is up, and with it the window the pair reaches");
     if (context == NULL) {
         return;

@@ -414,9 +414,9 @@ int main(void) {
     XudResult step;
     int status = 0;
 
-    step = xud_init_context(&context, XUD_WAVING_WIDTH, XUD_WAVING_HEIGHT);
-    printf(
-        LOGNAME ": xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_WAVING_WIDTH, XUD_WAVING_HEIGHT, xud_result_name(step), XUD_VERSION);
+    step = xud_init_context(&context, XUD_WAVING_WIDTH, XUD_WAVING_HEIGHT, LOGNAME);
+    printf(LOGNAME ": xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_WAVING_WIDTH, XUD_WAVING_HEIGHT, LOGNAME,
+        xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         return (step == XUD_UNSUPPORTED) ? 0 : 1;
     }

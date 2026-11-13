@@ -236,9 +236,9 @@ int main(void) {
         return 1;
     }
 
-    result = xud_init_context(&context, XUD_HM_WIDTH, XUD_HM_HEIGHT);
-    printf("%s: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_LOG_NAME, XUD_HM_WIDTH, XUD_HM_HEIGHT, xud_result_name(result),
-        XUD_VERSION);
+    result = xud_init_context(&context, XUD_HM_WIDTH, XUD_HM_HEIGHT, XUD_LOG_NAME);
+    printf("%s: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_LOG_NAME, XUD_HM_WIDTH, XUD_HM_HEIGHT, XUD_LOG_NAME,
+        xud_result_name(result), XUD_VERSION);
     if (result != XUD_OK) {
         free(fontFile);
         return (result == XUD_UNSUPPORTED) ? 0 : 1;

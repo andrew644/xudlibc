@@ -820,10 +820,10 @@ int main(void) {
     uint32_t windowClosed = 0u;
     uint32_t timedOut = 0u;
     uint32_t settling = 0u; /* the run's short frames: see the note beside the scene call below */
-    XudResult result = xud_init_context(&context, XUD_BREAKOUT_WINDOW_WIDTH, XUD_BREAKOUT_WINDOW_HEIGHT);
+    XudResult result = xud_init_context(&context, XUD_BREAKOUT_WINDOW_WIDTH, XUD_BREAKOUT_WINDOW_HEIGHT, "breakout_3d");
 
-    printf("breakout_3d: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_BREAKOUT_WINDOW_WIDTH, XUD_BREAKOUT_WINDOW_HEIGHT,
-        xud_result_name(result), XUD_VERSION);
+    printf("breakout_3d: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_BREAKOUT_WINDOW_WIDTH, XUD_BREAKOUT_WINDOW_HEIGHT,
+        "breakout_3d", xud_result_name(result), XUD_VERSION);
     if (result != XUD_OK) {
         return (result == XUD_UNSUPPORTED) ? 0 : 1;
     }

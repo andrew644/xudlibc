@@ -668,7 +668,7 @@ static void xud_test_gpu_descriptor(void) {
     VkDeviceSize bytes = 0u;
     VkDeviceSize cursor = 0u;
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-desc/context-completes",
         "the ladder completes with this rung in it, which is the descriptor's bring-up not refusing "
         "a real device's caps");

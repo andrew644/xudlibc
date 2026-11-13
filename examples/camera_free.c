@@ -236,9 +236,9 @@ int main(void) {
         return 1;
     }
 
-    step = xud_init_context(&context, XUD_CAMERA_FREE_WIDTH, XUD_CAMERA_FREE_HEIGHT);
-    printf("camera_free: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_CAMERA_FREE_WIDTH, XUD_CAMERA_FREE_HEIGHT,
-        xud_result_name(step), XUD_VERSION);
+    step = xud_init_context(&context, XUD_CAMERA_FREE_WIDTH, XUD_CAMERA_FREE_HEIGHT, "camera_free");
+    printf("camera_free: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_CAMERA_FREE_WIDTH, XUD_CAMERA_FREE_HEIGHT,
+        "camera_free", xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         free(fontFile);
         return (step == XUD_UNSUPPORTED) ? 0 : 1;

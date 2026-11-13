@@ -218,7 +218,7 @@ static void xud_test_renderer_resize_gpu(void) {
     uint32_t fbWidth = 0u;
     uint32_t fbHeight = 0u;
 
-    result = xud_init_context(&context, XUD_TEST_RESIZE_OPEN_EXTENT, XUD_TEST_RESIZE_OPEN_EXTENT);
+    result = xud_init_context(&context, XUD_TEST_RESIZE_OPEN_EXTENT, XUD_TEST_RESIZE_OPEN_EXTENT, "xud_test");
     xud_check(result == XUD_OK, "gpu-resize/context-completes", "the ladder has to complete before anything can be resized");
     if (context == NULL) {
         return;
@@ -376,7 +376,7 @@ static void xud_test_background_gpu(void) {
     XudColor red = (XudColor) { 255u, 0u, 0u, 255u };
     XudColor green = (XudColor) { 0u, 255u, 0u, 255u };
 
-    result = xud_init_context(&context, XUD_TEST_RESIZE_OPEN_EXTENT, XUD_TEST_RESIZE_OPEN_EXTENT);
+    result = xud_init_context(&context, XUD_TEST_RESIZE_OPEN_EXTENT, XUD_TEST_RESIZE_OPEN_EXTENT, "xud_test");
     xud_check(result == XUD_OK, "gpu-background/context", "a context at the small extent, the resize area's own");
     if (context == NULL) {
         return;

@@ -571,7 +571,7 @@ static void xud_test_renderpass_gpu(void) {
     memset(&current, 0, sizeof current);
     memset(&depth, 0, sizeof depth);
 
-    result = xud_init_context(&context, 96u, 64u);
+    result = xud_init_context(&context, 96u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-renderpass/context-completes", "the ladder has to complete before a pass can exist");
     if (context == NULL) {
         return;

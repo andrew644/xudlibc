@@ -31,9 +31,9 @@ int main(void) {
     printf("xud_vulkan_supported() -> %s\n", xud_result_name(supported));
 
     XudContext* context = NULL;
-    const XudResult result = xud_init_context(&context, 640, 480);
+    const XudResult result = xud_init_context(&context, 640, 480, "hello_context");
 
-    printf("xud_init_context(640, 480) -> %s (xudlibc %s)\n", xud_result_name(result), XUD_VERSION);
+    printf("xud_init_context(640, 480, \"hello_context\") -> %s (xudlibc %s)\n", xud_result_name(result), XUD_VERSION);
 
     if (result != XUD_OK) {
         /* XUD_UNSUPPORTED is the honest state on a machine with no Vulkan loader or no window sys

@@ -557,10 +557,15 @@ typedef struct XudContext XudContext;
 /// device present and no window open.
 XudResult xud_vulkan_supported(void);
 
-/// Create the library context for a width x height window, in creation order: volkInitialize() the
-/// loader, open the diagnostics layer when XUD_VALIDATE asked for it, open a GLFW window, create
-/// the VkInstance carrying that window's required instance extensions, install the debug
-/// messenger, open the physical layer through THAT instance (enumerate, rank, record caps), ask
+/// Create the library context for a window of `width` x `height` named `title` - raylib's
+/// InitWindow(width, height, title) with the out-param first. The title is the name the window
+/// system shows and decorates with: GLFW copies it when the window is created, so the caller's
+/// string is read during this call and may be freed the moment it returns, this library keeps no
+/// copy of it, and an empty one is a window with no name rather than a bad argument. Creation order:
+/// volkInitialize() the loader, open the diagnostics layer when XUD_VALIDATE asked for it, open the
+/// named GLFW window, create the VkInstance carrying that window's required instance extensions,
+/// install the debug messenger, open the physical layer through THAT instance (enumerate, rank,
+/// record caps), ask
 /// GLFW whether that physical device can present to this window's system, create the VkDevice from
 /// the recorded caps and the chosen queue family, resolve the two role queues, create the
 /// VkSurfaceKHR for the window, and create the VkSwapchainKHR for that surface on that device (the
@@ -572,14 +577,15 @@ XudResult xud_vulkan_supported(void);
 /// the pass/pipeline/framebuffer/frame ladder), then the handle table as the top rung. On entry
 /// *outContext must be NULL; it is NULL on every failure path, and every failure path tears down
 /// what was built - a refused request leaks nothing and a valid one never hands back a half-built
-/// context. XUD_UNSUPPORTED means this machine cannot host a context at all (no Vulkan loader, no
+/// context. A NULL `title` is refused beside the out-param and the extent bounds. XUD_UNSUPPORTED means
+/// this machine cannot host a context at all (no Vulkan loader, no
 /// window system, no device this layer can take, a window system this device cannot present to,
 /// a surface this layer cannot get a swapchain for, a renderer or an allocator this layer cannot
 /// open); no field of XudContext is a sentinel any more, and what is missing is not a field but a
 /// rung above the renderer - the rest of raylib's 3D shape family, the camera + transform math an
 /// d the object kinds a public handle would name - which is why a caller can draw a triangle, a box
 /// and a sphere today and nothing else, and why no handle names an object yet.
-XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height);
+XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t height, const char* title);
 
 /// Tear the context down in the reverse order of creation - handle table -> renderer -> allocator
 /// -> swapchain -> device -> surface -> window -> physical -> instance -> diagnostics -> loader -

@@ -973,7 +973,7 @@ static void xud_test_batch_gpu(void) {
 
     memset(&stats, 0, sizeof(stats));
 
-    result = xud_init_context(&context, 256u, 256u);
+    result = xud_init_context(&context, 256u, 256u, "xud_test");
     xud_check(result == XUD_OK, "gpu-batch/context-completes", "the ladder has to complete before the batch can exist");
     if (context == NULL) {
         return;

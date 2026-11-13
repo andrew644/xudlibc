@@ -821,7 +821,7 @@ static void xud_test_audio_gpu(void) {
     memset(&audio, 0, sizeof(audio));
     memset(&info, 0, sizeof(info));
 
-    xud_check(xud_init_context(&context, 64u, 64u) == XUD_OK, "gpu-context",
+    xud_check(xud_init_context(&context, 64u, 64u, "xud_test") == XUD_OK, "gpu-context",
         "a context comes up for the audio half, which is the one thing a decode does NOT need and a public handle does");
     if (context == NULL) {
         return;
@@ -1163,7 +1163,7 @@ static void xud_test_audio_device(void) {
     memset(&handle, 0, sizeof(handle));
     memset(&audio, 0, sizeof(audio));
 
-    xud_check(xud_init_context(&context, 64u, 64u) == XUD_OK, "device-context",
+    xud_check(xud_init_context(&context, 64u, 64u, "xud_test") == XUD_OK, "device-context",
         "a real context is up, which is the one thing the sound rung needs and a decode does not");
     if (context == NULL) {
         return;
@@ -1689,7 +1689,7 @@ static void xud_test_audio_spatial_device(void) {
     memset(&plain, 0, sizeof(plain));
     memset(&audio, 0, sizeof(audio));
 
-    xud_check(xud_init_context(&context, 64u, 64u) == XUD_OK, "spatial-device-context",
+    xud_check(xud_init_context(&context, 64u, 64u, "xud_test") == XUD_OK, "spatial-device-context",
         "a real context is up, which is the one thing the listener needs and the arithmetic above did not");
     if (context == NULL) {
         return;

@@ -535,7 +535,7 @@ static void xud_test_texture_gpu(void) {
         }
     }
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-texture/bringup-completes",
         "this machine has a Vulkan loader and a window system, so the ladder must complete");
     if (context == NULL) {
@@ -714,7 +714,7 @@ static void xud_test_texture_gpu(void) {
        slots, and the 16th create is the refusal a scene halfway through a level-load meets. A second
        context keeps the walk above's slot expectations its own.
     */
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-texture/ceiling-bringup", "the second context completes");
     if (context != NULL) {
         XudHandle ceilingHandles[XUD_MAX_TEXTURES];
@@ -892,7 +892,7 @@ static void xud_test_texture_readback_gpu(void) {
         }
     }
 
-    result = xud_init_context(&context, XUD_TEST_READBACK_EXTENT, XUD_TEST_READBACK_EXTENT);
+    result = xud_init_context(&context, XUD_TEST_READBACK_EXTENT, XUD_TEST_READBACK_EXTENT, "xud_test");
     xud_check(result == XUD_OK, "gpu-texture/readback-bringup",
         "this machine has a Vulkan loader and a window system, so the ladder must complete");
     if (context == NULL) {
@@ -1263,7 +1263,7 @@ static void xud_test_texture_params_gpu(void) {
 
     memset(&handle, 0, sizeof(handle));
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-params/bringup-completes", "a real context is up, which is what the sampler recreate needs");
     if (context == NULL) {
         return;

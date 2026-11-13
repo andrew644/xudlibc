@@ -466,7 +466,7 @@ static void xud_test_material_gpu(void) {
     XudMaterialRecord const* record = NULL;
     uint32_t live = 0u;
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-material/bringup-completes",
         "this machine has a Vulkan loader and a window system, so the ladder must complete");
     if (context == NULL) {

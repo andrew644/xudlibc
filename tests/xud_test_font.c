@@ -1297,7 +1297,7 @@ static void xud_test_font_gpu(void) {
     data.codepoints = NULL;
     data.codepointCount = 0u;
 
-    xud_check(xud_init_context(&context, 64u, 64u) == XUD_OK, "gpu-context",
+    xud_check(xud_init_context(&context, 64u, 64u, "xud_test") == XUD_OK, "gpu-context",
         "a context comes up for the font half, so the atlas has a device to be created on");
     if (context == NULL) {
         return;

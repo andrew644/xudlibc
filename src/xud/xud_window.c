@@ -141,16 +141,17 @@ XudResult xud_window_check_instance_support(bool* outSupports, const XudWindow* 
 /// glfwGetRequiredInstanceExtensions returns pointers into storage GLFW keeps only until the libra
 /// ry is terminated (src/vulkan.c returns _glfw.vk.extensions, a static array of static buffers), a
 /// nd this struct owns the names for as long as the window lives.
-XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height) {
+XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height, const char* title) {
     XudWindow* window = NULL;
     const char** requiredNames = NULL;
     uint32_t requiredCount = 0u;
     XudResult result = XUD_INVALID_ARG;
     uint32_t row = 0u;
 
-    if ((outWindow == NULL) || (*outWindow != NULL) || (width < XUD_WINDOW_MIN_EXTENT) || (width > XUD_WINDOW_MAX_EXTENT)
-        || (height < XUD_WINDOW_MIN_EXTENT) || (height > XUD_WINDOW_MAX_EXTENT))
+    if ((outWindow == NULL) || (*outWindow != NULL) || (title == NULL) || (width < XUD_WINDOW_MIN_EXTENT) || (width > XUD_WINDOW_MAX_EXTENT)
+        || (height < XUD_WINDOW_MIN_EXTENT) || (height > XUD_WINDOW_MAX_EXTENT)) {
         return XUD_INVALID_ARG;
+    }
 
     window = calloc(1, sizeof(XudWindow));
     if (window == NULL)
@@ -200,7 +201,7 @@ XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height
        re the hint lands (_glfw.hints.context.client). A window hinted for GL or EGL would carry a
        GL context this library does not have and must not have. */
     glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-    window->glfwWindow = glfwCreateWindow((int)width, (int)height, XUD_WINDOW_TITLE, NULL, NULL);
+    window->glfwWindow = glfwCreateWindow((int)width, (int)height, title, NULL, NULL);
     if (window->glfwWindow == NULL) {
         result = XUD_UNSUPPORTED; /* the window system refused: no surface can be created for no
                                     thing */

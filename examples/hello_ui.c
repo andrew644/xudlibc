@@ -205,9 +205,9 @@ int main(void) {
     printf("hello_ui: read %u bytes of %s\n", fontBytes, XUD_HELLO_FONT_PATH);
 
     XudContext* context = NULL;
-    XudResult step = xud_init_context(&context, XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT);
+    XudResult step = xud_init_context(&context, XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT, "hello_ui");
 
-    printf("hello_ui: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT,
+    printf("hello_ui: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT, "hello_ui",
         xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         free(fileData);

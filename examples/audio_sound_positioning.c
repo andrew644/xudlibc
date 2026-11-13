@@ -622,9 +622,9 @@ int main(int argc, char** argv) {
             (double)XUD_POSITIONING_WALK_TURN);
     }
 
-    step = xud_init_context(&context, XUD_POSITIONING_WIDTH, XUD_POSITIONING_HEIGHT);
-    printf(LOGNAME ": xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_POSITIONING_WIDTH, XUD_POSITIONING_HEIGHT, xud_result_name(step),
-        XUD_VERSION);
+    step = xud_init_context(&context, XUD_POSITIONING_WIDTH, XUD_POSITIONING_HEIGHT, LOGNAME);
+    printf(LOGNAME ": xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_POSITIONING_WIDTH, XUD_POSITIONING_HEIGHT, LOGNAME,
+        xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         return (step == XUD_UNSUPPORTED) ? 0 : 1;
     }

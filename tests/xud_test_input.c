@@ -343,7 +343,7 @@ static void xud_test_input_gpu(void) {
     float move = 0.0f;
     const char* name = NULL;
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "input/gpu-context", "bring-up opened the rung as part of it");
     if (result != XUD_OK) {
         return;

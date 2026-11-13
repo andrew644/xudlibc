@@ -309,7 +309,7 @@ static void xud_test_gpu_draw(void) {
     const uint8_t triangleColor[4] = { 255u, 255u, 255u, 255u };
     const float triangleNormal[3] = { 0.0f, 0.0f, 1.0f };
 
-    result = xud_init_context(&context, 256u, 256u);
+    result = xud_init_context(&context, 256u, 256u, "xud_test");
     xud_check(result == XUD_OK, "gpu-draw/context-completes", "the ladder has to complete before anything can be drawn");
     if (context == NULL)
         return;

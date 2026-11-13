@@ -439,9 +439,9 @@ int main(void) {
         return 1;
     }
 
-    step = xud_init_context(&context, XUD_FIRST_PERSON_WIDTH, XUD_FIRST_PERSON_HEIGHT);
-    printf("camera_first_person: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_FIRST_PERSON_WIDTH, XUD_FIRST_PERSON_HEIGHT,
-        xud_result_name(step), XUD_VERSION);
+    step = xud_init_context(&context, XUD_FIRST_PERSON_WIDTH, XUD_FIRST_PERSON_HEIGHT, "camera_first_person");
+    printf("camera_first_person: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_FIRST_PERSON_WIDTH, XUD_FIRST_PERSON_HEIGHT,
+        "camera_first_person", xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         free(fontFile);
         return (step == XUD_UNSUPPORTED) ? 0 : 1;

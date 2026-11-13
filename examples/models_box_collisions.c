@@ -288,9 +288,9 @@ int main(void) {
         return 1;
     }
 
-    step = xud_init_context(&context, XUD_BOX_COLLISIONS_WIDTH, XUD_BOX_COLLISIONS_HEIGHT);
-    printf("models_box_collisions: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_BOX_COLLISIONS_WIDTH, XUD_BOX_COLLISIONS_HEIGHT,
-        xud_result_name(step), XUD_VERSION);
+    step = xud_init_context(&context, XUD_BOX_COLLISIONS_WIDTH, XUD_BOX_COLLISIONS_HEIGHT, "models_box_collisions");
+    printf("models_box_collisions: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_BOX_COLLISIONS_WIDTH,
+        XUD_BOX_COLLISIONS_HEIGHT, "models_box_collisions", xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         free(fontFile);
         return (step == XUD_UNSUPPORTED) ? 0 : 1;

@@ -208,7 +208,8 @@ static void xud_test_time_gpu(void) {
     uint64_t ticksAfter = 0u;
     uint64_t frequency = 0u;
 
-    xud_check(xud_init_context(&context, 64u, 64u) == XUD_OK, "time/gpu-context", "bring-up opened the clock rung as part of it");
+    xud_check(
+        xud_init_context(&context, 64u, 64u, "xud_test") == XUD_OK, "time/gpu-context", "bring-up opened the clock rung as part of it");
     if (context == NULL) {
         return;
     }

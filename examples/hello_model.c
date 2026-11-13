@@ -263,10 +263,10 @@ int main(void) {
     uint32_t refused = 0u;
     double now = 0.0;
     bool shouldClose = false;
-    XudResult step = xud_init_context(&context, XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT);
+    XudResult step = xud_init_context(&context, XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT, "hello_model");
 
-    printf("hello_model: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT,
-        xud_result_name(step), XUD_VERSION);
+    printf("hello_model: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT,
+        "hello_model", xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         return (step == XUD_UNSUPPORTED) ? 0 : 1;
     }

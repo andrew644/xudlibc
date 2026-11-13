@@ -3417,7 +3417,7 @@ static void xud_test_shapes_gpu(void) {
     XudVector2 triB = (XudVector2) { .x = 48.0f, .y = 32.0f };
     XudVector2 triC = (XudVector2) { .x = 32.0f, .y = 48.0f };
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-shapes/bringup-completes",
         "this machine has a Vulkan loader and a window system, so the ladder must complete");
     if (context == NULL) {

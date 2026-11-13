@@ -245,10 +245,10 @@ int main(void) {
     }
 
     XudContext* context = NULL;
-    XudResult step = xud_init_context(&context, XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT);
+    XudResult step = xud_init_context(&context, XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT, "hello_font");
 
-    printf("hello_font: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT,
-        xud_result_name(step), XUD_VERSION);
+    printf("hello_font: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_HELLO_WINDOW_WIDTH, XUD_HELLO_WINDOW_HEIGHT,
+        "hello_font", xud_result_name(step), XUD_VERSION);
     if (step != XUD_OK) {
         free(fileData);
         return (step == XUD_UNSUPPORTED) ? 0 : 1;

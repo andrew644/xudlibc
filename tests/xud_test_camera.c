@@ -864,7 +864,7 @@ static void xud_test_camera_gpu(void) {
         .near = 1.0f,
         .far = 4.0f };
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-camera/bringup-completes",
         "this machine has a Vulkan loader and a window system, so the ladder must complete");
     if (context == NULL) {

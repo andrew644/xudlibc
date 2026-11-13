@@ -104,11 +104,6 @@ static_assert(VK_MAX_EXTENSION_NAME_SIZE == 256u, "xud_window.h: GLFW's required
 #define XUD_WINDOW_MAX_EXTENT 2147483647u
 static_assert(XUD_WINDOW_MAX_EXTENT == (uint32_t)INT_MAX, "xud_window.h: the extent bound is glfwCreateWindow's int bound");
 
-/* The window title every xudlibc window carries. GLFW's Wayland backend uses it as the window
-   title and, through xdg-decoration, as the hint for a decorated session; a fixed title keeps
-   the library's windows identifiable without adding a public knob this layer does not own. */
-#define XUD_WINDOW_TITLE "xudlibc"
-
 /* How many instance-level extensions GLFW's window system can ask of an xudlibc instance. One
    macro for one number, defined by the instance layer (XUD_INSTANCE_EXTRA_MAX, the bound of the
    extra-names array xud_instance_create() accepts): this layer's storage is that wide, so the
@@ -174,15 +169,18 @@ XudResult xud_window_check_instance_support(bool* outSupports, const XudWindow* 
 /// dow with the client API hinted GLFW_NO_API (glfwWindowHint, window.c 400 -> _glfw.hints.con-
 /// text.client) - the only client API glfwCreateWindowSurface accepts (vulkan.c: a window whose
 /// context.client is not GLFW_NO_API is refused with VK_ERROR_NATIVE_WINDOW_IN_USE_KHR). GLFW's
-/// required names are copied into this struct, not kept as GLFW's pointers.
+/// required names are copied into this struct, not kept as GLFW's pointers. The title is the name the
+/// window system shows and decorates with (GLFW's Wayland backend uses it for the title and for the
+/// xdg-decoration hint); GLFW copies it at create and this layer keeps no copy, so the caller may free
+/// its string the moment this call returns, and "" is a window with no name rather than a bad argument.
 /// XUD_INVALID_ARG on a NULL out-param or one that already owns a window (nothing is created
-/// twice into the same slot), on an extent of 0 or above INT_MAX. XUD_UNSUPPORTED when GLFW re-
-/// fuses: no glfwInit, no Vulkan loader behind GLFW, or no window - on a machine with no Wayland
-/// session this is the honest answer. XUD_OUT_OF_RESOURCES when GLFW asks for more extensions
-/// than the bound above holds (truncating that list would mean a surface rung that silently can-
-/// not work), XUD_INTERNAL_ERROR when GLFW lies about it or a name does not fit its buffer.
-/// Every failure path frees the struct and leaves NULL.
-XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height);
+/// twice into the same slot), on an extent of 0 or above INT_MAX, or on a NULL title. XUD_
+/// UNSUPPORTED when GLFW refuses: no glfwInit, no Vulkan loader behind GLFW, or no window - on a
+/// machine with no Wayland session this is the honest answer. XUD_OUT_OF_RESOURCES when GLFW asks
+/// for more extensions than the bound above holds (truncating that list would mean a surface rung
+/// that silently cannot work), XUD_INTERNAL_ERROR when GLFW lies about it or a name does not fit
+/// its buffer. Every failure path frees the struct and leaves NULL.
+XudResult xud_window_open(XudWindow** outWindow, uint32_t width, uint32_t height, const char* title);
 
 /// Driver (GLFW): ask the window system for a new extent - glfwSetWindowSize. This is the one
 ///   call in this tree that moves a window's extent at all: nothing else writes window->width /

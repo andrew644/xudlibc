@@ -880,7 +880,7 @@ static void xud_test_model_gpu(void) {
     uint32_t mismatched = 0u;
     uint32_t drawBefore = 0u;
 
-    result = xud_init_context(&context, 64u, 64u);
+    result = xud_init_context(&context, 64u, 64u, "xud_test");
     xud_check(result == XUD_OK, "gpu-model/context",
         "this machine has a loader, so the ladder completes and the rungs below have a device to be handed");
     if (context == NULL) {

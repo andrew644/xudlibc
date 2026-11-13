@@ -381,9 +381,9 @@ int main(void) {
         return 1;
     }
 
-    result = xud_init_context(&context, XUD_MESH_GEN_WIDTH, XUD_MESH_GEN_HEIGHT);
-    printf("models_mesh_generation: xud_init_context(%u, %u) -> %s (xudlibc %s)\n", XUD_MESH_GEN_WIDTH, XUD_MESH_GEN_HEIGHT,
-        xud_result_name(result), XUD_VERSION);
+    result = xud_init_context(&context, XUD_MESH_GEN_WIDTH, XUD_MESH_GEN_HEIGHT, "models_mesh_generation");
+    printf("models_mesh_generation: xud_init_context(%u, %u, \"%s\") -> %s (xudlibc %s)\n", XUD_MESH_GEN_WIDTH, XUD_MESH_GEN_HEIGHT,
+        "models_mesh_generation", xud_result_name(result), XUD_VERSION);
     if (result != XUD_OK) {
         free(fontFile);
         return (result == XUD_UNSUPPORTED) ? 0 : 1;
