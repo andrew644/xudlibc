@@ -51,7 +51,7 @@ static void xud_shapes_note_refused(XudBatch* batch, uint64_t requestedVertices,
     const uint64_t indexBound = (uint64_t)XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES);
 
     (void)xud_batch_note_refused(batch, (uint32_t)((requestedVertices > vertexBound) ? vertexBound : requestedVertices),
-        (uint32_t)((requestedIndices > indexBound) ? indexBound : requestedIndices));
+        (uint32_t)((requestedIndices > indexBound) ? indexBound : requestedIndices), 0u);
 }
 
 /*-----------------------------------------------------------------------------------------------

@@ -1016,7 +1016,11 @@ XudResult xud_get_batch_stats(XudBatchStats* outStats, XudContext* context) {
     if (result != XUD_OK) {
         return result;
     }
-    result = xud_batch_wanted(context->renderer->batch, &outStats->wantedVertices, &outStats->wantedIndices);
+    result = xud_batch_wanted(context->renderer->batch, &outStats->wantedVertices, &outStats->wantedIndices, &outStats->wantedInstances);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_batch_instance_stats(context->renderer->batch, &outStats->instanceCount, &outStats->instanceCapacity);
     if (result != XUD_OK) {
         return result;
     }

@@ -46,12 +46,24 @@ layout(push_constant) uniform XudPushRow {
 
 layout(location = 0) in vec3 inPos;
 
+/* The instance matrix (S3.2), binding 4 of xud_batch.h: the depth passes replay the OPAQUE and
+   TEXTURED TRIANGLES rows, instanced ones included, and N copies at the push row's single matrix
+   would be N shadows at the origin and one pre-passed tuft where the shaded pass then finds N -
+   depth disagreeing with colour, which is exactly the disagreement the pre-pass exists to
+   prevent. Read only when the push row's instance bit is set; the shaded pass applies the same
+   branch with the same inputs, so both passes rasterize the same triangles either way. */
+layout(location = 4) in mat4 inInstanceMatrix;
+
 void main(void)
 {
     /* The three lines solid.vert's placement boils down to once the outputs it exists to feed
-       are gone: model, view-projection, Y-flip - identical arithmetic, identical gl_Position. */
+       are gone: model, view-projection, Y-flip - identical arithmetic, identical gl_Position,
+       including the arena-vs-instance branch and the variant mask. */
     const uint xudPushFlagVariantUI = 3u;
-    vec4 localPos = xudPush.modelMatrix * vec4(inPos, 1.0f);
-    vec4 clipPos = (xudPush.flags == xudPushFlagVariantUI) ? localPos : (xudFrame.viewProj * localPos);
+    const uint xudPushVariantMask = 3u;
+    const uint xudPushFlagInstanced = 8u;
+    mat4 model = ((xudPush.flags & xudPushFlagInstanced) != 0u) ? inInstanceMatrix : xudPush.modelMatrix;
+    vec4 localPos = model * vec4(inPos, 1.0f);
+    vec4 clipPos = ((xudPush.flags & xudPushVariantMask) == xudPushFlagVariantUI) ? localPos : (xudFrame.viewProj * localPos);
     gl_Position = vec4(clipPos.x, -clipPos.y, clipPos.z, clipPos.w);
 }

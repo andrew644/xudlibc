@@ -219,9 +219,14 @@ struct XudPipeline {
                     pre-pass has no fragment stage to receive */
     VkPipelineShaderStageCreateInfo prepassShaderStage; /* its ONE stage row: a pre-pass with a
                     fragment stage would be the shaded pass again */
-    VkPipelineVertexInputStateCreateInfo prepassVertexInput; /* one binding and one attribute: the
-                    batch's position stream alone, filled by xud_pipeline_fill_prepass_vertex_input
-                    () from the batch's own row 0 */
+    VkPipelineVertexInputStateCreateInfo prepassVertexInput; /* three bindings and five attributes: the
+                    batch's position stream plus the instance matrix - filled by
+                    xud_pipeline_fill_prepass_vertex_input() from the batch's filled rows */
+    VkVertexInputBindingDescription prepassBindings[3]; /* the depth passes' OWN binding rows: bindings
+                    0 and 4 are not adjacent in the batch's array, so the two rows are COPIED here and
+                    the state names this array - which the pipeline outlives either way */
+    VkVertexInputAttributeDescription prepassAttributes[5]; /* location 0 plus the matrix's four columns
+                    at 4..7, likewise copied - the depth stages declare exactly these five */
     VkPipelineColorBlendStateCreateInfo prepassBlending; /* attachmentCount 0: the pre-pass
                     subpass references no colour attachment, and a blend attachment row for
                     attachment 0 of a subpass that has none is VUID 05722 territory */

@@ -6,7 +6,6 @@ Renderer roadmap: each item only depends on items above it.
 
 - **S3.1** Let a texture hold hundreds of images instead of 15, and stop switching image
   sets per object. Must come before the next item, which can't switch anything.
-- **S3.2** Draw thousands of copies of the same object in one call (grass, rocks, bullets).
 - **S3.3** Let the graphics card decide what's off-screen or hidden and skip it, with no CPU
   involvement. This changes how geometry is stored, so it comes after the two above.
 

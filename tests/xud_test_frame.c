@@ -182,6 +182,8 @@ static void xud_test_frame_pure(void) {
         XudPushRow pushRow;
         const XudBatchDraw sentinelRow = { .firstIndex = 0u,
             .indexCount = 3u,
+            .firstInstance = XUD_BATCH_INSTANCE_FROM_PUSH,
+            .instanceCount = 1u,
             .topology = XUD_BATCH_TOPOLOGY_TRIANGLES,
             .variant = XUD_BATCH_VARIANT_OPAQUE,
             .materialIndex = XUD_BATCH_NO_MATERIAL,
@@ -191,11 +193,24 @@ static void xud_test_frame_pure(void) {
             .tint = { 1.0f, 1.0f, 1.0f, 1.0f } };
         const XudBatchDraw realRow = { .firstIndex = 12u,
             .indexCount = 6u,
+            .firstInstance = XUD_BATCH_INSTANCE_FROM_PUSH,
+            .instanceCount = 1u,
             .topology = XUD_BATCH_TOPOLOGY_LINES,
             .variant = XUD_BATCH_VARIANT_TRANSPARENT,
             .materialIndex = 3u,
             .textureIndex = 2u,
             .geometryIndex = XUD_BATCH_GEOMETRY_OWN,
+            .modelMatrix = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f },
+            .tint = { 1.0f, 1.0f, 1.0f, 1.0f } };
+        const XudBatchDraw instancedRow = { .firstIndex = 0u,
+            .indexCount = 36u,
+            .firstInstance = 0u,
+            .instanceCount = 1000u,
+            .topology = XUD_BATCH_TOPOLOGY_TRIANGLES,
+            .variant = XUD_BATCH_VARIANT_OPAQUE,
+            .materialIndex = 3u,
+            .textureIndex = 2u,
+            .geometryIndex = 1u,
             .modelMatrix = { 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f },
             .tint = { 1.0f, 1.0f, 1.0f, 1.0f } };
         uint32_t axis = 0u;
@@ -226,14 +241,18 @@ static void xud_test_frame_pure(void) {
             "n index a read could use and the sentinel indexes nothing");
         xud_check((pushRow.textureIndex == 0u) && (pushRow.flags == XUD_BATCH_VARIANT_OPAQUE) && (pushRow.reserved == 0u),
             "frame/push-other-members",
-            "texture 0, the slot the frame loop's per-frame bind leaves set 1 at - the white default the no-texture sentinel maps to - and "
-            "flags "
-            "the variant the draw was flushed under, and the padding byte-zeroed");
+            "texture 0, the slot the frame loop's per-frame bind leaves set 1 at - the white default the no-texture sentinel maps to - "
+            "flags the variant the draw was flushed under with NO instance bit, because the row's firstInstance names no instance row, "
+            "and the padding byte-zeroed");
 
         xud_check(xud_frame_fill_push_row(&pushRow, &realRow) == XUD_OK, "frame/push-real-ok", "and so for a real material slot");
         xud_check((pushRow.materialIndex == 3u) && (pushRow.flags == XUD_BATCH_VARIANT_TRANSPARENT), "frame/push-real-passthrough",
             "a slot that is not the sentinel is passed through unchanged, and the variant follows the"
             "row - the per-draw channel carries the draw's own facts, not this rung's");
+        xud_check(xud_frame_fill_push_row(&pushRow, &instancedRow) == XUD_OK, "frame/push-instanced-ok", "and so for an instanced row");
+        xud_check(pushRow.flags == (XUD_BATCH_VARIANT_OPAQUE | XUD_PUSH_FLAG_INSTANCED), "frame/push-instanced-flag",
+            "the row whose firstInstance names a real instance row sets the instance bit on top of the variant - the one word that tells "
+            "the vertex stage to take its matrix from bindings 4 and 5 rather than from this push");
         xud_check(pushRow.textureIndex == 2u, "frame/push-real-texture-passthrough",
             "and the same for the texture slot: a row that names a real entry of set 0's array is "
             "passed through unchanged, which is the slot the frame loop's slice rebind will bind set "
@@ -245,6 +264,8 @@ static void xud_test_frame_pure(void) {
 
         const XudBatchDraw posedRow = { .firstIndex = 6u,
             .indexCount = 3u,
+            .firstInstance = XUD_BATCH_INSTANCE_FROM_PUSH,
+            .instanceCount = 1u,
             .topology = XUD_BATCH_TOPOLOGY_TRIANGLES,
             .variant = XUD_BATCH_VARIANT_OPAQUE,
             .materialIndex = XUD_BATCH_NO_MATERIAL,

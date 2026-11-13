@@ -1375,12 +1375,15 @@ XudResult xud_end_drawing(XudContext* context);
 typedef struct XudBatchStats {
     uint32_t vertexCount; /* the live vertices, the count every stream holds */
     uint32_t indexCount; /* the live indices */
+    uint32_t instanceCount; /* the live instance rows - the count both instance streams hold (S3.2) */
     uint32_t vertexCapacity; /* the capacity an append's vertex bound is checked against */
     uint32_t indexCapacity; /* the capacity an append's index bound is checked against */
+    uint32_t instanceCapacity; /* the capacity an instanced draw's copy count is checked against */
     uint32_t drawCount; /* the draw rows recorded for the frame so far */
     uint64_t stagingBytes; /* the arena's total, in bytes */
     uint32_t wantedVertices; /* the largest refused append's vertex ask since the last grow - 0 when nothing was refused */
     uint32_t wantedIndices; /* the index half of the same ask */
+    uint32_t wantedInstances; /* the instance half of the same ask */
     uint32_t growthAsked; /* 1 when the ask above exceeds the current capacity: the next xud_begin_drawing() grows */
     uint32_t
         atBound; /* 1 when the capacity is at the batch's bound: a grow cannot happen, so an ask above the capacity is refused until the scene fits */
@@ -1654,6 +1657,21 @@ XudResult xud_draw_mesh(XudContext* context, XudHandle handle);
 /// a handle that does not name a live MESH slot of this context; XUD_UNSUPPORTED on a context that
 /// never completed bring-up; XUD_OUT_OF_MEMORY being the only batch code a caller can act on.
 XudResult xud_draw_mesh_ex(XudContext* context, XudHandle handle, const float* modelMatrix, XudColor tint);
+
+/// Draw N copies of one mesh in one call: the S3.2 instanced row. The copies share the mesh's five
+/// buffers and the material begun around the call - like xud_draw_mesh() - and differ in that the
+/// per-copy transform is DATA: matrices is instanceCount rows of 16 column-major floats, tints is
+/// instanceCount XudColours or NULL for white on every copy, and one draw row with the count in its
+/// vkCmdDrawIndexed instanceCount argument replays all of them, the vertex stage reading each copy's
+/// matrix and colour from the instance streams rather than from a push of its own. The batch spends
+/// instance rows for the call; the arena's vertex and index streams do not move. XUD_INVALID_ARG on
+/// a NULL context, a NULL or zero-count array, a non-finite matrix element, or a handle that does
+/// not name a live MESH slot of this context; XUD_UNSUPPORTED on a context that never completed
+/// bring-up; XUD_OUT_OF_MEMORY when the copies do not fit the instance region - the ask is recorded
+/// and the frame boundary grows the batch for the NEXT frame, the same deferral a refused shape
+/// gets.
+XudResult xud_draw_mesh_instanced(
+    XudContext* context, XudHandle handle, const float* matrices, const XudColor* tints, uint32_t instanceCount);
 
 /// Draw every mesh a model owns, each with the material the load read for it: the model's row of the
 /// drawing API. A model is a list of MESH slots and one MATERIAL slot per primitive, so this call

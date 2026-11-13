@@ -92,6 +92,21 @@ static const size_t xudPipelineFragCodeSize[XUD_PIPELINE_FRAG_MODULE_COUNT] = { 
  * The fixed pipeline state - pure, no driver call, no handle in hand
  *-----------------------------------------------------------------------------------------------*/
 
+/* The vertex-input row of the fullscreen blits - the resolve, the bright pass, the two blurs: the
+   triangle their vertex stages invent from gl_VertexIndex is bound to no buffer, so the row that
+   names nothing IS the correct row. It lives HERE, a file constant, rather than in
+   pipeline->vertexInput, because xud_pipeline_open overwrites that member with the batch's nine
+   rows before these three pipelines are created, and pointing the blits at it would hand their
+   gl_VertexIndex-only stages nine attributes they consume none of - 495 validation warnings per
+   test run, and a pipeline layout that promises vertex buffers its draws never bind. */
+static const VkPipelineVertexInputStateCreateInfo xudBlitVertexInput = { .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+    .pNext = NULL,
+    .flags = 0u,
+    .vertexBindingDescriptionCount = 0u,
+    .pVertexBindingDescriptions = NULL,
+    .vertexAttributeDescriptionCount = 0u,
+    .pVertexAttributeDescriptions = NULL };
+
 XudResult xud_pipeline_fill_vertex_input(XudPipeline* pipeline, const XudBatch* batch) {
     uint32_t stream = 0u;
 
@@ -101,19 +116,27 @@ XudResult xud_pipeline_fill_vertex_input(XudPipeline* pipeline, const XudBatch* 
 
     /* The rows must be the batch's FILLED rows rather than a zero row: xud_batch_open fills them before
        it creates anything, so a batch that exists has them, and a struct whose rows are still all zero is
-       one that never went through that open. The check is that the four binding numbers and the four
-       attribute locations are the stream numbers 0..3 - which is both what the pipeline's vertex-input row
-       is about to claim and what vkCmdBindVertexBuffers will bind, so a row that disagrees is refused here
-       rather than built into a pipeline that reads a binding nothing wrote.
+       one that never went through that open. The check is that every binding number and every attribute
+       location equals its array index - which is both what the pipeline's vertex-input row is about to
+       claim and what vkCmdBindVertexBuffers will bind, so a row that disagrees is refused here rather
+       than built into a pipeline that reads a binding nothing wrote. The count grew with S3.2: six
+       bindings (four streams, the instance two) and nine attributes (the streams, the matrix's four
+       columns, the tint), and the identity check covers all of them because the frame loop binds the
+       same six buffers in the same index order.
     */
-    for (stream = 0u; stream < XUD_BATCH_STREAM_COUNT; stream++) {
-        if ((batch->bindings[stream].binding != stream) || (batch->attributes[stream].location != stream)) {
+    for (stream = 0u; stream < XUD_BATCH_BINDING_COUNT; stream++) {
+        if (batch->bindings[stream].binding != stream) {
+            return XUD_INVALID_ARG;
+        }
+    }
+    for (stream = 0u; stream < XUD_BATCH_ATTRIBUTE_COUNT; stream++) {
+        if (batch->attributes[stream].location != stream) {
             return XUD_INVALID_ARG;
         }
     }
 
     /* The row points at the BATCH's arrays rather than at a copy of them, which is what makes the
-       pipeline's vertex-input state name the same four streams the batch's buffers hold - and what
+       pipeline's vertex-input state name the same six buffers the batch's buffers hold - and what
        makes the batch's life the pipeline's subject. The renderer opens the batch before the pipeline
        and closes it after, so the pointer cannot outlive what it names.
     */
@@ -121,8 +144,8 @@ XudResult xud_pipeline_fill_vertex_input(XudPipeline* pipeline, const XudBatch* 
     pipeline->vertexInput.pNext = NULL;
     pipeline->vertexInput.pVertexBindingDescriptions = (const VkVertexInputBindingDescription*)batch->bindings;
     pipeline->vertexInput.pVertexAttributeDescriptions = (const VkVertexInputAttributeDescription*)batch->attributes;
-    pipeline->vertexInput.vertexBindingDescriptionCount = XUD_BATCH_STREAM_COUNT;
-    pipeline->vertexInput.vertexAttributeDescriptionCount = XUD_BATCH_STREAM_COUNT;
+    pipeline->vertexInput.vertexBindingDescriptionCount = XUD_BATCH_BINDING_COUNT;
+    pipeline->vertexInput.vertexAttributeDescriptionCount = XUD_BATCH_ATTRIBUTE_COUNT;
     return XUD_OK;
 }
 
@@ -130,21 +153,37 @@ XudResult xud_pipeline_fill_prepass_vertex_input(XudPipeline* pipeline, const Xu
     if ((pipeline == NULL) || (batch == NULL)) {
         return XUD_INVALID_ARG;
     }
-    /* Stream 0 - the position stream - is the whole input: the pre-pass vertex module declares
-       one attribute at location 0 and reads nothing else. The same "filled rows only" check the
-       four-stream fill above makes, narrowed to the row this pipeline points at: a batch whose
-       row 0 names binding 0 location 0 is a batch whose position buffer vkCmdBindVertexBuffers
-       binds at 0, which is the binding the pre-pass pipeline's single declaration claims. */
+    /* Stream 0 - the position stream - plus the instance matrix: the pre-pass and the shadow pass
+       replay the OPAQUE and TEXTURED TRIANGLES rows of the batch, and an instanced row's geometry
+       lives at N transforms, so a depth stage that ignored the instance matrix would rasterize N
+       copies of the grass tuft at the ORIGIN - occluders the camera never sees, and no copy of the
+       grass itself. The same "filled rows only" check the shaded fill makes, narrowed to the rows
+       this pipeline points at. */
     if ((batch->bindings[0].binding != 0u) || (batch->attributes[0].location != 0u)) {
         return XUD_INVALID_ARG;
     }
+    if ((batch->bindings[XUD_BATCH_BINDING_MATRIX].binding != XUD_BATCH_BINDING_MATRIX)
+        || (batch->attributes[XUD_BATCH_BINDING_MATRIX].location != XUD_BATCH_BINDING_MATRIX)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The two bindings are not adjacent in the batch's array - bindings 0, 4 - so the rows are
+       COPIED into the pipeline's own storage and the state names that copy. The instance TINT
+       binding joins neither depth pass: a shadow does not care what colour the copy is. */
+    pipeline->prepassBindings[0] = batch->bindings[0];
+    pipeline->prepassBindings[1] = batch->bindings[XUD_BATCH_BINDING_MATRIX];
+    pipeline->prepassAttributes[0] = batch->attributes[0];
+    pipeline->prepassAttributes[1] = batch->attributes[XUD_BATCH_BINDING_MATRIX];
+    pipeline->prepassAttributes[2] = batch->attributes[XUD_BATCH_BINDING_MATRIX + 1u];
+    pipeline->prepassAttributes[3] = batch->attributes[XUD_BATCH_BINDING_MATRIX + 2u];
+    pipeline->prepassAttributes[4] = batch->attributes[XUD_BATCH_BINDING_MATRIX + 3u];
 
     pipeline->prepassVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     pipeline->prepassVertexInput.pNext = NULL;
-    pipeline->prepassVertexInput.pVertexBindingDescriptions = (const VkVertexInputBindingDescription*)&batch->bindings[0];
-    pipeline->prepassVertexInput.pVertexAttributeDescriptions = (const VkVertexInputAttributeDescription*)&batch->attributes[0];
-    pipeline->prepassVertexInput.vertexBindingDescriptionCount = 1u;
-    pipeline->prepassVertexInput.vertexAttributeDescriptionCount = 1u;
+    pipeline->prepassVertexInput.pVertexBindingDescriptions = pipeline->prepassBindings;
+    pipeline->prepassVertexInput.pVertexAttributeDescriptions = pipeline->prepassAttributes;
+    pipeline->prepassVertexInput.vertexBindingDescriptionCount = 2u;
+    pipeline->prepassVertexInput.vertexAttributeDescriptionCount = 5u;
     return XUD_OK;
 }
 
@@ -179,14 +218,16 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     }
 
     /* --- vertex input: the STARTING state of this field, zero bindings and zero attributes. The
-       batch rung below this one owns the four SoA streams, and xud_pipeline_open calls xud_pipeline_fill_vertex_input
-       AFTER this call, which overwrites all four fields below with the batch's four rows - so the
-       built pipeline names those streams and the built-in SPIR-V reads them at those locations
-       rather than generating its three vertices from gl_VertexIndex. Writing the zero row here at
-       all is what lets the headless assembly test ask "is the row stamped, is its pNext clear" with
-       no batch in hand. The row itself must still be present and stamped: pVertexInputState may not
-       be NULL when any fragment stage is present, because a fragment stage that writes gl_FragColor
-       reads gl_FragCoord, and that is the spec's own rule for this pointer. --- */
+       batch rung below this one owns the four SoA streams and the instance pair, and xud_pipeline_open
+       calls xud_pipeline_fill_vertex_input AFTER this call, which overwrites all four fields below
+       with the batch's six bindings and nine attributes - so the built batch pipelines name those
+       streams and the built-in SPIR-V reads them at those locations rather than generating their
+       vertices from gl_VertexIndex. The fullscreen blits never see this member at all: their fillers
+       name the file-scope zero row beside this file's open. Writing the zero row here at all is what
+       lets the headless assembly test ask "is the row stamped, is its pNext clear" with no batch in
+       hand. The row itself must still be present and stamped: pVertexInputState may not be NULL when
+       any fragment stage is present, because a fragment stage that writes gl_FragColor reads
+       gl_FragCoord, and that is the spec's own rule for this pointer. --- */
     pipeline->vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     pipeline->vertexInput.pNext = NULL;
     pipeline->vertexInput.vertexBindingDescriptionCount = 0u;
@@ -604,9 +645,10 @@ XudResult xud_pipeline_fill_resolve_create_info(const XudPipeline* pipeline, VkG
     outCreateInfo->stageCount = XUD_PIPELINE_STAGE_COUNT;
     outCreateInfo->pStages = pipeline->resolveShaderStages;
     outCreateInfo->pTessellationState = NULL;
-    outCreateInfo->pVertexInputState = &pipeline->vertexInput; /* the zero row, deliberately: see the
-        declaration's note - the triangle's only input is gl_VertexIndex and the resolve pass binds no
-        vertex buffer, so the row that names nothing IS the correct row here */
+    outCreateInfo->pVertexInputState = &xudBlitVertexInput; /* the file-scope zero row, deliberately:
+        the triangle's only input is gl_VertexIndex and the resolve pass binds no vertex buffer, so the
+        row that names nothing IS the correct row here - and it is NOT pipeline->vertexInput, which the
+        open above has already filled with the batch's nine rows */
     outCreateInfo->pInputAssemblyState = &pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES];
     outCreateInfo->pViewportState = &pipeline->viewportState;
     outCreateInfo->pRasterizationState = &pipeline->rasterizer;
@@ -771,7 +813,8 @@ XudResult xud_pipeline_fill_bloom_create_info(
     outCreateInfo->stageCount = XUD_PIPELINE_STAGE_COUNT;
     outCreateInfo->pStages = stages;
     outCreateInfo->pTessellationState = NULL;
-    outCreateInfo->pVertexInputState = &pipeline->vertexInput;
+    outCreateInfo->pVertexInputState = &xudBlitVertexInput; /* the zero row, for the same reason the
+        resolve filler names it: the chain's triangle is invented and bound to no buffer */
     outCreateInfo->pInputAssemblyState = &pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES];
     outCreateInfo->pViewportState = &pipeline->viewportState;
     outCreateInfo->pRasterizationState = &pipeline->rasterizer;

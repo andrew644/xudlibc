@@ -484,16 +484,16 @@ static void xud_test_gpu_allocator(void) {
     }
 
     /* The context's own bring-up already opened the descriptor rung, the render pass below the ren
-       derer AND the batch rung below the renderer, and those three carved nine ranges out of four
+       derer AND the batch rung below the renderer, and those three carved eleven ranges out of four
        blocks: the per-frame uniform buffer is the first request the allocator ever saw (alignment 2
        56, so it sits in the 64 KiB block this layer opens first), the depth image is the second - i
        ts requirements ask for an alignment of 65536 on this driver, which no hole in the first bloc
        k can satisfy, so the image's block is a second VkDeviceMemory rather than a suballocation -
-       and the batch's arena plus its four streams and its index buffer plus the descriptor's stagin
-       g arena are seven more, small enough that they share blocks and need one more block only once
-       the holes run out. TWO of those nine are not suballocations at all but whole blocks of their
-       own - the batch's arena and the descriptor's - because vkMapMemory maps a VkDeviceMemory rat
-       her than a range, so a carve that is mapped cannot share a block with one that is mapped too.
+       and the batch's arena plus its four streams and its index buffer plus its two instance buff
+       ers plus the descriptor's staging arena are nine more, small enough that they share blocks a
+       nd need one more block only once the holes run out. TWO of those eleven are not
+       suballocations at all but whole blocks of their own - the batch's arena and the descriptor's - because vkMapMemory maps a
+       VkDeviceMemory rather than a range, so a carve that is mapped cannot share a block with one that is mapped too.
        Every number below is therefore read as a delta on this baseline rather than as a constant,
        which is what keeps the rung's rules about what moved rather than about absolute offsets.
      */
@@ -506,7 +506,7 @@ static void xud_test_gpu_allocator(void) {
         "block the scratch pass's own depth image shares for the same reason) and the shadow map - three images, three blocks, the map "
         "too big for the other two's holes - and the two host-visible arenas - the batch's and the descriptor's staging arena - which "
         "are blocks of their own because vkMapMemory maps a VkDeviceMemory rather than a range");
-    xud_check(baseLive == 17u, "gpu-alloc/baseline-seventeen-live", "and seventeen live ranges, those seventeen carves");
+    xud_check(baseLive == 19u, "gpu-alloc/baseline-nineteen-live", "and nineteen live ranges, those nineteen carves");
     xud_check(baseBytes > 0u, "gpu-alloc/baseline-bytes", "and reserved bytes, so the rungs below this one really did ask the allocator");
     xud_check(cursorBefore == 0u, "gpu-alloc/baseline-cursor",
         "and the ring's cursor is still at the start, because nothing has asked for transient memory y"

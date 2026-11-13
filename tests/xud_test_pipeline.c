@@ -76,30 +76,28 @@ static void xud_test_pipeline_pure(void) {
         XudBatch empty = (XudBatch) { 0 };
         XudPipeline refused = (XudPipeline) { 0 };
 
-        batch.bindings[XUD_BATCH_STREAM_POS].binding = XUD_BATCH_STREAM_POS;
-        batch.bindings[XUD_BATCH_STREAM_UV].binding = XUD_BATCH_STREAM_UV;
-        batch.bindings[XUD_BATCH_STREAM_COLOR].binding = XUD_BATCH_STREAM_COLOR;
-        batch.bindings[XUD_BATCH_STREAM_NORMAL].binding = XUD_BATCH_STREAM_NORMAL;
-        batch.bindings[XUD_BATCH_STREAM_POS].stride = XUD_BATCH_STREAM_POS_SIZE;
-        batch.bindings[XUD_BATCH_STREAM_UV].stride = XUD_BATCH_STREAM_UV_SIZE;
-        batch.bindings[XUD_BATCH_STREAM_COLOR].stride = XUD_BATCH_STREAM_COLOR_SIZE;
-        batch.bindings[XUD_BATCH_STREAM_NORMAL].stride = XUD_BATCH_STREAM_NORMAL_SIZE;
-        batch.attributes[XUD_BATCH_STREAM_POS].location = XUD_BATCH_STREAM_POS;
-        batch.attributes[XUD_BATCH_STREAM_UV].location = XUD_BATCH_STREAM_UV;
-        batch.attributes[XUD_BATCH_STREAM_COLOR].location = XUD_BATCH_STREAM_COLOR;
-        batch.attributes[XUD_BATCH_STREAM_NORMAL].location = XUD_BATCH_STREAM_NORMAL;
-        batch.attributes[XUD_BATCH_STREAM_POS].format = XUD_BATCH_STREAM_FORMAT(XUD_BATCH_STREAM_POS);
-        batch.attributes[XUD_BATCH_STREAM_UV].format = XUD_BATCH_STREAM_FORMAT(XUD_BATCH_STREAM_UV);
-        batch.attributes[XUD_BATCH_STREAM_COLOR].format = XUD_BATCH_STREAM_FORMAT(XUD_BATCH_STREAM_COLOR);
-        batch.attributes[XUD_BATCH_STREAM_NORMAL].format = XUD_BATCH_STREAM_FORMAT(XUD_BATCH_STREAM_NORMAL);
+        for (uint32_t row = 0u; row < XUD_BATCH_BINDING_COUNT; row++) {
+            batch.bindings[row].binding = row;
+            batch.bindings[row].stride = (row < XUD_BATCH_STREAM_COUNT)
+                ? (uint32_t)XUD_BATCH_STREAM_ELEMENT(row)
+                : (uint32_t)XUD_BATCH_INSTANCE_ELEMENT(row - XUD_BATCH_STREAM_COUNT);
+        }
+        for (uint32_t row = 0u; row < XUD_BATCH_ATTRIBUTE_COUNT; row++) {
+            batch.attributes[row].location = row;
+            batch.attributes[row].format = (row < XUD_BATCH_STREAM_COUNT)
+                ? XUD_BATCH_STREAM_FORMAT(row)
+                : XUD_BATCH_INSTANCE_FORMAT(
+                      row < (XUD_BATCH_STREAM_COUNT + 4u) ? XUD_BATCH_INSTANCE_STREAM_MATRIX : XUD_BATCH_INSTANCE_STREAM_TINT);
+        }
 
         xud_check(xud_pipeline_fill_vertex_input(&withBatch, &batch) == XUD_OK, "pipeline/vertex-input-from-batch",
-            "the overwrite completes against a batch whose four binding numbers and four attribute locations are the stream numbers 0..3, "
-            "which is both what the pipeline's vertex-input row is about to claim and what vkCmdBindVertexBuffers will bind");
-        xud_check((withBatch.vertexInput.vertexBindingDescriptionCount == XUD_BATCH_STREAM_COUNT)
-                && (withBatch.vertexInput.vertexAttributeDescriptionCount == XUD_BATCH_STREAM_COUNT),
-            "pipeline/four-bindings-four-attributes",
-            "four of each, the batch's four streams, where the row fill_state writes had zero of each");
+            "the overwrite completes against a batch whose six binding numbers and nine attribute locations are their array indices - "
+            "four streams, the instance two, the matrix's four columns and the tint - which is both what the pipeline's vertex-input row "
+            "is about to claim and what vkCmdBindVertexBuffers will bind");
+        xud_check((withBatch.vertexInput.vertexBindingDescriptionCount == XUD_BATCH_BINDING_COUNT)
+                && (withBatch.vertexInput.vertexAttributeDescriptionCount == XUD_BATCH_ATTRIBUTE_COUNT),
+            "pipeline/six-bindings-nine-attributes",
+            "six and nine, the batch's streams plus the instance rows, where the row fill_state writes had zero of each");
         xud_check(withBatch.vertexInput.pVertexBindingDescriptions == (const VkVertexInputBindingDescription*)batch.bindings,
             "pipeline/binding-array-is-the-batch's",
             "the row NAMES the batch's own array rather than a copy of it, which is what makes the batch's life the pipeline's subject");
@@ -453,6 +451,65 @@ static void xud_test_pipeline_pure(void) {
     xud_check(lineInfo.pInputAssemblyState != out.pInputAssemblyState, "pipeline/create-input-assembly-rows-differ",
         "the two create-infos differ in the input-assembly row, which is the whole of what a topology "
         "is at this rung");
+
+    /* The blit rows: the resolve, the bright pass and the blurs are created by the open AFTER it
+       fills pipeline->vertexInput with the batch's six bindings and nine attributes, so their
+       vertex input must be their OWN zero row rather than that member. The bug this pins is the
+       batch's nine rows landing on the gl_VertexIndex-only blit shaders, which consume none of
+       them - 495 validation warnings per GPU test run and a pipeline promising buffers its draws
+       never bind. */
+    {
+        XudPipeline blit;
+        VkGraphicsPipelineCreateInfo blitOut;
+        VkPipelineShaderStageCreateInfo blitStages[XUD_PIPELINE_STAGE_COUNT];
+        XudBatch fake;
+        uint32_t row = 0u;
+
+        memset(&blit, 0, sizeof(blit));
+        memset(&fake, 0, sizeof(fake));
+        memset(&blitStages, 0, sizeof(blitStages));
+        xud_pipeline_fill_state(&blit);
+        blit.layout = (VkPipelineLayout)0x9000u;
+        blit.resolveRenderPass = (VkRenderPass)0x4000u;
+        blit.bloomRenderPass = (VkRenderPass)0x4100u;
+        blit.resolveShaderStages[XUD_PIPELINE_VERTEX_STAGE].module = (VkShaderModule)0x7000u;
+        blit.resolveShaderStages[XUD_PIPELINE_FRAGMENT_STAGE].module = (VkShaderModule)0x7100u;
+        blitStages[XUD_PIPELINE_VERTEX_STAGE].module = (VkShaderModule)0x7000u;
+        blitStages[XUD_PIPELINE_FRAGMENT_STAGE].module = (VkShaderModule)0x7200u;
+        for (row = 0u; row < XUD_BATCH_BINDING_COUNT; row++) {
+            fake.bindings[row].binding = row;
+        }
+        for (row = 0u; row < XUD_BATCH_ATTRIBUTE_COUNT; row++) {
+            fake.attributes[row].location = row;
+        }
+
+        xud_check(xud_pipeline_fill_resolve_create_info(&blit, &blitOut) == XUD_OK, "pipeline/resolve-create-ok",
+            "the resolve row's create-info assembles from the record");
+        xud_check((blitOut.pVertexInputState != NULL) && (blitOut.pVertexInputState != &blit.vertexInput)
+                && (blitOut.pVertexInputState->vertexBindingDescriptionCount == 0u)
+                && (blitOut.pVertexInputState->vertexAttributeDescriptionCount == 0u)
+                && (blitOut.pVertexInputState->pVertexBindingDescriptions == NULL)
+                && (blitOut.pVertexInputState->pVertexAttributeDescriptions == NULL),
+            "pipeline/resolve-vertex-input-is-the-zero-row",
+            "the blit's vertex input is a stamped row of no bindings and no attributes that is NOT the "
+            "record's vertexInput member, which the open will fill with the batch");
+
+        /* Replay the open's ordering: the member now names the batch's nine rows, and BOTH blit
+           fillers must still name nothing. */
+        xud_check(xud_pipeline_fill_vertex_input(&blit, &fake) == XUD_OK, "pipeline/blit-replay-batch-fill",
+            "the open's fill lands on the record");
+        xud_check(blit.vertexInput.vertexAttributeDescriptionCount == XUD_BATCH_ATTRIBUTE_COUNT, "pipeline/blit-member-is-batch",
+            "and the member really does name the batch now, so the checks below cannot pass by the member "
+            "still being zero");
+        xud_check(xud_pipeline_fill_resolve_create_info(&blit, &blitOut) == XUD_OK, "pipeline/resolve-create-after-fill", "assembles");
+        xud_check((blitOut.pVertexInputState != &blit.vertexInput) && (blitOut.pVertexInputState->vertexAttributeDescriptionCount == 0u),
+            "pipeline/resolve-stays-zero-after-the-batch-fill",
+            "the resolve's row is still the one that names nothing, which is the half the batch fill cannot corrupt");
+        xud_check(xud_pipeline_fill_bloom_create_info(&blit, &blitOut, blitStages) == XUD_OK, "pipeline/bloom-create-after-fill",
+            "and so the chain's create-info assembles");
+        xud_check((blitOut.pVertexInputState != &blit.vertexInput) && (blitOut.pVertexInputState->vertexBindingDescriptionCount == 0u),
+            "pipeline/bloom-stays-zero-after-the-batch-fill", "the same rule on the bright and blur row of the chain");
+    }
 
     /* The THIRD column of the variant axis, which is where the second fragment module exists: the
        textured row is the same record read at a third row, and the one thing it differs from the two

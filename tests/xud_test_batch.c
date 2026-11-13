@@ -72,6 +72,7 @@ static void xud_test_batch_pure(void) {
     uint32_t asked = 0u;
     uint32_t wantedVertices = 0u;
     uint32_t wantedIndices = 0u;
+    uint32_t wantedInstances = 0u;
     const float pos[3] = { 0.0f, 0.0f, 0.0f };
     const float uv[2] = { 0.0f, 0.0f };
     const uint8_t color[4] = { 0u, 0u, 0u, 0u };
@@ -108,13 +109,20 @@ static void xud_test_batch_pure(void) {
     xud_check(
         b.indexOffset == b.streamOffset[XUD_BATCH_STREAM_NORMAL] + (VkDeviceSize)XUD_BATCH_INITIAL_VERTICES * XUD_BATCH_STREAM_NORMAL_SIZE,
         "batch/index-offset-after-normal", "the index window follows the four streams rather than preceding them");
-    xud_check(b.stagingBytes == b.indexOffset + (VkDeviceSize)b.indexCapacity * XUD_BATCH_INDEX_SIZE, "batch/arena-is-the-sum",
-        "the arena's total is the last window's end, which is what makes an append that stays inside a window stay inside the arena");
     xud_check(b.stagingBytes
-            == (VkDeviceSize)XUD_BATCH_INITIAL_VERTICES * XUD_BATCH_VERTEX_SIZE + (VkDeviceSize)b.indexCapacity * XUD_BATCH_INDEX_SIZE,
+            == b.indexOffset + (VkDeviceSize)b.indexCapacity * XUD_BATCH_INDEX_SIZE
+                + (VkDeviceSize)b.instanceCapacity * (XUD_BATCH_INSTANCE_MATRIX_SIZE + XUD_BATCH_INSTANCE_TINT_SIZE),
+        "batch/arena-is-the-sum",
+        "the arena's total is the LAST window's end - the instance regions after the index buffer included - which is what makes an "
+        "append that stays inside a window stay inside the arena");
+    xud_check(b.stagingBytes
+            == (VkDeviceSize)XUD_BATCH_INITIAL_VERTICES * XUD_BATCH_VERTEX_SIZE + (VkDeviceSize)b.indexCapacity * XUD_BATCH_INDEX_SIZE
+                + (VkDeviceSize)b.instanceCapacity * (XUD_BATCH_INSTANCE_MATRIX_SIZE + XUD_BATCH_INSTANCE_TINT_SIZE),
         "batch/arena-matches-the-interleaved-arithmetic",
-        "the SoA arena is the same total an interleaved 36 B/vertex arena would be - SoA changes the unit of the copy and of the grow, not "
-        "the size of a vertex");
+        "the SoA arena is the same total an interleaved 36 B/vertex arena would be, plus the two instance regions - SoA changes the unit "
+        "of the copy and of the grow, not the size of a vertex");
+    xud_check(b.instanceCapacity == XUD_BATCH_INSTANCE_CAPACITY(XUD_BATCH_INITIAL_VERTICES), "batch/instance-capacity-from-layout",
+        "the layout derives the instance capacity from the vertex capacity by the header's ratio, in the same pass as the windows");
 
     /* The layout writes the per-stream facts too, in the pure half: that is what lets the invari
        ant below be checked on a batch that never created a buffer. */
@@ -163,8 +171,15 @@ static void xud_test_batch_pure(void) {
         "a row with nowhere to be written is refused");
     xud_check(xud_batch_fill_binding(&binding, NULL, XUD_BATCH_STREAM_POS) == XUD_INVALID_ARG, "batch/binding-no-caps",
         "and a row with no caps to gate against - the repo's check-before-you-use rule has nothing to check");
-    xud_check(xud_batch_fill_binding(&binding, &caps, XUD_BATCH_STREAM_COUNT) == XUD_INVALID_ARG, "batch/binding-past-four",
-        "a stream index past the four is a bad argument, not a fifth binding");
+    xud_check(xud_batch_fill_binding(&binding, &caps, XUD_BATCH_BINDING_COUNT) == XUD_INVALID_ARG, "batch/binding-past-six",
+        "a binding index past the six is a bad argument - four streams and the instance two, not a seventh buffer");
+    xud_check((xud_batch_fill_binding(&binding, &caps, XUD_BATCH_BINDING_MATRIX) == XUD_OK)
+            && (binding.inputRate == VK_VERTEX_INPUT_RATE_INSTANCE) && (binding.stride == XUD_BATCH_INSTANCE_MATRIX_SIZE),
+        "batch/binding-instance-rate",
+        "the matrix stream's row is the one PER_INSTANCE row: stride 64, read once per copy rather than once per vertex");
+    xud_check((xud_batch_fill_binding(&binding, &caps, XUD_BATCH_BINDING_TINT) == XUD_OK)
+            && (binding.inputRate == VK_VERTEX_INPUT_RATE_INSTANCE) && (binding.stride == XUD_BATCH_INSTANCE_TINT_SIZE),
+        "batch/binding-instance-tint", "and the tint row is the other: four unorm bytes a copy, XudColor's width");
     xud_check(xud_batch_fill_binding(&binding, &caps, XUD_BATCH_STREAM_COLOR) == XUD_OK, "batch/binding-ok",
         "the narrowest stream's binding row fills");
     xud_check(binding.binding == XUD_BATCH_STREAM_COLOR, "batch/binding-number-is-stream-index",
@@ -634,8 +649,9 @@ static void xud_test_batch_pure(void) {
     xud_check(xud_batch_growth_asked(NULL, &asked) == XUD_INVALID_ARG, "batch/growth-asked-null-batch", "refused");
     xud_check(xud_batch_growth_asked(&b, NULL) == XUD_INVALID_ARG, "batch/growth-asked-null-out", "refused");
 
-    xud_check(xud_batch_note_refused(NULL, 1u, 1u) == XUD_INVALID_ARG, "batch/note-refused-null-batch", "refused");
-    xud_check(xud_batch_note_refused(&b, capacity, XUD_BATCH_INDEX_CAPACITY(capacity)) == XUD_OK, "batch/note-refused-at-capacity-is-quiet",
+    xud_check(xud_batch_note_refused(NULL, 1u, 1u, 1u) == XUD_INVALID_ARG, "batch/note-refused-null-batch", "refused");
+    xud_check(xud_batch_note_refused(&b, capacity, XUD_BATCH_INDEX_CAPACITY(capacity), 0u) == XUD_OK,
+        "batch/note-refused-at-capacity-is-quiet",
         "a request that FITS records nothing - at the capacity is not a refusal, and a batch that was never refused keeps answering 0/0");
     xud_check(
         xud_batch_growth_asked(&b, &asked) == XUD_OK, "batch/note-at-capacity-still-quiet", "the same batch, still asking for nothing");
@@ -646,16 +662,21 @@ static void xud_test_batch_pure(void) {
        what is already live plus what the refused shape wanted, which is the only way a grow can
        tell a frame that overflowed from a frame that merely filled. */
     xud_check(xud_batch_note_refused(
-                  &b, capacity + XUD_SHAPES_CUBE_VERTEX_COUNT, XUD_BATCH_INDEX_CAPACITY(capacity) + XUD_SHAPES_CUBE_INDEX_COUNT)
+                  &b, capacity + XUD_SHAPES_CUBE_VERTEX_COUNT, XUD_BATCH_INDEX_CAPACITY(capacity) + XUD_SHAPES_CUBE_INDEX_COUNT, 0u)
             == XUD_OK,
         "batch/note-refused-a-cube", "the refusal's ask is recorded");
-    xud_check(
-        (xud_batch_wanted(&b, &wantedVertices, &wantedIndices) == XUD_OK) && (wantedVertices == (capacity + XUD_SHAPES_CUBE_VERTEX_COUNT)),
+    xud_check((xud_batch_wanted(&b, &wantedVertices, &wantedIndices, &wantedInstances) == XUD_OK)
+            && (wantedVertices == (capacity + XUD_SHAPES_CUBE_VERTEX_COUNT)),
         "batch/wanted-reads-the-vertex-ask", "88 vertices, the 64 live plus the cube's 24 - a total, not a shape size");
     xud_check(wantedIndices == (XUD_BATCH_INDEX_CAPACITY(capacity) + XUD_SHAPES_CUBE_INDEX_COUNT), "batch/wanted-reads-the-index-ask",
         "and 132 indices over the 96 the layout computed for 64 vertices");
-    xud_check(xud_batch_wanted(NULL, &wantedVertices, &wantedIndices) == XUD_INVALID_ARG, "batch/wanted-null-batch", "refused");
-    xud_check(xud_batch_wanted(&b, NULL, &wantedIndices) == XUD_INVALID_ARG, "batch/wanted-null-out", "refused");
+    xud_check(wantedInstances == 0u, "batch/wanted-reads-no-instance-ask",
+        "and the instance half of the ask stays empty - a vertex refusal says nothing about the instance region");
+    xud_check(
+        xud_batch_wanted(NULL, &wantedVertices, &wantedIndices, &wantedInstances) == XUD_INVALID_ARG, "batch/wanted-null-batch", "refused");
+    xud_check(xud_batch_wanted(&b, NULL, &wantedIndices, &wantedInstances) == XUD_INVALID_ARG, "batch/wanted-null-out", "refused");
+    xud_check(xud_batch_wanted(&b, &wantedVertices, &wantedIndices, NULL) == XUD_INVALID_ARG, "batch/wanted-null-instance-out",
+        "the instance half is an out too");
 
     xud_check(xud_batch_growth_asked(&b, &asked) == XUD_OK, "batch/growth-asked-after-refusal", "the question asked again");
     xud_check(
@@ -665,10 +686,10 @@ static void xud_test_batch_pure(void) {
        against the same live counts, so it wants the biggest of those asks rather than their sum. A
        smaller ask after a bigger one changes nothing, which is what keeps a frame that refused man
        y shapes from asking the batch to grow past what it needs. */
-    xud_check(xud_batch_note_refused(&b, capacity + 1u, capacity + 1u) == XUD_OK, "batch/note-smaller-ask",
+    xud_check(xud_batch_note_refused(&b, capacity + 1u, capacity + 1u, 0u) == XUD_OK, "batch/note-smaller-ask",
         "a smaller refusal is noted after a bigger one");
-    xud_check(
-        (xud_batch_wanted(&b, &wantedVertices, &wantedIndices) == XUD_OK) && (wantedVertices == (capacity + XUD_SHAPES_CUBE_VERTEX_COUNT)),
+    xud_check((xud_batch_wanted(&b, &wantedVertices, &wantedIndices, &wantedInstances) == XUD_OK)
+            && (wantedVertices == (capacity + XUD_SHAPES_CUBE_VERTEX_COUNT)),
         "batch/ask-is-a-maxima-not-a-sum", "and the ask is still the bigger of the two, not the two added together");
 
     /* The ask is retired by the layout, which is both what a fresh open starts from and what a grow
@@ -677,7 +698,8 @@ static void xud_test_batch_pure(void) {
        again, for a scene that already fits. */
     xud_check(xud_batch_layout(&b, XUD_BATCH_INITIAL_VERTICES * 2u) == XUD_OK, "batch/layout-doubled-for-the-ask",
         "the capacity the ask asked for is a capacity the layout accepts");
-    xud_check((xud_batch_wanted(&b, &wantedVertices, &wantedIndices) == XUD_OK) && (wantedVertices == 0u) && (wantedIndices == 0u),
+    xud_check((xud_batch_wanted(&b, &wantedVertices, &wantedIndices, &wantedInstances) == XUD_OK) && (wantedVertices == 0u)
+            && (wantedIndices == 0u) && (wantedInstances == 0u),
         "batch/layout-retired-the-ask",
         "the new layout starts un-refused, which is what makes the boundary's loop terminate rather than double to the bound every frame");
     xud_check(xud_batch_growth_asked(&b, &asked) == XUD_OK, "batch/growth-asked-after-the-grow", "the question asked a third time");
@@ -860,6 +882,154 @@ static void xud_test_batch_pure(void) {
             "every row names an entry of the geometry list that exists, which is the half that only exists "
             "once a row can name geometry beside the arena");
 
+        /*--- the instanced record: two instance regions, one shared cursor, rows that replay them --*/
+
+        {
+            float instMatrices[3u * XUD_BATCH_MODEL_MATRIX_COUNT];
+            uint8_t instTints[3u * XUD_BATCH_INSTANCE_TINT_SIZE];
+            XudBatchDraw instRow;
+            uint32_t instDrawBefore = 0u;
+            uint32_t instLiveBefore = 0u;
+            uint32_t instStatsCount = 0u;
+            uint32_t instStatsCapacity = 0u;
+            uint32_t wantedVerts = 0u;
+            uint32_t wantedIndices = 0u;
+            uint32_t wantedInst = 0u;
+            uint32_t whiteBytes = 0u;
+
+            for (element = 0u; element < (3u * XUD_BATCH_MODEL_MATRIX_COUNT); element++) {
+                instMatrices[element] = (float)element + 0.5f;
+            }
+            for (element = 0u; element < (3u * XUD_BATCH_INSTANCE_TINT_SIZE); element++) {
+                instTints[element] = (uint8_t)(element + 1u);
+            }
+
+            /* The rungs above stopped writing bytes with stagingMapped = NULL; the instance record
+               writes, so the arena maps again for it. */
+            b.stagingMapped = xudTestArena;
+            b.stagingMappedLive = 1u;
+
+            xud_check(xud_batch_record_instanced_draw(NULL, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                          XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u, instMatrices, instTints, 3u)
+                    == XUD_INVALID_ARG,
+                "batch/instanced-null-batch", "refused");
+            xud_check(xud_batch_record_instanced_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                          XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u, NULL, instTints, 3u)
+                    == XUD_INVALID_ARG,
+                "batch/instanced-null-matrices", "an array of nothing is not three transforms - the count is a promise about the array");
+            xud_check(xud_batch_record_instanced_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                          XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u, instMatrices, instTints, 0u)
+                    == XUD_INVALID_ARG,
+                "batch/instanced-zero-count", "zero copies is a draw that assembles nothing, refused rather than a hidden no-op");
+            xud_check(xud_batch_record_instanced_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                          XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 2u, instMatrices, instTints, 3u)
+                    == XUD_INVALID_ARG,
+                "batch/instanced-index-count-below-three", "the range rule reads again beside the instance count");
+            xud_check(xud_batch_record_instanced_draw(&b, XUD_BATCH_TOPOLOGY_COUNT, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                          XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u, instMatrices, instTints, 3u)
+                    == XUD_INVALID_ARG,
+                "batch/instanced-bad-topology", "the same topology guard the plain mesh record applies");
+            instMatrices[XUD_BATCH_MODEL_MATRIX_COUNT + 3u] = NAN;
+            xud_check(xud_batch_record_instanced_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                          XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u, instMatrices, instTints, 3u)
+                    == XUD_INVALID_ARG,
+                "batch/instanced-nan-matrix-refused",
+                "the finiteness guard is per instance row: a NaN in the SECOND matrix refuses the whole record, because drawing two "
+                "good copies and one poisoned one is not a partial a caller could ask for");
+            instMatrices[XUD_BATCH_MODEL_MATRIX_COUNT + 3u] = (float)(XUD_BATCH_MODEL_MATRIX_COUNT + 3u) + 0.5f;
+
+            instDrawBefore = b.drawCount;
+            instLiveBefore = b.instanceCount;
+            xud_check(xud_batch_record_instanced_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                          XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u, instMatrices, instTints, 3u)
+                    == XUD_OK,
+                "batch/instanced-recorded", "three copies of the second mesh record as one row");
+            xud_check(b.drawCount == (instDrawBefore + 1u), "batch/instanced-one-row", "one row for one call");
+            xud_check(b.instanceCount == (instLiveBefore + 3u), "batch/instanced-cursor-advanced",
+                "the shared cursor of the two instance regions moved by three rows, which is what makes one instance index address "
+                "the matrix and the tint of the same copy");
+            xud_check(xud_batch_draw_get(&b, b.drawCount - 1u, &instRow) == XUD_OK, "batch/instanced-row-reads", "the row reads back");
+            xud_check((instRow.instanceCount == 3u) && (instRow.firstInstance == instLiveBefore),
+                "batch/instanced-row-names-the-instance-window",
+                "three copies starting where the cursor stood before the call, so a second call's rows never overlap the first's");
+            xud_check(instRow.firstInstance != XUD_BATCH_INSTANCE_FROM_PUSH, "batch/instanced-row-is-no-sentinel",
+                "and the row does NOT carry the from-push sentinel, which is the one bit the frame loop's push row reads for the "
+                "vertex stage's matrix source");
+            xud_check((instRow.geometryIndex == 2u) && (instRow.firstIndex == 0u) && (instRow.indexCount == 6u),
+                "batch/instanced-row-replays-the-geometry",
+                "the row replays the geometry entry its five buffers dedupe to, over the whole index range");
+            mismatched = 0u;
+            for (element = 0u; element < (3u * XUD_BATCH_MODEL_MATRIX_COUNT); element++) {
+                if (memcmp(xudTestArena + b.instanceOffset[XUD_BATCH_INSTANCE_STREAM_MATRIX]
+                            + ((VkDeviceSize)instLiveBefore * XUD_BATCH_INSTANCE_MATRIX_SIZE) + ((VkDeviceSize)element * sizeof(float)),
+                        &instMatrices[element], sizeof(float))
+                    != 0) {
+                    mismatched++;
+                }
+            }
+            xud_check(mismatched == 0u, "batch/instanced-matrices-in-the-instance-region",
+                "the three matrices are at instanceOffset + row*64 element for element, in the matrix region rather than the streams");
+            mismatched = 0u;
+            for (element = 0u; element < (3u * XUD_BATCH_INSTANCE_TINT_SIZE); element++) {
+                if (xudTestArena[b.instanceOffset[XUD_BATCH_INSTANCE_STREAM_TINT]
+                        + ((VkDeviceSize)instLiveBefore * XUD_BATCH_INSTANCE_TINT_SIZE) + (VkDeviceSize)element]
+                    != instTints[element]) {
+                    mismatched++;
+                }
+            }
+            xud_check(mismatched == 0u, "batch/instanced-tints-in-the-instance-region",
+                "and the twelve tint bytes are at their own region's offset plus row*4, which is where the tint binding's stride reads");
+            xud_check(xud_batch_check_invariant(&b) == XUD_OK, "batch/instanced-invariant",
+                "the cursor, the regions and the row agree, which is what the frame loop trusts when it rebinds");
+
+            xud_check(xud_batch_record_instanced_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                          XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u, instMatrices, NULL, 2u)
+                    == XUD_OK,
+                "batch/instanced-null-tints-white", "a NULL tint array is legal - raylib's DrawMesh and xud_draw_model have no tint");
+            whiteBytes = 0u;
+            for (element = 0u; element < (2u * XUD_BATCH_INSTANCE_TINT_SIZE); element++) {
+                if (xudTestArena[b.instanceOffset[XUD_BATCH_INSTANCE_STREAM_TINT]
+                        + ((VkDeviceSize)(instLiveBefore + 3u) * XUD_BATCH_INSTANCE_TINT_SIZE) + (VkDeviceSize)element]
+                    != 0xFFu) {
+                    whiteBytes++;
+                }
+            }
+            xud_check(whiteBytes == 0u, "batch/instanced-null-tints-are-white",
+                "and the rows it wrote are opaque white, the identity of the tint multiply, so the draw is the plain model draw's "
+                "colour rather than black");
+
+            xud_check(xud_batch_instance_stats(&b, &instStatsCount, &instStatsCapacity) == XUD_OK, "batch/instanced-stats-read",
+                "the live cursor and the capacity read back");
+            xud_check((instStatsCount == (instLiveBefore + 5u)) && (instStatsCapacity == b.instanceCapacity),
+                "batch/instanced-stats-are-the-cursor", "five rows live now - three with tints, two white - against the layout's capacity");
+
+            instDrawBefore = b.drawCount;
+            instLiveBefore = b.instanceCount;
+            wantedVerts = 0u;
+            wantedIndices = 0u;
+            wantedInst = 0u;
+            xud_check(xud_batch_record_instanced_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL,
+                          XUD_BATCH_NO_TEXTURE, meshBuffers, meshOffsets, 6u, instMatrices, instTints, b.instanceCapacity + 1u)
+                    == XUD_OUT_OF_MEMORY,
+                "batch/instanced-over-capacity-refused", "an ask past the instance capacity is refused like the arena's overflows");
+            xud_check((b.drawCount == instDrawBefore) && (b.instanceCount == instLiveBefore), "batch/instanced-refusal-atomic",
+                "and the refusal wrote nothing: no row, no instance bytes - the frame boundary grows the arenas from the noted ask "
+                "and the caller replays the whole call, so a half-written record would double the copies");
+            xud_check(xud_batch_wanted(&b, &wantedVerts, &wantedIndices, &wantedInst) == XUD_OK, "batch/instanced-refusal-noted",
+                "the ask is readable at the frame boundary");
+            xud_check(wantedInst == (instLiveBefore + b.instanceCapacity + 1u), "batch/instanced-ask-is-live-plus-requested",
+                "the instance ask is live-plus-requested, so the grown arena can hold the replay");
+            xud_check((wantedVerts == b.vertexCount) && (wantedIndices == b.indexCount), "batch/instanced-ask-keeps-the-arena-counts",
+                "and the vertex and index asks carry the live arena totals - an instance overflow still asks the frame to grow the "
+                "arena whole, since one realloc moves all six regions together");
+
+            xud_check(xud_batch_reset(&b) == XUD_OK, "batch/instanced-reset", "the frame ends");
+            xud_check(b.instanceCount == 0u, "batch/instanced-reset-rewinds-the-cursor",
+                "the cursor rewinds with the arena - the instance regions are frame-local bytes the next frame overwrites, not "
+                "perpetual storage");
+            xud_check(b.stagingMapped == xudTestArena, "batch/instanced-reset-keeps-the-mapping", "and the arena stays mapped");
+        }
+
         xud_check(xud_batch_reset(&b) == XUD_OK, "batch/reset-with-geometry", "the reset completes");
         xud_check(b.geometryCount == 0u, "batch/reset-retires-the-geometry-list",
             "the list is frame-local, because it is indexed by rows recorded after the reset - a list that "
@@ -913,7 +1083,7 @@ static void xud_test_batch_pure(void) {
         /* The refused-append half: the ask is recorded, the query reads it back, and the flags say
            what the frame boundary will do about it. */
         xud_check(xud_batch_note_refused(&pb, XUD_BATCH_INITIAL_VERTICES + XUD_SHAPES_CUBE_VERTEX_COUNT,
-                      XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) + XUD_SHAPES_CUBE_INDEX_COUNT)
+                      XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) + XUD_SHAPES_CUBE_INDEX_COUNT, 0u)
                 == XUD_OK,
             "batch-public/refusal-noted", "a shape that did not fit records the total it asked to hold");
         xud_check(xud_get_batch_stats(&stats, &shell) == XUD_OK, "batch-public/ok-after-refusal", "and the query answers after it");
@@ -931,7 +1101,7 @@ static void xud_test_batch_pure(void) {
         xud_check(xud_batch_layout(&pb, XUD_BATCH_MAX_VERTICES) == XUD_OK, "batch-public/layout-at-bound",
             "a layout at the bound is legal: the bound is a capacity, not a refusal");
         xud_check(xud_batch_note_refused(&pb, XUD_BATCH_MAX_VERTICES + XUD_SHAPES_CUBE_VERTEX_COUNT,
-                      XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES) + XUD_SHAPES_CUBE_INDEX_COUNT)
+                      XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES) + XUD_SHAPES_CUBE_INDEX_COUNT, 0u)
                 == XUD_OK,
             "batch-public/refusal-noted-at-bound", "and a refusal against a full batch records its ask too");
         xud_check(xud_get_batch_stats(&stats, &shell) == XUD_OK, "batch-public/ok-at-bound", "and the query answers at the bound");

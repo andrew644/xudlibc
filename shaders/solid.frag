@@ -86,11 +86,17 @@ layout(push_constant) uniform XudPushRow {
 layout(location = 1) in vec4 inColor;
 layout(location = 2) in vec3 inNormal;
 layout(location = 3) in vec3 inWorldPos;
+/* The draw's tint, through the vertex stage (solid.vert's outTint): an instanced draw's tint is
+   per copy and this stage cannot name the copy, so the push row's tint member is unread here -
+   the block stays declared in full because Vulkan demands one identical XudPushRow across the
+   stages of a pipeline, and the flags member below is still read. */
+layout(location = 4) in vec4 inTint;
 layout(location = 0) out vec4 outColor;
 
 const uint xudLightKindSun = 0u;   // XUD_LIGHT_KIND_SUN (xud.h), restated for this language
 const uint xudLightKindSpot = 2u;  // XUD_LIGHT_KIND_SPOT (xud.h), same
 const uint xudPushFlagVariantUI = 3u; // XUD_BATCH_VARIANT_UI (xud_batch.h), same rule
+const uint xudPushVariantMask = 3u;   // XUD_PUSH_VARIANT_MASK (xud_descriptor.h): variant lives in the low two bits
 
 float xudShadowFactor(vec3 worldPos)
 {
@@ -173,7 +179,7 @@ void main()
 {
     vec3 shade;
 
-    if (xudPush.flags == xudPushFlagVariantUI) {
+    if ((xudPush.flags & xudPushVariantMask) == xudPushFlagVariantUI) {
         shade = vec3(1.0f);
     } else {
         shade = xudFrame.ambient.rgb * xudFrame.ambient.w;
@@ -183,5 +189,5 @@ void main()
         }
     }
 
-    outColor = vec4(inColor.rgb * shade * xudPush.tint.rgb, inColor.a * xudPush.tint.a);
+    outColor = vec4(inColor.rgb * shade * inTint.rgb, inColor.a * inTint.a);
 }

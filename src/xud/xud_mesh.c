@@ -992,3 +992,64 @@ XudResult xud_draw_mesh_ex(XudContext* context, XudHandle handle, const float* m
     tintRow[3] = (float)tint.a / 255.0f;
     return xud_mesh_draw(context, handle, modelMatrix, tintRow);
 }
+
+/* The public instanced row (S3.2): the same record fetch and the same five buffers as the plain
+   pair, and the same material state the call draws under - what differs is the batch call at the
+   end and the ARGUMENTS it spends. No conversion happens on the way down: the matrices array IS
+   the instance matrix stream's bytes (16 column-major floats a row) and the XudColor array IS the
+   tint stream's (four unorm bytes a row), asserted below from the two headers' own numbers, so
+   ten thousand copies cost one guard loop and one arena append - no push, no staging copy, no
+   per-copy call at all. */
+static_assert(sizeof(XudColor) == XUD_BATCH_INSTANCE_TINT_SIZE,
+    "the public colour and the instance tint row are the same four bytes, so the public call can hand its array straight through");
+XudResult xud_draw_mesh_instanced(
+    XudContext* context, XudHandle handle, const float* matrices, const XudColor* tints, uint32_t instanceCount) {
+    XudBatch* batch = NULL;
+    const XudMeshRecord* record = NULL;
+    VkBuffer buffers[XUD_MESH_BUFFER_COUNT];
+    VkDeviceSize offsets[XUD_MESH_BUFFER_COUNT];
+    uint32_t variant = 0u;
+    uint32_t materialIndex = 0u;
+    uint32_t textureIndex = XUD_BATCH_NO_TEXTURE;
+    uint32_t slot = 0u;
+    uint32_t row = 0u;
+    XudResult result = XUD_OK;
+
+    if ((context == NULL) || (matrices == NULL) || (instanceCount == 0u)) {
+        return XUD_INVALID_ARG; /* tints may be NULL - white on every copy is the default the docs
+                                    state; matrices and a count are not optional */
+    }
+    for (row = 0u; row < instanceCount; row++) {
+        result = xud_batch_model_matrix_check(matrices + ((size_t)row * XUD_BATCH_MODEL_MATRIX_COUNT));
+        if (result != XUD_OK) {
+            return result; /* atomic in its refusal, the way the batch's own instanced record is:
+                              one NaN row refuses the whole call, it does not place N-1 copies */
+        }
+    }
+
+    if ((context->renderer == NULL) || (context->renderer->batch == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+    batch = context->renderer->batch;
+
+    result = xud_mesh_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    for (slot = 0u; slot < XUD_MESH_BUFFER_COUNT; slot++) {
+        buffers[slot] = record->buffer[slot];
+        offsets[slot] = 0u;
+        if (buffers[slot] == VK_NULL_HANDLE) {
+            return XUD_INTERNAL_ERROR;
+        }
+    }
+
+    result = xud_batch_state_get(batch, &variant, &materialIndex, &textureIndex);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    return xud_batch_record_instanced_draw(batch, XUD_BATCH_TOPOLOGY_TRIANGLES, variant, materialIndex, textureIndex, buffers, offsets,
+        record->indexCount, matrices, (const uint8_t*)tints, instanceCount);
+}

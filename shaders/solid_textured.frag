@@ -48,11 +48,15 @@ layout(push_constant) uniform XudPushRow {
 
 layout(location = 0) in vec2 inUv;
 layout(location = 1) in vec4 inColor;
+/* The draw's tint through the vertex stage - see solid.frag's inTint for the rule: per-copy tints
+   make the push row's tint member meaningless for instanced draws, and the UI column's glyph
+   quads are unlit so they read nothing but the map and this colour anyway. */
+layout(location = 4) in vec4 inTint;
 layout(location = 0) out vec4 outColor;
 
 layout(set = 0, binding = 2) uniform sampler2D xudSampler[512];  // XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE, restated for GLSL
 
 void main()
 {
-    outColor = inColor * texture(xudSampler[nonuniformEXT(xudPush.textureIndex)], inUv) * xudPush.tint;
+    outColor = inColor * texture(xudSampler[nonuniformEXT(xudPush.textureIndex)], inUv) * inTint;
 }

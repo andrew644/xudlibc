@@ -148,6 +148,7 @@ static void xud_test_shapes_pure(void) {
     uint32_t capacity = 0u;
     uint32_t drawCount = 0u;
     VkDeviceSize stagingBytes = 0u;
+    uint32_t instanceCount = 0u;
 
     memset(&b, 0, sizeof(b));
     memset(&shell, 0, sizeof(shell));
@@ -1851,8 +1852,10 @@ static void xud_test_shapes_pure(void) {
         "visible");
     result = xud_shapes_append_glyph_quad(&b, glyph0, glyph1, glyphUv0, glyphUv1, color);
     xud_check(result == XUD_OUT_OF_MEMORY, "shapes/glyph-run-seventeenth-refused", "and the seventeenth is refused");
-    xud_check(xud_batch_wanted(&b, &vertexCount, &indexCount) == XUD_OK, "shapes/glyph-run-noted-the-ask",
+    xud_check(xud_batch_wanted(&b, &vertexCount, &indexCount, &instanceCount) == XUD_OK, "shapes/glyph-run-noted-the-ask",
         "and the refusal left the ask behind, which is what the frame boundary above reads before it grows");
+    xud_check(instanceCount == 0u, "shapes/glyph-run-ask-names-no-instances",
+        "and the glyph refusal asked for no instance rows - the arena overflow and the instance region are separate asks");
     xud_check((vertexCount == (XUD_BATCH_INITIAL_VERTICES + XUD_SHAPES_GLYPH_VERTEX_COUNT))
             && (indexCount == (XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) + XUD_SHAPES_GLYPH_INDEX_COUNT)),
         "shapes/glyph-run-ask-is-the-seventeenth-quad",

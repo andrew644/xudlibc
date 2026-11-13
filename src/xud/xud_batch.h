@@ -106,6 +106,50 @@
                       ? XUD_BATCH_FORMAT_UV                                                                                                \
                       : (((index) == XUD_BATCH_STREAM_COLOR) ? XUD_BATCH_FORMAT_COLOR : XUD_BATCH_FORMAT_NORMAL)))
 
+/* The two INSTANCE streams (S3.2): the per-instance model matrix and the per-instance tint, read
+   once per instance rather than once per vertex (VK_VERTEX_INPUT_RATE_INSTANCE, divisor 1 - the
+   core-1.1 divisor form at this library's 1.3 floor). They continue the pipeline's binding and
+   location numbering: binding 4 is the matrix stream, whose stride is one whole column-major mat4
+   (64 B) read as FOUR attributes at locations 4..7 at offsets 0/16/32/48 - the matrix is the one
+   stream whose element is wider than its attribute, because a mat4 IS four vec4s and GLSL
+   reassembles the columns from the four locations in order. Binding 5 is the tint stream: one
+   RGBA8 row per instance at location 8, in UNORM currency - the four bytes of XudColor, verbatim,
+   which is what lets the public instanced draw hand its colour array straight through with no
+   float conversion and no temporary. SoA keeps its meaning here: one row per INSTANCE, SoA only
+   ever meant one attribute family per buffer, and the matrix family is 64 B wide by nature.
+
+   A draw that does not instance reads neither stream: the push row's flags bit says so and the
+   vertex stage's branch never names the attribute, so the batch's own arena needs no filler row
+   for the plain path and a non-instanced draw pays nothing for the axis existing. */
+#define XUD_BATCH_INSTANCE_STREAM_COUNT 2u
+#define XUD_BATCH_INSTANCE_STREAM_MATRIX 0u
+#define XUD_BATCH_INSTANCE_STREAM_TINT 1u
+#define XUD_BATCH_BINDING_MATRIX 4u /* the matrix stream's binding number, the batch's four streams being 0..3 */
+#define XUD_BATCH_BINDING_TINT 5u /* the tint stream's binding number */
+#define XUD_BATCH_FORMAT_INSTANCE VK_FORMAT_R32G32B32A32_SFLOAT /* one matrix column */
+#define XUD_BATCH_FORMAT_INSTANCE_TINT VK_FORMAT_R8G8B8A8_UNORM /* the tint: XudColor's four bytes, normalized to 0..1 by the fetch */
+#define XUD_BATCH_INSTANCE_MATRIX_SIZE 64u
+#define XUD_BATCH_INSTANCE_TINT_SIZE 4u
+#define XUD_BATCH_INSTANCE_ELEMENT(index)                                                                                                  \
+    (((index) == XUD_BATCH_INSTANCE_STREAM_MATRIX) ? XUD_BATCH_INSTANCE_MATRIX_SIZE : XUD_BATCH_INSTANCE_TINT_SIZE)
+#define XUD_BATCH_INSTANCE_FORMAT(index)                                                                                                   \
+    (((index) == XUD_BATCH_INSTANCE_STREAM_MATRIX) ? XUD_BATCH_FORMAT_INSTANCE : XUD_BATCH_FORMAT_INSTANCE_TINT)
+
+/* The vertex-input row counts once the two instance streams are in: bindings are the batch's four
+   plus the instance two, and attributes are the four plus the matrix's four columns plus the
+   tint. The pipeline's vertex-input state is filled from the batch's arrays, so these two numbers
+   are what xud_pipeline_fill_vertex_input hands vkCreateGraphicsPipelines. */
+#define XUD_BATCH_BINDING_COUNT (XUD_BATCH_STREAM_COUNT + XUD_BATCH_INSTANCE_STREAM_COUNT)
+#define XUD_BATCH_ATTRIBUTE_COUNT (XUD_BATCH_STREAM_COUNT + 4u + 1u)
+
+/* The instance capacity that goes with a vertex capacity: EIGHT instances per vertex slot. Like
+   the index capacity above it is a CHOICE, not a bound: the instanced draws S3.2 exists for are
+   small primitives repeated (grass, bullets), where one instance costs a handful of vertices, and
+   the 8 keeps the instance region from being the first wall such a frame hits. A frame that wants
+   more than the region holds is refused and noted, and the growth step doubles both, so the ratio
+   is kept rather than corrected. At the batch's own vertex bound this answers 32768 instances. */
+#define XUD_BATCH_INSTANCE_CAPACITY(v) ((v) * 8u)
+
 /* The draw array's growth step, on the same doubling sequence the rest of this tree uses. The
    batch's draw rows are one row per pipeline/material change, so a frame's worth of changes is
    the count this is sized for rather than a bound a caller has to know about. */
@@ -154,16 +198,16 @@
 #define XUD_BATCH_INDEX_CAPACITY(v) (((v) * 3u + 1u) / 2u)
 
 #define XUD_BATCH_COPY_REGION_COUNT                                                                                                        \
-    (XUD_BATCH_STREAM_COUNT                                                                                                                \
-        + 1u) /* four streams plus the index buffer, one region each - five destinations is five vkCmdCopyBuffer       \
-                                     calls, see xud_batch_upload's doc */
+    (XUD_BATCH_STREAM_COUNT + XUD_BATCH_INSTANCE_STREAM_COUNT                                                                              \
+        + 1u) /* four streams, the instance two, and the index buffer - the upload's live-row count is its own field, because a mesh-only
+                  frame has instance bytes and no arena bytes and the empty regions must not be copied */
 
 static_assert(XUD_BATCH_VERTEX_SIZE
         == (XUD_BATCH_STREAM_POS_SIZE + XUD_BATCH_STREAM_UV_SIZE + XUD_BATCH_STREAM_COLOR_SIZE + XUD_BATCH_STREAM_NORMAL_SIZE),
     "one vertex is the four streams' widths added, which is the number the arena's offsets are built from");
 static_assert(XUD_BATCH_VERTEX_SIZE == 36u, "the settled decision's 36 B/vertex across four buffers, read rather than remembered");
 static_assert(XUD_BATCH_STREAM_COUNT == (XUD_BATCH_STREAM_NORMAL + 1u), "the four stream rows are contiguous from pos up to normal");
-static_assert(XUD_BATCH_COPY_REGION_COUNT == 5u, "one copy region per stream plus one for the index buffer");
+static_assert(XUD_BATCH_COPY_REGION_COUNT == 7u, "one region per stream, per instance stream, and one for the index buffer");
 static_assert(XUD_BATCH_STREAM_ELEMENT(XUD_BATCH_STREAM_COLOR) == 4u,
     "the chain above answers the width the constants state, for the narrowest stream of the four");
 static_assert(XUD_BATCH_STREAM_ELEMENT(XUD_BATCH_STREAM_POS) + XUD_BATCH_STREAM_ELEMENT(XUD_BATCH_STREAM_UV)
@@ -176,14 +220,16 @@ static_assert((XUD_BATCH_VERTEX_SIZE % 4u) == 0u,
 static_assert(
     XUD_BATCH_MAX_VERTICES >= XUD_BATCH_INITIAL_VERTICES, "the bound is above the start, or the first grow step is already past it");
 static_assert(
-    (XUD_BATCH_INITIAL_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) * XUD_BATCH_INDEX_SIZE)
+    (XUD_BATCH_INITIAL_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_INITIAL_VERTICES) * XUD_BATCH_INDEX_SIZE
+        + XUD_BATCH_INSTANCE_CAPACITY(XUD_BATCH_INITIAL_VERTICES) * (XUD_BATCH_INSTANCE_MATRIX_SIZE + XUD_BATCH_INSTANCE_TINT_SIZE))
         <= XUD_ALLOCATOR_BLOCK_MIN_SIZE,
-    "the smallest batch's staging arena fits the allocator's SMALLEST block, which is the block the arena gets when it owns one - the "
-    "arena is mapped, and a mapped carve owns its block rather than sharing one");
-static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES) * XUD_BATCH_INDEX_SIZE)
+    "the smallest batch's staging arena - streams, indices and the instance region - fits the allocator's SMALLEST block, which is the "
+    "block the arena gets when it owns one - the arena is mapped, and a mapped carve owns its block rather than sharing one");
+static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_CAPACITY(XUD_BATCH_MAX_VERTICES) * XUD_BATCH_INDEX_SIZE
+                  + XUD_BATCH_INSTANCE_CAPACITY(XUD_BATCH_MAX_VERTICES) * (XUD_BATCH_INSTANCE_MATRIX_SIZE + XUD_BATCH_INSTANCE_TINT_SIZE))
         <= XUD_ALLOCATOR_BLOCK_MAX_SIZE,
-    "the largest batch's staging arena is one request the allocator's block-growth ceiling can serve, which is what makes the bound the "
-    "allocator's own rather than an invented one");
+    "the largest batch's staging arena, instance region included, is one request the allocator's block-growth ceiling can serve, which is "
+    "what makes the bound the allocator's own rather than an invented one");
 
 /*-----------------------------------------------------------------------------------------------
  * The topology, the pipeline variant and the material slot a draw row names
@@ -288,6 +334,18 @@ here rather than at the arena, and the sentinel is what makes its first rebind u
 instead of a fact about which row happened to come first */
 #define XUD_BATCH_GEOMETRY_MIN 8u /* the geometry list's step, the same doubling shape the draw list and the rest of this tree uses */
 
+/* The draw row's other "not from a list" sentinel: a row whose pose and tint come from the PUSH
+   row rather than from the instance streams names no instance row at all. The 0xFFFFFFFF shape is
+   XUD_BATCH_NO_MATERIAL's, not GEOMETRY_OWN's 0: instance row 0 is a real row the first instanced
+   draw of the frame writes, and a default that meant "read row 0" would make every arena draw
+   alias the first grass tuft's matrix. The frame loop maps the sentinel to the draw argument pair
+   (1 copy, firstInstance 0) and to the push row's instance flag, which is what tells the vertex
+   stage to take its matrix from the push and not from bindings 4 and 5. */
+#define XUD_BATCH_INSTANCE_FROM_PUSH 0xFFFFFFFFu
+
+static_assert(XUD_BATCH_INSTANCE_FROM_PUSH > XUD_BATCH_MAX_VERTICES,
+    "the sentinel is above every instance row the largest batch can write, so no real cursor collides with it");
+
 /* The five buffers one geometry row binds: the four attribute streams at the pipeline's binding
    numbers 0..3 and the one index buffer the draw's index range reads. The count is the batch's
    stream count plus one rather than xud_mesh.h's XUD_MESH_BUFFER_COUNT, because xud_mesh.h
@@ -329,6 +387,12 @@ typedef struct XudBatchDraw XudBatchDraw;
 struct XudBatchDraw {
     uint32_t firstIndex; /* where in the index buffer this draw starts */
     uint32_t indexCount; /* how many indices it takes - vkCmdDrawIndexed's whole argument pair */
+    uint32_t firstInstance; /* where in the instance streams this draw's copies start - XUD_BATCH_INSTANCE_FROM_PUSH
+                                 for every row that does not instance (the pose stays in the push row), the cursor
+                                 value the instanced record stamped for a row that does */
+    uint32_t instanceCount; /* how many copies the GPU assembles - vkCmdDrawIndexed's instanceCount argument; 1 for every
+                                 row the append paths and the single mesh record write, the caller's count for an
+                                 xud_batch_record_instanced_draw row */
     uint32_t topology; /* which topology this run's indices are assembled as - the row of the
                             pipeline list the frame loop binds beside this draw, and raylib's own
                             field: rlDrawCall's `mode` (rlgl.h 407), replayed by glDrawArrays at
@@ -362,6 +426,8 @@ struct XudBatchGeometry {
 typedef struct XudBatch XudBatch;
 struct XudBatch {
     XudBatchStream stream[XUD_BATCH_STREAM_COUNT];
+    XudBatchStream instanceStream[XUD_BATCH_INSTANCE_STREAM_COUNT]; /* the per-instance matrix and tint rows (S3.2), the same
+                                                                        XudBatchStream shape read at instanceCapacity */
 
     VkBuffer indexBuffer; /* the one index buffer of the settled decision */
     VkBufferCreateInfo indexBufferInfo;
@@ -383,17 +449,24 @@ struct XudBatch {
        tor's ring, whose cursor wraps.) --- */
     VkDeviceSize streamOffset[XUD_BATCH_STREAM_COUNT];
     VkDeviceSize indexOffset;
+    VkDeviceSize instanceOffset[XUD_BATCH_INSTANCE_STREAM_COUNT]; /* the two instance regions, laid out after the index buffer */
     VkDeviceSize stagingBytes; /* the arena's total, what the staging buffer was created for */
 
     uint32_t vertexCapacity; /* vertices every stream can hold, the one capacity all four share */
     uint32_t indexCapacity; /* indices the index buffer can hold */
+    uint32_t instanceCapacity; /* instances the two instance streams can hold, XUD_BATCH_INSTANCE_CAPACITY of the vertex capacity */
     uint32_t vertexCount; /* live vertices - the invariant's subject: every stream holds this many */
     uint32_t indexCount; /* live indices */
+    uint32_t instanceCount; /* live instance rows - the count both instance streams hold, and the firstInstance
+                                 the next instanced draw is stamped with */
 
     /* --- the rows the pipeline rung below and the frame loop above are handed --- */
-    VkVertexInputBindingDescription bindings[XUD_BATCH_STREAM_COUNT];
-    VkVertexInputAttributeDescription attributes[XUD_BATCH_STREAM_COUNT];
+    VkVertexInputBindingDescription bindings[XUD_BATCH_BINDING_COUNT];
+    VkVertexInputAttributeDescription attributes[XUD_BATCH_ATTRIBUTE_COUNT];
     VkBufferCopy copyRegions[XUD_BATCH_COPY_REGION_COUNT];
+    uint32_t copyRegionCount; /* the rows of copyRegions that name LIVE bytes this frame - three of the seven
+                                   can be empty (a mesh-only frame copies no arena streams), and the upload
+                                   hands vkCmdCopyBuffer exactly this many rows */
 
     /* --- the capacity ask: what the largest refused append was asked to hold ---. A shape's
        append is ATOMIC (xud_shapes.h: a shape that does not fit writes nothing), so a frame that
@@ -407,6 +480,8 @@ struct XudBatch {
        the capacities that layout replaces. */
     uint32_t wantedVertices; /* 0 when nothing has been refused since the last grow */
     uint32_t wantedIndices; /* the index half of the same ask, read against indexCapacity */
+    uint32_t wantedInstances; /* the instance half, read against instanceCapacity - the ask of the largest
+                                   refused instanced draw, on the same frame-lifetime rule as the pair above */
 
     /* --- the flush state: what the pending batch of draws was accumulated under --- */
     uint32_t currentTopology; /* the topology the pending draws are assembled as - raylib's
@@ -444,10 +519,11 @@ struct XudBatch {
     uint32_t growCount; /* how many times the capacity doubled - the counter a test reads to know the growth path ran more than once */
 };
 
-static_assert(sizeof(((XudBatch*)0)->bindings) / sizeof(VkVertexInputBindingDescription) == XUD_BATCH_STREAM_COUNT,
-    "the binding array must be exactly the count the pipeline's vertex-input row will claim");
-static_assert(sizeof(((XudBatch*)0)->attributes) / sizeof(VkVertexInputAttributeDescription) == XUD_BATCH_STREAM_COUNT,
-    "the attribute array must be exactly the count the pipeline's vertex-input row will claim");
+static_assert(sizeof(((XudBatch*)0)->bindings) / sizeof(VkVertexInputBindingDescription) == XUD_BATCH_BINDING_COUNT,
+    "the binding array must be exactly the count the pipeline's vertex-input row will claim - four streams plus the instance two");
+static_assert(sizeof(((XudBatch*)0)->attributes) / sizeof(VkVertexInputAttributeDescription) == XUD_BATCH_ATTRIBUTE_COUNT,
+    "the attribute array must be exactly the count the pipeline's vertex-input row will claim - four streams, four matrix columns, one "
+    "tint");
 static_assert(sizeof(((XudBatch*)0)->copyRegions) / sizeof(VkBufferCopy) == XUD_BATCH_COPY_REGION_COUNT,
     "the copy-region array must be exactly the count vkCmdCopyBuffer will be handed");
 
@@ -456,7 +532,7 @@ static_assert(sizeof(((XudBatch*)0)->copyRegions) / sizeof(VkBufferCopy) == XUD_
  *-----------------------------------------------------------------------------------------------*/
 
 /// Pure: the arena's layout for one vertex capacity - the four stream offsets, the index offset,
-/// the arena total and the index capacity. This is the "vertex/index arithmetic" and the
+/// the two instance offsets, the arena total, and the index and instance capacities. This is the
 /// "capacity-doubling bounds" half of the rung with the driver calls taken out of it: every
 /// number below is a fact about the layout, checkable with no device present, and the buffer
 /// sizes, the copy-region sizes and the append offsets are all read off these same rows, so
@@ -481,35 +557,37 @@ XudResult xud_batch_next_capacity(uint32_t vertexCapacity, uint32_t* outNext);
 /// bound, which is the same row xud_allocator.h checks rather than a second rule.
 XudResult xud_batch_host_visible_bits(const XudDeviceCaps* caps, uint32_t* outMemoryTypeBits);
 
-/// Pure: the one binding row of one stream - binding number = the stream index, stride = the
-/// stream's element size, rate PER_VERTEX. Gated on the caps' maxVertexInputBindings and
+/// Pure: the one binding row of one stream, in the EXTENDED index space: 0..3 the four vertex
+/// streams (rate PER_VERTEX, stride the stream's element) and 4..5 the instance streams (rate
+/// PER_INSTANCE - core 1.1, under this library's 1.3 floor - stride 64 for the matrix and 4 for
+/// the tint). Gated on the caps' maxVertexInputBindings and
 /// maxVertexInputAttributes: the repo's "check before you use" rule read at the vertex-input
-/// limits, so a device that answers fewer than four of either gets XUD_UNSUPPORTED rather than
-/// a pipeline whose vertex-input state the driver would reject. XUD_INVALID_ARG on a NULL
-/// out-row; XUD_UNSUPPORTED when the caps cannot hold this row.
+/// limits, so a device that cannot hold six bindings or nine locations gets XUD_UNSUPPORTED
+/// rather than a pipeline the driver would reject. XUD_INVALID_ARG on a NULL out-row or an index
+/// at or past the six; XUD_UNSUPPORTED when the caps cannot hold this row.
 XudResult xud_batch_fill_binding(VkVertexInputBindingDescription* outRow, const XudDeviceCaps* caps, uint32_t streamIndex);
 
-/// Pure: the one attribute row of one stream - location = the stream index (the GLSL's `in`
-/// location), binding = the stream index, format = the stream's format, offset 0 (each stream is
-/// its own buffer, so an attribute never sits at a non-zero offset inside one - that is what
-/// SoA buys against an interleaved stream). Same caps gate as the binding row above. XUD_
-/// INVALID_ARG on a NULL out-row or a stream index past the four; XUD_UNSUPPORTED when the caps
-/// cannot hold it.
+/// Pure: the one attribute row of one stream, in the EXTENDED index space: 0..3 the four vertex
+/// streams (location = index, binding = index, offset 0), 4..7 the matrix stream's four columns
+/// (binding 4, offsets 0/16/32/48 - the one stream whose element is wider than one attribute), 8
+/// the tint (binding 5, offset 0). Same caps gate as the binding row above. XUD_INVALID_ARG on a
+/// NULL out-row or an index at or past the nine; XUD_UNSUPPORTED when the caps cannot hold it.
 XudResult xud_batch_fill_attribute(VkVertexInputAttributeDescription* outRow, const XudDeviceCaps* caps, uint32_t streamIndex);
 
-/// Pure: the batch's whole vertex-input state, into the struct's own rows - the four bindings and
-/// the four attributes, in stream order, each built by the two calls above so the rows the
-/// pipeline is handed and the rows vkCmdBindVertexBuffers is handed are one set of bytes. XUD_
-/// INVALID_ARG on a NULL batch; XUD_UNSUPPORTED when the caps cannot hold four of either.
+/// Pure: the batch's whole vertex-input state, into the struct's own rows - the six bindings and
+/// the nine attributes, streams first and instance streams after, each built by the two calls
+/// above so the rows the pipeline is handed and the rows vkCmdBindVertexBuffers is handed are one
+/// set of bytes. XUD_INVALID_ARG on a NULL batch; XUD_UNSUPPORTED when the caps cannot hold them.
 XudResult xud_batch_fill_vertex_input(XudBatch* batch, const XudDeviceCaps* caps);
 
-/// Pure: the batch's own five copy rows, in stream order then the index buffer's, each from its
-/// arena offset to offset 0 in its own buffer, each the live byte count rather than the capacity.
-/// One row per destination rather than one array for one call, because vkCmdCopyBuffer names ONE
-/// source and ONE destination buffer: five destinations is five calls, each carrying the one row
-/// below, and the arena stays the single source of all five. XUD_INVALID_ARG on a NULL batch;
-/// XUD_UNSUPPORTED when a live byte count is 0 (a copy of nothing is not a region, and vkCmdCopy
-/// Buffer's VUID makes a zero-size region a hard error).
+/// Pure: the batch's copy rows - four streams, the instance two, then the index buffer - each from
+/// its arena offset to offset 0 in its own buffer, each the live byte count rather than the
+/// capacity. EMPTY regions are omitted and copyRegionCount carries the row count: a frame of
+/// nothing but mesh draws has arena streams holding nothing and instance bytes to copy, and a
+/// zero-size region is a hard error at vkCmdCopyBuffer rather than a no-op. XUD_INVALID_ARG on a
+/// NULL batch; XUD_UNSUPPORTED when EVERY region is empty (an upload of nothing is not an upload).
+/// The rows are still one per destination rather than one array for one call, because vkCmdCopy
+/// Buffer names ONE source and ONE destination buffer - see xud_batch_upload's doc.
 XudResult xud_batch_fill_copy_regions(XudBatch* batch);
 
 /// Pure: record the largest total a refused append was asked to hold, which is what makes a frame
@@ -518,14 +596,16 @@ XudResult xud_batch_fill_copy_regions(XudBatch* batch);
 /// against the same live counts, so it wants the biggest of those asks and not their sum. A
 /// request at or below the current capacities records nothing, so a batch that was never refused
 /// keeps answering 0/0. XUD_INVALID_ARG on a NULL batch.
-XudResult xud_batch_note_refused(XudBatch* batch, uint32_t requestedVertices, uint32_t requestedIndices);
+/// The instance total is the third half of the same ask: an instanced draw refused at instance
+/// capacity notes its total there, on the same maxima rule. XUD_INVALID_ARG on a NULL batch.
+XudResult xud_batch_note_refused(XudBatch* batch, uint32_t requestedVertices, uint32_t requestedIndices, uint32_t requestedInstances);
 
-/// Pure: the capacity ask above reads - the largest refused request's vertex and index totals, 0/0
-/// when nothing has been refused since the last grow. This is the headless-testable half of the
+/// Pure: the capacity ask above read - the largest refused request's vertex, index and instance
+/// totals, 0/0/0 when nothing has been refused since the last grow. This is the headless-testable
 /// whole growth path: the ask, the next capacity and the bound are arithmetic on the batch's own
 /// rows, and only xud_batch_grow's six creates touch a driver. XUD_INVALID_ARG on a NULL batch or
 /// out-pointer.
-XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_t* outIndices);
+XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_t* outIndices, uint32_t* outInstances);
 
 /// Pure: the variant and the material slot the pending draws are being accumulated under - the pair
 /// a draw that names a handle BESIDE the arena records under rather than chooses: a mesh draws with
@@ -544,8 +624,9 @@ XudResult xud_batch_model_matrix_check(const float* modelMatrix);
 /// question the frame boundary above needs before it calls xud_batch_grow, and the reason it is
 /// asked rather than answered above: the batch owns BOTH halves of the comparison, the vertex ask
 /// against vertexCapacity and the index ask against indexCapacity, which is xud_batch_layout's
-/// 3n/2 and not a number a caller should restate. 1 when either half exceeds, 0 otherwise. XUD_
-/// INVALID_ARG on a NULL batch or out-pointer.
+/// 3n/2 and not a number a caller should restate, and since S3.2 a third half, the instance ask
+/// against instanceCapacity. 1 when ANY of the three exceeds, 0 otherwise. XUD_INVALID_ARG on a
+/// NULL batch or out-pointer.
 XudResult xud_batch_growth_asked(const XudBatch* batch, uint32_t* outAsked);
 
 /// Pure: the invariant the settled decision states - "every stream holds the same vertex count".
@@ -607,6 +688,30 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
 /// the draw list's or the geometry list's doubling step fails on the host.
 XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex, uint32_t textureIndex,
     const float* modelMatrix, const float* tint, const VkBuffer* buffers, const VkDeviceSize* offsets, uint32_t indexCount);
+
+/// Pure: record ONE draw row that assembles instanceCount copies of one mesh through the two
+/// instance streams, and write those instances' bytes into the arena at the live instance cursor.
+/// This is the S3.2 record: one row, one bind, one vkCmdDrawIndexed call with the caller's count
+/// in its instanceCount argument - "thousands of copies of the same object in one call" read as
+/// the batch record it has to be. Like xud_batch_record_mesh_draw it closes the pending arena run
+/// first and dedupes the mesh's buffers into the geometry list; unlike it, it spends capacity:
+/// the instance region must hold firstInstance+instanceCount rows in BOTH instance streams, and a
+/// refusal notes the ask (wantedInstances) so the frame boundary above can grow, and writes
+/// NOTHING - the record is atomic in its instance rows the way a shape's append is atomic in its
+/// vertices. The row is stamped firstInstance = the cursor before the write and instanceCount =
+/// the caller's count; its own pose is the identity and the white, because the per-copy transform
+/// and colour ARE the instance rows - the push row the frame loop pushes beside this draw carries
+/// the instanced flag on top of the variant, and the vertex stage reads its matrix and tint from
+/// the instance streams instead of from that push. matrices is instanceCount rows of 16 floats,
+/// column-major; tints is instanceCount rows of XUD_BATCH_INSTANCE_TINT_SIZE unorm bytes (the
+/// four of an XudColor, verbatim) or NULL, which writes white for every copy. XUD_INVALID_ARG on a
+/// NULL batch, matrices or buffers array, a count of 0, a non-finite matrix element
+/// (xud_batch_model_matrix_check reads every row), a topology/variant past its list, or a null
+/// buffer among the mesh's five; XUD_OUT_OF_MEMORY at instance capacity (the ask is noted; the
+/// grow is the boundary's) or when a host doubling step fails.
+XudResult xud_batch_record_instanced_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex,
+    uint32_t textureIndex, const VkBuffer* buffers, const VkDeviceSize* offsets, uint32_t indexCount, const float* matrices,
+    const uint8_t* tints, uint32_t instanceCount);
 
 /// Pure: move the batch's topology state, and close the pending run into a draw row of the SAME
 /// batch first if the state actually changes and the run has content in it. This is raylib's
@@ -681,6 +786,10 @@ XudResult xud_batch_reset(XudBatch* batch);
 XudResult xud_batch_stats(const XudBatch* batch, uint32_t* outVertexCount, uint32_t* outIndexCount, uint32_t* outVertexCapacity,
     uint32_t* outDrawCount, VkDeviceSize* outStagingBytes);
 
+/// Pure: the live instance rows and the instance capacity - the instance pair beside the vertex
+/// pair xud_batch_stats hands out. XUD_INVALID_ARG on a NULL batch or out-pointer.
+XudResult xud_batch_instance_stats(const XudBatch* batch, uint32_t* outInstanceCount, uint32_t* outInstanceCapacity);
+
 /// Pure: the index capacity the layout installed alongside its vertex capacity - the 3n/2 that
 /// xud_batch_layout() computed and wrote into the batch when it set the vertex capacity, read back
 /// from the field rather than re-derived: the field is the number an append's index bound is
@@ -688,6 +797,11 @@ XudResult xud_batch_stats(const XudBatch* batch, uint32_t* outVertexCount, uint3
 /// half of the same pair xud_batch_stats above hands out the vertex half of. XUD_INVALID_ARG on a
 /// NULL batch or out-pointer.
 XudResult xud_batch_index_capacity(const XudBatch* batch, uint32_t* outIndexCapacity);
+
+/// Pure: the instance capacity the layout installed - XUD_BATCH_INSTANCE_CAPACITY of the vertex
+/// capacity, read back from the field the same way xud_batch_index_capacity reads the index half.
+/// XUD_INVALID_ARG on a NULL batch or out-pointer.
+XudResult xud_batch_instance_capacity(const XudBatch* batch, uint32_t* outInstanceCapacity);
 
 /// Driver: the whole rung up in one call. Order: the arena's layout for the initial capacity, the
 /// staging VkBuffer (usage TRANSFER_SRC, sized to the arena), its memory requirements, the STATI

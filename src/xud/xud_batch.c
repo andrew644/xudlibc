@@ -97,6 +97,8 @@ static void xud_batch_retire(XudBatch* batch, const XudDevice* device, XudLoader
         }
         batch->indexBuffer = VK_NULL_HANDLE;
     }
+
+    batch->copyRegionCount = 0u; /* the filled rows name buffers that are about to be gone */
     for (index = 0u; index < XUD_BATCH_STREAM_COUNT; index++) {
         if (batch->stream[index].buffer == VK_NULL_HANDLE) {
             continue;
@@ -105,6 +107,15 @@ static void xud_batch_retire(XudBatch* batch, const XudDevice* device, XudLoader
             (void)loader->deviceTable.vkDestroyBuffer(device->device, batch->stream[index].buffer, NULL);
         }
         batch->stream[index].buffer = VK_NULL_HANDLE;
+    }
+    for (index = 0u; index < XUD_BATCH_INSTANCE_STREAM_COUNT; index++) {
+        if (batch->instanceStream[index].buffer == VK_NULL_HANDLE) {
+            continue;
+        }
+        if (loader->deviceTable.vkDestroyBuffer != NULL) {
+            (void)loader->deviceTable.vkDestroyBuffer(device->device, batch->instanceStream[index].buffer, NULL);
+        }
+        batch->instanceStream[index].buffer = VK_NULL_HANDLE;
     }
 
     /* The ranges go free after the buffers that name them are gone - the ownership direction the
@@ -115,6 +126,11 @@ static void xud_batch_retire(XudBatch* batch, const XudDevice* device, XudLoader
     for (index = 0u; index < XUD_BATCH_STREAM_COUNT; index++) {
         if (batch->stream[index].range.size != 0u) {
             (void)xud_allocator_release(alloc, &batch->stream[index].range);
+        }
+    }
+    for (index = 0u; index < XUD_BATCH_INSTANCE_STREAM_COUNT; index++) {
+        if (batch->instanceStream[index].range.size != 0u) {
+            (void)xud_allocator_release(alloc, &batch->instanceStream[index].range);
         }
     }
     if (batch->stagingRange.size != 0u) {
@@ -153,6 +169,18 @@ XudResult xud_batch_layout(XudBatch* batch, uint32_t vertexCapacity) {
     batch->indexOffset = running;
     running += (VkDeviceSize)XUD_BATCH_INDEX_CAPACITY(vertexCapacity) * (VkDeviceSize)XUD_BATCH_INDEX_SIZE;
 
+    /* The two instance regions after the index buffer, at the 8× headroom the capacity macro
+       states: 64 B per matrix row and 16 B per tint, both sized for the same instance capacity
+       so one instance index addresses both buffers legally. */
+    batch->instanceCapacity = XUD_BATCH_INSTANCE_CAPACITY(vertexCapacity);
+    for (index = 0u; index < XUD_BATCH_INSTANCE_STREAM_COUNT; index++) {
+        batch->instanceStream[index].format = XUD_BATCH_INSTANCE_FORMAT(index);
+        batch->instanceStream[index].elementSize = (VkDeviceSize)XUD_BATCH_INSTANCE_ELEMENT(index);
+        batch->instanceStream[index].capacityBytes = (VkDeviceSize)batch->instanceCapacity * batch->instanceStream[index].elementSize;
+        batch->instanceOffset[index] = running;
+        running += batch->instanceStream[index].capacityBytes;
+    }
+
     batch->vertexCapacity = vertexCapacity;
     batch->indexCapacity = XUD_BATCH_INDEX_CAPACITY(vertexCapacity);
     batch->stagingBytes = running;
@@ -165,10 +193,12 @@ XudResult xud_batch_layout(XudBatch* batch, uint32_t vertexCapacity) {
        batch that now fits from doubling again next frame. */
     batch->vertexCount = 0u;
     batch->indexCount = 0u;
+    batch->instanceCount = 0u;
     batch->pendingFirstIndex = 0u;
     batch->pendingIndexCount = 0u;
     batch->wantedVertices = 0u;
     batch->wantedIndices = 0u;
+    batch->wantedInstances = 0u;
 
     return XUD_OK;
 }
@@ -204,7 +234,7 @@ XudResult xud_batch_next_capacity(uint32_t vertexCapacity, uint32_t* outNext) {
 XudResult xud_batch_fill_binding(VkVertexInputBindingDescription* outRow, const XudDeviceCaps* caps, uint32_t streamIndex) {
     const VkPhysicalDeviceLimits* limits = NULL;
 
-    if ((outRow == NULL) || (caps == NULL) || (streamIndex >= XUD_BATCH_STREAM_COUNT)) {
+    if ((outRow == NULL) || (caps == NULL) || (streamIndex >= XUD_BATCH_BINDING_COUNT)) {
         return XUD_INVALID_ARG;
     }
 
@@ -218,8 +248,18 @@ XudResult xud_batch_fill_binding(VkVertexInputBindingDescription* outRow, const 
     }
 
     outRow->binding = streamIndex;
-    outRow->stride = (uint32_t)XUD_BATCH_STREAM_ELEMENT(streamIndex);
-    outRow->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    if (streamIndex < XUD_BATCH_STREAM_COUNT) {
+        outRow->stride = (uint32_t)XUD_BATCH_STREAM_ELEMENT(streamIndex);
+        outRow->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    } else {
+        outRow->stride = (uint32_t)XUD_BATCH_INSTANCE_ELEMENT(streamIndex - XUD_BATCH_STREAM_COUNT);
+        /* The instance rate: core since 1.1 and no feature to enable, one row read per instance.
+           VK_EXT_vertex_input_divisor could stretch that to one row per K instances, but the
+           stretch is a pNext chain on the vertex-input state and this batch wants K of 1 - the
+           plain core row already says everything the S3.2 draws need, which is that THIS row and
+           not a push carries the per-copy transform. */
+        outRow->inputRate = VK_VERTEX_INPUT_RATE_INSTANCE;
+    }
 
     if (outRow->stride > limits->maxVertexInputBindingStride) {
         return XUD_UNSUPPORTED;
@@ -230,7 +270,7 @@ XudResult xud_batch_fill_binding(VkVertexInputBindingDescription* outRow, const 
 XudResult xud_batch_fill_attribute(VkVertexInputAttributeDescription* outRow, const XudDeviceCaps* caps, uint32_t streamIndex) {
     const VkPhysicalDeviceLimits* limits = NULL;
 
-    if ((outRow == NULL) || (caps == NULL) || (streamIndex >= XUD_BATCH_STREAM_COUNT)) {
+    if ((outRow == NULL) || (caps == NULL) || (streamIndex >= XUD_BATCH_ATTRIBUTE_COUNT)) {
         return XUD_INVALID_ARG;
     }
 
@@ -240,12 +280,27 @@ XudResult xud_batch_fill_attribute(VkVertexInputAttributeDescription* outRow, co
     }
 
     outRow->location = streamIndex;
-    outRow->binding = streamIndex;
-    outRow->format = XUD_BATCH_STREAM_FORMAT(streamIndex);
-    /* offset 0 is the whole point of SoA here: each stream is its own VkBuffer, so an attribute
-       never sits at a non-zero offset inside one, and the maxVertexInputAttributeOffset limit
-       has nothing to be checked against. */
-    outRow->offset = 0u;
+    if (streamIndex < XUD_BATCH_STREAM_COUNT) {
+        outRow->binding = streamIndex;
+        outRow->format = XUD_BATCH_STREAM_FORMAT(streamIndex);
+        /* offset 0 is the whole point of SoA here: each stream is its own VkBuffer, so an
+           attribute never sits at a non-zero offset inside one, and the maxVertexInputAttribute
+           Offset limit has nothing to be checked against. */
+        outRow->offset = 0u;
+    } else if (streamIndex < (XUD_BATCH_STREAM_COUNT + 4u)) {
+        /* The matrix's four columns: one binding, four locations, one vec4 apart - the shape
+           GLSL reassembles into a mat4 when the `in` declaration is a mat4 spanning four
+           consecutive locations. The offsets are 16 B apart inside the 64 B instance row, the
+           first non-zero attribute offsets in this batch, and the one the instance stream's own
+           note states: the element is wider than its attribute because the element IS four. */
+        outRow->binding = XUD_BATCH_BINDING_MATRIX;
+        outRow->format = XUD_BATCH_INSTANCE_FORMAT(XUD_BATCH_INSTANCE_STREAM_MATRIX);
+        outRow->offset = (streamIndex - XUD_BATCH_STREAM_COUNT) * 16u;
+    } else {
+        outRow->binding = XUD_BATCH_BINDING_TINT;
+        outRow->format = XUD_BATCH_INSTANCE_FORMAT(XUD_BATCH_INSTANCE_STREAM_TINT);
+        outRow->offset = 0u;
+    }
 
     return XUD_OK;
 }
@@ -257,18 +312,35 @@ XudResult xud_batch_fill_vertex_input(XudBatch* batch, const XudDeviceCaps* caps
         return XUD_INVALID_ARG;
     }
 
-    for (index = 0u; index < XUD_BATCH_STREAM_COUNT; index++) {
+    /* The six bindings are the four streams then the instance two; the nine attributes are the
+       four streams at locations 0..3, the matrix's four columns at 4..7 and the tint at 8 - the
+       attribute loop runs over LOCATIONS, because that is the number the fill keys its caps gate
+       on and the number the GLSL's `in` declarations read. */
+    for (index = 0u; index < XUD_BATCH_BINDING_COUNT; index++) {
         if (xud_batch_fill_binding(&batch->bindings[index], caps, index) != XUD_OK) {
             return XUD_UNSUPPORTED;
         }
+    }
+    for (index = 0u; index < XUD_BATCH_ATTRIBUTE_COUNT; index++) {
         if (xud_batch_fill_attribute(&batch->attributes[index], caps, index) != XUD_OK) {
             return XUD_UNSUPPORTED;
         }
+    }
+    for (index = 0u; index < XUD_BATCH_STREAM_COUNT; index++) {
         /* The stream's own rows are the same bytes, kept beside the buffer they describe: the
            frame loop binds through these, the pipeline was built from the array above, and one
            set of bytes is the reason the two cannot disagree. */
         batch->stream[index].binding = batch->bindings[index];
         batch->stream[index].attribute = batch->attributes[index];
+    }
+    /* The instance rows keep the same rule: the matrix stream's stored attribute is its FIRST
+       column row, and the three columns behind it are read off the pipeline's array - the frame
+       loop never binds per-attribute, it binds per-buffer, and the binding row is the whole of
+       what binding needs. */
+    for (index = 0u; index < XUD_BATCH_INSTANCE_STREAM_COUNT; index++) {
+        batch->instanceStream[index].binding = batch->bindings[XUD_BATCH_STREAM_COUNT + index];
+        batch->instanceStream[index].attribute
+            = batch->attributes[(index == XUD_BATCH_INSTANCE_STREAM_MATRIX) ? XUD_BATCH_BINDING_MATRIX : (XUD_BATCH_ATTRIBUTE_COUNT - 1u)];
     }
 
     return XUD_OK;
@@ -279,30 +351,45 @@ XudResult xud_batch_fill_vertex_input(XudBatch* batch, const XudDeviceCaps* caps
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_batch_fill_copy_regions(XudBatch* batch) {
-    uint32_t index = 0u;
+    uint32_t slot = 0u;
+    uint32_t rows = 0u;
     VkDeviceSize liveBytes = 0u;
 
     if (batch == NULL) {
         return XUD_INVALID_ARG;
     }
 
-    if ((batch->vertexCount == 0u) || (batch->indexCount == 0u)) {
-        return XUD_UNSUPPORTED;
+    /* The seven rows are filled at their SLOT positions - four streams, the instance two, the
+       index buffer - and an empty region keeps its row with size 0 rather than being compacted
+       away: the destination of a row is read off the slot it sits in (xud_batch_upload's same
+       mapping), and a compacted array would be an array whose rows no longer name their own
+       buffers. A mesh-only frame - the S3.2 frame of thousands of grass tufts, where the arena's
+       four streams hold nothing and the instance region holds thousands of rows - is exactly the
+       frame that needs the empties marked rather than skipped, and vkCmdCopyBuffer's zero-size
+       VUID is honoured by the upload not handing those rows over at all. */
+    for (slot = 0u; slot < XUD_BATCH_COPY_REGION_COUNT; slot++) {
+        if (slot < XUD_BATCH_STREAM_COUNT) {
+            liveBytes = (VkDeviceSize)batch->vertexCount * batch->stream[slot].elementSize;
+            batch->copyRegions[slot].srcOffset = batch->streamOffset[slot];
+        } else if (slot < (XUD_BATCH_STREAM_COUNT + XUD_BATCH_INSTANCE_STREAM_COUNT)) {
+            liveBytes = (VkDeviceSize)batch->instanceCount * batch->instanceStream[slot - XUD_BATCH_STREAM_COUNT].elementSize;
+            batch->copyRegions[slot].srcOffset = batch->instanceOffset[slot - XUD_BATCH_STREAM_COUNT];
+        } else {
+            liveBytes = (VkDeviceSize)batch->indexCount * (VkDeviceSize)XUD_BATCH_INDEX_SIZE;
+            batch->copyRegions[slot].srcOffset = batch->indexOffset;
+        }
+        batch->copyRegions[slot].dstOffset = 0u;
+        batch->copyRegions[slot].size = liveBytes;
+        if (liveBytes != 0u) {
+            rows++;
+        }
     }
 
-    for (index = 0u; index < XUD_BATCH_COPY_REGION_COUNT; index++) {
-        if (index < XUD_BATCH_STREAM_COUNT) {
-            liveBytes = (VkDeviceSize)batch->vertexCount * batch->stream[index].elementSize;
-            batch->copyRegions[index].srcOffset = batch->streamOffset[index];
-            batch->copyRegions[index].dstOffset = 0u;
-            batch->copyRegions[index].size = liveBytes;
-            continue;
-        }
-        liveBytes = (VkDeviceSize)batch->indexCount * (VkDeviceSize)XUD_BATCH_INDEX_SIZE;
-        batch->copyRegions[index].srcOffset = batch->indexOffset;
-        batch->copyRegions[index].dstOffset = 0u;
-        batch->copyRegions[index].size = liveBytes;
+    if (rows == 0u) {
+        return XUD_UNSUPPORTED; /* an upload of nothing is not an upload - and it is the frame
+                                    loop's hasContent that refuses to call this on such a frame */
     }
+    batch->copyRegionCount = rows;
 
     return XUD_OK;
 }
@@ -338,9 +425,23 @@ XudResult xud_batch_check_invariant(const XudBatch* batch) {
     }
 
     /* The second half: the live counts are inside the capacities, so an append that passed the
-       capacity was refused rather than wrapped, and a draw that names them reads real bytes. */
-    if ((batch->vertexCount > batch->vertexCapacity) || (batch->indexCount > batch->indexCapacity)) {
+       capacity was refused rather than wrapped, and a draw that names them reads real bytes. The
+       instance streams join the capacity mirror the first half states: both are sized for the one
+       instanceCapacity, so one instance index addresses matrix and tint alike. */
+    if ((batch->vertexCount > batch->vertexCapacity) || (batch->indexCount > batch->indexCapacity)
+        || (batch->instanceCount > batch->instanceCapacity)) {
         return XUD_UNSUPPORTED;
+    }
+    for (index = 0u; index < XUD_BATCH_INSTANCE_STREAM_COUNT; index++) {
+        if (batch->instanceStream[index].elementSize == 0u) {
+            return XUD_UNSUPPORTED;
+        }
+        if ((batch->instanceStream[index].capacityBytes % batch->instanceStream[index].elementSize) != 0u) {
+            return XUD_UNSUPPORTED;
+        }
+        if ((batch->instanceStream[index].capacityBytes / batch->instanceStream[index].elementSize) != batch->instanceCapacity) {
+            return XUD_UNSUPPORTED;
+        }
     }
 
     /* The third half, which only exists once a row can name geometry beside the arena: every
@@ -351,6 +452,19 @@ XudResult xud_batch_check_invariant(const XudBatch* batch) {
     for (index = 0u; index < batch->drawCount; index++) {
         if (batch->draws[index].geometryIndex > batch->geometryCount) {
             return XUD_UNSUPPORTED;
+        }
+        /* The instance mirror of the same half: a row's copy range is inside the rows the batch
+           actually wrote, and a row naming past the cursor is a draw the frame loop would record
+           with a firstInstance no arena byte backs. The push sentinel passes with count 1 and
+           names no row at all; instanceCount 0 is a broken state of either kind - only the
+           instanced record ever writes a count above one, and it stamps at least one. */
+        if (batch->draws[index].instanceCount == 0u) {
+            return XUD_UNSUPPORTED;
+        }
+        if (batch->draws[index].firstInstance != XUD_BATCH_INSTANCE_FROM_PUSH) {
+            if ((batch->draws[index].firstInstance + batch->draws[index].instanceCount) > batch->instanceCount) {
+                return XUD_UNSUPPORTED;
+            }
         }
     }
 
@@ -476,6 +590,8 @@ XudResult xud_batch_record_draw(XudBatch* batch, uint32_t topology, uint32_t var
     batch->draws[batch->drawCount].textureIndex = textureIndex;
     batch->draws[batch->drawCount].geometryIndex = XUD_BATCH_GEOMETRY_OWN;
     xud_batch_pose_identity(batch->draws[batch->drawCount].modelMatrix, batch->draws[batch->drawCount].tint);
+    batch->draws[batch->drawCount].firstInstance = XUD_BATCH_INSTANCE_FROM_PUSH;
+    batch->draws[batch->drawCount].instanceCount = 1u;
     batch->drawCount++;
 
     batch->pendingFirstIndex = batch->indexCount;
@@ -576,6 +692,137 @@ XudResult xud_batch_record_mesh_draw(XudBatch* batch, uint32_t topology, uint32_
     for (channel = 0u; channel < XUD_BATCH_TINT_COUNT; channel++) {
         batch->draws[batch->drawCount].tint[channel] = tint[channel];
     }
+    batch->draws[batch->drawCount].firstInstance = XUD_BATCH_INSTANCE_FROM_PUSH;
+    batch->draws[batch->drawCount].instanceCount = 1u;
+    batch->drawCount++;
+
+    return XUD_OK;
+}
+
+/* The instanced row (S3.2): one mesh, one recorded draw, N copies the GPU assembles from the two
+   instance streams. The record spends instance capacity where the plain mesh record spends none -
+   the instance bytes are arena bytes, written into the same mapped arena the appends write, and
+   the whole check-before-write rule applies: the capacity is checked BEFORE the pending arena run
+   is closed, so a refused instanced draw leaves the batch exactly as it found it (the pending run
+   still pending, no geometry row added, no draw row) and the frame boundary above reads the note
+   the refusal leaves behind. Dedup and pending-close mirror xud_batch_record_mesh_draw exactly. */
+XudResult xud_batch_record_instanced_draw(XudBatch* batch, uint32_t topology, uint32_t variant, uint32_t materialIndex,
+    uint32_t textureIndex, const VkBuffer* buffers, const VkDeviceSize* offsets, uint32_t indexCount, const float* matrices,
+    const uint8_t* tints, uint32_t instanceCount) {
+    XudResult result = XUD_OK;
+    uint32_t geometryIndex = XUD_BATCH_GEOMETRY_OWN;
+    uint32_t found = 0u;
+    uint32_t slot = 0u;
+    uint32_t candidate = 0u;
+    uint32_t row = 0u;
+    uint8_t* arena = NULL;
+
+    if ((batch == NULL) || (buffers == NULL) || (offsets == NULL) || (matrices == NULL)) {
+        return XUD_INVALID_ARG; /* tints is the one array allowed to be NULL - it means white */
+    }
+    if (instanceCount == 0u) {
+        return XUD_INVALID_ARG; /* zero copies is a no-op a caller can skip; a zero-count row would
+                                    be a vkCmdDrawIndexed that assembles nothing and names nothing */
+    }
+    if ((topology >= XUD_BATCH_TOPOLOGY_COUNT) || (variant >= XUD_BATCH_VARIANT_COUNT)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((textureIndex != XUD_BATCH_NO_TEXTURE) && (textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
+        return XUD_INVALID_ARG;
+    }
+    if (indexCount < 3u || ((indexCount % 3u) != 0u)) {
+        return XUD_INVALID_ARG; /* the mesh rung's own rule, read again where the range is named */
+    }
+    for (slot = 0u; slot < XUD_BATCH_GEOMETRY_BUFFER_COUNT; slot++) {
+        if (buffers[slot] == VK_NULL_HANDLE) {
+            return XUD_INVALID_ARG;
+        }
+    }
+    if ((batch->stagingMapped == NULL) || (batch->stagingMappedLive == 0u)) {
+        return XUD_OUT_OF_MEMORY;
+    }
+    if ((batch->instanceCount + instanceCount) > batch->instanceCapacity) {
+        (void)xud_batch_note_refused(batch, batch->vertexCount, batch->indexCount, batch->instanceCount + instanceCount);
+        return XUD_OUT_OF_MEMORY; /* the fit is decided before the caller's array is read at all: an ask
+                                      that cannot be served is refused without O(n) work over matrices
+                                      the replay will hand to the call that does fit */
+    }
+    for (row = 0u; row < instanceCount; row++) {
+        result = xud_batch_model_matrix_check(matrices + ((size_t)row * XUD_BATCH_MODEL_MATRIX_COUNT));
+        if (result != XUD_OK) {
+            return result; /* one NaN row poisons the whole record: the check is per-instance and
+                              atomic in its refusal, the way the append is atomic per shape */
+        }
+    }
+
+    if (batch->pendingIndexCount != 0u) {
+        result = xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial, batch->currentTexture);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+
+    for (candidate = 0u; (found == 0u) && (candidate < batch->geometryCount); candidate++) {
+        found = 1u;
+        for (slot = 0u; slot < XUD_BATCH_GEOMETRY_BUFFER_COUNT; slot++) {
+            if ((batch->geometry[candidate].buffer[slot] != buffers[slot]) || (batch->geometry[candidate].offset[slot] != offsets[slot])) {
+                found = 0u;
+                break;
+            }
+        }
+        if (found != 0u) {
+            geometryIndex = candidate + 1u;
+        }
+    }
+    if (found == 0u) {
+        result = xud_batch_geometry_reserve(batch);
+        if (result != XUD_OK) {
+            return result;
+        }
+        for (slot = 0u; slot < XUD_BATCH_GEOMETRY_BUFFER_COUNT; slot++) {
+            batch->geometry[batch->geometryCount].buffer[slot] = buffers[slot];
+            batch->geometry[batch->geometryCount].offset[slot] = offsets[slot];
+        }
+        batch->geometry[batch->geometryCount].indexCount = indexCount;
+        geometryIndex = batch->geometryCount + 1u;
+        batch->geometryCount++;
+    }
+
+    result = xud_batch_draw_reserve(batch);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The bytes: N matrix rows and N tint rows appended at the live cursor, in the same arena the
+       vertex appends write and by the same memcpy-then-bump discipline. The two streams share one
+       cursor, which is what makes one instance index address both. */
+    arena = (uint8_t*)batch->stagingMapped;
+    for (row = 0u; row < instanceCount; row++) {
+        memcpy(arena + batch->instanceOffset[XUD_BATCH_INSTANCE_STREAM_MATRIX]
+                + ((size_t)(batch->instanceCount + row) * XUD_BATCH_INSTANCE_MATRIX_SIZE),
+            matrices + ((size_t)row * XUD_BATCH_MODEL_MATRIX_COUNT), XUD_BATCH_INSTANCE_MATRIX_SIZE);
+        if (tints != NULL) {
+            memcpy(arena + batch->instanceOffset[XUD_BATCH_INSTANCE_STREAM_TINT]
+                    + ((size_t)(batch->instanceCount + row) * XUD_BATCH_INSTANCE_TINT_SIZE),
+                tints + ((size_t)row * XUD_BATCH_INSTANCE_TINT_SIZE), XUD_BATCH_INSTANCE_TINT_SIZE);
+        } else {
+            memset(arena + batch->instanceOffset[XUD_BATCH_INSTANCE_STREAM_TINT]
+                    + ((size_t)(batch->instanceCount + row) * XUD_BATCH_INSTANCE_TINT_SIZE),
+                0xFF, XUD_BATCH_INSTANCE_TINT_SIZE);
+        }
+    }
+
+    batch->draws[batch->drawCount].firstIndex = 0u;
+    batch->draws[batch->drawCount].indexCount = indexCount;
+    batch->draws[batch->drawCount].topology = topology;
+    batch->draws[batch->drawCount].variant = variant;
+    batch->draws[batch->drawCount].materialIndex = materialIndex;
+    batch->draws[batch->drawCount].textureIndex = textureIndex;
+    batch->draws[batch->drawCount].geometryIndex = geometryIndex;
+    batch->draws[batch->drawCount].firstInstance = batch->instanceCount;
+    batch->draws[batch->drawCount].instanceCount = instanceCount;
+    xud_batch_pose_identity(batch->draws[batch->drawCount].modelMatrix, batch->draws[batch->drawCount].tint);
+    batch->instanceCount += instanceCount;
     batch->drawCount++;
 
     return XUD_OK;
@@ -777,6 +1024,7 @@ XudResult xud_batch_reset(XudBatch* batch) {
 
     batch->vertexCount = 0u;
     batch->indexCount = 0u;
+    batch->instanceCount = 0u;
     batch->drawCount = 0u;
     batch->pendingFirstIndex = 0u;
     batch->pendingIndexCount = 0u;
@@ -789,15 +1037,15 @@ XudResult xud_batch_reset(XudBatch* batch) {
     return XUD_OK;
 }
 
-XudResult xud_batch_note_refused(XudBatch* batch, uint32_t requestedVertices, uint32_t requestedIndices) {
+XudResult xud_batch_note_refused(XudBatch* batch, uint32_t requestedVertices, uint32_t requestedIndices, uint32_t requestedInstances) {
     if (batch == NULL) {
         return XUD_INVALID_ARG;
     }
 
     /* The ask is recorded against the batch's OWN capacities, and a request that fits records
-       nothing: a batch that was never refused keeps answering 0/0, which is what makes the frame
+       nothing: a batch that was never refused keeps answering 0/0/0, which is what makes the frame
        boundary's grow loop a no-op on an ordinary frame rather than a doubling every frame. The
-       pair is a maxima and not a sum - a frame that refused several shapes refused them all
+       triple is a maxima and not a sum - a frame that refused several shapes refused them all
        against the same live counts, so the biggest ask is the one the next frame has to hold. */
     if ((requestedVertices > batch->wantedVertices) && (requestedVertices > batch->vertexCapacity)) {
         batch->wantedVertices = requestedVertices;
@@ -805,17 +1053,21 @@ XudResult xud_batch_note_refused(XudBatch* batch, uint32_t requestedVertices, ui
     if ((requestedIndices > batch->wantedIndices) && (requestedIndices > batch->indexCapacity)) {
         batch->wantedIndices = requestedIndices;
     }
+    if ((requestedInstances > batch->wantedInstances) && (requestedInstances > batch->instanceCapacity)) {
+        batch->wantedInstances = requestedInstances;
+    }
 
     return XUD_OK;
 }
 
-XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_t* outIndices) {
-    if ((batch == NULL) || (outVertices == NULL) || (outIndices == NULL)) {
+XudResult xud_batch_wanted(const XudBatch* batch, uint32_t* outVertices, uint32_t* outIndices, uint32_t* outInstances) {
+    if ((batch == NULL) || (outVertices == NULL) || (outIndices == NULL) || (outInstances == NULL)) {
         return XUD_INVALID_ARG;
     }
 
     *outVertices = batch->wantedVertices;
     *outIndices = batch->wantedIndices;
+    *outInstances = batch->wantedInstances;
 
     return XUD_OK;
 }
@@ -837,11 +1089,15 @@ XudResult xud_batch_growth_asked(const XudBatch* batch, uint32_t* outAsked) {
         return XUD_INVALID_ARG;
     }
 
-    /* Both halves, against the batch's OWN capacities: the vertex ask against vertexCapacity and
-       the index ask against the indexCapacity xud_batch_layout computed as 3n/2 for it. Either
-       half exceeding is enough - a frame that overflows the indices is a frame the next capacity
-       has to hold, and the grow doubles both, so the ratio is kept rather than corrected. */
-    *outAsked = ((batch->wantedVertices > batch->vertexCapacity) || (batch->wantedIndices > batch->indexCapacity)) ? 1u : 0u;
+    /* All three halves, against the batch's OWN capacities: the vertex ask against vertexCapacity,
+       the index ask against the indexCapacity xud_batch_layout computed as 3n/2 for it, and the
+       instance ask against the instanceCapacity it computed as 8n for. ANY half exceeding is
+       enough - a frame that overflows the instance region is a frame the next capacity has to
+       hold, and the grow doubles all three, so the ratios are kept rather than corrected. */
+    *outAsked = ((batch->wantedVertices > batch->vertexCapacity) || (batch->wantedIndices > batch->indexCapacity)
+                    || (batch->wantedInstances > batch->instanceCapacity))
+        ? 1u
+        : 0u;
 
     return XUD_OK;
 }
@@ -868,6 +1124,27 @@ XudResult xud_batch_index_capacity(const XudBatch* batch, uint32_t* outIndexCapa
     }
 
     *outIndexCapacity = batch->indexCapacity;
+
+    return XUD_OK;
+}
+
+XudResult xud_batch_instance_capacity(const XudBatch* batch, uint32_t* outInstanceCapacity) {
+    if ((batch == NULL) || (outInstanceCapacity == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outInstanceCapacity = batch->instanceCapacity;
+
+    return XUD_OK;
+}
+
+XudResult xud_batch_instance_stats(const XudBatch* batch, uint32_t* outInstanceCount, uint32_t* outInstanceCapacity) {
+    if ((batch == NULL) || (outInstanceCount == NULL) || (outInstanceCapacity == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    *outInstanceCount = batch->instanceCount;
+    *outInstanceCapacity = batch->instanceCapacity;
 
     return XUD_OK;
 }
@@ -1042,14 +1319,12 @@ static XudResult xud_batch_create_staging(
 }
 
 static XudResult xud_batch_create_one(
-    XudBatch* batch, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps, XudAllocator* alloc, uint32_t streamIndex) {
+    XudBatch* batch, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps, XudAllocator* alloc, XudBatchStream* row) {
     VkMemoryRequirements needs;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
-    XudBatchStream* row = NULL;
 
-    if ((batch == NULL) || (loader == NULL) || (device == NULL) || (caps == NULL) || (alloc == NULL)
-        || (streamIndex >= XUD_BATCH_STREAM_COUNT)) {
+    if ((batch == NULL) || (loader == NULL) || (device == NULL) || (caps == NULL) || (alloc == NULL) || (row == NULL)) {
         return XUD_UNSUPPORTED;
     }
     if ((loader->deviceTable.vkCreateBuffer == NULL) || (loader->deviceTable.vkDestroyBuffer == NULL)
@@ -1057,7 +1332,9 @@ static XudResult xud_batch_create_one(
         return XUD_UNSUPPORTED;
     }
 
-    row = &batch->stream[streamIndex];
+    /* The row arrives resolved rather than as a stream index: the instance streams are created
+       by the same eight lines the four vertex streams are, and a buffer's create is a fact about
+       its element width and capacity, not about which of the two arrays it lives in. */
     /* The width, the format and the capacity are xud_batch_layout()'s, read rather than
        recomputed: the buffer's size and the arena's window are one pair of numbers, and the
        append offsets are the third. */
@@ -1185,12 +1462,12 @@ XudResult xud_batch_open(XudBatch** outBatch, XudLoader* loader, const XudDevice
         return XUD_UNSUPPORTED;
     }
 
-    /* The four vertex bindings and the four vertex attributes have to fit the caps before a single
-       buffer is created: a device that answers fewer than four of either cannot hold this
-       batch's vertex-input state at all, and creating six buffers it can never be drawn with is
-       work for a refusal that the caps already tell us about. */
-    if ((caps->properties.properties.limits.maxVertexInputBindings < XUD_BATCH_STREAM_COUNT)
-        || (caps->properties.properties.limits.maxVertexInputAttributes < XUD_BATCH_STREAM_COUNT)) {
+    /* The six vertex bindings and the nine vertex attributes have to fit the caps before a single
+       buffer is created: a device that answers fewer of either than this batch's vertex-input
+       state claims cannot hold it at all, and creating eight buffers it can never be drawn with
+       is work for a refusal that the caps already tell us about. */
+    if ((caps->properties.properties.limits.maxVertexInputBindings < XUD_BATCH_BINDING_COUNT)
+        || (caps->properties.properties.limits.maxVertexInputAttributes < XUD_BATCH_ATTRIBUTE_COUNT)) {
         return XUD_UNSUPPORTED;
     }
 
@@ -1223,7 +1500,15 @@ XudResult xud_batch_open(XudBatch** outBatch, XudLoader* loader, const XudDevice
     }
 
     for (index = 0u; index < XUD_BATCH_STREAM_COUNT; index++) {
-        result = xud_batch_create_one(batch, loader, device, caps, alloc, index);
+        result = xud_batch_create_one(batch, loader, device, caps, alloc, &batch->stream[index]);
+        if (result != XUD_OK) {
+            xud_batch_retire(batch, device, loader, alloc);
+            free(batch);
+            return result;
+        }
+    }
+    for (index = 0u; index < XUD_BATCH_INSTANCE_STREAM_COUNT; index++) {
+        result = xud_batch_create_one(batch, loader, device, caps, alloc, &batch->instanceStream[index]);
         if (result != XUD_OK) {
             xud_batch_retire(batch, device, loader, alloc);
             free(batch);
@@ -1304,7 +1589,13 @@ XudResult xud_batch_grow(XudBatch* batch, XudLoader* loader, const XudDevice* de
     }
 
     for (index = 0u; index < XUD_BATCH_STREAM_COUNT; index++) {
-        result = xud_batch_create_one(batch, loader, device, caps, alloc, index);
+        result = xud_batch_create_one(batch, loader, device, caps, alloc, &batch->stream[index]);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+    for (index = 0u; index < XUD_BATCH_INSTANCE_STREAM_COUNT; index++) {
+        result = xud_batch_create_one(batch, loader, device, caps, alloc, &batch->instanceStream[index]);
         if (result != XUD_OK) {
             return result;
         }
@@ -1317,6 +1608,20 @@ XudResult xud_batch_grow(XudBatch* batch, XudLoader* loader, const XudDevice* de
 
     batch->growCount++;
     return XUD_OK;
+}
+
+/* The destination buffer of copy-region SLOT N: four streams, the instance two, the index
+   buffer. The slot-to-buffer mapping is the same order fill_copy_regions fills its rows in, and
+   both reads - the check loop and the record loop in xud_batch_upload - go through this one
+   function so the two cannot disagree about which row feeds which buffer. */
+static VkBuffer xud_batch_copy_destination(const XudBatch* batch, uint32_t slot) {
+    if (slot < XUD_BATCH_STREAM_COUNT) {
+        return batch->stream[slot].buffer;
+    }
+    if (slot < (XUD_BATCH_STREAM_COUNT + XUD_BATCH_INSTANCE_STREAM_COUNT)) {
+        return batch->instanceStream[slot - XUD_BATCH_STREAM_COUNT].buffer;
+    }
+    return batch->indexBuffer;
 }
 
 XudResult xud_batch_upload(XudBatch* batch, XudLoader* loader, const XudDevice* device, VkCommandBuffer commandBuffer) {
@@ -1356,23 +1661,30 @@ XudResult xud_batch_upload(XudBatch* batch, XudLoader* loader, const XudDevice* 
        command buffer the frame loop will submit with some streams bound and some not, and this
        rung does not own that buffer to be able to say it is discarded. */
     for (index = 0u; index < XUD_BATCH_COPY_REGION_COUNT; index++) {
-        destination = (index < XUD_BATCH_STREAM_COUNT) ? batch->stream[index].buffer : batch->indexBuffer;
+        if (batch->copyRegions[index].size == 0u) {
+            continue; /* an empty region is not a copy: a mesh-only frame marks its arena rows
+                          empty and its instance rows live, and the empties are not handed over */
+        }
+        destination = xud_batch_copy_destination(batch, index);
         if (destination == VK_NULL_HANDLE) {
             return XUD_INVALID_ARG;
         }
     }
 
-    /* Five calls, each carrying the one region for one destination. vkCmdCopyBuffer names ONE
-       source and ONE destination buffer, so five destinations is five calls and the arena stays
-       the single source of all five - which is what the SoA decision's "a stream is the unit of
-       the copy" means read against these headers. The call is legal only OUTSIDE a render pass
-       instance, which is the frame loop's job to honour - and the two barriers that make the host
-       write visible to the transfer and the transfer visible to the vertex shader are its job too,
-       because a barrier recorded into a command buffer this rung does not own is not a decision
-       this rung can make. A transfer command has no stage, so no stage mask is an argument here
-       at all. */
+    /* One call per live region, each carrying the one row for one destination. vkCmdCopyBuffer
+       names ONE source and ONE destination buffer, so N destinations is N calls and the arena
+       stays the single source of all of them - which is what the SoA decision's "a stream is the
+       unit of the copy" means read against these headers, the instance streams being streams too.
+       The call is legal only OUTSIDE a render pass instance, which is the frame loop's job to
+       honour - and the two barriers that make the host write visible to the transfer and the
+       transfer visible to the vertex shader are its job too, because a barrier recorded into a
+       command buffer this rung does not own is not a decision this rung can make. A transfer
+       command has no stage, so no stage mask is an argument here at all. */
     for (index = 0u; index < XUD_BATCH_COPY_REGION_COUNT; index++) {
-        destination = (index < XUD_BATCH_STREAM_COUNT) ? batch->stream[index].buffer : batch->indexBuffer;
+        if (batch->copyRegions[index].size == 0u) {
+            continue;
+        }
+        destination = xud_batch_copy_destination(batch, index);
         loader->deviceTable.vkCmdCopyBuffer(commandBuffer, batch->stagingBuffer, destination, 1u, &batch->copyRegions[index]);
     }
 

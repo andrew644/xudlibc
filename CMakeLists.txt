@@ -412,6 +412,12 @@ add_executable(models_waving_cubes
 
 target_link_libraries(models_waving_cubes PRIVATE xud)
 
+add_executable(models_instanced_field
+    examples/models_instanced_field.c
+)
+
+target_link_libraries(models_instanced_field PRIVATE xud)
+
 add_executable(models_lighting
     examples/models_lighting.c
 )

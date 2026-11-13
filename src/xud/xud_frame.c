@@ -313,7 +313,13 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
        ariant is XUD_BATCH_VARIANT_UI, the screen-space column whose position is clip space already,
        so the channel is what makes the overlay screen-fixed rather than a flag this rung would have
        to special-case beside each push. */
-    outRow->flags = drawRow->variant;
+    /* The variant, plus one bit the vertex stage branches on: a row whose firstInstance names no
+       instance row (the push sentinel) places from the modelMatrix below; a row whose firstInstance
+       names one places from the instance streams, and the bit says so. The row's OWN modelMatrix
+       and tint stay in the push either way - for an instanced row they are the batch's stamped
+       identity/white, unread, and keeping them costs nothing the draw could spend better. */
+    outRow->flags
+        = (drawRow->firstInstance == XUD_BATCH_INSTANCE_FROM_PUSH) ? drawRow->variant : (drawRow->variant | XUD_PUSH_FLAG_INSTANCED);
     outRow->reserved = 0u;
     /* The tint is the draw's own, copied out of the row the same way the matrix above is: white for
        a plain append, the caller's colour for a posed or a 2D draw, and the fragment stage is the
@@ -514,8 +520,14 @@ static XudResult xud_frame_flush_batch(XudBatch* batch, uint32_t* outHasContent)
     if (xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes) != XUD_OK) {
         return XUD_INTERNAL_ERROR;
     }
-    *outHasContent = ((vertexCount > 0u) && (indexCount > 0u)) ? 1u : 0u;
-    if (*outHasContent != 0u) {
+    /* The instance cursor joins the gate: a frame whose whole content is instanced mesh rows has
+       NO arena vertices, and the old arena-only rule would skip this frame's upload and the bulk
+       binds - leaving the instance bytes in staging, never copied, and bindings 4 and 5 unbound,
+       so the instanced draws would read whatever the driver had there and assemble nothing. The
+       instance regions ride the same upload (xud_batch_fill_copy_regions already counts them), so
+       "batch has bytes to move" now means the arena OR the instance pair has live rows. */
+    *outHasContent = (((vertexCount > 0u) && (indexCount > 0u)) || (batch->instanceCount > 0u)) ? 1u : 0u;
+    if ((vertexCount > 0u) && (indexCount > 0u)) {
         if (xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial, batch->currentTexture)
             != XUD_OK) {
             return XUD_OUT_OF_MEMORY;
@@ -670,6 +682,24 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
             }
             loader->deviceTable.vkCmdBindVertexBuffers(
                 frame->commandBuffer, XUD_FRAME_FIRST_BINDING, XUD_BATCH_STREAM_COUNT, streamRows, streamOffsets);
+            /* The instance pair, bound as its own call at bindings 4 and 5: the geometry rebinds
+               below overwrite bindings 0..3 when a mesh row takes over from the arena, and the
+               instance streams must survive every one of those rebinds - a grass tuft's transform
+               lives in a buffer the mesh's own vertices do not touch. The pipeline declares these
+               two bindings for every draw of the batch, sentinels included, so the bind is once
+               per pass and the draws that do not read the bytes are draws whose vertex stage was
+               built to skip them. */
+            {
+                VkBuffer instanceRows[XUD_BATCH_INSTANCE_STREAM_COUNT];
+                VkDeviceSize instanceOffsets[XUD_BATCH_INSTANCE_STREAM_COUNT];
+                uint32_t instance = 0u;
+                for (instance = 0u; instance < XUD_BATCH_INSTANCE_STREAM_COUNT; instance++) {
+                    instanceRows[instance] = batch->instanceStream[instance].buffer;
+                    instanceOffsets[instance] = 0u;
+                }
+                loader->deviceTable.vkCmdBindVertexBuffers(
+                    frame->commandBuffer, XUD_BATCH_STREAM_COUNT, XUD_BATCH_INSTANCE_STREAM_COUNT, instanceRows, instanceOffsets);
+            }
         }
         loader->deviceTable.vkCmdBindIndexBuffer(frame->commandBuffer, batch->indexBuffer, 0u, XUD_FRAME_INDEX_TYPE);
         boundGeometry = XUD_BATCH_GEOMETRY_OWN;
@@ -754,7 +784,12 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
         }
         loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
             descriptor->pushRange.offset, descriptor->pushRange.size, &pushRow);
-        loader->deviceTable.vkCmdDrawIndexed(frame->commandBuffer, drawRow.indexCount, 1u, drawRow.firstIndex, 0, 0u);
+        /* The copy count off the row: the sentinel's rows assemble their one copy and name row 0 -
+           the shader does not read it, the flag bit says the push row places, and naming row 0 is
+           legal because the instance buffers are bound and their row 0 exists. An instanced row
+           passes both numbers straight through: vkCmdDrawIndexed's pair IS the batch's pair. */
+        loader->deviceTable.vkCmdDrawIndexed(frame->commandBuffer, drawRow.indexCount, drawRow.instanceCount, drawRow.firstIndex, 0,
+            (drawRow.firstInstance == XUD_BATCH_INSTANCE_FROM_PUSH) ? 0u : drawRow.firstInstance);
     }
     loader->deviceTable.vkCmdEndRenderPass(frame->commandBuffer);
 

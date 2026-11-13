@@ -107,7 +107,7 @@ XudResult xud_ui_append_draw_list(XudBatch* batch, const XudUiVertex* vertices, 
        boundary's grow and nothing is appended, so the ui simply reappears the frame after the
        batch has grown rather than drawing a half window. */
     if (((liveVertices + vertexCount) > vertexCapacity) || ((liveIndices + elementCount) > indexCapacity)) {
-        (void)xud_batch_note_refused(batch, liveVertices + vertexCount, liveIndices + elementCount);
+        (void)xud_batch_note_refused(batch, liveVertices + vertexCount, liveIndices + elementCount, 0u);
         return XUD_OK;
     }
 

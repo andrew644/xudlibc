@@ -243,10 +243,20 @@ typedef struct XudPushRow {
     float modelMatrix[16]; /* 64 B - the model matrix */
     uint32_t materialIndex; /* 4 B - which material slot this draw uses */
     uint32_t textureIndex; /* 4 B - which entry of set 0's sampler array this draw samples */
-    uint32_t flags; /* 4 B - the draw's own bits (blend variant, unlit, ...) */
+    uint32_t flags; /* 4 B - low two bits: the variant (XudBatchVariant); bits above: the flag macros below */
     uint32_t reserved; /* 4 B - keeps the row a multiple of 16 with no hole */
     float tint[4]; /* 16 B - the draw's own tint, 0..1 per channel: the per-draw colour the fragment stage multiplies by */
 } XudPushRow;
+
+/* The flags channel's bit above the variant bits: set when the draw's transform and tint come from
+   the instance streams (bindings 4 and 5, xud_batch.h) and NOT from this row's modelMatrix/tint.
+   The batch records the difference as XUD_BATCH_INSTANCE_FROM_PUSH in the draw row's firstInstance;
+   xud_frame_fill_push_row is where the difference becomes a bit; the vertex stages branch on the
+   bit rather than reading a matrix the row deliberately did not fill. The variant stays in bits 0..1
+   (four variants, so a mask of 3 reads it back), which is what lets a UI-column instanced draw,
+   were one ever recorded, keep both facts in one word. */
+#define XUD_PUSH_FLAG_INSTANCED 8u
+#define XUD_PUSH_VARIANT_MASK 3u
 
 #define XUD_DESCRIPTOR_PUSH_SIZE 96u /* sizeof(XudPushRow), asserted below */
 #define XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE 720u /* sizeof(XudFrameUniformRow) = 200 + the 8 B pad + 8 rows of 64 B, asserted below */

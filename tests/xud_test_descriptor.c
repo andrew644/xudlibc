@@ -885,11 +885,10 @@ static void xud_test_gpu_descriptor(void) {
        ck and one live range, its white default made a second block and a second live range, the rend
        er pass's depth image made a third of each, the renderer's scratch image and the scratch pass's
        own depth image made a fourth and fifth - two more IMAGE requirements, each alignment too large
-       for a hole in a block someone else holds - and the batch rung below the renderer made a sixt
-       h block and six more live ranges: its arena and its five data buffers are six requests small
-       enough to share blocks, which is the suballocation half of the repo's "allocate once, suballoca
-       te always" rule seen from the other side of the ladder. The two host-visible arenas - this
-       rung's staging arena and the batch's - are blocks of their own besides it. Every number below
+       h block and eight more live ranges: its arena and its five data buffers plus its two instance
+       buffers are requests small enough to share blocks, which is the suballocation half of the repo's
+       "allocate once, suballocate always" rule seen from the other side of the ladder. The two
+       host-visible arenas - this rung's staging arena and the batch's - are blocks of their own besides it. Every number below
        is therefore read as a delta on this baseline rather than as a constant.
     */
     xud_check(
@@ -899,10 +898,10 @@ static void xud_test_gpu_descriptor(void) {
         "default shares, the renderer's scratch image in a block the scratch pass's own depth image shares, the shadow map - too big "
         "for the other blocks' holes - in one of its own, and the two host-visible arenas, this rung's staging arena and the batch's, "
         "which are blocks of their own because a mapping is per-VkDeviceMemory rather than per-range");
-    xud_check(liveCount == 17u, "gpu-desc/seventeen-live-ranges",
-        "seventeen live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, "
+    xud_check(liveCount == 19u, "gpu-desc/nineteen-live-ranges",
+        "nineteen live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, "
         "the scratch pass's depth, the shadow map, the four bloom-chain levels, the two arenas each of which is a whole block, and the "
-        "batch's four streams plus its index buffer, which is what a completed context owns now");
+        "batch's four streams plus its index buffer plus its two instance buffers, which is what a completed context owns now");
     {
         uint32_t stream = 0u;
         uint32_t level = 0u;
@@ -910,6 +909,9 @@ static void xud_test_gpu_descriptor(void) {
         VkDeviceSize bloomCarves = 0u;
         for (stream = 0u; stream < XUD_BATCH_STREAM_COUNT; stream++) {
             batchCarves += context->renderer->batch->stream[stream].range.size;
+        }
+        for (stream = 0u; stream < XUD_BATCH_INSTANCE_STREAM_COUNT; stream++) {
+            batchCarves += context->renderer->batch->instanceStream[stream].range.size;
         }
         batchCarves += context->renderer->batch->stagingRange.size;
         batchCarves += context->renderer->batch->indexRange.size;
@@ -923,7 +925,7 @@ static void xud_test_gpu_descriptor(void) {
                     + context->renderer->shadowPass->depthRange.size + bloomCarves + batchCarves),
             "gpu-desc/bytes-are-every-carve",
             "the reserved bytes are exactly every carve added up, which is what makes the counter a fact rather than an estimate - and "
-            "the batch's six and the chain's four are in that sum, so the rungs below this one are being counted rather than assumed");
+            "the batch's eight and the chain's four are in that sum, so the rungs below this one are being counted rather than assumed");
     }
     xud_check(cursor == 0u, "gpu-desc/cursor-untouched",
         "and the ring's cursor is still at the start: a per-frame uniform buffer is static, not transi"

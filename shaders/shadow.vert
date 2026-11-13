@@ -48,6 +48,11 @@ layout(push_constant) uniform XudPushRow {
 
 layout(location = 0) in vec3 inPos;
 
+/* The instance matrix (S3.2), binding 4 of xud_batch.h: a thousand tufts each cast, and the
+   occluder list the sun sees must be the list the camera sees - same copies, same transforms,
+   same branch as prepass.vert and solid.vert. */
+layout(location = 4) in mat4 inInstanceMatrix;
+
 void main(void)
 {
     /* Sun, not camera: world space goes through the casting sun's view-projection and the same
@@ -55,7 +60,9 @@ void main(void)
        exists to store. Ortho means w is 1 and the z this writes is the reversed linear depth the
        map's GREATER_OR_EQUAL compare reads directly - no divide, no remap, nothing that could
        the occluder's depth disagree with the fragment's own lookup of it. */
-    vec4 worldPos = xudPush.modelMatrix * vec4(inPos, 1.0f);
+    const uint xudPushFlagInstanced = 8u;
+    mat4 model = ((xudPush.flags & xudPushFlagInstanced) != 0u) ? inInstanceMatrix : xudPush.modelMatrix;
+    vec4 worldPos = model * vec4(inPos, 1.0f);
     vec4 clipPos = xudFrame.lightViewProj * worldPos;
     gl_Position = vec4(clipPos.x, -clipPos.y, clipPos.z, clipPos.w);
 }

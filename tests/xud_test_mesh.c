@@ -36,6 +36,7 @@
 #include <string.h> /* Required for: memcmp and memset, the bytes the write is checked against */
 
 #include "xud.h" /* Required for: XudResult, XudContext, XudHandle, XudMeshData and the public mesh pair */
+#include "xud_allocator.h" /* Required for: XudMemoryRange, xud_allocator_acquire_host_visible - the readback's block */
 #include "xud_batch.h" /* Required for: XUD_BATCH_STREAM_*, XUD_BATCH_VERTEX_SIZE, XUD_BATCH_INDEX_SIZE - the widths the layout is read against */
 #include "xud_core.h" /* Required for: struct XudContext, whose handleTable/loader/device/allocator the GPU half reaches */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_alloc, xud_handle_table_live_count - the slot this record lives in */
@@ -588,9 +589,328 @@ static void xud_test_mesh_gpu(void) {
     xud_check(context == NULL, "gpu-mesh/context-cleared", "and the context pointer is cleared, so a close run twice cannot double-free");
 }
 
+/*-----------------------------------------------------------------------------------------------
+ * The instanced GPU half: ONE draw row whose two instance rows place the same quad at two screen
+ * columns, read back as pixels. This is the whole claim of instancing seen from outside: one
+ * vkCmdDrawIndexed, two copies, each at its own matrix and its own tint. The probes are three
+ * columns of the middle row - the left copy's centre, the gap between them, the right copy's
+ * centre - so a draw that ignored the instance matrices and drew both at the pushed identity
+ * fails the side probes, a draw that misindexed the matrices puts the wrong colour on one side,
+ * and a draw that read the matrices but multiplied in the STALE push row lands the quads
+ * elsewhere or nowhere. The byte arithmetic is the rendertarget area's: ACES at the resolve, the
+ * sRGB encode on top when the swapchain is SRGB.
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_TEST_INST_WINDOW 192u /* the square window; the three probe columns are 60/96/132 */
+#define XUD_TEST_INST_TOLERANCE 8u /* the compositor's own drift, the same order the rendertarget probes carry */
+
+static float xud_test_inst_aces(float c) {
+    const float t = (c * (2.51f * c + 0.03f)) / (c * (2.43f * c + 0.59f) + 0.14f);
+
+    return (t < 0.0f) ? 0.0f : ((t > 1.0f) ? 1.0f : t);
+}
+
+static uint32_t xud_test_inst_srgb_byte(uint8_t value) {
+    const float c = xud_test_inst_aces((float)value / 255.0f);
+    const float e = (c <= 0.0031308f) ? (12.92f * c) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
+
+    return (uint32_t)(e * 255.0f + 0.5f);
+}
+
+static uint32_t xud_test_inst_aces_byte(uint8_t value) { return (uint32_t)(xud_test_inst_aces((float)value / 255.0f) * 255.0f + 0.5f); }
+
+/* One frame of the probe scene: the identity-of-the-camera pair looking down -Z from (0,0,4) with
+   a 90-degree aperture, so the z=0 plane maps linearly to NDC - x=±1.5 world is x=±0.375 NDC -
+   and the whole content is the one instanced row. */
+static void xudTestInstFrame(XudContext* context, XudHandle quad, const float* matrices, const XudColor* tints) {
+    (void)xud_begin_drawing(context);
+    (void)xud_clear_background(context, (XudColor) { .r = 0u, .g = 0u, .b = 0u, .a = 255u });
+    (void)xud_begin_camera_3d(context,
+        (XudCamera3D) { .position = { 0.0f, 0.0f, 4.0f },
+            .target = { 0.0f, 0.0f, 0.0f },
+            .up = { 0.0f, 1.0f, 0.0f },
+            .fovy = 90.0f,
+            .near = 0.1f,
+            .far = 100.0f });
+    (void)xud_draw_mesh_instanced(context, quad, matrices, tints, 2u);
+    (void)xud_end_camera_3d(context);
+    (void)xud_end_drawing(context);
+}
+
+static void xud_test_mesh_instanced_gpu(void) {
+    XudContext* context = NULL;
+    XudResult result = XUD_OK;
+    XudHandle quad = { 0u, 0u, 0u };
+    VkResult vk = VK_SUCCESS;
+    float matrices[2u * XUD_BATCH_MODEL_MATRIX_COUNT];
+    XudColor tints[2];
+    uint32_t midRows = 0u;
+    uint32_t midInstances = 0u;
+    uint32_t frame = 0u;
+    uint32_t acquireTry = 0u;
+    VkBuffer readback = VK_NULL_HANDLE;
+    XudMemoryRange readbackRange;
+    VkMemoryRequirements readbackReq;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer command = VK_NULL_HANDLE;
+    VkFence fence = VK_NULL_HANDLE;
+    VkFence acquireFence = VK_NULL_HANDLE;
+    uint8_t* pixels = NULL;
+    uint32_t acquired = 0u;
+
+    result = xud_init_context(&context, XUD_TEST_INST_WINDOW, XUD_TEST_INST_WINDOW, "xud_test");
+    xud_check(result == XUD_OK, "mesh-instanced/bringup", "the probe scene needs a completed context");
+    if (context == NULL) {
+        return;
+    }
+
+    /* The two instance rows: identity rotations translated to x = -1.5 (tint red) and x = +1.5
+       (tint blue). With the camera below the z=0 plane maps xNDC = x / (4 * aspect), so the two
+       centres are NDC -0.375 and +0.375 on a square window - pixel columns 60 and 132 of 192. */
+    memset(matrices, 0, sizeof matrices);
+    matrices[0] = 1.0f;
+    matrices[5] = 1.0f;
+    matrices[10] = 1.0f;
+    matrices[15] = 1.0f;
+    matrices[12] = -1.5f;
+    matrices[16] = 1.0f;
+    matrices[21] = 1.0f;
+    matrices[26] = 1.0f;
+    matrices[31] = 1.0f;
+    matrices[16 + 12] = 1.5f;
+    tints[0] = (XudColor) { .r = 255u, .g = 0u, .b = 0u, .a = 255u };
+    tints[1] = (XudColor) { .r = 0u, .g = 0u, .b = 255u, .a = 255u };
+
+    result
+        = xud_upload_mesh(&quad, context, &(XudMeshData) { .vertexCount = 4u, .indexCount = 6u, .pos = xudQuadPos, .index = xudQuadIndex });
+    xud_check(
+        result == XUD_OK, "mesh-instanced/quad-uploaded", "the twice-instanced quad is uploaded, white colour and +Z normal by default");
+
+    /* The row's own shape mid-frame: ONE row, TWO instance rows, ONE geometry entry. A public call
+       that degraded into two plain draws would double the row count here, which is the very cost
+       instancing exists to remove. */
+    xud_check(xud_begin_drawing(context) == XUD_OK, "mesh-instanced/frame-opens", "the frame opens");
+    xud_check(xud_draw_mesh_instanced(context, quad, matrices, tints, 2u) == XUD_OK, "mesh-instanced/draw-recorded",
+        "the public instanced draw records");
+    midRows = context->renderer->batch->drawCount;
+    midInstances = context->renderer->batch->instanceCount;
+    xud_check(midRows == 1u, "mesh-instanced/one-row", "and it is ONE draw row, not two");
+    xud_check(midInstances == 2u, "mesh-instanced/two-instance-rows",
+        "with two instance rows behind it - the cursor the frame loop's firstInstance reads for the row");
+    xud_check(context->renderer->batch->geometryCount == 1u, "mesh-instanced/one-geometry-entry",
+        "and one geometry entry, the quad's five buffers deduped as for the plain mesh draw");
+    xud_check(xud_end_drawing(context) == XUD_OK, "mesh-instanced/frame-presents",
+        "the frame with the instanced row presents, so the instance binds and the instance-flagged push row are commands "
+        "the validation layer accepted");
+
+    /* The window's late tile: the rendertarget area's spin, so no probe reads an image of an extent
+       that moved after it was drawn. */
+    {
+        uint32_t stableFrames = 0u;
+        uint32_t spinFrames = 0u;
+        uint32_t lastWidth = context->swapchain->createInfo.imageExtent.width;
+        uint32_t lastHeight = context->swapchain->createInfo.imageExtent.height;
+        while ((stableFrames < 12u) && (spinFrames < 600u)) {
+            xudTestInstFrame(context, quad, matrices, tints);
+            if ((context->swapchain->createInfo.imageExtent.width == lastWidth)
+                && (context->swapchain->createInfo.imageExtent.height == lastHeight)) {
+                stableFrames++;
+            } else {
+                stableFrames = 0u;
+                lastWidth = context->swapchain->createInfo.imageExtent.width;
+                lastHeight = context->swapchain->createInfo.imageExtent.height;
+            }
+            spinFrames++;
+        }
+    }
+    for (frame = 0u; frame < (context->swapchain->imageCount + 1u); frame++) {
+        xudTestInstFrame(context, quad, matrices, tints);
+    }
+
+    const VkFenceCreateInfo acquireFenceInfo
+        = (VkFenceCreateInfo) { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = NULL, .flags = 0u };
+    (void)context->loader->deviceTable.vkCreateFence(context->device->device, &acquireFenceInfo, NULL, &acquireFence);
+    for (acquireTry = 0u; acquireTry < 8u; acquireTry++) {
+        (void)context->loader->deviceTable.vkResetFences(context->device->device, 1u, &acquireFence);
+        vk = context->loader->deviceTable.vkAcquireNextImageKHR(
+            context->device->device, context->swapchain->swapchain, UINT64_MAX, VK_NULL_HANDLE, acquireFence, &acquired);
+        if ((vk != VK_ERROR_OUT_OF_DATE_KHR) && (vk != VK_SUBOPTIMAL_KHR)) {
+            break;
+        }
+        for (frame = 0u; frame < (context->swapchain->imageCount + 1u); frame++) {
+            xudTestInstFrame(context, quad, matrices, tints);
+        }
+    }
+    if (vk != VK_SUCCESS) {
+        (void)context->loader->deviceTable.vkDestroyFence(context->device->device, acquireFence, NULL);
+        (void)xud_close_context(&context);
+        return;
+    }
+    (void)context->loader->deviceTable.vkWaitForFences(context->device->device, 1u, &acquireFence, VK_TRUE, UINT64_MAX);
+    (void)context->loader->deviceTable.vkDestroyFence(context->device->device, acquireFence, NULL);
+    {
+        const uint32_t width = context->swapchain->createInfo.imageExtent.width;
+        const uint32_t height = context->swapchain->createInfo.imageExtent.height;
+        const VkFormat format = context->swapchain->createInfo.imageFormat;
+        const uint32_t blueIndex = (format == VK_FORMAT_B8G8R8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_UNORM) ? 0u : 2u;
+        const uint32_t redIndex = (blueIndex == 0u) ? 2u : 0u;
+        const uint32_t fullByte = ((format == VK_FORMAT_R8G8B8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_SRGB))
+            ? xud_test_inst_srgb_byte(255u)
+            : xud_test_inst_aces_byte(255u);
+        const uint32_t zeroByte = xud_test_inst_aces_byte(0u);
+        const float aspect = (float)width / (float)height;
+        const uint32_t row = height / 2u;
+        const uint32_t leftCol = (uint32_t)((((1.0f + (-1.5f / (4.0f * aspect))) * 0.5f) * (float)width) + 0.5f);
+        const uint32_t rightCol = (uint32_t)((((1.0f + (1.5f / (4.0f * aspect))) * 0.5f) * (float)width) + 0.5f);
+        const uint32_t middleCol = width / 2u;
+        VkImage image = context->swapchain->images[acquired];
+        VkBufferCreateInfo bufferInfo;
+        VkCommandPoolCreateInfo poolInfo;
+        VkCommandBufferAllocateInfo allocationInfo;
+        VkCommandBufferBeginInfo beginInfo;
+        VkImageMemoryBarrier imageBarrier;
+        VkImageSubresourceLayers subresource;
+        VkBufferImageCopy region;
+        VkSubmitInfo submitInfo;
+        VkFenceCreateInfo fenceInfo;
+
+        xud_check((width >= XUD_TEST_INST_WINDOW) && (height >= XUD_TEST_INST_WINDOW), "mesh-instanced/extent",
+            "the presented extent keeps all three probe columns in view");
+        xud_check((format == VK_FORMAT_R8G8B8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_SRGB) || (format == VK_FORMAT_R8G8B8A8_UNORM)
+                || (format == VK_FORMAT_B8G8R8A8_UNORM),
+            "mesh-instanced/format", "and the format is one of the four 8888s the byte arithmetic below reads");
+
+        memset(&bufferInfo, 0, sizeof bufferInfo);
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = (VkDeviceSize)width * (VkDeviceSize)height * 4u;
+        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        vk = context->loader->deviceTable.vkCreateBuffer(context->device->device, &bufferInfo, NULL, &readback);
+        xud_check(vk == VK_SUCCESS, "mesh-instanced/buffer", "the destination buffer is created");
+        context->loader->deviceTable.vkGetBufferMemoryRequirements(context->device->device, readback, &readbackReq);
+        {
+            const VkMemoryType* memTypes = context->physicalDevice->caps.memoryProperties.memoryProperties.memoryTypes;
+            const uint32_t memTypeCount = context->physicalDevice->caps.memoryProperties.memoryProperties.memoryTypeCount;
+            uint32_t hostVisibleMask = 0u;
+            uint32_t type = 0u;
+
+            for (type = 0u; type < memTypeCount; type++) {
+                if ((memTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u) {
+                    hostVisibleMask |= (1u << type);
+                }
+            }
+            readbackReq.memoryTypeBits &= hostVisibleMask;
+        }
+        result = xud_allocator_acquire_host_visible(
+            &readbackRange, context->allocator, context->loader, context->device, &context->physicalDevice->caps, &readbackReq);
+        xud_check(result == XUD_OK, "mesh-instanced/block", "a host-visible block is carved for it");
+        vk = context->loader->deviceTable.vkBindBufferMemory(context->device->device, readback, readbackRange.memory, readbackRange.offset);
+        xud_check(vk == VK_SUCCESS, "mesh-instanced/bound", "and the buffer binds into it");
+        vk = context->loader->deviceTable.vkMapMemory(
+            context->device->device, readbackRange.memory, readbackRange.offset, readbackRange.size, 0u, (void**)&pixels);
+        xud_check((vk == VK_SUCCESS) && (pixels != NULL), "mesh-instanced/mapped", "and the mapping is live");
+
+        memset(&poolInfo, 0, sizeof poolInfo);
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        poolInfo.queueFamilyIndex = context->device->graphicsQueue.queueFamilyIndex;
+        vk = context->loader->deviceTable.vkCreateCommandPool(context->device->device, &poolInfo, NULL, &pool);
+        memset(&allocationInfo, 0, sizeof allocationInfo);
+        allocationInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocationInfo.commandPool = pool;
+        allocationInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocationInfo.commandBufferCount = 1u;
+        vk = context->loader->deviceTable.vkAllocateCommandBuffers(context->device->device, &allocationInfo, &command);
+        memset(&beginInfo, 0, sizeof beginInfo);
+        beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        vk = context->loader->deviceTable.vkBeginCommandBuffer(command, &beginInfo);
+
+        memset(&imageBarrier, 0, sizeof imageBarrier);
+        imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        imageBarrier.srcAccessMask = 0u;
+        imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        imageBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        imageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        imageBarrier.image = image;
+        imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        imageBarrier.subresourceRange.levelCount = 1u;
+        imageBarrier.subresourceRange.layerCount = 1u;
+        context->loader->deviceTable.vkCmdPipelineBarrier(
+            command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u, NULL, 1u, &imageBarrier);
+        memset(&subresource, 0, sizeof subresource);
+        subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        subresource.layerCount = 1u;
+        memset(&region, 0, sizeof region);
+        region.bufferImageHeight = height;
+        region.imageSubresource = subresource;
+        region.imageExtent.width = width;
+        region.imageExtent.height = height;
+        region.imageExtent.depth = 1u;
+        context->loader->deviceTable.vkCmdCopyImageToBuffer(command, image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1u, &region);
+        imageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        imageBarrier.dstAccessMask = 0u;
+        imageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        imageBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        context->loader->deviceTable.vkCmdPipelineBarrier(
+            command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0u, 0u, NULL, 0u, NULL, 1u, &imageBarrier);
+        vk = context->loader->deviceTable.vkEndCommandBuffer(command);
+        memset(&fenceInfo, 0, sizeof fenceInfo);
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        vk = context->loader->deviceTable.vkCreateFence(context->device->device, &fenceInfo, NULL, &fence);
+        memset(&submitInfo, 0, sizeof submitInfo);
+        submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submitInfo.commandBufferCount = 1u;
+        submitInfo.pCommandBuffers = &command;
+        vk = context->loader->deviceTable.vkQueueSubmit(context->device->graphicsQueue.queue, 1u, &submitInfo, fence);
+        vk = context->loader->deviceTable.vkWaitForFences(context->device->device, 1u, &fence, VK_TRUE, UINT64_MAX);
+        xud_check(vk == VK_SUCCESS, "mesh-instanced/copied", "the copy runs, so the buffer holds the presented image");
+
+        if ((vk == VK_SUCCESS) && (pixels != NULL)) {
+            const size_t leftAt = (((size_t)row * (size_t)width) + (size_t)leftCol) * 4u;
+            const size_t middleAt = (((size_t)row * (size_t)width) + (size_t)middleCol) * 4u;
+            const size_t rightAt = (((size_t)row * (size_t)width) + (size_t)rightCol) * 4u;
+
+            xud_check((pixels[leftAt + redIndex] >= (fullByte - XUD_TEST_INST_TOLERANCE))
+                    && (pixels[leftAt + redIndex] <= (fullByte + XUD_TEST_INST_TOLERANCE))
+                    && (pixels[leftAt + blueIndex] <= (zeroByte + XUD_TEST_INST_TOLERANCE)),
+                "mesh-instanced/left-copy-is-the-first-instance",
+                "the left probe is RED - the first instance row's matrix (x=-1.5) and the first row's tint, both read from "
+                "bindings 4 and 5 rather than from the push row");
+            xud_check((pixels[rightAt + blueIndex] >= (fullByte - XUD_TEST_INST_TOLERANCE))
+                    && (pixels[rightAt + blueIndex] <= (fullByte + XUD_TEST_INST_TOLERANCE))
+                    && (pixels[rightAt + redIndex] <= (zeroByte + XUD_TEST_INST_TOLERANCE)),
+                "mesh-instanced/right-copy-is-the-second-instance",
+                "the right probe is BLUE - the SECOND row's matrix and tint, so the instance index advanced between the copies "
+                "and neither copy fell back to the pushed identity");
+            xud_check((pixels[middleAt + redIndex] <= (zeroByte + XUD_TEST_INST_TOLERANCE))
+                    && (pixels[middleAt + blueIndex] <= (zeroByte + XUD_TEST_INST_TOLERANCE)),
+                "mesh-instanced/gap-stays-clear",
+                "and the column between them is the cleared black: the two copies are 72 pixels apart, which only the per-instance "
+                "translations can produce - both quads at the pushed identity would have covered it, and both at one instance's "
+                "matrix would have left one side probe empty");
+        }
+
+        if (fence != VK_NULL_HANDLE) {
+            context->loader->deviceTable.vkDestroyFence(context->device->device, fence, NULL);
+        }
+        if (pool != VK_NULL_HANDLE) {
+            context->loader->deviceTable.vkFreeCommandBuffers(context->device->device, pool, 1u, &command);
+            context->loader->deviceTable.vkDestroyCommandPool(context->device->device, pool, NULL);
+        }
+        if (readback != VK_NULL_HANDLE) {
+            context->loader->deviceTable.vkDestroyBuffer(context->device->device, readback, NULL);
+        }
+        (void)xud_allocator_release(context->allocator, &readbackRange);
+    }
+
+    xud_check(xud_close_mesh(context, quad) == XUD_OK, "mesh-instanced/quad-closed", "the quad's slot closes before the context does");
+    (void)xud_close_context(&context);
+}
+
 void xud_test_mesh(void) {
     xud_test_mesh_pure();
     if (xud_gpu_tests_enabled()) {
         xud_test_mesh_gpu();
+        xud_test_mesh_instanced_gpu();
     }
 }

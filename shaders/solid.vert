@@ -55,6 +55,13 @@ layout(location = 1) in vec2 inUv;
 layout(location = 2) in vec4 inColor;
 layout(location = 3) in vec3 inNormal;
 
+/* The instance pair (S3.2): bindings 4 and 5 of xud_batch.h, declared here as one mat4 and one
+   vec4 - the mat4 consumes locations 4..7, exactly the four attribute rows fill_attribute writes
+   one column apiece, and the GLSL mat4 is what reassembles them. READ ONLY when the push row's
+   instance bit is set; for a push-placed draw the row still loads, and its bytes are whatever the
+   last frame left in instance row 0, which is precisely why the branch below must not read it. */
+layout(location = 4) in mat4 inInstanceMatrix;
+layout(location = 8) in vec4 inInstanceTint;
 layout(location = 0) out vec2 outUv;
 layout(location = 1) out vec4 outColor;
 layout(location = 2) out vec3 outNormal;
@@ -63,26 +70,47 @@ layout(location = 2) out vec3 outNormal;
    light table's positions live in. Unused by the textured and UI fragment stages, which discard
    it. */
 layout(location = 3) out vec3 outWorldPos;
+/* The tint reaches the fragment stages through THIS stage now rather than through their own
+   read of the push row: for an instanced draw the tint is per COPY and lives in the instance
+   stream, and the fragment stage has no way to name the copy - the vertex stage is the only
+   stage that ever sees both the instance index and the fragment's future pixels. */
+layout(location = 4) out vec4 outTint;
 
 void main(void)
 {
     /* Vulkan's clip space is Y-DOWN, the NDC the viewProj and the identity-space draws author
        is Y-UP: flip the Y once, here, at the last point before the rasteriser. Culling is
        disabled (xud_pipeline.h's XUD_PIPELINE_CULL_MODE) so the flip costs no winding change. */
-    /* XUD_BATCH_VARIANT_UI (xud_batch.h), restated here: the shader and the C axis are two
-       languages, so the one number the branch keys on is spelled in both and a rename of the
-       column must touch both. A draw flushed on the UI column carries a position that is clip
-       space already (the ui rung's mapper emits it in the y-up NDC the identity matrices
-       expect), so placing it through the frame's viewProj would move and scale the overlay with
-       the caller's 3D camera - raylib's GUI is always screen-fixed, and this skip is what makes
-       that true here. The model matrix still applies: identity for a plain screen quad, and the
-       channel a screen-space transform of a later step can hand in without a second pipeline. */
+    /* XUD_BATCH_VARIANT_UI (xud_batch.h) and XUD_PUSH_FLAG_INSTANCED / XUD_PUSH_VARIANT_MASK
+       (xud_descriptor.h), restated here: the shader and the C axis are two languages, so the
+       numbers the branches key on are spelled in both and a rename must touch both. The variant
+       lives in the low two bits - four variants - and the instance flag is bit 3 above them, so
+       one word carries "which column flushed this" and "who places it" at once.
+
+       A draw flushed on the UI column carries a position that is clip space already (the ui
+       rung's mapper emits it in the y-up NDC the identity matrices expect), so placing it through
+       the frame's viewProj would move and scale the overlay with the caller's 3D camera -
+       raylib's GUI is always screen-fixed, and this skip is what makes that true here. The model
+       matrix still applies: identity for a plain screen quad, and the channel a screen-space
+       transform of a later step can hand in without a second pipeline.
+
+       The arena-vs-mesh branch: an instanced row's matrix and tint ARE the instance attributes -
+       that is the whole of S3.2, thousands of copies placed by the rasteriser rather than by one
+       push each - and the push row's members for that draw are the identity/white the batch
+       stamped. A push-placed row reads the push and must NOT multiply in the instance bytes,
+       which for it are last frame's stale row 0. One multiply per vertex either way. */
     const uint xudPushFlagVariantUI = 3u;
-    vec4 localPos = xudPush.modelMatrix * vec4(inPos, 1.0f);
-    vec4 clipPos = (xudPush.flags == xudPushFlagVariantUI) ? localPos : (xudFrame.viewProj * localPos);
+    const uint xudPushVariantMask = 3u;
+    const uint xudPushFlagInstanced = 8u;
+    bool instanced = (xudPush.flags & xudPushFlagInstanced) != 0u;
+    mat4 model = instanced ? inInstanceMatrix : xudPush.modelMatrix;
+    vec4 tint = instanced ? inInstanceTint : xudPush.tint;
+    vec4 localPos = model * vec4(inPos, 1.0f);
+    vec4 clipPos = ((xudPush.flags & xudPushVariantMask) == xudPushFlagVariantUI) ? localPos : (xudFrame.viewProj * localPos);
     gl_Position = vec4(clipPos.x, -clipPos.y, clipPos.z, clipPos.w);
     outUv = inUv;
     outColor = inColor;
-    outNormal = (xudPush.modelMatrix * vec4(inNormal, 0.0f)).xyz;
+    outNormal = (model * vec4(inNormal, 0.0f)).xyz;
     outWorldPos = localPos.xyz;
+    outTint = tint;
 }
