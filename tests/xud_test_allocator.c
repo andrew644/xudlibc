@@ -506,7 +506,7 @@ static void xud_test_gpu_allocator(void) {
         "renderer's scratch image, the scratch pass's own depth image and the shadow map - three more images, three more alignments - "
         "and the two host-visible arenas - the batch's and the descriptor's staging arena - which are blocks of their own because "
         "vkMapMemory maps a VkDeviceMemory rather than a range");
-    xud_check(baseLive == 13u, "gpu-alloc/baseline-thirteen-live", "and thirteen live ranges, those thirteen carves");
+    xud_check(baseLive == 17u, "gpu-alloc/baseline-seventeen-live", "and seventeen live ranges, those seventeen carves");
     xud_check(baseBytes > 0u, "gpu-alloc/baseline-bytes", "and reserved bytes, so the rungs below this one really did ask the allocator");
     xud_check(cursorBefore == 0u, "gpu-alloc/baseline-cursor",
         "and the ring's cursor is still at the start, because nothing has asked for transient memory y"

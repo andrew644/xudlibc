@@ -778,6 +778,102 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
     return XUD_OK;
 }
 
+/* One bloom-chain level, end to end inside an ALREADY BEGUN command buffer: the level's opening
+   barrier out of the tracker, the pass's begin (its own clear, which the renderer filled black -
+   the chain's background is black regardless of the window's), set 0 as always, set 1 ALWAYS -
+   the level's source slot, the scratch image's own for level 0 and the level-below's for every
+   blur row - the bright pipeline for level 0 and the one blur row after it, three vertices the
+   command buffer invents, and the sampled-sync barrier that lets the level BELOW this one (or
+   the present row, for the last) read what this pass wrote. The chain binds slot-sets rather
+   than sampling the present row's descriptor array because a shader that statically touches an
+   array is checked against EVERY member of it - and the level in pass right now is one of
+   them, in the attachment layout no sampler may read. The recording is xud_frame_record_pass()'s
+   one-attachment branch with the batch rows, the depth row and the draw loop removed: the
+   chain's fullscreen triangle is the resolve's triangle, and the level's input is a texture,
+   not geometry. */
+static XudResult xud_frame_record_bloom(XudFrame* frame, XudLoader* loader, const XudPipeline* pipeline, const XudFrameBloomRow* row,
+    uint32_t level, XudDescriptor* descriptor) {
+    XudResult result;
+    VkCommandBufferBeginInfo begin;
+    VkViewport viewport;
+    VkRect2D scissor;
+    VkRenderPassBeginInfo passBegin;
+    VkImageMemoryBarrier barrier;
+    VkImageMemoryBarrier filled;
+
+    result = xud_frame_fill_recording(&begin, &viewport, &scissor, row->framebuffer->createInfo.width, row->framebuffer->createInfo.height);
+    if (result != XUD_OK) {
+        (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
+        return result;
+    }
+    loader->deviceTable.vkCmdSetViewport(frame->commandBuffer, 0u, 1u, &viewport);
+    loader->deviceTable.vkCmdSetScissor(frame->commandBuffer, 0u, 1u, &scissor);
+
+    passBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    passBegin.pNext = NULL;
+    passBegin.framebuffer = row->framebuffer->framebuffer;
+    passBegin.renderPass = row->pass->renderPass;
+    passBegin.renderArea.offset.x = 0;
+    passBegin.renderArea.offset.y = 0;
+    passBegin.renderArea.extent.width = row->framebuffer->createInfo.width;
+    passBegin.renderArea.extent.height = row->framebuffer->createInfo.height;
+    passBegin.pClearValues = row->pass->clearValues;
+    passBegin.clearValueCount = XUD_RENDERPASS_ATTACHMENT_COUNT;
+
+    barrier = (VkImageMemoryBarrier) { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .pNext = NULL,
+        .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = row->pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].initialLayout,
+        .srcQueueFamilyIndex = 0u,
+        .dstQueueFamilyIndex = 0u,
+        .image = row->framebuffer->image,
+        .subresourceRange = row->framebuffer->viewInfo.subresourceRange };
+    if (xud_layout_barrier_fill(&filled, frame->layout, barrier.image, &barrier) != XUD_OK) {
+        (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
+        return XUD_INTERNAL_ERROR;
+    }
+    loader->deviceTable.vkCmdPipelineBarrier(
+        frame->commandBuffer, XUD_FRAME_BARRIER_STAGES, XUD_FRAME_BARRIER_STAGES, 0u, 0u, NULL, 0u, NULL, 1u, &filled);
+
+    loader->deviceTable.vkCmdBeginRenderPass(frame->commandBuffer, &passBegin, VK_SUBPASS_CONTENTS_INLINE);
+    {
+        const VkDescriptorSet setRows[XUD_FRAME_SET_COUNT] = { descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] };
+        loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
+            XUD_FRAME_FIRST_SET, XUD_FRAME_SET_COUNT, setRows, 0u, NULL);
+    }
+    {
+        /* The level's source as a slot-set - the same binding-the-set-by-number shape the
+           textured batch rows use, and for the same reason: the input differs per draw, and
+           one bind per draw is the only per-draw input the batch's one push range cannot be.
+           Level 0's slot carries the scratch image; level k's carries level k-1's view. */
+        const VkDescriptorSet slotSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(row->sourceSlot)];
+        loader->deviceTable.vkCmdBindDescriptorSets(
+            frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, XUD_DESCRIPTOR_SET_MATERIAL, 1u, &slotSet, 0u, NULL);
+    }
+    loader->deviceTable.vkCmdBindPipeline(
+        frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, (level == 0u) ? pipeline->brightPipeline : pipeline->bloomBlurPipeline);
+    loader->deviceTable.vkCmdDraw(frame->commandBuffer, 3u, 1u, 0u, 0u);
+    loader->deviceTable.vkCmdEndRenderPass(frame->commandBuffer);
+
+    {
+        const VkImageMemoryBarrier toSample = (VkImageMemoryBarrier) { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = NULL,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = row->pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout,
+            .newLayout = row->pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout,
+            .image = row->framebuffer->image,
+            .subresourceRange = row->framebuffer->viewInfo.subresourceRange,
+            .srcQueueFamilyIndex = 0u,
+            .dstQueueFamilyIndex = 0u };
+        loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0u, 0u, NULL, 0u, NULL, 1u, &toSample);
+    }
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * One frame, end to end - the driver half
  *-----------------------------------------------------------------------------------------------*/
@@ -785,8 +881,9 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
     const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, const XudRenderPass* prepassPass,
-    const XudFramebuffer* prepassFramebuffer, const XudRenderPass* shadowPass, const XudFramebuffer* shadowFramebuffer, uint32_t hdrSlot,
-    const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex) {
+    const XudFramebuffer* prepassFramebuffer, const XudRenderPass* shadowPass, const XudFramebuffer* shadowFramebuffer,
+    const XudFrameBloomRow* bloomRows, uint32_t bloomCount, uint32_t hdrSlot, const XudFramePassScope* scopes, uint32_t scopeCount,
+    XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex) {
     XudQueue graphicsQueue;
     XudQueue presentQueue;
     XudFramebuffer* row = NULL;
@@ -807,6 +904,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     uint32_t scope = 0u;
     uint32_t scopeContent[XUD_FRAME_SCOPE_MAX];
     uint32_t slot = 0u;
+    uint32_t bloom = 0u;
 
     if (((scopes == NULL) && (scopeCount > 0u)) || (scopeCount > XUD_FRAME_SCOPE_MAX)) {
         return XUD_INVALID_ARG;
@@ -857,6 +955,29 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
             || (shadowPass->depthView == VK_NULL_HANDLE) || (shadowFramebuffer->framebuffer == VK_NULL_HANDLE)
             || (pipeline->shadowPipeline == VK_NULL_HANDLE)) {
             return XUD_INVALID_ARG;
+        }
+    }
+    if (((bloomRows == NULL) && (bloomCount > 0u)) || (bloomCount > XUD_DESCRIPTOR_BLOOM_LEVELS)) {
+        return XUD_INVALID_ARG;
+    }
+    if (bloomCount > 0u) {
+        /* The chain is optional as a CHAIN and load-bearing as one: every recorded level binds
+           its pass's framebuffer, barriers its framebuffer's image, and binds one of the five
+           chain pipelines, so a row that is present but not live is refused exactly like the
+           shadow pair above. The pipeline tests run per level rather than once: bloomCount 1
+           records a bright row and no blur row, and a half-built chain of pipelines is the
+           pipeline rung's problem, not one this frame would draw around. */
+        if (pipeline->brightPipeline == VK_NULL_HANDLE) {
+            return XUD_INVALID_ARG;
+        }
+        for (bloom = 0u; bloom < bloomCount; bloom++) {
+            if ((bloomRows[bloom].pass == NULL) || (bloomRows[bloom].pass->renderPass == VK_NULL_HANDLE)
+                || (bloomRows[bloom].framebuffer == NULL) || (bloomRows[bloom].framebuffer->framebuffer == VK_NULL_HANDLE)
+                || (bloomRows[bloom].framebuffer->view == VK_NULL_HANDLE)
+                || (bloomRows[bloom].sourceSlot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)
+                || ((bloom > 0u) && (pipeline->bloomBlurPipeline == VK_NULL_HANDLE))) {
+                return XUD_INVALID_ARG;
+            }
         }
     }
     /* Every row of the pipeline list has to be live, not just the two the variant axis names: a draw
@@ -1189,6 +1310,23 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         frame, loader, device, pipeline, hdrPass, hdrFramebuffer, batch, descriptor, 0u, 1u, XUD_FRAME_NO_RESOLVE, 0u);
     if (result != XUD_OK) {
         return result;
+    }
+
+    /* --- 5e2. the bloom chain, when the renderer brought one up: bright first (it reads the
+       scratch image the barrier above just made sample-ready), then each blur level, each
+       reading the level above through the sampler array. The chain sits HERE - after the
+       scratch pass, before the screen pass - because its input is the finished HDR image and
+       the present row's sum wants every level already sampled-ready when its pass begins.
+       The levels' layouts are the chain's own: every pass ends in SHADER_READ_ONLY, the
+       barrier beside each pass carries the write-before-read guarantee, and the tracker rows
+       the renderer opened are read by the next frame's opening barrier exactly the way the
+       scratch image's row is.
+    */
+    for (bloom = 0u; bloom < bloomCount; bloom++) {
+        result = xud_frame_record_bloom(frame, loader, pipeline, &bloomRows[bloom], bloom, descriptor);
+        if (result != XUD_OK) {
+            return result;
+        }
     }
 
     /* --- 5f. the screen pass, the same recording through the same helper, with the resolve

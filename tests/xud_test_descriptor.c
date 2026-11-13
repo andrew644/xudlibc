@@ -205,10 +205,11 @@ static void xud_test_descriptor_pure(void) {
     xud_check((d.poolSizes[0u].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) && (d.poolSizes[0u].descriptorCount == 1u),
         "descriptor/pool-uniform-row", "one uniform buffer");
     xud_check((d.poolSizes[1u].type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-            && (d.poolSizes[1u].descriptorCount == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u),
+            && (d.poolSizes[1u].descriptorCount == (XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u + XUD_DESCRIPTOR_BLOOM_LEVELS)),
         "descriptor/pool-sampler-row",
-        "the array's size plus one, because the count is the ceiling of what the pool's sets may hold in total: the texture step's set 1 "
-        "is the array and set 0's binding 1 is the shadow map's one more");
+        "the array's size plus the shadow map's one in set 0's binding 1 plus the bloom chain's four in binding 2: the count is the "
+        "ceiling of what the pool's sets may hold in total, and a pool one short is a vkAllocateDescriptorSets that fails at the "
+        "renderer's bring-up");
 
     /* The allocate-infos, which name the pool and the layout rather than a set. BOTH sets of this
        layout are allocated, so there are two rows of the array below rather than one, and the index
@@ -818,27 +819,31 @@ static void xud_test_gpu_descriptor(void) {
         "either), the renderer's scratch image, the scratch pass's own depth image and the shadow map - three more images for the same "
         "alignment reason - and the two host-visible arenas, this rung's staging arena and the batch's, which are blocks of their own "
         "because a mapping is per-VkDeviceMemory rather than per-range");
-    xud_check(liveCount == 13u, "gpu-desc/thirteen-live-ranges",
-        "thirteen live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, "
-        "the scratch pass's depth, the shadow map, the two arenas each of which is a whole block, and the batch's four streams plus "
-        "its index buffer, which is what a completed context owns now");
+    xud_check(liveCount == 17u, "gpu-desc/seventeen-live-ranges",
+        "seventeen live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, "
+        "the scratch pass's depth, the shadow map, the four bloom-chain levels, the two arenas each of which is a whole block, and the "
+        "batch's four streams plus its index buffer, which is what a completed context owns now");
     {
         uint32_t stream = 0u;
+        uint32_t level = 0u;
         VkDeviceSize batchCarves = 0u;
+        VkDeviceSize bloomCarves = 0u;
         for (stream = 0u; stream < XUD_BATCH_STREAM_COUNT; stream++) {
             batchCarves += context->renderer->batch->stream[stream].range.size;
         }
         batchCarves += context->renderer->batch->stagingRange.size;
         batchCarves += context->renderer->batch->indexRange.size;
+        for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
+            bloomCarves += context->renderer->bloomRange[level].size;
+        }
         xud_check(bytes
                 == (context->descriptor->uniformRange.size + context->descriptor->uniformStagingRange.size
                     + context->descriptor->whiteRange.size + context->renderer->renderPass->depthRange.size
                     + context->renderer->hdrColorRange.size + context->renderer->hdrPass->depthRange.size
-                    + context->renderer->shadowPass->depthRange.size + batchCarves),
+                    + context->renderer->shadowPass->depthRange.size + bloomCarves + batchCarves),
             "gpu-desc/bytes-are-every-carve",
-            "the reserved bytes are exactly every carve added up, which is what makes the counter a fa"
-            "ct rather than an estimate - and the batch's six are in that sum, so the rung below this o"
-            "ne is being counted rather than assumed");
+            "the reserved bytes are exactly every carve added up, which is what makes the counter a fact rather than an estimate - and "
+            "the batch's six and the chain's four are in that sum, so the rungs below this one are being counted rather than assumed");
     }
     xud_check(cursor == 0u, "gpu-desc/cursor-untouched",
         "and the ring's cursor is still at the start: a per-frame uniform buffer is static, not transi"

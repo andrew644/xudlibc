@@ -154,11 +154,23 @@ add_custom_command(
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/present.frag"
     VERBATIM)
 add_custom_command(
+    OUTPUT "${XUD_GEN_DIR}/bloom_bright_frag.spv"
+    COMMAND "${GLSLANG_VALIDATOR}" -V -o "${XUD_GEN_DIR}/bloom_bright_frag.spv" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_bright.frag"
+    COMMAND "${XUD_SPIRV_VAL}" "${XUD_GEN_DIR}/bloom_bright_frag.spv"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_bright.frag"
+    VERBATIM)
+add_custom_command(
+    OUTPUT "${XUD_GEN_DIR}/bloom_blur_frag.spv"
+    COMMAND "${GLSLANG_VALIDATOR}" -V -o "${XUD_GEN_DIR}/bloom_blur_frag.spv" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_blur.frag"
+    COMMAND "${XUD_SPIRV_VAL}" "${XUD_GEN_DIR}/bloom_blur_frag.spv"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/bloom_blur.frag"
+    VERBATIM)
+add_custom_command(
     OUTPUT "${XUD_GEN_DIR}/xud_solid_spv.h"
     COMMAND "${CMAKE_COMMAND}"
         -DSPV_OUT_HEADER=${XUD_GEN_DIR}/xud_solid_spv.h
         -DSPV_GUARD=XUD_SOLID_SPV_H_
-        -DSPV_COUNT=7
+        -DSPV_COUNT=9
         -DSPV_ARRAY_0=xudSolidVertSpv
         -DSPV_ARRAY_1=xudSolidFragSpv
         -DSPV_ARRAY_2=xudSolidFragTexturedSpv
@@ -166,6 +178,8 @@ add_custom_command(
         -DSPV_ARRAY_4=xudPresentFragSpv
         -DSPV_ARRAY_5=xudPrepassVertSpv
         -DSPV_ARRAY_6=xudShadowVertSpv
+        -DSPV_ARRAY_7=xudBloomBrightFragSpv
+        -DSPV_ARRAY_8=xudBloomBlurFragSpv
         -DSPV_INPUT_0=${XUD_GEN_DIR}/solid_vert.spv
         -DSPV_INPUT_1=${XUD_GEN_DIR}/solid_frag.spv
         -DSPV_INPUT_2=${XUD_GEN_DIR}/solid_textured_frag.spv
@@ -173,8 +187,10 @@ add_custom_command(
         -DSPV_INPUT_4=${XUD_GEN_DIR}/present_frag.spv
         -DSPV_INPUT_5=${XUD_GEN_DIR}/prepass_vert.spv
         -DSPV_INPUT_6=${XUD_GEN_DIR}/shadow_vert.spv
+        -DSPV_INPUT_7=${XUD_GEN_DIR}/bloom_bright_frag.spv
+        -DSPV_INPUT_8=${XUD_GEN_DIR}/bloom_blur_frag.spv
         -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/spv_to_header.cmake"
-    DEPENDS "${XUD_GEN_DIR}/solid_vert.spv" "${XUD_GEN_DIR}/solid_frag.spv" "${XUD_GEN_DIR}/solid_textured_frag.spv" "${XUD_GEN_DIR}/present_vert.spv" "${XUD_GEN_DIR}/present_frag.spv" "${XUD_GEN_DIR}/prepass_vert.spv" "${XUD_GEN_DIR}/shadow_vert.spv"
+    DEPENDS "${XUD_GEN_DIR}/solid_vert.spv" "${XUD_GEN_DIR}/solid_frag.spv" "${XUD_GEN_DIR}/solid_textured_frag.spv" "${XUD_GEN_DIR}/present_vert.spv" "${XUD_GEN_DIR}/present_frag.spv" "${XUD_GEN_DIR}/prepass_vert.spv" "${XUD_GEN_DIR}/shadow_vert.spv" "${XUD_GEN_DIR}/bloom_bright_frag.spv" "${XUD_GEN_DIR}/bloom_blur_frag.spv"
     VERBATIM)
 set(XUD_GENERATED_HEADERS "${XUD_GEN_DIR}/xud_solid_spv.h")
 

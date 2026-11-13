@@ -196,6 +196,45 @@ struct XudRenderer {
                            caller's targets in THIS format: pass compatibility is format-for-format,
                            and a target in another format would be a pass the scene pipelines
                            cannot draw into. */
+    /* --- the bloom chain (S2.6): four images, halving down, level 0 at half the scratch
+       extent. The bright pass renders into level 0 FROM the scratch image and each blur level
+       renders from the level above; the present row samples the sum of all four. ONE pass
+       handle serves every level - an attachment description carries a format, not an extent,
+       and extent is not compatibility - and it is the handle every level's framebuffer row and
+       the pipeline's five chain rows are built against, so a resize retires and reopens the
+       images, views, ranges and rows with the scratch pair while the pass handle, like the
+       scene passes', stays put. */
+    XudRenderPass* bloomPass; /* owned */
+    VkImage bloomImage[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* owned: COLOR_ATTACHMENT | SAMPLED, the
+                                                        two uses the chain and the present row give */
+    VkImageView bloomView[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* owned: the SAMPLING views the
+                                                           descriptor's binding-2 array names - the
+                                                           attachment views live inside the rows below,
+                                                           the scratch pair's two-view split */
+    VkImageCreateInfo bloomImageInfo[XUD_DESCRIPTOR_BLOOM_LEVELS];
+    VkImageViewCreateInfo bloomViewInfo[XUD_DESCRIPTOR_BLOOM_LEVELS];
+    XudMemoryRange bloomRange[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* BORROWED from the allocator */
+    XudFramebuffer* bloomFramebuffer[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* owned, one row per level */
+    uint32_t bloomWidth[XUD_DESCRIPTOR_BLOOM_LEVELS];
+    uint32_t bloomHeight[XUD_DESCRIPTOR_BLOOM_LEVELS];
+    XudFrameBloomRow bloomRows[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* the pairs handed down to the
+                                                                frame loop, filled when the chain
+                                                                is live and read as bloom-off
+                                                                while it is not */
+    uint32_t bloomSourceSlot[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* the slot carrying bloomView[level]
+                                                              as a set 1 sampler, for every level
+                                                              but the last: the blur of level
+                                                              L+1 samples level L through this,
+                                                              never through the present row's
+                                                              array - index 0 of the row is the
+                                                              chain's own first source and NOT
+                                                              the scratch slot, which the frame
+                                                              reads straight from hdrSlot */
+    uint32_t bloomSourceLive[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* 1 per slot this rung claimed, the
+                                                              guard the retire reads - the last
+                                                              level binds nothing, its image is
+                                                              never a source */
+    uint32_t bloomLive; /* 1 once the whole chain is up - the guard draw, resize and retire read */
     XudFrame* frame; /* owned: the command pool, the command buffer, the acquire semaphore and
                         the per-image fences */
     uint32_t framebufferCount; /* the count xud_frame_draw() is handed, recorded here so the

@@ -739,6 +739,56 @@ XudResult xud_pipeline_fill_shadow_create_info(const XudPipeline* pipeline, VkGr
     return XUD_OK;
 }
 
+XudResult xud_pipeline_fill_bloom_create_info(
+    const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo, VkPipelineShaderStageCreateInfo* stages) {
+    if ((outCreateInfo == NULL) || (stages == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((pipeline == NULL) || (pipeline->layout == VK_NULL_HANDLE) || (pipeline->bloomRenderPass == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((stages[XUD_PIPELINE_VERTEX_STAGE].module == VK_NULL_HANDLE) || (stages[XUD_PIPELINE_FRAGMENT_STAGE].module == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((pipeline->vertexInput.sType != VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO)
+        || (pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES].sType != VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO)
+        || (pipeline->viewportState.sType != VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO)
+        || (pipeline->rasterizer.sType != VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO)
+        || (pipeline->multisample.sType != VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO)
+        || (pipeline->blending[XUD_BATCH_VARIANT_OPAQUE].sType != VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
+        || (pipeline->dynamicState.sType != VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO)
+        || (pipeline->resolveDepthStencil.sType != VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The resolve's rows whole - the zero vertex input (the chain's triangle is the resolve's
+       triangle, invented from gl_VertexIndex, bound to no buffer), the no-depth row (a glow has
+       no depth to test and none to keep), blend disabled (every covered pixel is replaced, both
+       by the threshold's write and by the blur's) - and the row the caller names: the stage
+       pair whose fragment half is one of the two bloom modules. */
+    outCreateInfo->sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    outCreateInfo->pNext = NULL;
+    outCreateInfo->flags = 0u;
+    outCreateInfo->stageCount = XUD_PIPELINE_STAGE_COUNT;
+    outCreateInfo->pStages = stages;
+    outCreateInfo->pTessellationState = NULL;
+    outCreateInfo->pVertexInputState = &pipeline->vertexInput;
+    outCreateInfo->pInputAssemblyState = &pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES];
+    outCreateInfo->pViewportState = &pipeline->viewportState;
+    outCreateInfo->pRasterizationState = &pipeline->rasterizer;
+    outCreateInfo->pMultisampleState = &pipeline->multisample;
+    outCreateInfo->pDepthStencilState = &pipeline->resolveDepthStencil;
+    outCreateInfo->pColorBlendState = &pipeline->blending[XUD_BATCH_VARIANT_OPAQUE];
+    outCreateInfo->pDynamicState = &pipeline->dynamicState;
+    outCreateInfo->layout = pipeline->layout;
+    outCreateInfo->renderPass = pipeline->bloomRenderPass;
+    outCreateInfo->subpass = XUD_PIPELINE_FIRST_SUBPASS;
+    outCreateInfo->basePipelineHandle = VK_NULL_HANDLE;
+    outCreateInfo->basePipelineIndex = -1;
+
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * Retiring the variant rows that got made - file-local, the ladder below and xud_pipeline_close()
  * both call it
@@ -803,13 +853,35 @@ static void xud_pipeline_retire_up_to_prepass(XudPipeline* pipeline, XudLoader* 
     (void)xud_shader_close(&pipeline->prepassVertexShader, device, loader);
 }
 
+static void xud_pipeline_retire_up_to_shadow(XudPipeline* pipeline, XudLoader* loader, const XudDevice* device) {
+    xud_pipeline_retire_up_to_prepass(pipeline, loader, device);
+    if (pipeline->shadowPipeline != VK_NULL_HANDLE) {
+        (void)loader->deviceTable.vkDestroyPipeline(device->device, pipeline->shadowPipeline, NULL);
+        pipeline->shadowPipeline = VK_NULL_HANDLE;
+    }
+    (void)xud_shader_close(&pipeline->shadowVertexShader, device, loader);
+}
+
+static void xud_pipeline_retire_bloom(XudPipeline* pipeline, XudLoader* loader, const XudDevice* device) {
+    if (pipeline->bloomBlurPipeline != VK_NULL_HANDLE) {
+        (void)loader->deviceTable.vkDestroyPipeline(device->device, pipeline->bloomBlurPipeline, NULL);
+        pipeline->bloomBlurPipeline = VK_NULL_HANDLE;
+    }
+    if (pipeline->brightPipeline != VK_NULL_HANDLE) {
+        (void)loader->deviceTable.vkDestroyPipeline(device->device, pipeline->brightPipeline, NULL);
+        pipeline->brightPipeline = VK_NULL_HANDLE;
+    }
+    (void)xud_shader_close(&pipeline->bloomBlurFragmentShader, device, loader);
+    (void)xud_shader_close(&pipeline->bloomBrightFragmentShader, device, loader);
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The create rung - the driver half
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
     const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass, VkRenderPass prepassRenderPass,
-    VkRenderPass shadowRenderPass) {
+    VkRenderPass shadowRenderPass, VkRenderPass bloomRenderPass) {
     XudPipeline* pipeline = NULL;
     XudShader* vertexShader = NULL;
     XudShader* fragModule[XUD_PIPELINE_FRAG_MODULE_COUNT] = { NULL }; /* one per entry of the FRAG axis,
@@ -831,6 +903,8 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
                             pre-pass row exists - and only opened when the rung was handed a
                             shadow pass at all: no pass, no module, no row */
     VkPipeline shadowCreated = VK_NULL_HANDLE;
+    VkPipeline brightCreated = VK_NULL_HANDLE;
+    VkPipeline blurCreated = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
@@ -1210,6 +1284,80 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
         pipeline->shadowPipeline = shadowCreated;
     }
 
+    /* The bloom chain's pipelines, last: the two fragment modules, the present vertex module
+       reused a third time (the chain's fullscreen triangle is the resolve's triangle), and two
+       create-infos that differ from the resolve's only in the pass handle and the stage pair -
+       the bright row first, then the one blur row every tail level binds. The whole block is
+       conditional on having been handed a bloom pass - the frame loop reads the null rows as
+       the same bloom-off answer the renderer gave. */
+    if (bloomRenderPass != VK_NULL_HANDLE) {
+        pipeline->bloomRenderPass = bloomRenderPass;
+        result
+            = xud_shader_open(&pipeline->bloomBrightFragmentShader, loader, device, xudBloomBrightFragSpv, sizeof(xudBloomBrightFragSpv));
+        if (result != XUD_OK) {
+            xud_pipeline_retire_up_to_shadow(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        result = xud_shader_open(&pipeline->bloomBlurFragmentShader, loader, device, xudBloomBlurFragSpv, sizeof(xudBloomBlurFragSpv));
+        if (result != XUD_OK) {
+            xud_pipeline_retire_bloom(pipeline, loader, device);
+            xud_pipeline_retire_up_to_shadow(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        result = xud_pipeline_fill_shader_stages(
+            pipeline->brightShaderStages, presentVertexShader->module, pipeline->bloomBrightFragmentShader->module);
+        if (result != XUD_OK) {
+            xud_pipeline_retire_bloom(pipeline, loader, device);
+            xud_pipeline_retire_up_to_shadow(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        result = xud_pipeline_fill_shader_stages(
+            pipeline->bloomBlurShaderStages, presentVertexShader->module, pipeline->bloomBlurFragmentShader->module);
+        if (result != XUD_OK) {
+            xud_pipeline_retire_bloom(pipeline, loader, device);
+            xud_pipeline_retire_up_to_shadow(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        result = xud_pipeline_fill_bloom_create_info(pipeline, &pipeline->brightCreateInfo, pipeline->brightShaderStages);
+        if (result != XUD_OK) {
+            xud_pipeline_retire_bloom(pipeline, loader, device);
+            xud_pipeline_retire_up_to_shadow(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        vk = loader->deviceTable.vkCreateGraphicsPipelines(
+            device->device, VK_NULL_HANDLE, 1u, &pipeline->brightCreateInfo, NULL, &brightCreated);
+        result = xud_result_from_vk(vk);
+        if (result != XUD_OK) {
+            xud_pipeline_retire_bloom(pipeline, loader, device);
+            xud_pipeline_retire_up_to_shadow(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        pipeline->brightPipeline = brightCreated;
+        result = xud_pipeline_fill_bloom_create_info(pipeline, &pipeline->bloomBlurCreateInfo, pipeline->bloomBlurShaderStages);
+        if (result != XUD_OK) {
+            xud_pipeline_retire_bloom(pipeline, loader, device);
+            xud_pipeline_retire_up_to_shadow(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        vk = loader->deviceTable.vkCreateGraphicsPipelines(
+            device->device, VK_NULL_HANDLE, 1u, &pipeline->bloomBlurCreateInfo, NULL, &blurCreated);
+        result = xud_result_from_vk(vk);
+        if (result != XUD_OK) {
+            xud_pipeline_retire_bloom(pipeline, loader, device);
+            xud_pipeline_retire_up_to_shadow(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        pipeline->bloomBlurPipeline = blurCreated;
+    }
+
     *outPipeline = pipeline;
     return XUD_OK;
 }
@@ -1268,7 +1416,25 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
             return XUD_UNSUPPORTED;
         }
     }
+    if (victim->bloomBlurPipeline != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroyPipeline == NULL) {
+            return XUD_UNSUPPORTED;
+        }
+    }
+    if (victim->brightPipeline != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroyPipeline == NULL) {
+            return XUD_UNSUPPORTED;
+        }
+    }
     xud_pipeline_destroy_rows(loader, device, victim->pipeline);
+    if (victim->bloomBlurPipeline != VK_NULL_HANDLE) {
+        loader->deviceTable.vkDestroyPipeline(device->device, victim->bloomBlurPipeline, NULL);
+        victim->bloomBlurPipeline = VK_NULL_HANDLE;
+    }
+    if (victim->brightPipeline != VK_NULL_HANDLE) {
+        loader->deviceTable.vkDestroyPipeline(device->device, victim->brightPipeline, NULL);
+        victim->brightPipeline = VK_NULL_HANDLE;
+    }
     if (victim->shadowPipeline != VK_NULL_HANDLE) {
         loader->deviceTable.vkDestroyPipeline(device->device, victim->shadowPipeline, NULL);
         victim->shadowPipeline = VK_NULL_HANDLE;
@@ -1324,6 +1490,18 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
     }
     if (victim->shadowVertexShader != NULL) {
         closedModule = xud_shader_close(&victim->shadowVertexShader, device, loader);
+        if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
+            first = closedModule;
+        }
+    }
+    if (victim->bloomBlurFragmentShader != NULL) {
+        closedModule = xud_shader_close(&victim->bloomBlurFragmentShader, device, loader);
+        if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
+            first = closedModule;
+        }
+    }
+    if (victim->bloomBrightFragmentShader != NULL) {
+        closedModule = xud_shader_close(&victim->bloomBrightFragmentShader, device, loader);
         if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
             first = closedModule;
         }

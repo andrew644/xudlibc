@@ -606,14 +606,16 @@ static void xud_test_texture_gpu(void) {
     xud_check(record->imageLayout == XUD_TEXTURE_SAMPLED_LAYOUT, "gpu-texture/image-layout",
         "and the record says the image ended in the sampled layout rather than the upload one, which is what makes the descriptor step's "
         "layout a fact read off the record rather than a guess about what the upload left behind");
-    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 2u), "gpu-texture/record-owns-a-slot",
-        "and the record names the entry of set 1's sampler array its view and sampler go into - the first free one, which is slot 2 "
-        "in a fresh context because slot 0 is the white default's own and slot 1 the renderer scratch image's, neither ever handed out");
+    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 5u), "gpu-texture/record-owns-a-slot",
+        "and the record names the entry of set 1's sampler array its view and sampler go into - the first free one, which is slot 5 "
+        "in a fresh context because slot 0 is the white default's own, slot 1 the renderer scratch image's and slots 2, 3 and 4 the "
+        "bloom chain's three source slots, none ever handed out");
     xud_check(context->descriptor->samplerSlotMask
-            == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)),
+            == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(5u)),
         "gpu-texture/slot-in-the-free-list",
         "and the descriptor rung's free list says the same: the create took a slot off the free list rather than the test assuming "
-        "one, beside the reserved bit of slot 0");
+        "one, beside the renderer's five permanent bits");
     xud_check(
         (record->stagingBuffer == VK_NULL_HANDLE) && (record->stagingRange.memory == VK_NULL_HANDLE) && (record->stagingMappedLive == 0u),
         "gpu-texture/staging-retired",
@@ -651,13 +653,14 @@ static void xud_test_texture_gpu(void) {
         "and what this rung wrote into");
     xud_check(record->stagingBytes < firstStagingBytes, "gpu-texture/second-smaller",
         "and its staging is smaller than the 8x8's, so the block is sized from the chain rather than from a fixed sheet size");
-    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 3u), "gpu-texture/second-owns-the-next-slot",
+    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 6u), "gpu-texture/second-owns-the-next-slot",
         "and the second create took the next free slot of set 1's array, so the free list hands out the entries rather than a fixed row "
         "per texture");
     xud_check(context->descriptor->samplerSlotMask
             == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
-                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u)),
-        "gpu-texture/two-slots-in-use", "and the free list says the same: the two textures' entries beside the reserved bit of slot 0");
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(5u)
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(6u)),
+        "gpu-texture/two-slots-in-use", "and the free list says the same: the two textures' entries beside the renderer's five bits");
     xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK, "gpu-texture/live-two-query",
         "the live count answers");
     xud_check(live == 2u, "gpu-texture/live-two", "and two TEXTURE slots are live");
@@ -678,10 +681,11 @@ static void xud_test_texture_gpu(void) {
 
     xud_check(xud_close_texture(context, handle) == XUD_OK, "gpu-texture/close-ok", "the first texture is released");
     xud_check(context->descriptor->samplerSlotMask
-            == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u)),
+            == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(6u)),
         "gpu-texture/close-freed-the-slot",
         "and the close gave the first texture's slot back to the free list before its view and sampler were destroyed, so the array's "
-        "entry no longer names a destroyed pair - beside the reserved bit of slot 0, which a close never touches");
+        "entry no longer names a destroyed pair - beside the renderer's five permanent bits, which a close never touches");
     xud_check(xud_texture_get(context->handleTable, handle, &record) == XUD_INVALID_ARG, "gpu-texture/close-freed-the-slot",
         "and the handle no longer names a live slot, so a texture kept past its close is refused rather than dangling");
     xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK,
@@ -697,10 +701,13 @@ static void xud_test_texture_gpu(void) {
             == XUD_OK,
         "gpu-texture/close-all-explicit", "the rung runs and closes the one TEXTURE record a slot still names");
     xud_check(closed == 1u, "gpu-texture/close-all-count", "and the count it reports is the one record that was still reachable");
-    xud_check(context->descriptor->samplerSlotMask == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u)),
+    xud_check(context->descriptor->samplerSlotMask
+            == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u)),
         "gpu-texture/close-all-freed-its-slot",
         "and the record's slot of set 1's array went back to the free list with it, so the walk leaves no entry naming a destroyed "
-        "pair - only the reserved bit of slot 0 and the renderer scratch image's slot 1 remain, and neither is a bit a close clears");
+        "pair - only the white default's bit, the renderer scratch image's slot and the bloom chain's three source slots remain, and "
+        "none is a bit a close clears");
     xud_check(xud_texture_close_all(context->handleTable, context->loader, context->device, context->allocator, context->descriptor, &live)
             == XUD_OK,
         "gpu-texture/close-all-idempotent",
@@ -749,10 +756,12 @@ static void xud_test_texture_gpu(void) {
                 result = xud_close_texture(context, ceilingHandles[c]);
                 xud_check(result == XUD_OK, "gpu-texture/ceiling-close-ok", "each of the ceiling's textures is released");
             }
-            xud_check(context->descriptor->samplerSlotMask == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u)),
+            xud_check(context->descriptor->samplerSlotMask
+                    == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
+                        | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u)),
                 "gpu-texture/ceiling-free-list-back",
-                "and every close gave its slot back, so the free list is the white default's bit, "
-                "the scratch image's bit and nothing else again");
+                "and every close gave its slot back, so the free list is the white default's bit, the scratch image's bit, the chain's "
+                "three source bits and nothing else again");
         }
         (void)xud_close_context(&context);
     }
@@ -784,6 +793,14 @@ static void xud_test_texture_gpu(void) {
    the hardware is entitled to hand to either side of it. Two keeps a genuine sampling error (a
    texel two away, a channel swap) out of the accepted set. */
 #define XUD_TEST_READBACK_BORDER_EPS 1e-3
+
+/* The reach, in screen pixels, of the present row's edge filter: the resolve's FXAA stage reads a
+   few pixels around each one and mixes across strong contrast, so a pixel whose centre sits within
+   this band of a texel border is a pixel the filter is entitled to hand as a blend of the texels
+   on either side - and an 8-texel sheet blown up to a tiled extent puts a border every texel
+   width apart. Three covers the filter's furthest tap; a pixel beyond the band owes the test an
+   exact texel again. */
+#define XUD_TEST_READBACK_EDGE_BAND 3.0
 
 /* The repair's bound: an acquire that keeps answering the swapchain's out-of-date codes after this
    many repairs is a compositor that is not going to stop resizing, and a test that retried it
@@ -1198,6 +1215,20 @@ static void xud_test_texture_readback_gpu(void) {
             const int32_t rowLo = (fracY < XUD_TEST_READBACK_BORDER_EPS) && (row > 0u) ? (int32_t)row - 1 : (int32_t)row;
             const int32_t rowHi
                 = (fracY > (1.0 - XUD_TEST_READBACK_BORDER_EPS)) && (row + 1u < XUD_TEST_READBACK_SHEET) ? (int32_t)row + 1 : (int32_t)row;
+            /* The edge filter's half of the geometry: the centre's distance, in SCREEN pixels, to
+               the nearest texel border on each axis, and the filter's reach scaled by the texel's
+               own screen width - at a sheet blown up to a tiled extent the band stays the filter's
+               few pixels, and at an extent where a texel is only a few pixels wide the band shrinks
+               to a quarter of that texel so mid-texel centres still owe an exact byte. */
+            const double texelPxX = (double)width / (double)XUD_TEST_READBACK_SHEET;
+            const double texelPxY = (double)height / (double)XUD_TEST_READBACK_SHEET;
+            const double edgePxX = ((fracX < 0.5) ? fracX : (1.0 - fracX)) * texelPxX;
+            const double edgePxY = ((fracY < 0.5) ? fracY : (1.0 - fracY)) * texelPxY;
+            const int nearEdge
+                = ((edgePxX <= ((texelPxX * 0.25) < XUD_TEST_READBACK_EDGE_BAND ? (texelPxX * 0.25) : XUD_TEST_READBACK_EDGE_BAND))
+                      || (edgePxY <= ((texelPxY * 0.25) < XUD_TEST_READBACK_EDGE_BAND ? (texelPxY * 0.25) : XUD_TEST_READBACK_EDGE_BAND)))
+                ? 1
+                : 0;
             const uint32_t at = ((row * XUD_TEST_READBACK_SHEET) + col) * XUD_TEXTURE_BYTES_PER_TEXEL;
             const uint32_t expectedR = srgb ? xud_test_srgb_byte(texels8x8[at]) : xud_test_aces_byte(texels8x8[at]);
             const uint32_t expectedG = srgb ? xud_test_srgb_byte(texels8x8[at + 1u]) : xud_test_aces_byte(texels8x8[at + 1u]);
@@ -1228,6 +1259,55 @@ static void xud_test_texture_readback_gpu(void) {
                         ? 1
                         : 0;
                 }
+            }
+            /* The blend's half of the acceptance: inside the band the pixel may be any channel-wise
+               mix of the eight neighbours around its texel - the filter's taps - so every channel
+               only has to lie between those neighbours' own encoded bytes, tolerance aside. */
+            if ((ok == 0) && (nearEdge != 0)) {
+                const int32_t mixRowLo = ((int32_t)row > 0) ? (int32_t)row - 1 : 0;
+                const int32_t mixRowHi = ((uint32_t)row + 1u < XUD_TEST_READBACK_SHEET) ? (int32_t)row + 1 : (int32_t)row;
+                const int32_t mixColLo = ((int32_t)col > 0) ? (int32_t)col - 1 : 0;
+                const int32_t mixColHi = ((uint32_t)col + 1u < XUD_TEST_READBACK_SHEET) ? (int32_t)col + 1 : (int32_t)col;
+                uint32_t mixMinR = 255u;
+                uint32_t mixMinG = 255u;
+                uint32_t mixMinB = 255u;
+                uint32_t mixMaxR = 0u;
+                uint32_t mixMaxG = 0u;
+                uint32_t mixMaxB = 0u;
+                int32_t mixY;
+                int32_t mixX;
+                for (mixY = mixRowLo; mixY <= mixRowHi; mixY++) {
+                    for (mixX = mixColLo; mixX <= mixColHi; mixX++) {
+                        const uint32_t atM = (((uint32_t)mixY * XUD_TEST_READBACK_SHEET) + (uint32_t)mixX) * XUD_TEXTURE_BYTES_PER_TEXEL;
+                        const uint32_t mixR = srgb ? xud_test_srgb_byte(texels8x8[atM]) : xud_test_aces_byte(texels8x8[atM]);
+                        const uint32_t mixG = srgb ? xud_test_srgb_byte(texels8x8[atM + 1u]) : xud_test_aces_byte(texels8x8[atM + 1u]);
+                        const uint32_t mixB = srgb ? xud_test_srgb_byte(texels8x8[atM + 2u]) : xud_test_aces_byte(texels8x8[atM + 2u]);
+                        if (mixR < mixMinR) {
+                            mixMinR = mixR;
+                        }
+                        if (mixR > mixMaxR) {
+                            mixMaxR = mixR;
+                        }
+                        if (mixG < mixMinG) {
+                            mixMinG = mixG;
+                        }
+                        if (mixG > mixMaxG) {
+                            mixMaxG = mixG;
+                        }
+                        if (mixB < mixMinB) {
+                            mixMinB = mixB;
+                        }
+                        if (mixB > mixMaxB) {
+                            mixMaxB = mixB;
+                        }
+                    }
+                }
+                ok = ((actualR + XUD_TEST_READBACK_TOLERANCE >= mixMinR) && (actualR <= (mixMaxR + XUD_TEST_READBACK_TOLERANCE))
+                         && (actualG + XUD_TEST_READBACK_TOLERANCE >= mixMinG) && (actualG <= (mixMaxG + XUD_TEST_READBACK_TOLERANCE))
+                         && (actualB + XUD_TEST_READBACK_TOLERANCE >= mixMinB) && (actualB <= (mixMaxB + XUD_TEST_READBACK_TOLERANCE))
+                         && (actualA >= (255u - XUD_TEST_READBACK_TOLERANCE)))
+                    ? 1
+                    : 0;
             }
             /* The seam's half of the acceptance: the pixel's centre through the quad's NDC, the v
                axis flipped to the screen's, and the shared diagonal is u + v = 0 - a centre inside

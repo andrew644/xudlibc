@@ -291,11 +291,13 @@ XudResult xud_descriptor_fill_set_layouts(XudDescriptor* descriptor) {
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].bindingCount = XUD_DESCRIPTOR_BINDINGS_PER_SET;
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].pBindings = descriptor->bindings[XUD_DESCRIPTOR_SET_MATERIAL];
 
-    /* set 0: the per-frame block at binding 0 and the shadow map at binding 1. The block row is
-       the buffer the whole scene reads, the shadow row the depth the fragment stages sample -
-       COMBINED_IMAGE_SAMPLER with the FRAGMENT-only stage the sampler already uses for textures,
-       and descriptorCount 1 because one map is shadowed by: the casting sun is the FIRST sun in
-       the table and there is exactly one of it per frame. Both rows sit in the contiguous list
+    /* set 0: the per-frame block at binding 0, the shadow map at binding 1 and the bloom chain at
+       binding 2. The block row is the buffer the whole scene reads, the shadow row the depth the
+       fragment stages sample, the bloom rows the four glow levels the resolve samples - all
+       COMBINED_IMAGE_SAMPLER with the FRAGMENT-only stage the sampler already uses for textures.
+       The shadow row counts one because the casting sun is the FIRST sun in the table and there
+       is exactly one of it per frame; the bloom row counts XUD_DESCRIPTOR_BLOOM_LEVELS because
+       the chain is one array the resolve reads whole. All rows sit in the contiguous list
        starting at 0 the create-info's own rule asks for.
      */
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].binding = XUD_DESCRIPTOR_BINDING;
@@ -309,6 +311,12 @@ XudResult xud_descriptor_fill_set_layouts(XudDescriptor* descriptor) {
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].descriptorCount = 1u;
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].stageFlags = XUD_DESCRIPTOR_SHADOW_STAGE;
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].pImmutableSamplers = NULL;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].binding = XUD_DESCRIPTOR_BLOOM_BINDING;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].descriptorType
+        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].descriptorCount = XUD_DESCRIPTOR_BLOOM_LEVELS;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].stageFlags = XUD_DESCRIPTOR_BLOOM_STAGE;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].pImmutableSamplers = NULL;
 
     /* set 1: the one sampler of a slot set. descriptorCount is 1 because each slot owns its own set
        holding one view-and-sampler pair - the per-slot-set design the header states in place of a
@@ -373,8 +381,10 @@ XudResult xud_descriptor_fill_pool_info(XudDescriptor* descriptor) {
     descriptor->poolSizes[0u].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptor->poolSizes[0u].descriptorCount = 1u;
     descriptor->poolSizes[1u].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptor->poolSizes[1u].descriptorCount = XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u; /* +1: the shadow map's pair in set 0's
-                                                                                           binding 1 allocates from this same pool */
+    descriptor->poolSizes[1u].descriptorCount
+        = XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u + XUD_DESCRIPTOR_BLOOM_LEVELS; /* +1: the shadow map's pair in set 0's binding 1;
+                                                                                   +LEVELS: the chain's rows in binding 2 - both
+                                                                                   allocate from this same pool */
 
     return XUD_OK;
 }
@@ -1017,6 +1027,68 @@ XudResult xud_descriptor_set_shadow_texture(
     descriptor->shadowWriteInfo.pTexelBufferView = NULL;
 
     loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->shadowWriteInfo, 0u, NULL);
+
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_set_bloom_textures(
+    XudDescriptor* descriptor, const XudLoader* loader, const XudDevice* device, const VkImageView* views, VkSampler sampler) {
+    uint32_t level = 0u;
+
+    if ((descriptor == NULL) || (loader == NULL) || (device == NULL) || (views == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
+        if (views[level] == VK_NULL_HANDLE) {
+            return XUD_INVALID_ARG;
+        }
+    }
+    if (sampler == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (!loader->open) {
+        return XUD_UNSUPPORTED;
+    }
+    if (device->device == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+    if (descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (loader->deviceTable.vkUpdateDescriptorSets == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+    /* Drain the in-flight frames, set_shadow_texture's guard repeated: the resize re-open that
+       rewrites this binding runs while the OLD chain's images still sit in submitted command
+       buffers' futures, and rewriting a binding those frames may read is the race. */
+    {
+        XudResult guard = xud_device_wait_idle(device, loader);
+        if (guard != XUD_OK) {
+            return guard;
+        }
+    }
+
+    for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
+        descriptor->bloomImageRows[level].sampler = sampler;
+        descriptor->bloomImageRows[level].imageView = views[level];
+        descriptor->bloomImageRows[level].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
+    descriptor->bloomWriteInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptor->bloomWriteInfo.pNext = NULL;
+    descriptor->bloomWriteInfo.dstSet = descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME];
+    descriptor->bloomWriteInfo.dstBinding = XUD_DESCRIPTOR_BLOOM_BINDING;
+    descriptor->bloomWriteInfo.dstArrayElement = 0u;
+    descriptor->bloomWriteInfo.descriptorCount = XUD_DESCRIPTOR_BLOOM_LEVELS;
+    descriptor->bloomWriteInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptor->bloomWriteInfo.pImageInfo = descriptor->bloomImageRows;
+    descriptor->bloomWriteInfo.pBufferInfo = NULL;
+    descriptor->bloomWriteInfo.pTexelBufferView = NULL;
+
+    loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->bloomWriteInfo, 0u, NULL);
 
     return XUD_OK;
 }

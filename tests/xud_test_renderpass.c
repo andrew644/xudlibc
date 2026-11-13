@@ -663,11 +663,11 @@ static void xud_test_renderpass_gpu(void) {
         "the descriptor's staging arena - are two more, because vkMapMemory maps a VkDeviceMemory rather than a range and a carve "
         "inside a block someone else already mapped cannot be mapped at all. The batch's five data buffers are the carves that do "
         "share a block, which is the suballocation half of the repo's allocate-once rule seen from above");
-    xud_check(live == 13u, "gpu-renderpass/thirteen-live-ranges",
-        "thirteen live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, "
-        "the scratch pass's depth, the shadow map, the two arenas each of which is a whole block, and the batch's four streams plus "
-        "its index buffer, which is what a completed context owns now and is the baseline every number in the allocator area is read "
-        "as a delta on");
+    xud_check(live == 17u, "gpu-renderpass/seventeen-live-ranges",
+        "seventeen live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, "
+        "the scratch pass's depth, the shadow map, the four bloom-chain levels, the two arenas each of which is a whole block, and the "
+        "batch's four streams plus its index buffer, which is what a completed context owns now and is the baseline every number in "
+        "the allocator area is read as a delta on");
     xud_check(bytes >= pass->depthRange.size, "gpu-renderpass/bytes-count-the-image",
         "the reserved-bytes counter includes the image's own range, so the counter is a fact about the rows"
         " rather than an estimate");

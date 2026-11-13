@@ -2,10 +2,6 @@
 
 Renderer roadmap: each item only depends on items above it.
 
-## Stage 2 - how the picture is built
-
-- **S2.6** Glow/bloom and edge-smoothing.
-
 ## Stage 3 - scale
 
 - **S3.1** Let a texture hold hundreds of images instead of 15, and stop switching image

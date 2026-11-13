@@ -362,6 +362,192 @@ static XudResult xud_renderer_shadow_open(
     return XUD_OK;
 }
 
+/* The chain's images, views and rows, retired - every step tolerating its own absence, the way
+   every other retire in this file does, so the same function cleans a half-built chain. The
+   pass handle is NOT touched: it survives a resize because the pipeline's five chain rows are
+   bound to it, and only the bring-up's own failure path and the renderer's teardown close it.
+   The binding-2 write is not released either - it is not a slot, and the reopen's own write
+   overwrites it once the new views exist; a draw between the two retires and reopens cannot
+   happen, because the resize closes the frame loop before this runs and reopens it after. */
+static void xud_renderer_bloom_images_retire(
+    XudRenderer* renderer, XudLoader* loader, const XudDevice* device, XudAllocator* alloc, XudDescriptor* descriptor) {
+    uint32_t level = 0u;
+
+    if ((renderer == NULL) || (loader == NULL) || (device == NULL)) {
+        return;
+    }
+    for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
+        if ((renderer->bloomSourceLive[level] != 0u) && (descriptor != NULL)) {
+            (void)xud_descriptor_release_texture_slot(descriptor, loader, device, renderer->bloomSourceSlot[level]);
+            renderer->bloomSourceLive[level] = 0u;
+            renderer->bloomSourceSlot[level] = 0u;
+        }
+        renderer->bloomRows[level].pass = NULL;
+        renderer->bloomRows[level].framebuffer = NULL;
+        if (renderer->bloomFramebuffer[level] != NULL) {
+            (void)xud_framebuffer_close(&renderer->bloomFramebuffer[level], device, loader);
+        }
+        if ((renderer->bloomImage[level] != VK_NULL_HANDLE) && (renderer->layout != NULL)) {
+            (void)xud_layout_forget(renderer->layout, renderer->bloomImage[level]);
+        }
+        if ((renderer->bloomView[level] != VK_NULL_HANDLE) && (loader->deviceTable.vkDestroyImageView != NULL)) {
+            loader->deviceTable.vkDestroyImageView(device->device, renderer->bloomView[level], NULL);
+            renderer->bloomView[level] = VK_NULL_HANDLE;
+        }
+        if ((renderer->bloomImage[level] != VK_NULL_HANDLE) && (loader->deviceTable.vkDestroyImage != NULL)) {
+            loader->deviceTable.vkDestroyImage(device->device, renderer->bloomImage[level], NULL);
+            renderer->bloomImage[level] = VK_NULL_HANDLE;
+        }
+        if ((renderer->bloomRange[level].memory != VK_NULL_HANDLE) && (alloc != NULL)) {
+            (void)xud_allocator_release(alloc, &renderer->bloomRange[level]);
+        }
+    }
+    renderer->bloomLive = 0u;
+}
+
+/* The chain's rows at the CURRENT scratch extent: level 0 at half the scratch's width and height
+   (rounded up, so a 1-pixel scratch still leaves a 1-pixel level), each further level half the
+   one above by the same rule. Every image is the scratch's own create-info shape - float format,
+   COLOR_ATTACHMENT | SAMPLED - tracked in the context's map the way the scratch image is, so the
+   chain's barriers read the tracker exactly as the scratch pass's do. The descriptor writes land
+   LAST, when every view exists: the present row's four-view array is one write, and the three
+   source slots the blur rows bind are claimed one per view - a chain with a hole in it is
+   refused rather than half-written into a set the first frame binds. */
+static XudResult xud_renderer_bloom_images_open(XudRenderer* renderer, XudLoader* loader, const XudDevice* device,
+    const XudDeviceCaps* caps, XudAllocator* alloc, XudDescriptor* descriptor) {
+    XudResult result = XUD_OK;
+    uint32_t level = 0u;
+    uint32_t width = 0u;
+    uint32_t height = 0u;
+
+    width = (renderer->hdrWidth + 1u) / 2u;
+    height = (renderer->hdrHeight + 1u) / 2u;
+    for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
+        if (width == 0u) {
+            width = 1u;
+        }
+        if (height == 0u) {
+            height = 1u;
+        }
+        renderer->bloomWidth[level] = width;
+        renderer->bloomHeight[level] = height;
+        result = xud_rendertarget_fill_color_info(&renderer->bloomImageInfo[level], width, height, renderer->hdrFormat);
+        if (result != XUD_OK) {
+            xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+            return result;
+        }
+        if (loader->deviceTable.vkCreateImage(device->device, &renderer->bloomImageInfo[level], NULL, &renderer->bloomImage[level])
+            != VK_SUCCESS) {
+            xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+            return XUD_VULKAN_ERROR;
+        }
+        {
+            VkMemoryRequirements needs;
+            memset(&needs, 0, sizeof needs);
+            loader->deviceTable.vkGetImageMemoryRequirements(device->device, renderer->bloomImage[level], &needs);
+            if (needs.size == 0u) {
+                xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+                return XUD_VULKAN_ERROR;
+            }
+            result = xud_allocator_acquire(&renderer->bloomRange[level], alloc, loader, device, caps, &needs);
+            if (result != XUD_OK) {
+                xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+                return result;
+            }
+        }
+        result = xud_result_from_vk(loader->deviceTable.vkBindImageMemory(
+            device->device, renderer->bloomImage[level], renderer->bloomRange[level].memory, renderer->bloomRange[level].offset));
+        if (result != XUD_OK) {
+            xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+            return result;
+        }
+        result = xud_layout_track(renderer->layout, renderer->bloomImage[level], renderer->bloomImageInfo[level].initialLayout);
+        if (result != XUD_OK) {
+            xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+            return result;
+        }
+        result = xud_framebuffer_fill_view_info(&renderer->bloomViewInfo[level], renderer->bloomImage[level], renderer->hdrFormat);
+        if (result != XUD_OK) {
+            xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+            return result;
+        }
+        if (loader->deviceTable.vkCreateImageView(device->device, &renderer->bloomViewInfo[level], NULL, &renderer->bloomView[level])
+            != VK_SUCCESS) {
+            xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+            return XUD_VULKAN_ERROR;
+        }
+        result = xud_framebuffer_open_bloom(&renderer->bloomFramebuffer[level], loader, device, renderer->bloomPass,
+            renderer->bloomImage[level], renderer->hdrFormat, width, height);
+        if (result != XUD_OK) {
+            xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+            return result;
+        }
+        width = (width + 1u) / 2u;
+        height = (height + 1u) / 2u;
+    }
+
+    result = xud_descriptor_set_bloom_textures(descriptor, loader, device, renderer->bloomView, renderer->hdrSampler);
+    if (result != XUD_OK) {
+        xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+    for (level = 0u; level + 1u < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
+        result = xud_descriptor_bind_texture_slot(descriptor, loader, device, renderer->bloomView[level], renderer->hdrSampler,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->bloomSourceSlot[level]);
+        if (result != XUD_OK) {
+            xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+            return result;
+        }
+        renderer->bloomSourceLive[level] = 1u;
+    }
+    for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
+        renderer->bloomRows[level].pass = renderer->bloomPass;
+        renderer->bloomRows[level].framebuffer = renderer->bloomFramebuffer[level];
+        renderer->bloomRows[level].sourceSlot = (level == 0u) ? renderer->hdrSlot : renderer->bloomSourceSlot[level - 1u];
+    }
+    renderer->bloomLive = 1u;
+    return XUD_OK;
+}
+
+/* The chain's bring-up: the ONE pass first (it is an argument of the pipeline's create three
+   steps below, the way the scratch pass is), its clear filled black - the chain's background is
+   black whatever the window's is, and unlike every other pass here it is never re-filled per
+   frame - and then the four levels' rows at the current scratch extent. It sits beside the
+   shadow map's bring-up rather than inside the scratch pair's because it follows a third rule:
+   sized by the extent like the scratch, recreated with it like the scratch, but bound to the
+   pipeline like the shadow map, so its pass belongs to the pipeline's argument list and its
+   images belong to the resize. */
+static XudResult xud_renderer_bloom_open(XudRenderer* renderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, XudDescriptor* descriptor) {
+    XudResult result = XUD_OK;
+
+    result = xud_renderpass_open_bloom(&renderer->bloomPass, loader, device, renderer->hdrFormat);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_renderpass_set_clear_color(renderer->bloomPass, 0.0f, 0.0f, 0.0f, 0.0f);
+    if (result != XUD_OK) {
+        (void)xud_renderpass_close(&renderer->bloomPass, device, loader, alloc);
+        return result;
+    }
+    result = xud_renderer_bloom_images_open(renderer, loader, device, caps, alloc, descriptor);
+    if (result != XUD_OK) {
+        (void)xud_renderpass_close(&renderer->bloomPass, device, loader, alloc);
+        return result;
+    }
+    return XUD_OK;
+}
+
+/* Reverse of the bring-up: the rows before the pass that named nothing of them and the
+   descriptor read them through, the pass last - and the sampler it sampled with belongs to the
+   scratch pair above this retire, which closes after it. */
+static void xud_renderer_bloom_retire(XudRenderer* renderer, XudLoader* loader, const XudDevice* device, XudAllocator* alloc) {
+    xud_renderer_bloom_images_retire(renderer, loader, device, alloc, renderer->descriptor);
+    if ((renderer != NULL) && (renderer->bloomPass != NULL)) {
+        (void)xud_renderpass_close(&renderer->bloomPass, device, loader, alloc);
+    }
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The one retirement order, shared by the teardown and by every failure path of the bring-up
  *-----------------------------------------------------------------------------------------------*/
@@ -389,6 +575,10 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
                                record owns - the retirement goes to the owned one, and the alias
                                is cleared so nothing reads it again */
     (void)rung;
+    xud_renderer_bloom_retire(renderer, loader, device, alloc); /* the chain goes with its own
+                               rows and pass, after the pipeline that named the pass and (through
+                               binding 2) its views - and before the scratch retire below, whose
+                               sampler the chain's descriptor write named */
     xud_renderer_hdr_retire(renderer, loader, device, alloc, renderer->descriptor); /* the scratch rows
                                go after the pipeline that names the scratch pass and before the
                                screen pass rung below; the descriptor outlives the renderer, so the
@@ -511,6 +701,20 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
         return result;
     }
 
+    /* 1c2. the bloom chain: the bright/blur images, their one pass, their rows, and set 0's
+       binding-2 write - before the pipeline, because the chain's five pipelines are BOUND to
+       this pass the way the scene list is bound to the scratch pass, and before the first
+       frame, because set 0 may not be bound while one of its bindings is unwritten. It is
+       sized by the scratch extent, which is why it follows the scratch pair rather than
+       leading it.
+    */
+    result = xud_renderer_bloom_open(renderer, loader, device, caps, alloc, descriptor);
+    if (result != XUD_OK) {
+        xud_renderer_retire(renderer, device, loader, alloc);
+        free(renderer);
+        return result;
+    }
+
     /* 2. the batch rung, below the pipeline in the ladder and above the allocator: its five
        buffers are carved out of the allocator's memory, which is already in hand from the pass
        above, and its vertex-input state is gated on the caps' vertex-input limits. It is handed
@@ -545,7 +749,8 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
        the pipeline that names those handles.
      */
     result = xud_pipeline_open(&renderer->pipeline, loader, device, descriptor, renderer->batch, renderer->hdrPass->renderPass,
-        renderer->renderPass->renderPass, renderer->prepassPass->renderPass, renderer->shadowPass->renderPass);
+        renderer->renderPass->renderPass, renderer->prepassPass->renderPass, renderer->shadowPass->renderPass,
+        renderer->bloomPass->renderPass);
     if (result != XUD_OK) {
         xud_renderer_retire(renderer, device, loader, alloc);
         free(renderer);
@@ -676,8 +881,9 @@ XudResult xud_renderer_draw(
 
     result = xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
         renderer->framebufferCount, renderer->hdrPass, renderer->hdrFramebuffer, renderer->prepassPass, renderer->hdrPrepassFramebuffer,
-        renderer->shadowPass, renderer->shadowFramebuffer, renderer->hdrSlot, renderer->scopes, renderer->scopeCount, renderer->screenBatch,
-        renderer->descriptor, outImageIndex);
+        renderer->shadowPass, renderer->shadowFramebuffer, (renderer->bloomLive != 0u) ? renderer->bloomRows : NULL,
+        (renderer->bloomLive != 0u) ? XUD_DESCRIPTOR_BLOOM_LEVELS : 0u, renderer->hdrSlot, renderer->scopes, renderer->scopeCount,
+        renderer->screenBatch, renderer->descriptor, outImageIndex);
     if (result == XUD_OK) {
         renderer->drawCount++;
     }
@@ -889,6 +1095,19 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
         return result;
     }
     renderer->hdrSlotLive = 1u;
+
+    /* The bloom chain follows the scratch pair down and back up exactly as it did at bring-up:
+       the rows (which name the OLD views), the tracker's forgets, the views, images and ranges
+       go first, and the levels are rebuilt at the new extent behind a fresh binding-2 write -
+       an array naming retired views is a resolve sampling freed handles. The pass handle stays
+       put: the five chain pipelines are bound to it, the same rule the scratch pass above
+       follows. The resize has closed the frame loop, so no draw can bind set 0 between the
+       retire and the re-write. */
+    xud_renderer_bloom_images_retire(renderer, loader, device, alloc, renderer->descriptor);
+    result = xud_renderer_bloom_images_open(renderer, loader, device, caps, alloc, renderer->descriptor);
+    if (result != XUD_OK) {
+        return result;
+    }
 
     /* And back up: the rows first (they are created FOR the pass, and their views name the NEW imag
        es), then the frame (its fences are one per image, so its count comes from the new swapchain

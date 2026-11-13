@@ -449,6 +449,44 @@ XudResult xud_renderpass_open_shadow(XudRenderPass** outPass, XudLoader* loader,
 XudResult xud_framebuffer_open_shadow(
     XudFramebuffer** outFramebuffer, XudLoader* loader, const XudDevice* device, const XudRenderPass* pass, uint32_t size);
 
+/// Pure: the bloom chain's own rows - a pass with ONE colour attachment and no depth at all.
+/// The colour description keeps fill_state's CLEAR/STORE pair (every chain level is rewritten
+/// from the level above each frame, so nothing worth loading ever survives) but its finalLayout
+/// becomes SHADER_READ_ONLY: the level leaves every pass in the layout the next chain row and
+/// the resolve sample it in. The subpass drops the depth reference - a glow has no depth to
+/// test - and the dependency row answers the cycle one level runs across frames: LAST frame's
+/// fragment stages SAMPLED this image, THIS frame's colour-attachment writes clear and refill
+/// it. The struct keeps its filled depth row unread; the create-info below hands the driver a
+/// one-row window over the colour. XUD_INVALID_ARG on a NULL pass; XUD_UNSUPPORTED on
+/// VK_FORMAT_UNDEFINED.
+XudResult xud_renderpass_fill_bloom_state(XudRenderPass* pass, VkFormat colorFormat);
+
+/// Pure: the bloom pass's create-info - fill_create_info with the one-row window stated:
+/// attachmentCount 1, pAttachments at the struct's COLOUR row (the shadow window starts one
+/// row in; this one does not move). XUD_INVALID_ARG on a NULL pass or out-pointer;
+/// XUD_UNSUPPORTED on a pass whose rows were never filled or whose subpass lost its colour
+/// reference.
+XudResult xud_renderpass_fill_bloom_create_info(const XudRenderPass* pass, VkRenderPassCreateInfo* outCreateInfo);
+
+/// Driver: the bloom level's pass - the only bring-up here that creates NOTHING but the
+/// VkRenderPass. The level's image is the renderer's, owned beside the scratch pair it feeds
+/// (the chain is recreated with the scratch at every resize), so the pass neither creates nor
+/// borrows an attachment: ownsDepth stays 0 and the depth rows stay empty, and the generic
+/// xud_renderpass_close() retires only the pass. XUD_INVALID_ARG on a NULL out-pointer or one
+/// that already owns a pass, a NULL loader/device, or a handle-less device; XUD_UNSUPPORTED
+/// when the loader is closed, its rows are not this device's, a row is nil, or the format is
+/// VK_FORMAT_UNDEFINED.
+XudResult xud_renderpass_open_bloom(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, VkFormat colorFormat);
+
+/// Driver: a bloom level's framebuffer - the framebuffer_open order minus the depth: the row's
+/// OWN view over the renderer's level image, attached as the pass's one attachment, the depth
+/// slot left NULL for the generic close to step over. XUD_INVALID_ARG on a NULL out-pointer or
+/// one that already owns a framebuffer, a NULL loader/device/pass, a handle-less device, image
+/// or render pass, or a zero extent; XUD_UNSUPPORTED when the loader is closed, its rows are
+/// not this device's, a row is nil, or the format is VK_FORMAT_UNDEFINED.
+XudResult xud_framebuffer_open_bloom(XudFramebuffer** outFramebuffer, XudLoader* loader, const XudDevice* device, const XudRenderPass* pass,
+    VkImage image, VkFormat format, uint32_t width, uint32_t height);
+
 /// Pure: re-state the borrowed depth row - the image, its view, both create-infos, the allocator's
 /// range and the tracker - from `source` into a borrowing pass, and clear ownsDepth so the borrower
 /// never tears the row down. The resize path calls this after xud_renderpass_recreate_depth() gives

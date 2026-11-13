@@ -297,6 +297,26 @@ typedef struct XudFramePassScope {
 } XudFramePassScope;
 
 /*-----------------------------------------------------------------------------------------------
+ * One bloom-chain level: the pair the loop records BETWEEN the scratch pass and the screen pass,
+ * so the four images the present row sums are sampled-ready when it reads them. The image needs
+ * no row here: the framebuffer row carries it, and the pass carries its own clear - black, the
+ * one background this chain wants regardless of the window's.
+ *-----------------------------------------------------------------------------------------------*/
+
+typedef struct XudFrameBloomRow {
+    const XudRenderPass* pass; /* the one pass every level's framebuffer is built against - the
+                                  levels differ in extent, and extent is not compatibility */
+    const XudFramebuffer* framebuffer; /* this level's one framebuffer row; its `image` is what
+                                          the level's barriers name */
+    uint32_t sourceSlot; /* the descriptor slot whose set this level's draw binds as its
+                            sampler: level 0's is the scratch image's own slot, and level k>0's
+                            is the slot that carries level k-1's view - the chain reads a level
+                            through a slot-set for the reason the descriptor header gives: a
+                            draw that statically touched the present row's whole array would be
+                            a layout check against every level, including the one in pass */
+} XudFrameBloomRow;
+
+/*-----------------------------------------------------------------------------------------------
  * The layer's contract
  *-----------------------------------------------------------------------------------------------*/
 
@@ -444,11 +464,20 @@ XudResult xud_frame_open(
 /// pipeline list must carry, is refused. The pair's layout record is the frame's like every
 /// other image's: the map ends each frame in the pass's own finalLayout - SHADER_READ_ONLY - and
 /// the tracker says so before the next frame's clear asks for it.
+/// The fourth optional row is the BLOOM CHAIN (S2.6): `bloomRows` - `bloomCount` of them, in
+/// DESCENDING size, the first half the scratch extent - recorded between the scratch pass and the
+/// screen pass. Level 0 binds set 1 to the scratch image's own slot and runs the pipeline's bright
+/// row; every later level samples the level above through the descriptor's bloom array and runs the
+/// pipeline's blur row for it. ALL OR NOTHING: `bloomCount` 0 with NULL rows is the bloom-off
+/// configuration and the frame runs exactly as it did before this row existed; a row whose pass,
+/// framebuffer or pipeline handle is not live is refused, as is a count above the levels the
+/// descriptor's array and the pipeline's blur rows were built for.
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
     const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, const XudRenderPass* prepassPass,
-    const XudFramebuffer* prepassFramebuffer, const XudRenderPass* shadowPass, const XudFramebuffer* shadowFramebuffer, uint32_t hdrSlot,
-    const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
+    const XudFramebuffer* prepassFramebuffer, const XudRenderPass* shadowPass, const XudFramebuffer* shadowFramebuffer,
+    const XudFrameBloomRow* bloomRows, uint32_t bloomCount, uint32_t hdrSlot, const XudFramePassScope* scopes, uint32_t scopeCount,
+    XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
 
 /// Driver: retire everything this rung owns, in the one order that is correct - vkWaitForFences on
 /// every fence still bounding a submission, then vkFreeCommandBuffers, vkDestroySemaphore, vkDestroyFence for ever

@@ -116,16 +116,29 @@ static_assert(XUD_DESCRIPTOR_SET_COUNT == (XUD_DESCRIPTOR_SET_MATERIAL + 1u),
    number is the row the bindings array holds at index 1 - a constant because the layout, like
    every other binding here, is a bring-up decision and not a per-draw question.
 */
-#define XUD_DESCRIPTOR_BINDINGS_PER_FRAME 2u
+#define XUD_DESCRIPTOR_BINDINGS_PER_FRAME 3u
 #define XUD_DESCRIPTOR_SHADOW_BINDING 1u
 #define XUD_DESCRIPTOR_SHADOW_STAGE VK_SHADER_STAGE_FRAGMENT_BIT
+
+/* Set 0's third binding, the bloom chain the resolve samples (S2.6): FOUR combined image
+   samplers under one binding - the chain is one array so the resolve's one set-0 bind carries
+   all four levels, and each blur pipeline picks its source by array index through a
+   specialization constant rather than a push, because the one push range the layout carries
+   belongs to the batch's draw rows. The count is the chain's depth, stated once here and read
+   by the renderer's array of levels and the shaders' array declarations alike.
+*/
+#define XUD_DESCRIPTOR_BLOOM_BINDING 2u
+#define XUD_DESCRIPTOR_BLOOM_LEVELS 4u
+#define XUD_DESCRIPTOR_BLOOM_STAGE VK_SHADER_STAGE_FRAGMENT_BIT
 
 static_assert(XUD_DESCRIPTOR_BINDINGS_PER_SET == 1u,
     "one binding for the material set, so its write's dstBinding is the same constant as its number");
 static_assert(
     XUD_DESCRIPTOR_BINDING == 0u, "the binding number is 0 in both sets, which is what makes the write's dstBinding the same constant");
-static_assert((XUD_DESCRIPTOR_BINDINGS_PER_FRAME == XUD_DESCRIPTOR_SHADOW_BINDING + 1u) && (XUD_DESCRIPTOR_SHADOW_BINDING == 1u),
-    "the per-frame set's bindings are the block at 0 and the shadow sampler at 1, a contiguous list from 0 as the create-info asks");
+static_assert((XUD_DESCRIPTOR_BINDINGS_PER_FRAME == XUD_DESCRIPTOR_BLOOM_BINDING + 1u) && (XUD_DESCRIPTOR_BLOOM_BINDING == 2u)
+        && (XUD_DESCRIPTOR_SHADOW_BINDING == 1u),
+    "the per-frame set's bindings are the block at 0, the shadow sampler at 1 and the bloom chain at 2, a contiguous list from 0 as "
+    "the create-info asks");
 
 /* The set-1 sampler array's size: the CEILING on how many combined image samplers one material's
  *  set may name. It is this layer's own bound for the same reason XUD_HANDLE_SLOT_MAX_CAPACITY is
@@ -143,22 +156,23 @@ static_assert((XUD_DESCRIPTOR_BINDINGS_PER_FRAME == XUD_DESCRIPTOR_SHADOW_BINDIN
    recording, which is the whole reason the design is per-slot sets rather than one array: vkCmd
    BindDescriptorSets cannot point a bound set at a different element, and updating a set a
    command buffer has already bound is exactly the write-after-bind the header states is refused
-   (its per-binding flag needs the pNext chain the repo does not take). 17 is the ceiling because
-   the axis now carries TWO permanent residents - slot 0, the white default, and the renderer's
-   scratch image's slot, claimed at the renderer's bring-up and never handed out - plus the
+   (its per-binding flag needs the pNext chain the repo does not take). 20 is the ceiling because
+   the axis now carries FIVE permanent residents - slot 0, the white default, the renderer's
+   scratch image's slot, and the three bloom-chain source slots the frame binds while a level
+   blurs, all claimed at the renderer's bring-up and never handed out - plus the
    XUD_MAX_TEXTURES entries the free list hands to textures; growing it further is a layout and
    pipeline-layout recreate, which the "created once at init" rule forbids at runtime.
- */
-#define XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE 17u
+*/
+#define XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE 20u
 
 static_assert(
     XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE > 0u, "a slot axis of zero slots allocates no sampler sets, which is a layout 1 no draw can bind");
 static_assert(XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE <= 32u,
     "the free list is one uint32_t of bits, so a slot axis past 32 would need two masks rather than a wider constant");
-static_assert(XUD_MAX_TEXTURES == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - 2u,
-    "the public ceiling of live textures is the slot axis minus its two permanent residents - slot 0, the white default's own, and "
-    "the renderer scratch image's slot, claimed before any texture exists - the two constants must not drift apart, because the free "
-    "list enforces this rung's number while a caller reads xud.h's");
+static_assert(XUD_MAX_TEXTURES == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - 5u,
+    "the public ceiling of live textures is the slot axis minus its five permanent residents - slot 0, the white default's own, "
+    "the renderer scratch image's slot, and the three bloom-chain source slots, all claimed before any texture exists - the two "
+    "constants must not drift apart, because the free list enforces this rung's number while a caller reads xud.h's");
 
 /* The number of descriptor sets this rung allocates: the one per-frame set of layout 0 plus one
    set per slot of layout 1. The pool's maxSets is this number and the sets array below is sized
@@ -512,6 +526,12 @@ struct XudDescriptor {
                                              map outlives every frame exactly as the block's buffer does */
     VkDescriptorImageInfo shadowImageRow; /* the (imageView, sampler, layout) triple that write names: written by the same call, read by
                                              nothing after it - the record-of-the-create rule one rung up, on a descriptor */
+    VkWriteDescriptorSet bloomWriteInfo; /* what vkUpdateDescriptorSets was handed for set 0's bloom array - the one
+                                            write that puts the chain's four view-and-sampler rows into binding 2.
+                                            Written at renderer bring-up AND at every resize re-open, because the
+                                            chain's images are recreated with the scratch pair. */
+    VkDescriptorImageInfo bloomImageRows[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* the four (imageView, sampler, layout)
+                                            triples that write names, in chain order: level 0 first. */
 
     /* --- the writes that bound the slot sets, and the white pair every one of them names by default --- */
     VkWriteDescriptorSet slotWriteInfos[XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE]; /* one write per slot set: what
@@ -816,6 +836,18 @@ XudResult xud_descriptor_set_shadow_view(XudDescriptor* descriptor, const float*
 /// once-at-bring-up rule the block's own binding follows.
 XudResult xud_descriptor_set_shadow_texture(
     XudDescriptor* descriptor, const XudLoader* loader, const XudDevice* device, VkImageView view, VkSampler sampler);
+
+/// Driver: the one write that names the bloom chain in set 0's binding 2 - four views, chain
+/// order, all sampled through the ONE sampler handed in (linear/clamp: the chain's reads want
+/// the same filter the scratch pair reads with, and a per-level sampler would be four objects
+/// agreeing on nothing new). SHADER_READ_ONLY is the layout every level's pass finalLayout and
+/// the resolve's read agree on. XUD_INVALID_ARG on a NULL descriptor/loader/device/views, a
+/// handle-less device, or a NULL sampler or any NULL view in the array; XUD_UNSUPPORTED on a
+/// closed or unbound loader or a nil write row. Called at renderer bring-up AND again at every
+/// resize re-open: the chain's images die and return with the scratch pair, and a binding 2
+/// naming retired views is a resolve sampling handles the driver has freed.
+XudResult xud_descriptor_set_bloom_textures(
+    XudDescriptor* descriptor, const XudLoader* loader, const XudDevice* device, const VkImageView* views, VkSampler sampler);
 
 /// Pure: the memory-type mask a staging arena needs - the AND of every caps memoryTypes row that
 /// carries VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, so a buffer bound to a type in this mask is a buffe

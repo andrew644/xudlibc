@@ -903,6 +903,66 @@ XudResult xud_renderpass_fill_shadow_create_info(const XudRenderPass* pass, VkRe
     return XUD_OK;
 }
 
+XudResult xud_renderpass_fill_bloom_state(XudRenderPass* pass, VkFormat colorFormat) {
+    XudResult result = XUD_INVALID_ARG;
+
+    result = xud_renderpass_fill_state(pass, colorFormat);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* The depth row steps out of the subpass entirely - and unlike the pre-pass, whose window
+       still carries two descriptions, the bloom window hands the driver ONE: the colour row. A
+       glow has no depth to test against and no depth to keep; the struct keeps the filled depth
+       row only because every reader of XudRenderPass indexes the two rows by their fixed
+       indices, and the window is the same trick fill_shadow_create_info plays in the other
+       direction. */
+    pass->subpasses[XUD_RENDERPASS_FIRST_SUBPASS].pDepthStencilAttachment = NULL;
+
+    /* The colour row leaves in the layout its sampler reads: a bloom level is written by the
+       pass below it in the chain and read by the pass above it - and by the resolve - in the
+       SAME frame. SHADER_READ_ONLY is the layout the descriptor was written with and the layout
+       the frame loop records in the tracker after every bloom pass, so the next frame's CLEAR
+       opens from a layout the tracker already names. */
+    pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    /* The dependency: LAST frame's fragment stages SAMPLED this level (the next chain row and
+       the resolve both read it), THIS frame's clear and draw WRITE it. The in-frame
+       write-before-read of the level this pass reads is the job of the barrier the frame loop
+       records after the producing pass; the dependency covers the cycle the image lives in
+       across frames, which is the same reason the shadow pass states its own pair. */
+    pass->dependencies[0u].srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    pass->dependencies[0u].srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    pass->dependencies[0u].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    pass->dependencies[0u].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
+    return XUD_OK;
+}
+
+XudResult xud_renderpass_fill_bloom_create_info(const XudRenderPass* pass, VkRenderPassCreateInfo* outCreateInfo) {
+    if ((pass == NULL) || (outCreateInfo == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].format == VK_FORMAT_UNDEFINED) {
+        return XUD_UNSUPPORTED;
+    }
+    if (pass->subpasses[XUD_RENDERPASS_FIRST_SUBPASS].pColorAttachments == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    outCreateInfo->sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+    outCreateInfo->pNext = NULL;
+    outCreateInfo->flags = 0u;
+    outCreateInfo->attachmentCount = 1u;
+    outCreateInfo->pAttachments = &pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT];
+    outCreateInfo->subpassCount = XUD_RENDERPASS_SUBPASS_COUNT;
+    outCreateInfo->pSubpasses = pass->subpasses;
+    outCreateInfo->dependencyCount = XUD_RENDERPASS_DEPENDENCY_COUNT;
+    outCreateInfo->pDependencies = pass->dependencies;
+
+    return XUD_OK;
+}
+
 XudResult xud_renderpass_borrow_depth(XudRenderPass* pass, const XudRenderPass* source) {
     if ((pass == NULL) || (source == NULL) || (source->depthImage == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
@@ -1112,6 +1172,67 @@ XudResult xud_renderpass_open_shadow(XudRenderPass** outPass, XudLoader* loader,
     result = xud_result_from_vk(loader->deviceTable.vkCreateRenderPass(device->device, &createInfo, NULL, &created));
     if (result != XUD_OK) {
         xud_renderpass_retire(pass, device, loader, alloc);
+        free(pass);
+        return result;
+    }
+    pass->renderPass = created;
+
+    *outPass = pass;
+    return XUD_OK;
+}
+
+XudResult xud_renderpass_open_bloom(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, VkFormat colorFormat) {
+    XudRenderPass* pass = NULL;
+    VkRenderPassCreateInfo createInfo;
+    VkRenderPass created = VK_NULL_HANDLE;
+    XudResult result = XUD_INVALID_ARG;
+
+    if ((outPass == NULL) || (*outPass != NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((loader == NULL) || (device == NULL)) {
+        return (loader == NULL) ? XUD_INVALID_ARG : XUD_UNSUPPORTED;
+    }
+    if (!loader->open) {
+        return XUD_UNSUPPORTED;
+    }
+    if (device->device == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (colorFormat == VK_FORMAT_UNDEFINED) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((loader->deviceTable.vkDestroyRenderPass == NULL) || (loader->deviceTable.vkCreateRenderPass == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The one bring-up in this file that creates NOTHING but the pass: the colour attachment a
+       bloom level draws into is the RENDERER's image - sized, allocated and tracked beside the
+       scratch pair it feeds - and a pass that owned a second copy of it would be two owners of
+       one image. ownsDepth stays 0 and no view, image, range or tracker row is filled: the
+       generic close retires this pass's VkRenderPass and stops there, exactly as it stops for
+       the pre-pass's borrowed row. */
+    pass = calloc(1u, sizeof(*pass));
+    if (pass == NULL) {
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    result = xud_renderpass_fill_bloom_state(pass, colorFormat);
+    if (result != XUD_OK) {
+        free(pass);
+        return result;
+    }
+    result = xud_renderpass_fill_bloom_create_info(pass, &createInfo);
+    if (result != XUD_OK) {
+        free(pass);
+        return result;
+    }
+
+    result = xud_result_from_vk(loader->deviceTable.vkCreateRenderPass(device->device, &createInfo, NULL, &created));
+    if (result != XUD_OK) {
         free(pass);
         return result;
     }
@@ -1514,6 +1635,88 @@ XudResult xud_framebuffer_open_shadow(
 
     result = xud_result_from_vk(loader->deviceTable.vkCreateFramebuffer(device->device, &createInfo, NULL, &created));
     if (result != XUD_OK) {
+        free(framebuffer);
+        return result;
+    }
+    framebuffer->framebuffer = created;
+
+    *outFramebuffer = framebuffer;
+    return XUD_OK;
+}
+
+XudResult xud_framebuffer_open_bloom(XudFramebuffer** outFramebuffer, XudLoader* loader, const XudDevice* device, const XudRenderPass* pass,
+    VkImage image, VkFormat format, uint32_t width, uint32_t height) {
+    XudFramebuffer* framebuffer = NULL;
+    VkImageViewCreateInfo viewInfo;
+    VkFramebufferCreateInfo createInfo;
+    VkImageView view = VK_NULL_HANDLE;
+    VkFramebuffer created = VK_NULL_HANDLE;
+    XudResult result = XUD_INVALID_ARG;
+
+    if ((outFramebuffer == NULL) || (*outFramebuffer != NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((loader == NULL) || (device == NULL) || (pass == NULL)) {
+        return (loader == NULL) ? XUD_INVALID_ARG : XUD_UNSUPPORTED;
+    }
+    if (!loader->open) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((device->device == VK_NULL_HANDLE) || (image == VK_NULL_HANDLE) || (pass->renderPass == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((width == 0u) || (height == 0u) || (format == VK_FORMAT_UNDEFINED)) {
+        return (format == VK_FORMAT_UNDEFINED) ? XUD_UNSUPPORTED : XUD_INVALID_ARG;
+    }
+    if ((loader->deviceTable.vkDestroyImageView == NULL) || (loader->deviceTable.vkCreateImageView == NULL)
+        || (loader->deviceTable.vkDestroyFramebuffer == NULL) || (loader->deviceTable.vkCreateFramebuffer == NULL)) {
+        return XUD_UNSUPPORTED;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    framebuffer = calloc(1u, sizeof(*framebuffer));
+    if (framebuffer == NULL) {
+        return XUD_OUT_OF_MEMORY;
+    }
+
+    result = xud_framebuffer_fill_view_info(&viewInfo, image, format);
+    if (result != XUD_OK) {
+        free(framebuffer);
+        return result;
+    }
+    result = xud_result_from_vk(loader->deviceTable.vkCreateImageView(device->device, &viewInfo, NULL, &view));
+    if (result != XUD_OK) {
+        free(framebuffer);
+        return result;
+    }
+    framebuffer->view = view;
+    framebuffer->viewInfo = viewInfo;
+    framebuffer->image = image; /* borrowed, never destroyed here - see the header's note */
+
+    /* The one attachment the bloom pass describes, attached; the depth slot stays NULL because
+       the pass names no depth and xud_framebuffer_close() already tolerates the empty row. The
+       list is the create-info's only attachment storage, so it is filled here for the same
+       reason framebuffer_open fills it there. */
+    framebuffer->attachmentViews[XUD_RENDERPASS_COLOR_ATTACHMENT] = view;
+    framebuffer->attachmentViews[XUD_RENDERPASS_DEPTH_ATTACHMENT] = VK_NULL_HANDLE;
+
+    createInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    createInfo.pNext = NULL;
+    createInfo.flags = 0u;
+    createInfo.renderPass = pass->renderPass;
+    createInfo.attachmentCount = 1u;
+    createInfo.pAttachments = &framebuffer->attachmentViews[XUD_RENDERPASS_COLOR_ATTACHMENT];
+    createInfo.width = width;
+    createInfo.height = height;
+    createInfo.layers = 1u;
+    framebuffer->createInfo = createInfo;
+
+    result = xud_result_from_vk(loader->deviceTable.vkCreateFramebuffer(device->device, &createInfo, NULL, &created));
+    if (result != XUD_OK) {
+        (void)loader->deviceTable.vkDestroyImageView(device->device, view, NULL);
+        framebuffer->view = VK_NULL_HANDLE;
         free(framebuffer);
         return result;
     }

@@ -256,6 +256,32 @@ struct XudPipeline {
                     the pre-pass's is: a shadow pass with a fragment stage is not a shadow map */
     VkGraphicsPipelineCreateInfo shadowCreateInfo; /* what vkCreateGraphicsPipelines was handed
                     for the shadow row, same record-as-created-bytes rule */
+
+    /* --- the bloom chain's own pipelines (S2.6): the bright-pass row and ONE blur row, each
+         the resolve's shape - the SAME present vertex module (the chain's fullscreen triangle
+         is the resolve's triangle at a smaller viewport), the SAME zero vertex-input row, no
+         depth, blend disabled - bound to the ONE bloom render pass all four levels share. One
+         blur pipeline serves the three tail levels because the level it reads is not a
+         pipeline decision at all: it is the slot set the frame loop binds as the pass's set 1,
+         the same way the resolve's source is a bind rather than a compile-time row. All rows
+         stay VK_NULL_HANDLE when open was handed no bloom pass, which is the bloom-off answer
+         the frame loop reads. --- */
+    VkPipeline brightPipeline; /* owned: created against the bloom render pass below */
+    VkPipeline bloomBlurPipeline; /* owned: the one blur row, bound by every tail level */
+    VkRenderPass bloomRenderPass; /* BORROWED, like the other pass fields: the one-attachment
+                    colour pass xud_renderpass_open_bloom() builds - one handle for every level
+                    because an attachment description carries a format, not an extent, and all
+                    four levels share the scratch format */
+    XudShader* bloomBrightFragmentShader; /* owned: the threshold module */
+    XudShader* bloomBlurFragmentShader; /* owned: the blur module, opened once - three modules
+                    holding nine identical taps would be three owners of one kernel */
+    VkPipelineShaderStageCreateInfo brightShaderStages[XUD_PIPELINE_STAGE_COUNT]; /* the present
+                    vertex row and the threshold fragment row */
+    VkPipelineShaderStageCreateInfo bloomBlurShaderStages[XUD_PIPELINE_STAGE_COUNT]; /* the same
+                    present vertex row and the blur fragment row - one pair, one pipeline */
+    VkGraphicsPipelineCreateInfo brightCreateInfo; /* what vkCreateGraphicsPipelines was handed
+                    for the bright row, same record-as-created-bytes rule */
+    VkGraphicsPipelineCreateInfo bloomBlurCreateInfo; /* and for the blur row */
 };
 
 /*-----------------------------------------------------------------------------------------------
@@ -523,18 +549,33 @@ XudResult xud_pipeline_fill_prepass_create_info(const XudPipeline* pipeline, VkG
 /// shadowRenderPass handle is not live, or a shadow stage row naming no module.
 XudResult xud_pipeline_fill_shadow_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo);
 
+/// Pure: the VkGraphicsPipelineCreateInfo ONE bloom row will be created with - the resolve's
+/// fill read for the two rows that make it a bloom row: `stages` (the shared present vertex
+/// module plus one of the two bloom fragment modules, supplied by the caller because the rung
+/// holds both stage pairs) and bloomRenderPass (the one colour pass all four levels share).
+/// Every state row is the resolve's: the zero vertex input, no depth, blend disabled, the
+/// shared layout - a glow drawn by a pipeline that disagreed with the resolve about the
+/// fullscreen triangle would be a glow in the wrong place. Refuses XUD_UNSUPPORTED when any
+/// shared row is unstamped, and XUD_INVALID_ARG on a NULL out-create-info, pipeline or stages
+/// row, a pipeline whose layout or bloomRenderPass handle is not live, or a stages pair naming
+/// no module.
+XudResult xud_pipeline_fill_bloom_create_info(
+    const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo, VkPipelineShaderStageCreateInfo* stages);
+
 /// Driver: as before, and additionally the shadow pass's pipeline (S2.5): `shadowRenderPass`
 /// binds the shadow row, and MAY be VK_NULL_HANDLE - the shadows-off configuration - in which
 /// case no fourth module opens and shadowPipeline stays a null handle for the frame loop to
 /// step around. When it is live: the sun's position-only module opens after the pre-pass's, its
-/// one stage row is stamped from it, and one more vkCreateGraphicsPipelines call binds the
-/// shadow row against the map's pass - after the pre-pass row is complete. The four pass
-/// arguments stay four different handles: the batch list writes the float scratch colour, the
-/// tonemap row writes the swapchain colour, the pre-pass row writes the scratch depth through a
-/// two-row pass, and the shadow row writes the map's depth through a one-row pass.
+/// one vertex stage is stamped from it, the two bloom fragment modules after it, their stage
+/// rows reuse the present vertex module, and each further vkCreateGraphicsPipelines call binds
+/// its row against its own pass - after the row before it is complete. The five pass arguments
+/// five different handles: the batch list writes the float scratch colour, the tonemap row
+/// writes the swapchain colour, the pre-pass row writes the scratch depth through a two-row
+/// pass, the shadow row writes the map's depth through a one-row pass, and the bloom rows write
+/// the chain's levels through the one-row colour pass they all share.
 XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
     const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass, VkRenderPass prepassRenderPass,
-    VkRenderPass shadowRenderPass);
+    VkRenderPass shadowRenderPass, VkRenderPass bloomRenderPass);
 
 /// Driver: the teardown - vkDestroyPipeline for the shadow row, the pre-pass row, the resolve row
 /// and every row of the list, then vkDestroyPipelineLayout, then every module of the frag-module
