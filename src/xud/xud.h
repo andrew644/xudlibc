@@ -2025,6 +2025,68 @@ XudResult xud_set_audio_pan(XudContext* context, XudHandle handle, float pan);
 XudResult xud_get_audio_pan(float* outPan, XudContext* context, XudHandle handle);
 
 /*-----------------------------------------------------------------------------------------------
+ * The positional audio API - raylib's SetSoundPosition/AttachAudioListener half, above the sound rung
+ *
+ * raylib's spatial half (reference/raylib/examples/audio/audio_sound_positioning.c: SetSoundPosition, SetListenerPosition, SetListenerVelocity,
+ * AttachAudioListener) reshaped for a surface that hands out handles over a context rather than Sound structs with a listener attached to each:
+ * ONE listener per audio device - where the ear is and which way it looks - and ONE source position per handle. The listener is context-level
+ * state rather than a row's, so the frame that moves the camera calls xud_set_audio_listener_position() ONCE and every placed handle follows it,
+ * which is the one thing the example above needs. The two velocities raylib stores and never reads are absent, with the Doppler they would have
+ * driven: this rung has no Doppler path, and a vector that is stored and never read is a promise the library cannot keep.
+ *
+ * The model, one half at a time. A handle whose source position was NEVER set is NON-spatial: xud_set_audio_volume() and xud_set_audio_pan() are
+ * the whole story of what its node hears, exactly as they were before this section existed. A handle whose position WAS set is SPATIAL: those two
+ * setters keep recording what the caller asked - and that BASE is what xud_get_audio_volume() and xud_get_audio_pan() answer, the caller's own ask
+ * rather than a computed value the caller never named - while the node hears the value the geometry produces, recomputed inside these setters when
+ * a source moves and when the ear moves or turns, not on the mixer's thread:
+ *
+ *   dir    = (source - listener) / d, the zero vector at d = 0, where there is no direction to pan by
+ *   right  = normalize(cross(forward, {0,1,0}))
+ *   volume = clamp(baseVolume / max(d, 1.0), 0.0, 1.0) - the linear rolloff, the BASE at and inside a unit's distance rather than an infinity
+ *   volume = volume * (1 + 0.5 * dot(forward, dir))   - only when that dot is negative: behind the ear is quieter than beside it
+ *   pan    = clamp(basePan + dot(dir, right), -1.0, 1.0)
+ *
+ * The listener's right is DERIVED rather than settable, and a forward parallel to the world's up is refused for the reason the derived right gives:
+ * straight up is a facing with no left or right. The listener defaults to the world origin looking down +z, and lives on the audio device - so all
+ * four listener calls answer XUD_UNSUPPORTED on a context that never played anything, which is the rung below that is not there rather than a bad
+ * argument. The source pair answers through the stream's record alone and so works before the first play: a placed handle played for the first time
+ * is placed from its first frame.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// Place one stream's source in the world, which is what makes it SPATIAL: from here on the level and the position the two setters recorded are the
+/// BASE the geometry is measured against, and the node hears the value the rolloff and the pan below produce instead. There is no un-place - a source
+/// position is the whole of what makes a handle spatial, so a stream stays spatial for its own whole life. XUD_INVALID_ARG on a NULL context, on a non-finite
+/// component of the position, or on a handle that does not name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never
+/// completed bring-up.
+XudResult xud_set_audio_source_position(XudContext* context, XudHandle handle, XudVector3 position);
+
+/// The source position the setter last asked - the world origin for a stream that was never placed, which is the answer that goes with the
+/// non-spatial state rather than a flag to ask about beside it. XUD_INVALID_ARG on a NULL out-position or context, or on a handle that does not
+/// name a live AUDIOSTREAM slot of this context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_get_audio_source_position(XudVector3* outPosition, XudContext* context, XudHandle handle);
+
+/// Move the ear: raylib's SetListenerPosition, one call per frame for a caller that moved its camera, and the reason every placed handle of this
+/// context follows it - every spatial row is rewritten before this call answers. The listener is the audio device's own state, so a context that
+/// never played anything has no ear to move. XUD_INVALID_ARG on a NULL context or a non-finite component; XUD_UNSUPPORTED on a context that never
+/// completed bring-up or that never spent an audio device.
+XudResult xud_set_audio_listener_position(XudContext* context, XudVector3 position);
+
+/// Where the ear is - the world origin for a device that was never moved. XUD_INVALID_ARG on a NULL out-position or context; XUD_UNSUPPORTED on a
+/// context that never completed bring-up or that never spent an audio device.
+XudResult xud_get_audio_listener_position(XudVector3* outPosition, XudContext* context);
+
+/// Turn the ear: the facing the pan is measured against, stored NORMALISED so the read-back answers the unit rather than the caller's own bytes.
+/// A facing of no length and a facing parallel to the world's up (straight up or straight down, which is a facing with no left or right) are both
+/// refused rather than normalised into a divide by zero. Every spatial row is rewritten before this call answers. XUD_INVALID_ARG on a NULL
+/// context, a non-finite component, a zero-length facing or a facing with no right; XUD_UNSUPPORTED on a context that never completed bring-up or
+/// that never spent an audio device.
+XudResult xud_set_audio_listener_forward(XudContext* context, XudVector3 forward);
+
+/// Which way the ear looks - the unit +z for a device that was never turned. XUD_INVALID_ARG on a NULL out-forward or context; XUD_UNSUPPORTED on
+/// a context that never completed bring-up or that never spent an audio device.
+XudResult xud_get_audio_listener_forward(XudVector3* outForward, XudContext* context);
+
+/*-----------------------------------------------------------------------------------------------
  * The clock API - raylib's time half, above the clock rung
  *
  * This is raylib's time surface (reference/raylib/raylib.h 1094-1104: GetFrameTime, GetTime, GetFPS

@@ -37,6 +37,8 @@
 #include <assert.h> /* Required for: static_assert, the public token mirror below */
 #include <stdlib.h> /* Required for: calloc, free - the record this rung spends */
 
+#include <math.h> /* Required for: sqrtf/isfinite - the rolloff's length and the vectors it refuses */
+
 /*-----------------------------------------------------------------------------------------------
  * The public token mirror, and why it is an assert rather than a translation
  *-----------------------------------------------------------------------------------------------*/
@@ -199,6 +201,97 @@ XudResult xud_audio_frames_from_seconds(uint64_t* outFrames, double seconds, uin
     }
 
     *outFrames = (uint64_t)frames;
+    return XUD_OK;
+}
+
+/* The one vector this rung's spatial arithmetic refuses: a component that is not a number is a
+   position no distance can be measured to, and the same reason every other rung's finiteness check
+   gives - sqrtf of a NaN is NaN, and a NaN written to a node's volume is a node that plays nothing
+   at all rather than a refusal the caller can see.
+*/
+static uint32_t xud_audio_vector_is_finite(const XudVector3* vector) {
+    return ((isfinite((double)vector->x) != 0) && (isfinite((double)vector->y) != 0) && (isfinite((double)vector->z) != 0)) ? 1u : 0u;
+}
+
+XudResult xud_audio_spatial_gain(
+    float* outVolume, float* outPan, const XudAudioListener* listener, const XudVector3* source, float baseVolume, float basePan) {
+    float delta[3];
+    float forward[3];
+    float direction[3];
+    float right[3];
+    float distance;
+    float forwardLength;
+    float rightLength;
+    float ahead;
+    float gain;
+    float pan;
+    uint32_t axis;
+
+    if ((outVolume == NULL) || (outPan == NULL) || (listener == NULL) || (source == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((xud_audio_vector_is_finite(&listener->position) == 0u) || (xud_audio_vector_is_finite(&listener->forward) == 0u)
+        || (xud_audio_vector_is_finite(source) == 0u) || (isfinite((double)baseVolume) == 0) || (isfinite((double)basePan) == 0)) {
+        return XUD_INVALID_ARG;
+    }
+
+    delta[0] = source->x - listener->position.x;
+    delta[1] = source->y - listener->position.y;
+    delta[2] = source->z - listener->position.z;
+    distance = sqrtf(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+
+    /* The direction, or the zero vector: a source AT the ear has no direction to be panned by, and
+       the divide below is the one this rung refuses rather than answers - zero is the answer that
+       leaves the pan at the base and the rolloff at its plateau.
+    */
+    for (axis = 0u; axis < 3u; axis++) {
+        direction[axis] = (distance > 0.0f) ? (delta[axis] / distance) : 0.0f;
+    }
+
+    forward[0] = listener->forward.x;
+    forward[1] = listener->forward.y;
+    forward[2] = listener->forward.z;
+    forwardLength = sqrtf(forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2]);
+    if (forwardLength <= 0.0f) {
+        /* A forward of no length is no facing at all, and the derived right below is zero with it. */
+        return XUD_UNSUPPORTED;
+    }
+    forward[0] /= forwardLength;
+    forward[1] /= forwardLength;
+    forward[2] /= forwardLength;
+
+    /* The derived right: cross(forward, {0,1,0}) of a UNIT forward is {-forward.z, 0, forward.x},
+       and its length is zero for exactly the facings that have no left or right - a forward parallel
+       to the world's up. Refused rather than guessed at, because a pan measured against a zero right
+       is a pan that answers the centre for every source in the world.
+    */
+    rightLength = sqrtf(forward[0] * forward[0] + forward[2] * forward[2]);
+    if (rightLength <= 0.0f) {
+        return XUD_UNSUPPORTED;
+    }
+    right[0] = -forward[2] / rightLength;
+    right[1] = 0.0f;
+    right[2] = forward[0] / rightLength;
+
+    /* The linear rolloff, plateued at the base inside a unit's distance: raylib's divide of the base
+       by the distance, and the plateau is the clamp that keeps d = 0 a base volume rather than an
+       infinity the node's own range refuses.
+    */
+    gain = baseVolume / ((distance < 1.0f) ? 1.0f : distance);
+    ahead = forward[0] * direction[0] + forward[1] * direction[1] + forward[2] * direction[2];
+    if (ahead < 0.0f) {
+        gain *= (1.0f + (0.5f * ahead));
+    }
+    pan = basePan + (direction[0] * right[0] + direction[2] * right[2]);
+
+    /* The two clamps, on the two ranges the public surface states for the two values: the spatial
+       pair is COMPUTED rather than asked for, so a value past a range here is this rung's arithmetic
+       rather than a caller's mistake, and the answer is the range's edge rather than a refusal a
+       caller could not have avoided.
+    */
+    *outVolume = (gain < 0.0f) ? 0.0f : ((gain > 1.0f) ? 1.0f : gain);
+    *outPan = (pan < -1.0f) ? -1.0f : ((pan > 1.0f) ? 1.0f : pan);
+
     return XUD_OK;
 }
 

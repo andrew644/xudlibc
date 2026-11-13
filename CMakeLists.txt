@@ -363,3 +363,9 @@ add_executable(models_heightmap_rendering
 )
 
 target_link_libraries(models_heightmap_rendering PRIVATE xud)
+
+add_executable(audio_sound_positioning
+    examples/audio_sound_positioning.c
+)
+
+target_link_libraries(audio_sound_positioning PRIVATE xud)

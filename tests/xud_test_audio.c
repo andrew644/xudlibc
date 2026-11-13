@@ -10,12 +10,14 @@
  *          them, the public load/close pair and the two queries against a shell context and ag
  *          ainst a real one, the play/stop pair's validation against a shell and its three states
  *          against a real context, the natural end of a stream on the audio thread and the close it
- *          leaves behind, and the teardown rung above the table's own close - and nothing
+ *          leaves behind, the positional pair's rolloff and pan as pure arithmetic and its place and
+ *          base against a shell, the listener and what a placed row hears against a real context, and
+ *          the teardown rung above the table's own close - and nothing
  *          else: the slot arrays and the generation bumps are the handle area's, the context's own
  *          bring-up and teardown are the core area's, and the vendor area's miniaudio check is o
  *          nly that the library links, which is not that this rung reads a container.
  *
- *   Layer: tests, above the handle area and below the core area. The whole area but the last two
+ *   Layer: tests, above the handle area and below the core area. The whole area but the last three
  *          halves runs with no driver present at all, and that is the point of it rather than a conven
  *          ience: the audio rung's driver half calls no Vulkan entry point and no driver function,
  *          so a decode is miniaudio reading a caller's bytes into a heap block, and a bare handle t
@@ -1389,6 +1391,463 @@ static void xud_test_audio_device(void) {
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The positional half, headless: the rolloff and the pan as arithmetic, with no device and no file
+ *
+ *   Every number below is stated against the formula the public header states rather than against a
+ *   table of values someone read off a run: the distance is the one the check itself picks, the
+ *   rolloff is that distance divided into the base, and the pan is the dot the derived right gives.
+ *   The listener is the origin facing +x for the pair that needs a left and a right, because that
+ *   facing's derived right IS +z - the axis the two sources sit on - so the expected pan is the axis
+ *   the source was placed on rather than a vector the reader has to derive to follow the check.
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The one comparison the spatial numbers are read with: the pair is float arithmetic on sqrtf, and a
+   check that demanded bit equality would be a check on the rounding of one machine's sqrtf.
+*/
+static int xud_test_audio_close(float a, float b) {
+    float delta = a - b;
+    return ((delta > -0.0001f) && (delta < 0.0001f)) ? 1 : 0;
+}
+
+static void xud_test_audio_spatial(void) {
+    XudAudioListener listener = { { 0.0f, 0.0f, 0.0f }, { 1.0f, 0.0f, 0.0f } };
+    XudVector3 source = { 0.0f, 0.0f, 0.0f };
+    float volume = 0.0f;
+    float pan = 0.0f;
+
+    /* Ahead at five: the distance divides the base, and the facing has nothing to say. */
+    source.x = 5.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_OK, "spatial-ahead-answers",
+        "a source straight ahead of the ear is answerable, which is the arithmetic running with no device under it at all");
+    xud_check(xud_test_audio_close(volume, 0.2f), "spatial-ahead-rolloff",
+        "and the level is the base divided by the five the check placed it at - the linear rolloff, not a square of it and not a plateau");
+    xud_check(xud_test_audio_close(pan, 0.0f), "spatial-ahead-centred",
+        "and the position is the centre, because straight ahead is neither left nor right of the facing");
+
+    /* The right and the left of the same distance: the derived right is +z for this facing, so a
+       source on +z is the full right and one on -z the full left, at the SAME distance and so the
+       same level - the pair being about direction alone.
+    */
+    source.x = 0.0f;
+    source.z = 5.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_OK, "spatial-right-answers",
+        "a source on the ear's right is answerable");
+    xud_check(xud_test_audio_close(pan, 1.0f), "spatial-right-pan",
+        "and answers the full right, which is the dot of the direction and the derived right - right being cross(forward, {0,1,0}) and "
+        "this "
+        "facing's right being +z");
+    xud_check(xud_test_audio_close(volume, 0.2f), "spatial-right-same-level",
+        "and the same level the front source answered, so the pan is a direction and not a second attenuation");
+    source.z = -5.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_OK, "spatial-left-answers",
+        "and the mirror source on the ear's left is answerable beside it");
+    xud_check(xud_test_audio_close(pan, -1.0f), "spatial-left-pan",
+        "and answers the full LEFT, the sign the check is here for: the pan flips with the axis, not with the distance");
+    xud_check(xud_test_audio_close(volume, 0.2f), "spatial-left-same-level", "and the same level again, beside the right's");
+
+    /* Behind at the same five: the facing has something to say, and what it says is quieter. */
+    source.x = -5.0f;
+    source.z = 0.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_OK, "spatial-behind-answers",
+        "a source behind the ear is answerable, the facing being read rather than the distance alone");
+    xud_check(xud_test_audio_close(volume, 0.1f), "spatial-behind-quieter",
+        "and half the level the same distance in front answered: the dot is -1, so the front factor of (1 + 0.5*dot) is a half - the half "
+        "of "
+        "raylib's model that reads which way the ear looks");
+    xud_check(xud_test_audio_close(pan, 0.0f), "spatial-behind-centred",
+        "and still the centre, because straight behind is on the axis the right is measured along by zero");
+
+    /* At the ear itself: no distance to roll off over and no direction to pan by. */
+    source.x = 0.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_OK, "spatial-at-ear-answers",
+        "a source AT the listener is answerable rather than a divide by zero");
+    xud_check(volume == 1.0f, "spatial-at-ear-base",
+        "and the level is the base itself, the plateau at and inside a unit's distance being the clamp that keeps d = 0 the base rather "
+        "than "
+        "an infinity the node's own range refuses");
+    xud_check(pan == 0.0f, "spatial-at-ear-centred",
+        "and the position is the base position, a source at the ear having no direction to be panned by");
+
+    /* The plateau and the clamp, on a base below the peak: inside the unit the base is what answers,
+       and a base pan biased toward one side cannot be pushed past the range by the geometry.
+    */
+    source.x = 0.25f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 0.5f, 0.0f) == XUD_OK, "spatial-near-answers",
+        "a source a quarter of the way to a unit is answerable");
+    xud_check(xud_test_audio_close(volume, 0.5f), "spatial-near-plateau",
+        "and answers its base rather than the double a bare divide would have answered: the rolloff starts at the unit, so nothing is "
+        "louder "
+        "for being closer than the unit it is already inside");
+    source.x = 0.0f;
+    source.z = 1.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 0.5f, 0.75f) == XUD_OK, "spatial-biased-answers",
+        "and a source to the right of a base position already biased to the right is answerable");
+    xud_check(pan == 1.0f, "spatial-biased-clamped",
+        "and the sum is CLAMPED to the full right rather than refused or wrapped - the spatial pair is computed rather than asked for, so "
+        "the "
+        "range's edge is the answer a caller could not have avoided");
+
+    /* A non-unit facing answers the unit one's pair: the helper normalises before it derives. */
+    listener.forward.x = 3.0f;
+    source.x = 5.0f;
+    source.z = 0.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_OK, "spatial-long-facing-answers",
+        "a facing handed over three times the length it needs is answerable");
+    xud_check(xud_test_audio_close(volume, 0.2f) && xud_test_audio_close(pan, 0.0f), "spatial-long-facing-normalised",
+        "and answers the pair the unit facing answered at the same place, so the arithmetic reads a direction rather than a length");
+
+    /* The refusals: the caller's shapes and the world's one bad facing. */
+    listener.forward.x = 1.0f;
+    xud_check(xud_audio_spatial_gain(NULL, &pan, &listener, &source, 1.0f, 0.0f) == XUD_INVALID_ARG, "spatial-null-out-volume",
+        "a level with nowhere to be written is refused");
+    xud_check(xud_audio_spatial_gain(&volume, NULL, &listener, &source, 1.0f, 0.0f) == XUD_INVALID_ARG, "spatial-null-out-pan",
+        "and a position with nowhere to be written beside it");
+    xud_check(xud_audio_spatial_gain(&volume, &pan, NULL, &source, 1.0f, 0.0f) == XUD_INVALID_ARG, "spatial-null-listener",
+        "and a gain with no ear to measure from is refused");
+    source.x = (float)0.0 / (float)0.0;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_INVALID_ARG, "spatial-source-nan",
+        "and a source that is not a number is refused rather than answered with a NaN a node would then play");
+    source.x = 5.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, (float)0.0 / (float)0.0, 0.0f) == XUD_INVALID_ARG,
+        "spatial-base-nan", "and a base level that is not a number is refused beside the source that is not one");
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, (float)0.0 / (float)0.0) == XUD_INVALID_ARG,
+        "spatial-base-pan-nan", "and a base position that is not a number is refused with it, the two bases being the same kind of ask");
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_OK, "spatial-finite-answers",
+        "and the finite pair answers again after it");
+    listener.forward.x = 0.0f;
+    listener.forward.y = 1.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_UNSUPPORTED, "spatial-facing-up-refused",
+        "a facing straight up the world's own axis is refused: cross(forward, up) is the zero vector, which is a facing with no left or "
+        "right "
+        "to pan against");
+    listener.forward.y = 0.0f;
+    xud_check(xud_audio_spatial_gain(&volume, &pan, &listener, &source, 1.0f, 0.0f) == XUD_UNSUPPORTED, "spatial-facing-zero-refused",
+        "and a facing of no length is refused the same way, the zero forward being the same shape with no direction attached");
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The positional pair against a shell: the place, the base that survives it, and the listener that
+ * has no device to live in yet
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_test_audio_spatial_shell(void) {
+    XudContext shell;
+    XudContext empty;
+    XudHandleTable* table = NULL;
+    XudHandle handle = { 0u, 0u, 0u };
+    XudHandle stale = { 0u, 0u, 0u };
+    XudHandle foreign = { 0u, 0u, 0u };
+    XudAudioData audio;
+    XudVector3 place = { 1.0f, 2.0f, 3.0f };
+    XudVector3 notANumber = { (float)0.0 / (float)0.0, 0.0f, 0.0f };
+    XudVector3 read = { 0.0f, 0.0f, 0.0f };
+    float volume = 0.0f;
+    float pan = 0.0f;
+
+    memset(&shell, 0, sizeof(shell));
+    memset(&empty, 0, sizeof(empty));
+    memset(&audio, 0, sizeof(audio));
+
+    xud_check(xud_handle_table_open(&table) == XUD_OK, "spatial-shell-table",
+        "a bare table is what the pair reaches, which is why the place and the base are checkable with no audio device spent at all");
+    if (table == NULL) {
+        return;
+    }
+    shell.handleTable = table;
+
+    audio.fileData = xudTestAudioFile[0];
+    audio.fileBytes = xudTestAudioBytes[0];
+    xud_check(xud_load_audio(&handle, &shell, &audio) == XUD_OK, "spatial-shell-loaded",
+        "a stream is loaded to be the thing the pair is asked about");
+
+    xud_check(xud_get_audio_source_position(&read, &shell, handle) == XUD_OK, "spatial-shell-origin-answers",
+        "the source's question answers before any place, through a shell and with no device under it");
+    xud_check((read.x == 0.0f) && (read.y == 0.0f) && (read.z == 0.0f), "spatial-shell-origin",
+        "and answers the world origin, which is the state the header states beside the non-spatial one rather than a flag asked about "
+        "separately");
+
+    xud_check(xud_set_audio_source_position(NULL, handle, place) == XUD_INVALID_ARG, "spatial-shell-null-context",
+        "a position with no context to own it is refused");
+    xud_check(xud_get_audio_source_position(NULL, &shell, handle) == XUD_INVALID_ARG, "spatial-shell-null-out",
+        "and a position with nowhere to be written is refused beside it");
+    xud_check(xud_set_audio_source_position(&empty, handle, place) == XUD_UNSUPPORTED, "spatial-shell-no-table",
+        "and a context that owns no handle table is refused as UNSUPPORTED rather than as a bad handle, the same split the level's setter "
+        "gives");
+    xud_check(xud_set_audio_source_position(&shell, handle, notANumber) == XUD_INVALID_ARG, "spatial-shell-source-nan",
+        "a position that is not a number is refused rather than stored, the arithmetic it would feed being the one that answers NaN for "
+        "it");
+
+    xud_check(xud_set_audio_source_position(&shell, handle, place) == XUD_OK, "spatial-shell-place",
+        "a fixed world position is asked, and the handle is SPATIAL from this line on");
+    xud_check(xud_get_audio_source_position(&read, &shell, handle) == XUD_OK, "spatial-shell-read-answers",
+        "and the source's question answers beside the place");
+    xud_check((read.x == 1.0f) && (read.y == 2.0f) && (read.z == 3.0f), "spatial-shell-position-roundtrip",
+        "and answers the three numbers the setter asked for, so the read-back is the place rather than a hope about it");
+
+    xud_check(xud_set_audio_volume(&shell, handle, 0.5f) == XUD_OK, "spatial-shell-base-volume-asked",
+        "a level is asked of a handle that is already placed, which is the record keeping a BASE rather than a level a mixer would hear");
+    xud_check(xud_get_audio_volume(&volume, &shell, handle) == XUD_OK, "spatial-shell-volume-answers", "and the level's question answers");
+    xud_check(volume == 0.5f, "spatial-shell-volume-is-base",
+        "and answers the caller's own 0.5 rather than the value the distance to the default listener would make of it - the choice the "
+        "public header states, pinned here so a read-back that started answering the computed number fails this area");
+    xud_check(xud_set_audio_pan(&shell, handle, -0.5f) == XUD_OK, "spatial-shell-base-pan-asked",
+        "a position is asked the same way, beside the level");
+    xud_check(xud_get_audio_pan(&pan, &shell, handle) == XUD_OK, "spatial-shell-pan-answers", "and the position's question answers");
+    xud_check(pan == -0.5f, "spatial-shell-pan-is-base",
+        "and answers the caller's own -0.5 rather than the dot the geometry would produce, the base being the state both getters answer");
+
+    xud_check(xud_set_audio_listener_position(NULL, place) == XUD_INVALID_ARG, "spatial-shell-listener-null-context",
+        "an ear with no context to own it is refused, the same first guard every call above gives");
+    xud_check(xud_get_audio_listener_position(NULL, &shell) == XUD_INVALID_ARG, "spatial-shell-listener-null-out",
+        "and an ear with nowhere to be written is refused beside it");
+    xud_check(xud_get_audio_listener_forward(NULL, &shell) == XUD_INVALID_ARG, "spatial-shell-forward-null-out",
+        "and a facing with nowhere to be written is refused the same way");
+    xud_check(xud_set_audio_listener_position(&empty, place) == XUD_UNSUPPORTED, "spatial-shell-listener-no-table",
+        "and a context that owns no handle table is refused as UNSUPPORTED, the bring-up guard running before the device's absence is "
+        "asked "
+        "about");
+    xud_check(xud_set_audio_listener_position(&shell, place) == XUD_UNSUPPORTED, "spatial-shell-listener-no-device",
+        "and a context that never played anything is refused as UNSUPPORTED too: the listener is the audio device's own state, and a "
+        "context "
+        "with no device has no ear to move - which is the one place this pair refuses a shape the level's setters take and store");
+    xud_check(xud_set_audio_listener_forward(&shell, place) == XUD_UNSUPPORTED, "spatial-shell-forward-no-device",
+        "and the facing is refused for the same reason beside the position");
+    xud_check(xud_get_audio_listener_position(&read, &shell) == XUD_UNSUPPORTED, "spatial-shell-listener-read-no-device",
+        "and the ear's question answers UNSUPPORTED rather than the default it would have, because there is no device to answer from");
+    xud_check(xud_get_audio_listener_forward(&read, &shell) == XUD_UNSUPPORTED, "spatial-shell-forward-read-no-device",
+        "and the facing's question answers the same way beside it");
+
+    xud_check(xud_get_audio_source_position(&read, &shell, handle) == XUD_OK, "spatial-shell-position-still-answers",
+        "the source's question still answers after all of that");
+    xud_check((read.x == 1.0f) && (read.y == 2.0f) && (read.z == 3.0f), "spatial-shell-position-untouched",
+        "and still the placed three, so the refused listener calls left the record naming the place it had");
+
+    stale = handle;
+    stale.generation = handle.generation + 1u;
+    xud_check(xud_set_audio_source_position(&shell, stale, place) == XUD_INVALID_ARG, "spatial-shell-stale",
+        "a handle kept past the close that freed its slot is refused as a bad argument, the accessor running before a position is stored");
+    foreign = handle;
+    foreign.kind = XUD_HANDLE_KIND_MESH;
+    xud_check(xud_set_audio_source_position(&shell, foreign, place) == XUD_INVALID_ARG, "spatial-shell-foreign-kind",
+        "and a handle of another kind is refused rather than a record of that other kind written a position into");
+    xud_check(xud_get_audio_source_position(&read, &shell, stale) == XUD_INVALID_ARG, "spatial-shell-read-stale",
+        "and the source's question gives the same answer for the same stale handle");
+
+    xud_check(xud_close_audio(&shell, handle) == XUD_OK, "spatial-shell-close",
+        "the public close releases the placed stream, with its position and its two bases parked in the record it frees");
+    xud_check(xud_handle_table_close(&shell.handleTable) == XUD_OK, "spatial-shell-table-close",
+        "and the shell's table closes, so the half leaves no slot and no block behind - and no audio device was ever spent to find any of "
+        "it");
+    xud_check(shell.handleTable == NULL, "spatial-shell-table-cleared", "and is cleared through the shell's own copy");
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The positional pair against a real context: the row hears the geometry, the getters answer the
+ * base, and one call that moves the ear moves every placed row
+ *-----------------------------------------------------------------------------------------------*/
+
+/* What the node itself was told: the row is this rung's bookkeeping and the node is what the mixer
+   reads, so the one claim this half can make about a SPATIAL handle - that the node hears the value
+   the geometry produced rather than the base the record keeps - is read off the node, through the
+   row the device owns at the stream's own slot index.
+*/
+static int xud_test_audio_node(float* outVolume, float* outPan, XudContext* context, XudHandle handle) {
+    XudSoundRow* row = NULL;
+
+    if ((context == NULL) || (context->sound == NULL) || (context->sound->rows == NULL) || (handle.index >= context->sound->rowCount)) {
+        return 0;
+    }
+    row = context->sound->rows[handle.index];
+    if (row == NULL) {
+        return 0;
+    }
+
+    *outVolume = ma_sound_get_volume(&row->sound);
+    *outPan = ma_sound_get_pan(&row->sound);
+    return 1;
+}
+
+static void xud_test_audio_spatial_device(void) {
+    XudContext* context = NULL;
+    XudHandle placed = { 0u, 0u, 0u };
+    XudHandle plain = { 0u, 0u, 0u };
+    XudAudioData audio;
+    XudVector3 place = { -5.0f, 0.0f, 0.0f };
+    XudVector3 zero = { 0.0f, 0.0f, 0.0f };
+    XudVector3 up = { 0.0f, 1.0f, 0.0f };
+    XudVector3 longForward = { 0.0f, 0.0f, 2.0f };
+    XudVector3 notANumber = { (float)0.0 / (float)0.0, 0.0f, 0.0f };
+    XudVector3 read = { 0.0f, 0.0f, 0.0f };
+    float volume = 0.0f;
+    float pan = 0.0f;
+    float nodeVolume = 0.0f;
+    float nodePan = 0.0f;
+    uint32_t closed = 0u;
+    XudResult played = XUD_INVALID_ARG;
+
+    memset(&placed, 0, sizeof(placed));
+    memset(&plain, 0, sizeof(plain));
+    memset(&audio, 0, sizeof(audio));
+
+    xud_check(xud_init_context(&context, 64u, 64u) == XUD_OK, "spatial-device-context",
+        "a real context is up, which is the one thing the listener needs and the arithmetic above did not");
+    if (context == NULL) {
+        return;
+    }
+
+    audio.fileData = xudTestAudioFile[0];
+    audio.fileBytes = xudTestAudioBytes[0];
+    xud_check(xud_load_audio(&placed, context, &audio) == XUD_OK, "spatial-device-loaded",
+        "the shortest of the files is decoded, which is the stream the place is stated on");
+
+    played = xud_play_audio(context, placed);
+    xud_check(played == XUD_OK || played == XUD_UNSUPPORTED, "spatial-device-play-answers",
+        "the play either spends the rung or refuses, and neither answer is a bug - the same gate the device half above accepts");
+    if (played != XUD_OK) {
+        xud_check(xud_close_audio(context, placed) == XUD_OK, "spatial-device-close-after-refusal",
+            "and the stream still closes over a rung that was never spent");
+        xud_check(xud_close_context(&context) == XUD_OK, "spatial-device-context-closed", "and the context closes with it");
+        return;
+    }
+
+    xud_check(xud_get_audio_listener_position(&read, context) == XUD_OK, "spatial-device-listener-answers",
+        "the ear's question answers once a device is under the context, which is the state the shell refused for");
+    xud_check((read.x == 0.0f) && (read.y == 0.0f) && (read.z == 0.0f), "spatial-device-listener-default",
+        "and answers the world origin, a device that was never moved being where the world starts");
+    xud_check(xud_get_audio_listener_forward(&read, context) == XUD_OK, "spatial-device-forward-answers",
+        "and the facing's question answers beside it");
+    xud_check((read.x == 0.0f) && (read.y == 0.0f) && (read.z == 1.0f), "spatial-device-forward-default",
+        "and answers +z, the facing xud_sound_open() writes rather than the calloc's zero the derived right would have refused");
+    xud_check(xud_set_audio_listener_forward(context, zero) == XUD_INVALID_ARG, "spatial-device-forward-zero-refused",
+        "a facing of no length is refused rather than stored, the derived right being the divide it would have fed");
+    xud_check(xud_set_audio_listener_forward(context, up) == XUD_INVALID_ARG, "spatial-device-forward-up-refused",
+        "and a facing straight up the world is refused beside it: cross(forward, {0,1,0}) is the zero vector, which is a facing with no "
+        "left "
+        "or right to pan against");
+    xud_check(xud_set_audio_listener_position(context, notANumber) == XUD_INVALID_ARG, "spatial-device-listener-nan-refused",
+        "and an ear that is not a number is refused once there IS a device to store it in, the shell having refused for the missing device "
+        "first");
+    xud_check(xud_get_audio_listener_forward(&read, context) == XUD_OK, "spatial-device-forward-still-answers",
+        "the facing's question answers after the three refusals");
+    xud_check((read.x == 0.0f) && (read.y == 0.0f) && (read.z == 1.0f), "spatial-device-forward-untouched",
+        "and still +z, so a refused turn left the ear looking where it did");
+    xud_check(xud_set_audio_listener_forward(context, longForward) == XUD_OK, "spatial-device-forward-long-asked",
+        "a facing handed over twice the length it needs is taken");
+    xud_check(xud_get_audio_listener_forward(&read, context) == XUD_OK, "spatial-device-forward-normalised-answers",
+        "and the question answers beside it");
+    xud_check((read.x == 0.0f) && (read.y == 0.0f) && (read.z == 1.0f), "spatial-device-forward-normalised",
+        "and answers the UNIT, the setter storing the direction rather than the caller's twice-long bytes - the one read-back in this pair "
+        "that does not answer the caller's own numbers");
+
+    /* The non-spatial handle, and the ear moving under it: the level the caller asked is the level the
+       node hears, before and after a listener move, which is the whole of the promise that a handle
+       nobody placed is untouched by any of this.
+    */
+    audio.fileData = xudTestAudioFile[2];
+    audio.fileBytes = xudTestAudioBytes[2];
+    xud_check(xud_load_audio(&plain, context, &audio) == XUD_OK, "spatial-device-plain-loaded",
+        "a second stream is decoded in a slot of its own and left where it is: never placed, so never spatial");
+    played = xud_play_audio(context, plain);
+    xud_check(played == XUD_OK, "spatial-device-plain-play", "and the play spends a row for it beside the first row");
+    xud_check(xud_set_audio_volume(context, plain, 0.5f) == XUD_OK, "spatial-device-plain-volume",
+        "a level is asked of the handle that was never placed");
+    xud_check(
+        xud_set_audio_pan(context, plain, -0.5f) == XUD_OK, "spatial-device-plain-pan", "and a position is asked of it beside the level");
+    xud_check(xud_test_audio_node(&nodeVolume, &nodePan, context, plain) == 1, "spatial-device-plain-row",
+        "the plain handle's row is live and answerable");
+    xud_check(xud_test_audio_close(nodeVolume, 0.5f) && xud_test_audio_close(nodePan, -0.5f), "spatial-device-plain-node-is-ask",
+        "and the node hears the two values the caller asked for, which is the non-spatial story told unchanged: no rolloff, no pan from a "
+        "facing, no geometry at all");
+    xud_check(xud_set_audio_listener_position(context, place) == XUD_OK, "spatial-device-plain-listener-moved",
+        "the ear is moved under both handles");
+    xud_check(xud_test_audio_node(&nodeVolume, &nodePan, context, plain) == 1, "spatial-device-plain-row-again",
+        "and the plain row is answerable again after the move");
+    xud_check(xud_test_audio_close(nodeVolume, 0.5f) && xud_test_audio_close(nodePan, -0.5f), "spatial-device-plain-untouched",
+        "and answers the same two values, so the walk a listener move runs skips a handle that was never placed rather than rewriting it");
+    /* The placed handle: the node hears the geometry, the getters answer the base, and the two move
+       apart by exactly the arithmetic the headless half pinned.
+    */
+    xud_check(xud_set_audio_listener_position(context, zero) == XUD_OK, "spatial-device-ear-home",
+        "the ear goes back to the world origin so the numbers below are the ones the headless half states");
+    xud_check(xud_set_audio_volume(context, placed, 0.8f) == XUD_OK, "spatial-device-base-asked",
+        "a level that is neither the default nor the silence is asked of the handle that has never been placed");
+    xud_check(xud_set_audio_source_position(context, placed, place) == XUD_OK, "spatial-device-placed",
+        "and the handle is placed five along -x, which makes it spatial with a row already under it");
+    xud_check(xud_test_audio_node(&nodeVolume, &nodePan, context, placed) == 1, "spatial-device-placed-row",
+        "the placed handle's row is answerable");
+    xud_check(xud_test_audio_close(nodeVolume, 0.16f), "spatial-device-node-is-rolloff",
+        "and the node hears 0.8/5 - the base over the five the place put between the ear and the source, which is the write the level's "
+        "setter ran instead of the 0.8 it was handed");
+    xud_check(xud_test_audio_close(nodePan, 1.0f), "spatial-device-node-is-pan",
+        "and the full right, this facing's derived right being -x and the source sitting on it");
+    xud_check(xud_get_audio_volume(&volume, context, placed) == XUD_OK, "spatial-device-base-answers", "and the level's question answers");
+    xud_check(volume == 0.8f, "spatial-device-base-survives",
+        "and answers the 0.8 the caller asked rather than the 0.16 the node was told, the two states being one record apart");
+    xud_check(xud_get_audio_pan(&pan, context, placed) == XUD_OK, "spatial-device-base-pan-answers",
+        "and the position's question answers beside the level's");
+    xud_check(pan == 0.0f, "spatial-device-base-pan-survives",
+        "and answers the centre the caller last asked for, not the full right the row was handed");
+
+    xud_check(xud_set_audio_listener_position(context, place) == XUD_OK, "spatial-device-ear-at-source",
+        "the ear is moved onto the source, which is the one call a frame that moved the camera makes");
+    xud_check(xud_test_audio_node(&nodeVolume, &nodePan, context, placed) == 1, "spatial-device-follow-row",
+        "and the placed row is answerable after it");
+    xud_check(xud_test_audio_close(nodeVolume, 0.8f) && xud_test_audio_close(nodePan, 0.0f), "spatial-device-follows-the-ear",
+        "and the node now hears the base at the centre: zero distance rolls off over nothing and has no direction to pan by, so moving the "
+        "ear rewrote a row nobody touched");
+
+    xud_check(xud_set_audio_listener_position(context, zero) == XUD_OK, "spatial-device-ear-home-again", "the ear goes home again");
+    read.x = 1.0f;
+    read.y = 0.0f;
+    read.z = 0.0f;
+    xud_check(xud_set_audio_listener_forward(context, read) == XUD_OK, "spatial-device-turn",
+        "and the ear turns down +x - the second setter that recomputes, the facing being half of the pan");
+    xud_check(xud_test_audio_node(&nodeVolume, &nodePan, context, placed) == 1, "spatial-device-turned-row", "and the row answers");
+    xud_check(xud_test_audio_close(nodeVolume, 0.08f), "spatial-device-turned-behind",
+        "and the source at -x is now straight BEHIND that facing, so the half the headless half pinned is applied over the rolloff: 0.8 "
+        "over "
+        "the five, halved");
+    xud_check(xud_test_audio_close(nodePan, 0.0f), "spatial-device-turned-centred",
+        "and straight behind the new facing is on the new right by zero, so the centre is what the node hears");
+    xud_check(xud_get_audio_source_position(&read, context, placed) == XUD_OK, "spatial-device-place-answers",
+        "and the source's question answers through the real context");
+    xud_check((read.x == -5.0f) && (read.y == 0.0f) && (read.z == 0.0f), "spatial-device-place-untouched-by-the-ear",
+        "and still the place the setter asked for, the ear's two moves having rewritten the node and not the record");
+
+    /* A handle placed BEFORE its first play: the row the play builds takes the spatial value rather
+       than the base, which is the one recompute the two setters cannot do for a row that did not
+       exist yet.
+    */
+    xud_check(xud_stop_audio(context, plain) == XUD_OK, "spatial-device-plain-stop", "the plain handle is stopped before its close");
+    xud_check(xud_close_audio(context, plain) == XUD_OK, "spatial-device-plain-close", "and closed");
+    audio.fileData = xudTestAudioFile[1];
+    audio.fileBytes = xudTestAudioBytes[1];
+    xud_check(xud_load_audio(&plain, context, &audio) == XUD_OK, "spatial-device-late-loaded",
+        "a third stream takes the slot for the play-after-the-place");
+    xud_check(xud_set_audio_listener_forward(context, longForward) == XUD_OK, "spatial-device-ear-facing-plus-z",
+        "and the ear faces +z again, the same facing it came up with");
+    xud_check(xud_set_audio_volume(context, plain, 0.5f) == XUD_OK, "spatial-device-late-base", "a base is asked of it");
+    xud_check(xud_set_audio_source_position(context, plain, place) == XUD_OK, "spatial-device-late-place",
+        "and it is placed five along -x BEFORE it has ever been played, so there is no row to write yet");
+    played = xud_play_audio(context, plain);
+    xud_check(played == XUD_OK, "spatial-device-late-play", "and the play builds the row it never had");
+    xud_check(xud_test_audio_node(&nodeVolume, &nodePan, context, plain) == 1, "spatial-device-late-row", "the new row answers");
+    xud_check(xud_test_audio_close(nodeVolume, 0.1f) && xud_test_audio_close(nodePan, 1.0f), "spatial-device-late-row-is-spatial",
+        "and it is built at the SPATIAL pair - 0.5 over the five, and the full right - rather than at the base for one frame and the "
+        "geometry after it, which is the play taking the record's place as well as its bases");
+
+    xud_check(xud_stop_audio(context, placed) == XUD_OK, "spatial-device-placed-stop", "the placed handle is stopped");
+    xud_check(xud_close_audio(context, placed) == XUD_OK, "spatial-device-placed-close", "and closed, position and bases and all");
+    xud_check(xud_stop_audio(context, plain) == XUD_OK, "spatial-device-late-stop", "and the late one beside it");
+    xud_check(xud_close_audio(context, plain) == XUD_OK, "spatial-device-late-close", "and closed");
+    xud_check(xud_sound_close(&context->sound, &closed) == XUD_OK, "spatial-device-sound-close",
+        "the rung's own teardown closes the device the listener lived on");
+    xud_check(context->sound == NULL, "spatial-device-sound-cleared", "and is cleared through the context's own copy");
+    xud_check(xud_close_context(&context) == XUD_OK, "spatial-device-context-closed", "and the context closes over it");
+    xud_check(context == NULL, "spatial-device-context-null", "and is cleared, leaving no row, no ear and no block behind");
+}
+
+/*-----------------------------------------------------------------------------------------------
  * The area's entry point
  *-----------------------------------------------------------------------------------------------*/
 
@@ -1399,6 +1858,7 @@ void xud_test_audio(void) {
         xud_test_audio_codes();
         xud_test_audio_stride();
         xud_test_audio_time();
+        xud_test_audio_spatial();
         return;
     }
 
@@ -1412,9 +1872,12 @@ void xud_test_audio(void) {
     xud_test_audio_shell();
     xud_test_audio_play();
     xud_test_audio_params();
+    xud_test_audio_spatial_shell();
+    xud_test_audio_spatial();
     if (xud_gpu_tests_enabled()) {
         xud_test_audio_gpu();
         xud_test_audio_device();
+        xud_test_audio_spatial_device();
     }
 
     xud_test_audio_file_drop();

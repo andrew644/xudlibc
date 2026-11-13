@@ -133,7 +133,40 @@ typedef struct XudAudioStreamRecord {
     float pan; /* the position the public setter last asked, -1.0 the full left to 1.0 the full
                  right: 0.0 (what xud_audio_open writes) is the block played centred, and a value a
                  row is not live for yet is the one the row takes when it is built */
+    uint32_t spatial; /* 0 while the stream is NON-spatial - the state xud_audio_open writes and the
+                        state a stream that was never given a world position stays in, in which the
+                        two rows above are the whole story of what the mixer hears - and 1 once
+                        xud_set_audio_source_position() has named one, which turns those two rows into
+                        the BASE a later xud_get_audio_volume()/xud_get_audio_pan() answers, the node
+                        hearing instead the value xud_audio_spatial_gain() computes from them */
+    XudVector3 sourcePosition; /* the world position the source setter last asked, in the same space
+                                  the listener is stated in: the origin a stream that never had one
+                                  keeps, and which is read beside the listener into that gain */
 } XudAudioStreamRecord;
+
+/*-----------------------------------------------------------------------------------------------
+ * The listener, and the one piece of arithmetic the spatial pair runs
+ *-----------------------------------------------------------------------------------------------
+
+   One listener per audio device, and the pair of vectors is the whole of it: where the ear is, and
+   which way it looks. There is no velocity here and no up vector, and both are decisions rather than
+   omissions: this rung has no Doppler path to spend a velocity on (raylib stores two of them and
+   reads neither), and an up the caller never states is one this rung derives as {0,1,0} - the world's
+   up, the one the forward is tested against below. The forward is stored NORMALISED by the setter
+   that takes it, so the arithmetic below never re-normalises a caller's vector and never finds a
+   divide by zero it did not refuse first.
+*/
+
+typedef struct XudAudioListener {
+    XudVector3 position; /* where the ear is, in the same space the record's sourcePosition is stated
+                            in: the world origin, which is what a device that was never moved answers */
+    XudVector3 forward; /* which way it looks, unit length as the setter stores it: +z, which is the
+                           direction a device that was never turned answers, and the one the derived
+                           right below is a right OF */
+} XudAudioListener;
+
+/* The two defaults, stated once so the rung that opens a device and the check that reads one agree. */
+#define XUD_AUDIO_LISTENER_DEFAULT { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f } } /* the world origin, looking down +z */
 
 /*-----------------------------------------------------------------------------------------------
  * The pure halves
@@ -169,6 +202,30 @@ XudResult xud_audio_seconds_from_frames(double* outSeconds, uint64_t frameCount,
 /// a frame early. XUD_INVALID_ARG on a NULL out-frames; XUD_UNSUPPORTED on a rate of zero, on a negative
 /// span, or on a span this rung's own frame ceiling cannot name; XUD_OK otherwise.
 XudResult xud_audio_frames_from_seconds(uint64_t* outFrames, double seconds, uint32_t sampleRate);
+
+/// Pure: what one SPATIAL handle's node hears, the whole of raylib's positional model in the one
+/// place so the public pair, the play that builds a row for a handle already placed, and this rung's
+/// own check all read ONE formula rather than three copies of it. With `L` the listener, `S` the
+/// source, `d` their distance and `up` the world's {0,1,0}:
+///
+///   dir   = (S - L) / d, the ZERO vector when d is 0 - a source at the ear has no direction to be
+///           panned by, and a divide by zero is not the answer to that question
+///   right = normalize(cross(L.forward, up))
+///   gain  = baseVolume / max(d, 1.0) - the linear rolloff, `baseVolume` at and inside a unit's
+///           distance rather than the infinity a bare divide answers at d = 0
+///   gain  = gain * (1 + 0.5 * dot(L.forward, dir)) when that dot is negative - a source behind the
+///           ear is quieter than one beside it at the same distance, which is the half of raylib's
+///           model that reads the facing rather than the distance
+///   out   = clamp(gain, 0, 1) beside the level the public surface states, and
+///           clamp(basePan + dot(dir, right), -1, 1) beside the position it states: a base pan of
+///           zero answers the geometry alone, and a non-zero one biases it without ever leaving the
+///           range, which is why the pair CLAMPS where the two public setters refuse.
+///
+/// XUD_INVALID_ARG on a NULL out-volume, out-pan, listener, source or on a non-finite component of
+/// either vector or of either base; XUD_UNSUPPORTED on a forward with no right - parallel to the
+/// world's up, which is a facing with no left or right to pan against; XUD_OK otherwise.
+XudResult xud_audio_spatial_gain(
+    float* outVolume, float* outPan, const XudAudioListener* listener, const XudVector3* source, float baseVolume, float basePan);
 
 /// Pure: the accessor the rung above reaches instead of the slot array - validate against the AUDIOSTREAM
 /// kind, then hand back the record of a live slot. XUD_INVALID_ARG on a NULL out-record or table, or on a

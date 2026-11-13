@@ -41,6 +41,8 @@
 
 #include <assert.h> /* Required for: static_assert, the public token mirror below */
 #include <stdlib.h> /* Required for: calloc, free - the rung, the rows and the row array */
+
+#include <math.h> /* Required for: sqrtf/isfinite - the facing's length, the derived right and the vectors these calls refuse */
 #include <string.h> /* Required for: memcpy, the one move the row array's own growth makes */
 
 /*-----------------------------------------------------------------------------------------------
@@ -199,6 +201,18 @@ XudResult xud_sound_open(XudSound** outSound) {
         return xud_sound_result_from_ma(maResult);
     }
 
+    /* The listener, defaulted rather than left at the calloc: a device that was never moved is at
+       the world origin, and one that was never turned looks down +z. The position would have been
+       zero on its own; the forward would not have been, and a zero forward is no facing at all -
+       the one the derived right refuses rather than pans against.
+    */
+    sound->listener.position.x = 0.0f;
+    sound->listener.position.y = 0.0f;
+    sound->listener.position.z = 0.0f;
+    sound->listener.forward.x = 0.0f;
+    sound->listener.forward.y = 0.0f;
+    sound->listener.forward.z = 1.0f;
+
     *outSound = sound;
     return XUD_OK;
 }
@@ -226,6 +240,8 @@ XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle strea
     ma_sound_config soundConfig;
     ma_result maResult = MA_INVALID_ARGS;
     XudResult result = XUD_INTERNAL_ERROR;
+    float volume = 1.0f;
+    float pan = 0.0f;
 
     if ((sound == NULL) || (table == NULL)) {
         return XUD_INVALID_ARG;
@@ -291,14 +307,29 @@ XudResult xud_sound_play(XudSound* sound, XudHandleTable* table, XudHandle strea
             return xud_sound_result_from_ma(maResult);
         }
 
-        /* The record's level, rate and position, taken on the row the caller set them on: a setter that
-           before this play stored the values where the record keeps them, and this is the moment
-           they reach a node that can take them - a row that never is built plays the record's
-           values, not the engine's defaults.
+        /* The record's level, rate and position, taken on the row the caller set them on: a setter
+           that before this play stored the values where the record keeps them, and this is the mo
+           ment they reach a node that can take them - a row that is only now built plays the record's
+           values, not the engine's defaults. A SPATIAL record's node hears the value the geometry
+           produces from those values rather than the base itself, which is the one recompute the
+           public setters cannot do for a row that did not exist yet: a placed handle played for the
+           first time is placed from its first frame rather than centred for one frame and placed a
+           fter.
         */
-        ma_sound_set_volume(&row->sound, record->volume);
+        volume = record->volume;
+        pan = record->pan;
+        if ((record->spatial != 0u)
+            && (xud_audio_spatial_gain(&volume, &pan, &sound->listener, &record->sourcePosition, record->volume, record->pan) != XUD_OK)) {
+            /* The listener this rung cannot pan against, which is the facing the public setter refu
+              ses before it can be stored: the base is what the node hears, the same answer the row w
+              ould have taken before any of this existed.
+            */
+            volume = record->volume;
+            pan = record->pan;
+        }
+        ma_sound_set_volume(&row->sound, volume);
         ma_sound_set_pitch(&row->sound, record->pitch);
-        ma_sound_set_pan(&row->sound, record->pan);
+        ma_sound_set_pan(&row->sound, pan);
 
         sound->rows[stream.index] = row;
         sound->liveRows++;
@@ -533,6 +564,99 @@ XudResult xud_sound_set_row_pan(XudSound* sound, XudHandle stream, float pan) {
     row = sound->rows[stream.index];
     if (row != NULL) {
         ma_sound_set_pan(&row->sound, pan);
+    }
+
+    return XUD_OK;
+}
+
+/* One record's SPATIAL value, computed and written: the one place this rung turns a base level and a
+   base position plus this device's listener into the two numbers a node hears, so the setter that
+   moved one source and the setter that moved the ear both run this rather than each carrying a copy
+   of the write. The row is taken by INDEX rather than by handle because the walk below has an index
+   and no generation to go with it, and because the handle the caller holds was validated by whoever
+   reached this - a slot with no row behind it is the state the write asks for already being the state
+   it has, which is the same answer xud_sound_set_row_volume() gives for the same shape.
+*/
+static XudResult xud_sound_record_write_spatial(XudSound* sound, uint32_t index, const XudAudioStreamRecord* record) {
+    XudSoundRow* row = NULL;
+    float volume = 0.0f;
+    float pan = 0.0f;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    result = xud_audio_spatial_gain(&volume, &pan, &sound->listener, &record->sourcePosition, record->volume, record->pan);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    if ((sound->rows != NULL) && (index < sound->rowCount)) {
+        row = sound->rows[index];
+        if (row != NULL) {
+            ma_sound_set_volume(&row->sound, volume);
+            ma_sound_set_pan(&row->sound, pan);
+        }
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_sound_apply_spatial(XudSound* sound, XudHandleTable* table, XudHandle stream) {
+    const XudAudioStreamRecord* record = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if ((sound == NULL) || (table == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    result = xud_audio_get(table, stream, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (record->spatial == 0u) {
+        /* A stream that was never placed is not this call's business: its base level and position
+           are the whole story of what its node hears, exactly as they were before any of this.
+        */
+        return XUD_OK;
+    }
+
+    return xud_sound_record_write_spatial(sound, stream.index, record);
+}
+
+XudResult xud_sound_apply_spatial_all(XudSound* sound, XudHandleTable* table, uint32_t* outApplied) {
+    void* found = NULL;
+    const XudAudioStreamRecord* record = NULL;
+    uint32_t index = 0u;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if ((sound == NULL) || (table == NULL) || (outApplied == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    *outApplied = 0u;
+    if (table->slots[XUD_HANDLE_KIND_AUDIOSTREAM] == NULL) {
+        /* No AUDIOSTREAM array was ever allocated: nothing of this kind was ever loaded, which is a
+           count of zero and not an error - the answer xud_audio_close_all() gives for the same shape.
+        */
+        return XUD_OK;
+    }
+
+    /* The audio rung's own walk, bounded by the array's high mark rather than its capacity and
+       reading every slot that has a record behind it - a record left in a slot a caller released is
+       freed by the audio rung's teardown, not here, and reading one is reading memory that is still
+       alive. A record that is not spatial is skipped rather than written: the ear moving is no
+       reason to retell a node its level, which is the check that keeps a table of non-spatial
+       streams a walk and nothing else.
+    */
+    for (index = 0u; index < table->slotCount[XUD_HANDLE_KIND_AUDIOSTREAM]; index++) {
+        if (xud_handle_record_get(table, XUD_HANDLE_KIND_AUDIOSTREAM, index, &found) != XUD_OK) {
+            return XUD_INVALID_ARG;
+        }
+        record = (const XudAudioStreamRecord*)found;
+        if ((record != NULL) && (record->spatial != 0u)) {
+            result = xud_sound_record_write_spatial(sound, index, record);
+            if (result != XUD_OK) {
+                return result;
+            }
+            (*outApplied)++;
+        }
     }
 
     return XUD_OK;
@@ -803,7 +927,12 @@ XudResult xud_set_audio_volume(XudContext* context, XudHandle handle, float volu
     io = (XudAudioStreamRecord*)record;
     io->volume = volume;
     if (context->sound != NULL) {
-        result = xud_sound_set_row_volume(context->sound, handle, volume);
+        /* A SPATIAL handle's node is told what the geometry makes of the base level rather than the
+           base itself - the recompute the positional pair owns, run here so a base asked for after
+           a handle was placed reaches the node from the frame it was asked on.
+        */
+        result = (record->spatial != 0u) ? xud_sound_apply_spatial(context->sound, context->handleTable, handle)
+                                         : xud_sound_set_row_volume(context->sound, handle, volume);
         if (result != XUD_OK) {
             io->volume = 1.0f;
             return result;
@@ -917,7 +1046,12 @@ XudResult xud_set_audio_pan(XudContext* context, XudHandle handle, float pan) {
     io = (XudAudioStreamRecord*)record;
     io->pan = pan;
     if (context->sound != NULL) {
-        result = xud_sound_set_row_pan(context->sound, handle, pan);
+        /* A SPATIAL handle's node is told what the geometry makes of the base position rather than
+           the base itself - the same recompute the positional pair runs, and the reason the record
+           keeps the value the caller asked for while the node hears the placed one.
+        */
+        result = (record->spatial != 0u) ? xud_sound_apply_spatial(context->sound, context->handleTable, handle)
+                                         : xud_sound_set_row_pan(context->sound, handle, pan);
         if (result != XUD_OK) {
             io->pan = 0.0f;
             return result;
@@ -944,5 +1078,188 @@ XudResult xud_get_audio_pan(float* outPan, XudContext* context, XudHandle handle
     }
 
     *outPan = record->pan;
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The positional half of the public surface: one source per handle, one listener per device
+ *-----------------------------------------------------------------------------------------------*/
+
+/* The one vector these six refuse: a component that is not a number is a position no distance can
+   be measured to, and the same reason the audio rung's own check gives - the arithmetic would answer
+   a NaN, and a NaN written to a node is a silent row rather than a refusal.
+*/
+static uint32_t xud_sound_vector_is_finite(const XudVector3* vector) {
+    return ((isfinite((double)vector->x) != 0) && (isfinite((double)vector->y) != 0) && (isfinite((double)vector->z) != 0)) ? 1u : 0u;
+}
+
+XudResult xud_set_audio_source_position(XudContext* context, XudHandle handle, XudVector3 position) {
+    const XudAudioStreamRecord* record = NULL;
+    XudAudioStreamRecord* io = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The handle validated before the position is stored, the same order the level's setter gives:
+       a stale or a wrong-kind handle refuses as a bad argument on a machine with no audio backend,
+       which is what keeps this half of the area's checks answerable against a shell.
+    */
+    result = xud_audio_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+    if (xud_sound_vector_is_finite(&position) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The handle becomes SPATIAL here and stays so: the position is the whole of what makes it one,
+       so there is no un-place to answer and no second state a caller has to keep beside the one this
+       call just wrote. The record keeps the position and the two bases it already kept; the node
+       hears the value the geometry makes of all three, from the next line of this function on.
+    */
+    io = (XudAudioStreamRecord*)record;
+    io->spatial = 1u;
+    io->sourcePosition = position;
+    if (context->sound != NULL) {
+        result = xud_sound_apply_spatial(context->sound, context->handleTable, handle);
+        if (result != XUD_OK) {
+            /* The position stays stored: it is the caller's own ask, and the refusal below is the
+               device's facing rather than this write's shape.
+            */
+            return result;
+        }
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_get_audio_source_position(XudVector3* outPosition, XudContext* context, XudHandle handle) {
+    const XudAudioStreamRecord* record = NULL;
+    XudResult result = XUD_INTERNAL_ERROR;
+
+    if ((outPosition == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    result = xud_audio_get(context->handleTable, handle, &record);
+    if (result != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The origin a stream that was never placed keeps - the answer that goes with the non-spatial
+       state rather than a flag the caller would have to ask about separately, which is the state the
+       level's and the position's own getters already answer as the base they were given.
+    */
+    *outPosition = record->sourcePosition;
+    return XUD_OK;
+}
+
+XudResult xud_set_audio_listener_position(XudContext* context, XudVector3 position) {
+    uint32_t applied = 0u;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+    if (xud_sound_vector_is_finite(&position) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->sound == NULL) {
+        /* The listener is the audio device's own state, and a context that never spent one - never
+           played anything - has no ear to move. The refusal is UNSUPPORTED for the reason every
+           other call above gives for a rung below that is not there.
+        */
+        return XUD_UNSUPPORTED;
+    }
+
+    context->sound->listener.position = position;
+
+    /* Every SPATIAL row of this context rewritten on the way past, which is the recompute raylib
+       runs in the mixer's own pass and this rung has no thread of its own to borrow: one call per
+       frame from a caller that moved the camera, and every placed handle follows it.
+    */
+    return xud_sound_apply_spatial_all(context->sound, context->handleTable, &applied);
+}
+
+XudResult xud_get_audio_listener_position(XudVector3* outPosition, XudContext* context) {
+    if ((outPosition == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+    if (context->sound == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    *outPosition = context->sound->listener.position;
+    return XUD_OK;
+}
+
+XudResult xud_set_audio_listener_forward(XudContext* context, XudVector3 forward) {
+    float length;
+    uint32_t applied = 0u;
+
+    if (context == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+    if (xud_sound_vector_is_finite(&forward) == 0u) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->sound == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    length = sqrtf(forward.x * forward.x + forward.y * forward.y + forward.z * forward.z);
+    if (length <= 0.0f) {
+        /* A facing of no length faces nothing, and the derived right would be a divide by zero. */
+        return XUD_INVALID_ARG;
+    }
+    if ((forward.x == 0.0f) && (forward.z == 0.0f)) {
+        /* Straight up or straight down: cross(forward, {0,1,0}) is the zero vector, which is a facing
+           with no left or right to pan against - every source would answer the centre.
+        */
+        return XUD_INVALID_ARG;
+    }
+
+    /* Stored NORMALISED, so the arithmetic reads a unit facing and never re-divides by a length it
+       refused above.
+    */
+    context->sound->listener.forward.x = forward.x / length;
+    context->sound->listener.forward.y = forward.y / length;
+    context->sound->listener.forward.z = forward.z / length;
+
+    return xud_sound_apply_spatial_all(context->sound, context->handleTable, &applied);
+}
+
+XudResult xud_get_audio_listener_forward(XudVector3* outForward, XudContext* context) {
+    if ((outForward == NULL) || (context == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->handleTable == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+    if (context->sound == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    /* The unit facing the setter stored, +z for a device that was never turned: the read-back is the
+       normalised ask rather than the vector a caller handed over, which is the one direction this
+       pair does not answer the caller's own bytes back.
+    */
+    *outForward = context->sound->listener.forward;
     return XUD_OK;
 }

@@ -135,6 +135,11 @@ typedef struct XudSound {
     uint32_t
         rowCount; /* the array's own high mark, which moves with every growth step and is what bounds the teardown walk rather than the capacity */
     uint32_t rowCapacity; /* rows of the array allocated, a step of the doubling sequence below */
+    XudAudioListener
+        listener; /* the ONE ear of this device: raylib attaches a listener to a sound and this library hands out handles over a context, so
+     the listener belongs to the device rather than to a row, which is what makes one call per frame move every spatial row at once. The two
+     vectors are the world origin and +z until a caller says otherwise - xud_audio_open() spends no device and xud_sound_open() is the first
+     thing that could hold a listener, so the default is what a device that was never moved or turned answers */
     uint32_t liveRows; /* rows that own a node, which is what xud_sound_close() reports and walks */
 } XudSound;
 
@@ -259,6 +264,31 @@ XudResult xud_sound_set_row_pitch(XudSound* sound, XudHandle stream, float pitch
 /// surface states (-1.0 the full left to 1.0 the full right); XUD_OK when the row was told or
 /// had none.
 XudResult xud_sound_set_row_pan(XudSound* sound, XudHandle stream, float pan);
+
+/// Driver: one SPATIAL row's level and position, rewritten from the device's listener - the write
+/// the public positional pair runs instead of the base it was handed, so a row of a spatial handle
+/// never hears a value the geometry did not produce. Order: the stream's record read through the
+/// audio rung's accessor, the base and the source position handed to xud_audio_spatial_gain() beside
+/// this rung's own listener, then the two writes on the node the row owns IF it has one - a slot
+/// with no node is the state the call asks for already being the state it has, for the reason the
+/// volume half gives: the record keeps the base and xud_sound_play() takes the SPATIAL value from
+/// it when it builds the row. A NON-spatial handle is not this call's business at all and answers
+/// XUD_OK without a write. XUD_INVALID_ARG on a NULL sound rung or table, or on a handle that does
+/// not name a live AUDIOSTREAM slot of this table; XUD_UNSUPPORTED on a listener this rung cannot
+/// pan against (a forward parallel to the world's up, which the public setter refuses before it can
+/// be stored, so this is this file's shape rather than a caller's); XUD_OK once the node was told or
+/// had none.
+XudResult xud_sound_apply_spatial(XudSound* sound, XudHandleTable* table, XudHandle stream);
+
+/// Driver: every spatial row of this table rewritten, which is what a listener that MOVED owes the
+/// device - raylib recomputes in the mixer's own pass and this rung has no mixer thread of its own
+/// to borrow, so the recompute runs on the caller's thread inside the setter that moved the ear.
+/// The walk is the audio rung's own: bounded by the AUDIOSTREAM array's high mark rather than its
+/// capacity, skipping every slot with no record behind it and every record that is not spatial, so
+/// a table of non-spatial streams costs the walk and nothing else. XUD_INVALID_ARG on a NULL sound
+/// rung or table; XUD_OK with a count of the rows that were rewritten, one per spatial slot, on a
+/// table whose audio array was never allocated the count zero.
+XudResult xud_sound_apply_spatial_all(XudSound* sound, XudHandleTable* table, uint32_t* outApplied);
 
 /// Driver: one row's node destroyed and its bufferRef reference given back, which is what the audio
 /// rung's close runs BEFORE it frees the record the row reads: a node left attached over a block the
