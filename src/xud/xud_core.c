@@ -791,10 +791,11 @@ XudResult xud_begin_drawing(XudContext* context) {
        batch's whole growth policy, so a scene bigger than the initial capacity settles in a handf
        ul of frames and then stays - xud_batch_grow clears the ask it answered, so a frame that now
        fits asks nothing and the loop does not run again. The grow is a recreate, and this is the
-       one place the public boundary sits between two recordings: xud_frame_draw() waited and reset
-       the frame's fence before it returned, so nothing is in flight that could still be reading a
-       buffer the recreate retires, which is the same guard a swapchain recreate owes its old handle
-       and a depth recreate owes the attachment it replaces. */
+       one place the public boundary sits between two recordings. The recreate retires the batch's
+       old buffers, so nothing may be in flight that could still be reading them: this is the same
+       guard a swapchain recreate owes its old handle and a depth recreate owes the attachment it
+       replaces, and it is now taken explicitly with a wait-idle rather than inherited from the
+       frame loop having waited its own fence last frame. */
     for (;;) {
         uint32_t asked = 0u;
 
@@ -810,6 +811,10 @@ XudResult xud_begin_drawing(XudContext* context) {
                never completed bring-up. Reported rather than dereferenced - and the ask stays set,
                so the frame below is refused by its appends rather than drawn short. */
             return XUD_UNSUPPORTED;
+        }
+        result = xud_device_wait_idle(context->device, context->loader);
+        if (result != XUD_OK) {
+            return result;
         }
         result = xud_batch_grow(
             context->renderer->batch, context->loader, context->device, &context->physicalDevice->caps, context->allocator);

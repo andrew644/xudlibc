@@ -127,9 +127,9 @@ static void xud_test_frame_pure(void) {
         "both rows beside that count are left empty by the pure half, which has no semaphore handle "
         "in hand; the driver half points them at the frame's own semaphore and its own stage row, w"
         "hich is the storage that outlives the call");
-    xud_check((submit.commandBufferCount == XUD_FRAME_COMMAND_BUFFER_COUNT) && (submit.pCommandBuffers == NULL), "frame/submit-command-row",
-        "one buffer, and the row itself is the driver half's, because the buffer is what the drive"
-        "r allocated");
+    xud_check((submit.commandBufferCount == 1u) && (submit.pCommandBuffers == NULL), "frame/submit-command-row",
+        "one buffer per submit - the in-flight slot's own - and the row itself is the driver half's, because the buffer is what the "
+        "driver allocated");
     xud_check(submit.signalSemaphoreCount == 1u, "frame/submit-signal-count",
         "one signal, which is the render-finished semaphore: the submit-to-present boundary spelled "
         "as a queue-side semaphore, so a present cannot run ahead of its render on a device whose two "
@@ -333,22 +333,22 @@ static void xud_test_gpu_draw(void) {
     xud_check(context->renderer->framebufferCount == context->swapchain->imageCount, "gpu-draw/count-is-image-count",
         "the renderer recorded one framebuffer per swapchain image, and the count it hands the draw matches");
     xud_check((context->renderer->framebuffers->count == context->swapchain->imageCount)
-            && (context->renderer->frame->imageFenceCount == context->swapchain->imageCount),
+            && (context->renderer->frame->frameFenceCount == XUD_FRAME_IN_FLIGHT_COUNT),
         "gpu-draw/arrays-match-swapchain",
-        "the framebuffer array and the fence array both match the swapchain, which is the pair the "
-        "draw compares against the swapchain in hand");
+        "the framebuffer array matches the swapchain and the fence array matches the in-flight slots, "
+        "which is the pair the draw compares against the swapchain in hand");
     xud_check((context->renderer->frame->commandPool != VK_NULL_HANDLE) && (context->renderer->frame->commandBuffer != VK_NULL_HANDLE)
-            && (context->renderer->frame->imageAcquired != VK_NULL_HANDLE),
-        "gpu-draw/frame-loop-live", "the command pool, the command buffer and the acquire semaphore are live");
-    xud_check(context->renderer->frame->imageFences[0u] != VK_NULL_HANDLE, "gpu-draw/first-fence-live",
-        "and so is at least one of the per-image fences");
+            && (context->renderer->frame->imageAcquired[0u] != VK_NULL_HANDLE),
+        "gpu-draw/frame-loop-live", "the command pool, the command buffer and the acquire semaphores are live");
+    xud_check(context->renderer->frame->frameFences[0u] != VK_NULL_HANDLE, "gpu-draw/first-fence-live",
+        "and so is at least one of the per-slot fences");
     xud_check((context->renderer->framebuffers->rows[0u]->framebuffer != VK_NULL_HANDLE)
             && (context->renderer->framebuffers->rows[0u]->view != VK_NULL_HANDLE),
         "gpu-draw/first-row-live", "the first framebuffer row and the image view of the swapchain image it was built for are live");
     xud_check(context->renderer->framebuffers->rows[0u]->createInfo.width == 256u, "gpu-draw/row-extent",
         "the row was built at the context's extent, copied from the swapchain rather than re-queried");
-    xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/nothing-in-flight-before",
-        "no frame has been drawn, so no fence is in flight");
+    xud_check((context->renderer->frame->inFlight[0u] == 0u) && (context->renderer->frame->inFlight[1u] == 0u),
+        "gpu-draw/nothing-in-flight-before", "no frame has been drawn, so no slot is in flight");
     xud_check(context->renderer->frame->recreateWanted == 0u, "gpu-draw/no-recreate-wanted-before",
         "and no acquire has answered yet, so the frame loop opens with no recreate wanted - the field "
         "is written at open rather than left to a zero that happens to be calloc's");
@@ -400,8 +400,8 @@ static void xud_test_gpu_draw(void) {
     xud_check(context->renderer->frame->framesDrawn == 0u, "gpu-draw/refusals-drew-nothing",
         "not one of the refusals above acquired, recorded or submitted - the counter is still zero, "
         "which is the whole point of checking the rows and their owners before the acquire");
-    xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/refusals-in-flight-still-none",
-        "and no fence was signalled, so a refused frame leaves nothing in flight to be waited");
+    xud_check((context->renderer->frame->inFlight[0u] == 0u) && (context->renderer->frame->inFlight[1u] == 0u),
+        "gpu-draw/refusals-in-flight-still-none", "and no fence was signalled, so a refused frame leaves nothing in flight to be waited");
 
     /* The batch the frame loop is about to consume, read before the first frame reaches it: the loop
        names the batch's six buffers in a copy, a vertex bind and an index bind, so a nil batch or a
@@ -523,8 +523,8 @@ static void xud_test_gpu_draw(void) {
         "the last present named this context's own swapchain");
     xud_check(context->renderer->frame->lastImageIndex < context->swapchain->imageCount, "gpu-draw/last-index-recorded",
         "the index the last acquire wrote is recorded in the frame loop");
-    xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-draw/nothing-in-flight-after",
-        "the last frame waited and reset its fence, so the teardown's fence guard has nothing left to wait");
+    xud_check(context->renderer->frame->currentFrame == (XUD_TEST_GPU_DRAW_FRAMES % XUD_FRAME_IN_FLIGHT_COUNT), "gpu-draw/ring-advanced",
+        "the in-flight ring advanced once per drawn frame, and the frame the loop just drew is still on the go");
     xud_check((context->renderer->frame->recreateWanted == 0u) || (context->renderer->frame->recreateWanted == 1u),
         "gpu-draw/recreate-flag-is-two-state",
         "the flag is the two-state answer the swapchain funnel writes, never a count of how many acquires asked for one: a machine "

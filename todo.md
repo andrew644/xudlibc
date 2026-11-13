@@ -4,9 +4,6 @@ Renderer roadmap: each item only depends on items above it.
 
 ## Stage 1 - plumbing (invisible, but everything later pays for skipping it)
 
-- **S1.1** Let the CPU and GPU work on different frames at once. Today the CPU waits for
-  the GPU every frame; fixing this first means later features get their own work slots
-  instead of fighting over one.
 - **S1.2** Give the engine a second graphics-card queue for moving data, so loading a
   texture stops freezing the picture.
 - **S1.3** One central place that tracks what each image is being used for right now (a
@@ -45,9 +42,3 @@ Renderer roadmap: each item only depends on items above it.
   lights.
 - **S4.3** Ray-traced reflections and global illumination. Last: most memory, most new
   machinery, fewest players with the hardware.
-
-## Why this order at all
-
-- Anything expensive to change once the game depends on it - the frame-waiting scheme, the
-  texture-slot design, the depth format - goes first.
-- Anything that changes how colors look goes before anyone spends time tuning colors.

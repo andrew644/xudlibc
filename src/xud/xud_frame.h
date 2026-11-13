@@ -75,13 +75,11 @@
  * The rung's own constants
  *-----------------------------------------------------------------------------------------------*/
 
-#define XUD_FRAME_COMMAND_BUFFER_COUNT                                                                                                     \
-    1u /* ONE command buffer for the whole rung: the plan's                                                                                \
-          "one command buffer", and the reason it is one and                                                                               \
-          not one-per-image is that the buffer is recorded and                                                                             \
-          submitted inside one frame here - a per-image buffer                                                                             \
-          would be the pipelined frame loop the plan does not                                                                              \
-          ask for yet */
+#define XUD_FRAME_IN_FLIGHT_COUNT                                                                                                          \
+    2u /* how many frames the CPU may have on the go at once: one slot per in-flight frame, each with its own command                     \
+          buffer, acquire semaphore, render-finished semaphore and fence. The CPU waits the slot's fence before it re-                    \
+          records the slot, so frame N+1 records while the GPU is still drawing frame N */
+#define XUD_FRAME_COMMAND_BUFFER_COUNT XUD_FRAME_IN_FLIGHT_COUNT /* one command buffer per in-flight slot */
 #define XUD_FRAME_SUBMIT_COUNT                                                                                                             \
     1u /* one VkSubmitInfo per submit: the plan's one batch flushed                                                                        \
           per frame, and the batch layer that would make this more th                                                                      \
@@ -175,7 +173,7 @@
          o be signalled, and the list is one fence, so the pair is the un                                                                  \
          ambiguous form rather than a bit pattern to reason about */
 
-static_assert(XUD_FRAME_COMMAND_BUFFER_COUNT == 1u, "one command buffer, per the plan");
+static_assert(XUD_FRAME_IN_FLIGHT_COUNT >= 2u, "two or more frames may be on the go, which is what makes the loop pipelined");
 static_assert(XUD_FRAME_SUBMIT_COUNT == 1u, "one submit per frame, per the plan");
 static_assert(XUD_FRAME_FIRST_BINDING == 0u, "the batch's four streams are bindings 0..3");
 static_assert(XUD_FRAME_VERTEX_READ_ACCESS == VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT, "the streams are read as vertex attributes");
@@ -200,35 +198,36 @@ static_assert(XUD_FRAME_BARRIER_STAGES == VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT,
 typedef struct XudFrame XudFrame;
 struct XudFrame {
     VkCommandPool commandPool; /* the one pool this rung owns */
-    VkCommandBuffer commandBuffer; /* allocated from it, once, and re-recorded every frame */
-    VkSemaphore imageAcquired; /* the acquire semaphore: acquire signals it, the submit waits on
-                                  it before anything reads the image. ONE semaphore, reused every
-                                  frame, and the reason that is legal is that the frame loop waits
-                                  it before the next acquire - a second acquire while one is still
-                                  unwaited would be two signals on a semaphore nobody waited */
-    VkSemaphore renderFinished; /* the submit-to-present boundary: the frame's submit signals it, and the present's
-                                    wait pair names it, so a present cannot run ahead of its render when the two
-                                    role queues are distinct VkQueue handles - two queues have no implicit ordering
-                                    between their submissions, and a bare vkQueuePresentKHR waits on nothing. On a
-                                    family that exposes one queue the pair is a no-op. Reused every frame for the
-                                    same reason the acquire semaphore is: the fence the loop waits at the end of the
-                                    frame is signalled only after the present finished, so the semaphore cannot be
-                                    signalled twice without a wait in between */
-    VkFence* imageFences; /* the plan's "one VkFence per swapchain image", heap array, index-cor
-                            respondent with the swapchain's image array - the fence that bounds a
-                            frame is the fence of the image that frame wrote, which is what makes
-                            "this image may be written again" the question the fence answers */
-    uint32_t imageFenceCount; /* how many fences are live - always the swapchain's imageCount */
-    uint32_t imageFenceCapacity; /* fences allocated for it, allocated exactly rather than doubled
-                                    (the count comes from a query that has an upper limit, the sam
-                                    e rule xud_framebuffer_array_open() states) */
-    VkImageLayout* imageLayouts; /* the layout each swapchain image is in as this rung LEFT it, index-correspondent with the fence array. It
+    VkCommandBuffer commandBufferRows[XUD_FRAME_IN_FLIGHT_COUNT]; /* allocated from it, ONE per in-flight slot: the draw
+                                                                       records into the slot its own fence has retired, so a
+                                                                       buffer the GPU may still be running is never re-recorded */
+    VkCommandBuffer commandBuffer; /* borrowed: commandBufferRows[currentFrame] as of the last draw - the slot the loop
+                                       records into, kept as a field so every recording site reads one name */
+    VkSemaphore imageAcquired[XUD_FRAME_IN_FLIGHT_COUNT]; /* one acquire semaphore per slot: the acquire signals it and that
+                                                              slot's submit waits it before anything reads the image. The slot's
+                                                              fence is waited before the slot's next acquire, so the semaphore
+                                                              cannot be signalled twice with no wait in between */
+    VkSemaphore renderFinished[XUD_FRAME_IN_FLIGHT_COUNT]; /* the submit-to-present boundary, one per slot: the slot's submit
+                                                               signals it and the present queue's no-command wait submit waits
+                                                               it, so a present cannot run ahead of its render when the two role
+                                                               queues are distinct VkQueue handles. The wait submit is enqueued
+                                                               before the same slot is next signalled, which is what keeps the
+                                                               per-slot reuse legal */
+    VkFence frameFences[XUD_FRAME_IN_FLIGHT_COUNT]; /* one fence per in-flight slot, vkQueueSubmit's fence argument: waited
+                                                        and reset at the START of the slot's next use rather than at the end
+                                                        of its own frame, which is the whole of the CPU/GPU overlap */
+    uint32_t frameFenceCount; /* how many fences are live - always XUD_FRAME_IN_FLIGHT_COUNT */
+    uint32_t inFlight[XUD_FRAME_IN_FLIGHT_COUNT]; /* 1 once a submit named the slot and before the loop waited that slot's
+                                                      fence again: what tells the teardown which fences may still bound work,
+                                                      because waiting a fence nothing ever submitted would hang the close */
+    uint32_t currentFrame; /* the slot the next xud_frame_draw() records into; advances after every submit */
+    VkImageLayout*
+        imageLayouts; /* the layout each swapchain image is in as this rung LEFT it, index-correspondent with the swapchain's image array. It
                                     is state, not decoration: the render pass this rung begins requires its attachment to be in the
                                     attachment's initialLayout from the first sample, and the spec requires the image to have been in that
                                     layout when the pass begins, so a barrier has to run before the pass and a barrier names the layout the
                                     image is in NOW. The array is per image because acquire chooses the image, not this rung. */
-    uint32_t imageLayoutCount; /* how many layout rows are live - always the swapchain's imageCount, allocated exactly by the same rule as
-                                  the fence array above */
+    uint32_t imageLayoutCount; /* how many layout rows are live - always the swapchain's imageCount, allocated exactly */
     VkImageLayout depthLayout; /* the layout the pass's ONE depth image is in as this rung LEFT it, same
                                   shape as the array above but one field rather than an array: the colour
                                   images are one per swapchain image and acquire chooses among them, whi
@@ -240,11 +239,6 @@ struct XudFrame {
                                   inalLayout for a depth attachment are the same layout - a depth attachm
                                   ent is never presented, so it has no PRESENT_SRC_KHR half to move back
                                   out to. */
-    VkFence lastFrameFence; /* borrowed: which fence the last xud_frame_draw() signalled, VK_NULL_
-                               HANDLE when no frame is in flight. The wait-then-reset pair at the
-                               end of a frame is what keeps every fence in the not-signalled state
-                               the NEXT submit requires, and recording which one it was is what ma
-                               kes that pair testable rather than a claim */
 
     /* --- the create-infos and the rows the driver calls were handed, kept beside the handles the
        same way every layer above keeps its own - the rule xud_device.c states for a queue row poin
@@ -266,13 +260,6 @@ struct XudFrame {
                                                                 because the submit row points at it
                                                                 and must not point at a frame-local
                                                                 array that has gone out of scope */
-    VkCommandBuffer commandBufferRows[XUD_FRAME_COMMAND_BUFFER_COUNT]; /* the array vkAllocateComm
-                                                                         andBuffers was handed and v
-                                                                         kFreeCommandBuffers hands b
-                                                                         ack (VkCommandBuffer is alre
-                                                                         ady a pointer typedef, so th
-                                                                         e array is of the handle its
-                                                                         elf, not of a pointer to it) */
     VkSwapchainKHR presentedSwapchain; /* BORROWED: the swapchain the last present named. The field
                                          is not decoration - xud_frame_draw() compares it against th
                                          e swapchain in hand, which is what makes a recreate that rep
@@ -362,12 +349,13 @@ XudResult xud_frame_fill_present_wait(VkSubmitInfo* outSubmit, VkSemaphore rende
 /// or a NULL draw row.
 XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRow);
 
-/// Driver: the whole bring-up of this rung - vkCreateCommandPool, vkAllocateCommandBuffers, vkCre
-/// ateSemaphore, and vkCreateFence once per swapchain image. Before any call: the loader is open,
+/// Driver: the whole bring-up of this rung - vkCreateCommandPool, vkAllocateCommandBuffers once per
+/// in-flight slot, vkCreateSemaphore twice per slot (the acquire and the render-finished pair), and
+/// vkCreateFence once per slot. Before any call: the loader is open,
 /// its device rows are this device's rows, and EVERY destroy row this teardown needs is checked BE
 /// FORE the create rows it would otherwise leak (the rule xud_window.c and xud_swapchain.c state fo
-/// r a surface and a swapchain, one rung below). On XUD_OK *outFrame owns a pool, a command buffer,
-/// a semaphore and imageCount fences, every create-info above says what each was created with, and
+/// r a surface and a swapchain, one rung below). On XUD_OK *outFrame owns a pool, one command buffer
+/// per in-flight slot, the two semaphore rows and the fence row, every create-info above says what each was created with, and
 /// the wait-stage row names the vertex stage (the stage the acquire semaphore is waited AT, which i
 /// s where the draw's work begins). On any error it stays NULL and everything created so far is des
 /// troyed in reverse order. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a frame,
@@ -376,9 +364,7 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
 /// needs is nil.
 XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain);
 
-/// Driver: one frame, end to end - acquire, reset + record the command (begin, viewport, scissor, bind pipeline, begin render pass with the
-/// pass's clear values, draw, end pass, end), submit to the graphics queue with the image's own fence, present on the pr esent queue, then
-/// wait that fence and reset it so the NEXT submit starts from the not-signalled state the spec requires. The framebuffer is picked by the
+/// Driver: one frame, end to end - wait the slot's fence if the slot still bounds work, acquire, reset + record the slot's command buffer (begin, viewport, scissor, bind pipeline, begin render pass with the pass's clear values, draw, end pass, end), submit to the graphics queue with the slot's own fence, present on the present queue. The CPU does NOT wait its own frame at the end: the next use of the same slot waits the fence, which is what lets frame N+1 record while frame N still runs. The framebuffer is picked by the
 /// index acquire wrote, through the array accessor, so a recreate that replaced the array is a caught error rather than a stale row (the r
 /// epo's accessor rule, one rung below). On XUD_OK *outImageIndex is the index that was presented a
 /// nd frame->framesDrawn has bumped; on any error the frame is left in the state it was in before t
@@ -428,8 +414,8 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
 
 /// Driver: retire everything this rung owns, in the one order that is correct - vkWaitForFences on
-/// a fence still in flight, then vkFreeCommandBuffers, vkDestroySemaphore, vkDestroyFence for ever
-/// y image fence, vkDestroyCommandPool LAST because the command buffer belongs to the pool and the
+/// every fence still bounding a submission, then vkFreeCommandBuffers, vkDestroySemaphore, vkDestroyFence for ever
+/// y in-flight fence, vkDestroyCommandPool LAST because the command buffer belongs to the pool and the
 /// spec requires the pool to outlive every buffer allocated from it. XUD_ALREADY when the pointer o
 /// wns no frame; XUD_INVALID_ARG on a NULL pointer-to-pointer or a NULL loader/device; XUD_UNSUPPOR
 /// TED when the loader is closed, its rows are not this device's, or a destroy row is nil while the

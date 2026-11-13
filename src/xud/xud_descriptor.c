@@ -715,6 +715,13 @@ XudResult xud_descriptor_bind_texture_slot(XudDescriptor* descriptor, XudLoader*
     if (loader->deviceTable.vkUpdateDescriptorSets == NULL) {
         return XUD_UNSUPPORTED;
     }
+    /* Drain the in-flight frames: a submitted command buffer may still be binding this set. */
+    {
+        XudResult guard = xud_device_wait_idle(device, loader);
+        if (guard != XUD_OK) {
+            return guard;
+        }
+    }
 
     if (xud_descriptor_pick_free_slot(descriptor, &slot) != XUD_OK) {
         return XUD_OUT_OF_RESOURCES;
@@ -756,6 +763,12 @@ XudResult xud_descriptor_release_texture_slot(XudDescriptor* descriptor, XudLoad
     }
     if (loader->deviceTable.vkUpdateDescriptorSets == NULL) {
         return XUD_UNSUPPORTED;
+    }
+    {
+        XudResult guard = xud_device_wait_idle(device, loader);
+        if (guard != XUD_OK) {
+            return guard;
+        }
     }
 
     if (xud_descriptor_fill_texture_slot_write(
@@ -803,6 +816,12 @@ XudResult xud_descriptor_update_texture_slot(XudDescriptor* descriptor, XudLoade
     }
     if (loader->deviceTable.vkUpdateDescriptorSets == NULL) {
         return XUD_UNSUPPORTED;
+    }
+    {
+        XudResult guard = xud_device_wait_idle(device, loader);
+        if (guard != XUD_OK) {
+            return guard;
+        }
     }
 
     if (xud_descriptor_fill_texture_slot_write(descriptor, slot, view, sampler, imageLayout) != XUD_OK) {

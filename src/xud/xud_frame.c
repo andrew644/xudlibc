@@ -1,7 +1,8 @@
 /***********************************************************************************************
  *
- *   xud_frame.c - the frame loop: one command pool, one command buffer, the acquire/submit/p
- *          resent triple, and the acquire semaphore + per-image fences that bound a frame
+ *   xud_frame.c - the frame loop: one command pool, one command buffer per in-flight slot, the
+ *          acquire/submit/present triple, and the per-slot acquire semaphore, render-finished
+ *          pair + fence that bounds a frame
  *
  *   Owns : vkCreateCommandPool / vkAllocateCommandBuffers / vkCreateSemaphore / vkCreateFence per
  *          swapchain image, one recorded frame (bind the variant's pipeline row per recorded draw
@@ -26,21 +27,21 @@
  *          frame's submit signals it and a no-command submit on the present queue waits it, which is the
  *          submit-to-present boundary for a device whose two role queues are two distinct handles - two
  *          queues have no implicit ordering between their submissions, and a bare vkQueuePresentKHR waits
- *          on nothing. ONE fence per swapchain image, handed to vkQueueSub
- *          mit as its fence argument and waited and reset at the end of the frame that wrote it, and no
+ *          on nothing. ONE fence per in-flight slot, handed to vkQueueSubmit as its fence argument
+ *          and waited and reset at the START of that slot's next use, and no
  *          VK_KHR_vulkan_memory_model anywhere.
- *          The fence array is per IMAGE rather than per frame, and that is the point of the plan's wording:
- *          what has to be true before an image is written again is that the presentation of THAT image
- *          finished.
+ *          The fence array is per FRAME-SLOT rather than per image: what the fence bounds is the
+ *          slot's recorded work, and the image a frame wrote is recycled by the swapchain's own
+ *          acquire, which is the boundary that says a presentation of that image finished.
  *
- *          The loop is single-flight BY DECISION, and this note is where that decision is recorded
- *          (issues.md #9): step 7's fence wait runs to completion before xud_frame_draw returns, so the
- *          CPU cannot start frame N+1 while the GPU is still drawing frame N, and throughput is capped at
- *          max(CPU frame, GPU frame) rather than their overlap. That is the price the fence being one per
- *          image, the acquire/submit/present triple carrying no frame array, and a completed frame leaving
- *          the device idle when it returns, all buy. Moving to triple-buffering with per-frame semaphores
- *          is a rewrite of this rung, not a patch, and until that rewrite this wait is a recorded ceiling
- *          rather than a defect to fix.
+ *          The loop is PIPELINED: XUD_FRAME_IN_FLIGHT_COUNT frames may be on the go at once, each
+ *          slot carrying its own command buffer, acquire semaphore, render-finished semaphore and
+ *          fence. xud_frame_draw waits the slot's fence (if that slot still bounds work) BEFORE it
+ *          re-records the slot and returns without waiting its own frame, so the CPU records frame
+ *          N+1 while the GPU still draws frame N; the wait only ever holds the CPU back to at most
+ *          one frame behind the GPU. The per-slot semaphore reuse is legal because each slot's
+ *          wait submit is enqueued before the same slot is next signalled - the host orders the
+ *          alternating signal/wait sequence, and the fence bounds the graphics half of it.
  *
  *          The acquire and the present are the only two calls here whose VkResult answers about the swap
  *          chain rather than about the call: VK_SUBOPTIMAL_KHR and VK_ERROR_OUT_OF_DATE_KHR are a frame
@@ -218,7 +219,7 @@ XudResult xud_frame_fill_submit(VkSubmitInfo* outSubmit, VkPresentInfoKHR* outPr
     outSubmit->pWaitSemaphores = NULL; /* filled by the driver half, which is the side that has a semap
                                          hore handle in hand */
     outSubmit->pWaitDstStageMask = NULL; /* filled by the driver half, which owns the stage row */
-    outSubmit->commandBufferCount = XUD_FRAME_COMMAND_BUFFER_COUNT;
+    outSubmit->commandBufferCount = 1u; /* ONE command buffer per submit - the in-flight slot's own */
     outSubmit->pCommandBuffers = NULL; /* filled by the driver half, which owns the buffer array */
     outSubmit->signalSemaphoreCount = 1u;
     outSubmit->pSignalSemaphores = NULL; /* filled by the driver half, which owns the semaphore storage: the pure half
@@ -332,7 +333,7 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
     uint32_t index = 0u;
-    uint32_t fencesMade = 0u;
+    uint32_t buffersAllocated = 0u;
 
     if ((outFrame == NULL) || (*outFrame != NULL)) {
         return XUD_INVALID_ARG;
@@ -374,26 +375,11 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
         return XUD_OUT_OF_MEMORY;
     }
 
-    frame->imageFences = calloc(swapchain->imageCount, sizeof(*frame->imageFences));
-    if (frame->imageFences == NULL) {
-        free(frame);
-        return XUD_OUT_OF_MEMORY;
-    }
-    frame->imageFenceCapacity = swapchain->imageCount;
-
-    /* The per-image layout record, and the reason it is a record rather than a constant: a swapchain
-       image has a layout, the render pass this rung begins requires its attachment to be in the
-       attachment's initialLayout, and the spec requires the image to have been IN that layout when
-       the pass begins (VUID-VkRenderPassBeginInfo-framebuffer-initialLayout-00009). The only way to
-       get there is a barrier, and a barrier names the layout the image is in NOW - so the rung has to
-       know it. It starts at VK_IMAGE_LAYOUT_UNDEFINED, which is what a freshly created swapchain
-       image really is, and every frame leaves its image in the pass's finalLayout, which is the
-       source layout of the NEXT frame's barrier. Recording it is what makes that pair testable
-       rather than a claim, and the reason it is per image rather than one value is that the images
-       are acquired in an order this rung does not control. */
+    /* The per-image layout record: the pass requires its attachment in the attachment's
+       initialLayout, a barrier is the only way across, and a barrier names the layout the image
+       is in NOW. Images start UNDEFINED; every frame leaves its image in the pass's finalLayout. */
     frame->imageLayouts = calloc(swapchain->imageCount, sizeof(*frame->imageLayouts));
     if (frame->imageLayouts == NULL) {
-        free(frame->imageFences);
         free(frame);
         return XUD_OUT_OF_MEMORY;
     }
@@ -401,18 +387,10 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
     for (index = 0u; index < swapchain->imageCount; index++) {
         frame->imageLayouts[index] = VK_IMAGE_LAYOUT_UNDEFINED;
     }
-
-    /* The depth image's layout row, written rather than left at zero: VK_IMAGE_LAYOUT_UNDEFINED happe
-       ns to be 0 and calloc would give it, but the field is state the first frame's barrier reads as
-       its oldLayout, and writing the constant is what says so to a reader rather than to a numerica
-       l coincidence. One field, not an array - see the note in xud_frame.h for why the colour half i
-       s an array and this half is not. */
     frame->depthLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 
-    /* The fence and the semaphore create-infos are the empty forms: no initial fence state is asked for
-       (VK_FENCE_CREATE_SIGNALED_BIT would be a fence that starts already signalled, which is the opposit
-       e of what a fence that has to bound a submission means), and VkSemaphoreCreateInfo has nothing els
-       e to say. */
+    /* The fence and the semaphore create-infos are the empty forms: a fence that started already
+       signalled is the opposite of a fence that has to bound a submission. */
     frame->semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     frame->semaphoreInfo.pNext = NULL;
     frame->semaphoreInfo.flags = 0u;
@@ -420,15 +398,13 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
     frame->fenceInfo.pNext = NULL;
     frame->fenceInfo.flags = 0u;
 
-    /* The wait-stage row is filled at open rather than per frame: it is part of the submit row the stru
-       ct keeps, and a stage row that was left at 0 would be a wait bound at no stage at all, which is a
-       submission that reads the image before the semaphore was waited. */
+    /* The wait-stage row is filled at open rather than per frame: it is part of the submit row the
+       struct keeps, and a stage row left at 0 would wait the acquire semaphore at no stage at all. */
     frame->waitStages[0u] = XUD_FRAME_WAIT_STAGE;
 
     result = xud_frame_fill_pool_info(&frame->poolInfo, device->queueRow.queueFamilyIndex);
     if (result != XUD_OK) {
         free(frame->imageLayouts);
-        free(frame->imageFences);
         free(frame);
         return result;
     }
@@ -436,104 +412,100 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
     vk = loader->deviceTable.vkCreateCommandPool(device->device, &frame->poolInfo, NULL, &frame->commandPool);
     if (vk != VK_SUCCESS) {
         free(frame->imageLayouts);
-        free(frame->imageFences);
         free(frame);
         return xud_result_from_vk(vk);
     }
 
     result = xud_frame_fill_allocation(&frame->allocationInfo, frame->commandPool);
     if (result != XUD_OK) {
-        (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
-        frame->commandPool = VK_NULL_HANDLE;
-        free(frame->imageLayouts);
-        free(frame->imageFences);
-        free(frame);
-        return result;
+        goto fail;
     }
 
     vk = loader->deviceTable.vkAllocateCommandBuffers(device->device, &frame->allocationInfo, frame->commandBufferRows);
     if (vk != VK_SUCCESS) {
-        (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
-        frame->commandPool = VK_NULL_HANDLE;
-        free(frame->imageLayouts);
-        free(frame->imageFences);
-        free(frame);
-        return xud_result_from_vk(vk);
+        result = xud_result_from_vk(vk);
+        goto fail;
+    }
+    buffersAllocated = 1u;
+    for (index = 0u; index < XUD_FRAME_IN_FLIGHT_COUNT; index++) {
+        if (frame->commandBufferRows[index] == VK_NULL_HANDLE) {
+            result = XUD_INTERNAL_ERROR;
+            goto fail;
+        }
     }
     frame->commandBuffer = frame->commandBufferRows[0u];
-    if (frame->commandBuffer == VK_NULL_HANDLE) {
-        loader->deviceTable.vkFreeCommandBuffers(
-            device->device, frame->commandPool, XUD_FRAME_COMMAND_BUFFER_COUNT, frame->commandBufferRows);
-        (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
-        frame->commandPool = VK_NULL_HANDLE;
-        frame->commandBuffer = VK_NULL_HANDLE;
-        free(frame->imageLayouts);
-        free(frame->imageFences);
-        free(frame);
-        return XUD_INTERNAL_ERROR;
-    }
 
-    vk = loader->deviceTable.vkCreateSemaphore(device->device, &frame->semaphoreInfo, NULL, &frame->imageAcquired);
-    if (vk != VK_SUCCESS) {
-        loader->deviceTable.vkFreeCommandBuffers(
-            device->device, frame->commandPool, XUD_FRAME_COMMAND_BUFFER_COUNT, frame->commandBufferRows);
-        (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
-        frame->commandPool = VK_NULL_HANDLE;
-        frame->commandBuffer = VK_NULL_HANDLE;
-        free(frame->imageLayouts);
-        free(frame->imageFences);
-        free(frame);
-        return xud_result_from_vk(vk);
-    }
-
-    vk = loader->deviceTable.vkCreateSemaphore(device->device, &frame->semaphoreInfo, NULL, &frame->renderFinished);
-    if (vk != VK_SUCCESS) {
-        (void)loader->deviceTable.vkDestroySemaphore(device->device, frame->imageAcquired, NULL);
-        frame->imageAcquired = VK_NULL_HANDLE;
-        loader->deviceTable.vkFreeCommandBuffers(
-            device->device, frame->commandPool, XUD_FRAME_COMMAND_BUFFER_COUNT, frame->commandBufferRows);
-        (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
-        frame->commandPool = VK_NULL_HANDLE;
-        frame->commandBuffer = VK_NULL_HANDLE;
-        free(frame->imageLayouts);
-        free(frame->imageFences);
-        free(frame);
-        return xud_result_from_vk(vk);
-    }
-
-    for (index = 0u; index < swapchain->imageCount; index++) {
-        vk = loader->deviceTable.vkCreateFence(device->device, &frame->fenceInfo, NULL, &frame->imageFences[index]);
+    /* One acquire + render-finished semaphore pair per in-flight slot; the handle lands in the
+       struct only once the create answered success, so the fail path below retires exactly the
+       live rows. */
+    for (index = 0u; index < XUD_FRAME_IN_FLIGHT_COUNT; index++) {
+        VkSemaphore made = VK_NULL_HANDLE;
+        vk = loader->deviceTable.vkCreateSemaphore(device->device, &frame->semaphoreInfo, NULL, &made);
         if (vk != VK_SUCCESS) {
-            for (fencesMade = index; fencesMade > 0u; fencesMade--) {
-                loader->deviceTable.vkDestroyFence(device->device, frame->imageFences[fencesMade - 1u], NULL);
-                frame->imageFences[fencesMade - 1u] = VK_NULL_HANDLE;
-            }
-            (void)loader->deviceTable.vkDestroySemaphore(device->device, frame->imageAcquired, NULL);
-            frame->imageAcquired = VK_NULL_HANDLE;
-            (void)loader->deviceTable.vkDestroySemaphore(device->device, frame->renderFinished, NULL);
-            frame->renderFinished = VK_NULL_HANDLE;
-            loader->deviceTable.vkFreeCommandBuffers(
-                device->device, frame->commandPool, XUD_FRAME_COMMAND_BUFFER_COUNT, frame->commandBufferRows);
-            (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
-            frame->commandPool = VK_NULL_HANDLE;
-            frame->commandBuffer = VK_NULL_HANDLE;
-            free(frame->imageLayouts);
-            free(frame->imageFences);
-            free(frame);
-            return xud_result_from_vk(vk);
+            result = xud_result_from_vk(vk);
+            goto fail;
         }
-        fencesMade = (index + 1u);
+        frame->imageAcquired[index] = made;
+        made = VK_NULL_HANDLE;
+        vk = loader->deviceTable.vkCreateSemaphore(device->device, &frame->semaphoreInfo, NULL, &made);
+        if (vk != VK_SUCCESS) {
+            result = xud_result_from_vk(vk);
+            goto fail;
+        }
+        frame->renderFinished[index] = made;
     }
-    frame->imageFenceCount = fencesMade;
 
-    /* No acquire has answered yet, so no recreate is wanted yet - written rather than left to calloc's
-       zero, because this is state a rung above reads rather than a numeric coincidence, the same re
-       ason xud_frame_open() writes the depth layout row for. */
+    /* One fence per in-flight slot: the fence bounds the slot's recorded work, and the slot's
+       next use is what waits and resets it. */
+    for (index = 0u; index < XUD_FRAME_IN_FLIGHT_COUNT; index++) {
+        VkFence madeFence = VK_NULL_HANDLE;
+        vk = loader->deviceTable.vkCreateFence(device->device, &frame->fenceInfo, NULL, &madeFence);
+        if (vk != VK_SUCCESS) {
+            result = xud_result_from_vk(vk);
+            goto fail;
+        }
+        frame->frameFences[index] = madeFence;
+    }
+    frame->frameFenceCount = XUD_FRAME_IN_FLIGHT_COUNT;
+
+    /* Nothing is in flight and no acquire has answered yet - written rather than left to calloc's
+       zero, because these are rows the draw and the teardown read as state. */
+    for (index = 0u; index < XUD_FRAME_IN_FLIGHT_COUNT; index++) {
+        frame->inFlight[index] = 0u;
+    }
+    frame->currentFrame = 0u;
     frame->recreateWanted = 0u;
     frame->presentedSwapchain = swapchain->swapchain; /* borrowed, updated by every draw */
 
     *outFrame = frame;
     return XUD_OK;
+
+fail:
+    /* Everything created so far, retired in the reverse of the create order; a row of the calloc'd
+       struct is VK_NULL_HANDLE until its own create wrote a handle, so a non-null row is exactly a
+       live object. */
+    for (index = XUD_FRAME_IN_FLIGHT_COUNT; index > 0u; index--) {
+        if (frame->frameFences[index - 1u] != VK_NULL_HANDLE) {
+            (void)loader->deviceTable.vkDestroyFence(device->device, frame->frameFences[index - 1u], NULL);
+        }
+    }
+    for (index = XUD_FRAME_IN_FLIGHT_COUNT; index > 0u; index--) {
+        if (frame->renderFinished[index - 1u] != VK_NULL_HANDLE) {
+            (void)loader->deviceTable.vkDestroySemaphore(device->device, frame->renderFinished[index - 1u], NULL);
+        }
+        if (frame->imageAcquired[index - 1u] != VK_NULL_HANDLE) {
+            (void)loader->deviceTable.vkDestroySemaphore(device->device, frame->imageAcquired[index - 1u], NULL);
+        }
+    }
+    if (buffersAllocated != 0u) {
+        loader->deviceTable.vkFreeCommandBuffers(
+            device->device, frame->commandPool, XUD_FRAME_COMMAND_BUFFER_COUNT, frame->commandBufferRows);
+    }
+    (void)loader->deviceTable.vkDestroyCommandPool(device->device, frame->commandPool, NULL);
+    frame->commandPool = VK_NULL_HANDLE;
+    free(frame->imageLayouts);
+    free(frame);
+    return result;
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -573,6 +545,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     uint32_t boundGeometry = XUD_BATCH_GEOMETRY_NONE;
     uint32_t boundTexture = XUD_BATCH_NO_TEXTURE;
     XudPushRow pushRow;
+    uint32_t slot = 0u;
 
     if ((frame == NULL) || (loader == NULL) || (device == NULL) || (swapchain == NULL) || (pipeline == NULL) || (pass == NULL)
         || (framebuffers == NULL) || (outImageIndex == NULL) || (batch == NULL) || (descriptor == NULL)) {
@@ -582,8 +555,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         return XUD_UNSUPPORTED;
     }
     if ((device->device == VK_NULL_HANDLE) || (swapchain->swapchain == VK_NULL_HANDLE) || (pipeline->layout == VK_NULL_HANDLE)
-        || (pass->renderPass == VK_NULL_HANDLE) || (frame->commandPool == VK_NULL_HANDLE) || (frame->commandBuffer == VK_NULL_HANDLE)
-        || (frame->imageAcquired == VK_NULL_HANDLE)) {
+        || (pass->renderPass == VK_NULL_HANDLE) || (frame->commandPool == VK_NULL_HANDLE) || (frame->commandBuffer == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
     /* Every row of the pipeline list has to be live, not just the two the variant axis names: a draw
@@ -626,7 +598,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        aw that carried on through a recreated swapchain would be a presentation against a dead handle. Th
        is is the rule the plan states as "the framebuffer array is recreated with the swapchain", read her
        e as a refusal rather than as a rebuild this rung cannot do without a resize to act on. */
-    if ((frame->imageFenceCount != swapchain->imageCount) || (frame->presentedSwapchain != swapchain->swapchain)
+    if ((frame->frameFenceCount != XUD_FRAME_IN_FLIGHT_COUNT) || (frame->presentedSwapchain != swapchain->swapchain)
         || (framebuffers->count != swapchain->imageCount) || (framebufferCount != swapchain->imageCount)
         || (frame->imageLayoutCount != swapchain->imageCount)) {
         return XUD_UNSUPPORTED;
@@ -663,25 +635,49 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         return XUD_INVALID_ARG;
     }
 
-    result = xud_frame_fill_submit(&submit, &present, frame->commandBuffer, swapchain->swapchain, frame->renderFinished);
+    /* --- 0. the in-flight slot. The CPU waits THIS slot's fence only when the slot still bounds
+       work (the frame two before this one, in a two-slot ring) and never its own frame, which is
+       what keeps the CPU at most one frame ahead of the GPU rather than lock-step with it. --- */
+    slot = frame->currentFrame;
+    if ((slot >= XUD_FRAME_IN_FLIGHT_COUNT) || (frame->commandBufferRows[slot] == VK_NULL_HANDLE)
+        || (frame->imageAcquired[slot] == VK_NULL_HANDLE) || (frame->renderFinished[slot] == VK_NULL_HANDLE)
+        || (frame->frameFences[slot] == VK_NULL_HANDLE)) {
+        return XUD_INTERNAL_ERROR;
+    }
+    if (frame->inFlight[slot] != 0u) {
+        vk = loader->deviceTable.vkWaitForFences(device->device, 1u, &frame->frameFences[slot], XUD_FRAME_WAIT_ALL, XUD_FRAME_NO_TIMEOUT);
+        result = xud_result_from_vk(vk);
+        if (result != XUD_OK) {
+            return result;
+        }
+        vk = loader->deviceTable.vkResetFences(device->device, 1u, &frame->frameFences[slot]);
+        result = xud_result_from_vk(vk);
+        if (result != XUD_OK) {
+            return result;
+        }
+        frame->inFlight[slot] = 0u;
+    }
+    frame->commandBuffer = frame->commandBufferRows[slot];
+
+    result = xud_frame_fill_submit(&submit, &present, frame->commandBuffer, swapchain->swapchain, frame->renderFinished[slot]);
     if (result != XUD_OK) {
         return result;
     }
-    result = xud_frame_fill_present_wait(&presentWaitSubmit, frame->renderFinished);
+    result = xud_frame_fill_present_wait(&presentWaitSubmit, frame->renderFinished[slot]);
     if (result != XUD_OK) {
         return result;
     }
     presentWaitSubmit.pWaitDstStageMask = frame->waitStages;
-    submit.pSignalSemaphores = &frame->renderFinished; /* the storage the signal row names lives in the frame, not in a
-                                                          parameter the fill died with */
-    presentWaitSubmit.pWaitSemaphores = &frame->renderFinished; /* and the wait row names the same storage: the two halves of
-                                                                   the boundary cannot name different semaphores */
+    submit.pSignalSemaphores = &frame->renderFinished[slot]; /* the storage the signal row names lives in the frame, not in a
+                                                                parameter the fill died with */
+    presentWaitSubmit.pWaitSemaphores = &frame->renderFinished[slot]; /* and the wait row names the same storage: the two halves
+                                                                         of the boundary cannot name different semaphores */
 
     /* --- 1. acquire. The acquire semaphore is the signal that an image is available; the fence argumen
        t here is VK_NULL_HANDLE because the fence this rung uses bounds the DRAW, not the acquire, and pa
        ssing one here would be a second, different boundary on the same image. --- */
     vk = loader->deviceTable.vkAcquireNextImageKHR(
-        device->device, swapchain->swapchain, XUD_FRAME_NO_TIMEOUT, frame->imageAcquired, VK_NULL_HANDLE, &imageIndex);
+        device->device, swapchain->swapchain, XUD_FRAME_NO_TIMEOUT, frame->imageAcquired[slot], VK_NULL_HANDLE, &imageIndex);
     /* The SECOND funnel, and the reason it is second: this is one of the two calls in the tree whose
        VkResult answers about the swapchain rather than about the call. VK_SUBOPTIMAL_KHR and VK_ERR
        OR_OUT_OF_DATE_KHR both mean "the image you asked for is yours" - the first adds "and this s
@@ -1148,24 +1144,20 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         return result;
     }
 
-    /* --- 5. submit on the graphics queue, with the acquire semaphore waited at the vertex stage and the i
-       mage's OWN fence as the fence argument. The fence is per image rather than per frame, which is the pl
-       an's wording read literally: what has to be true before an image is written again is that the present
-       ation of THAT image finished. --- */
-    frameFence = frame->imageFences[imageIndex];
-    if (frameFence == VK_NULL_HANDLE) {
-        return XUD_INVALID_ARG;
-    }
-    submit.pWaitSemaphores = &frame->imageAcquired;
+    /* --- 5. submit on the graphics queue, with the slot's acquire semaphore waited at the vertex
+       stage and the SLOT's own fence as the fence argument. The fence bounds the slot's recorded
+       work; the image a frame wrote is recycled by the swapchain's own acquire, so no host-side
+       wait on this frame is needed to protect the image. --- */
+    frameFence = frame->frameFences[slot];
+    submit.pWaitSemaphores = &frame->imageAcquired[slot];
     submit.pWaitDstStageMask = frame->waitStages;
-    submit.pCommandBuffers = frame->commandBufferRows;
+    submit.pCommandBuffers = &frame->commandBufferRows[slot];
     vk = loader->deviceTable.vkQueueSubmit(graphicsQueue.queue, XUD_FRAME_SUBMIT_COUNT, &submit, frameFence);
     result = xud_result_from_vk(vk);
     if (result != XUD_OK) {
-        frame->lastFrameFence = VK_NULL_HANDLE;
         return result;
     }
-    frame->lastFrameFence = frameFence;
+    frame->inFlight[slot] = 1u;
 
     /* The layout record moves HERE, after a submit that answered success: the barrier above is what
        transitions the image, the barrier runs only inside the submitted commands, so the layout the
@@ -1209,22 +1201,10 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         frame->recreateWanted = 1u;
     }
 
-    /* --- 7. wait the fence that bounded this frame, then reset it. The wait is what makes "this image may b
-       e written again" a question the fence answers rather than an assumption, and the reset is what keeps
-       the invariant the NEXT submit requires: vkQueueSubmit's fence must be in the not-signalled state, and
-       vkWaitForFences does not put it there. --- */
-    vk = loader->deviceTable.vkWaitForFences(device->device, 1u, &frameFence, XUD_FRAME_WAIT_ALL, XUD_FRAME_NO_TIMEOUT);
-    result = xud_result_from_vk(vk);
-    if (result != XUD_OK) {
-        return result;
-    }
-    vk = loader->deviceTable.vkResetFences(device->device, 1u, &frameFence);
-    result = xud_result_from_vk(vk);
-    if (result != XUD_OK) {
-        return result;
-    }
-
-    frame->lastFrameFence = VK_NULL_HANDLE; /* waited and reset, so nothing is in flight any more */
+    /* --- 7. NO fence wait here. The fence this submit carries is waited and reset at the START of
+       the next use of THIS slot - step 0 above - which is what lets the CPU record the next frame
+       while this one still runs. inFlight[slot] is the record that it bounds work. --- */
+    frame->currentFrame = (slot + 1u) % XUD_FRAME_IN_FLIGHT_COUNT;
     frame->presentedSwapchain = swapchain->swapchain;
     frame->lastImageIndex = imageIndex;
 
@@ -1275,15 +1255,18 @@ XudResult xud_frame_close(XudFrame** ioFrame, const XudDevice* device, XudLoader
        n the wait comes first: a presentation may still be reading the very image this fence bound, and dest
        roying the fence under it is destroying the record of a presentation that has not finished. A guard t
        hat cannot run is a teardown this rung must not start. */
-    if (victim->lastFrameFence != VK_NULL_HANDLE) {
+    for (index = 0u; index < XUD_FRAME_IN_FLIGHT_COUNT; index++) {
+        if ((victim->inFlight[index] == 0u) || (victim->frameFences[index] == VK_NULL_HANDLE)) {
+            continue;
+        }
         if (loader->deviceTable.vkWaitForFences == NULL) {
             return XUD_UNSUPPORTED;
         }
-        vk = loader->deviceTable.vkWaitForFences(device->device, 1u, &victim->lastFrameFence, XUD_FRAME_WAIT_ALL, XUD_FRAME_NO_TIMEOUT);
+        vk = loader->deviceTable.vkWaitForFences(device->device, 1u, &victim->frameFences[index], XUD_FRAME_WAIT_ALL, XUD_FRAME_NO_TIMEOUT);
         if (vk != VK_SUCCESS) {
             return xud_result_from_vk(vk);
         }
-        victim->lastFrameFence = VK_NULL_HANDLE;
+        victim->inFlight[index] = 0u;
     }
 
     /* A semaphore still named by a queue's submission cannot be destroyed either, and the last frame's
@@ -1306,29 +1289,35 @@ XudResult xud_frame_close(XudFrame** ioFrame, const XudDevice* device, XudLoader
             device->device, victim->commandPool, XUD_FRAME_COMMAND_BUFFER_COUNT, victim->commandBufferRows);
         victim->commandBuffer = VK_NULL_HANDLE;
     }
-    if (victim->imageAcquired != VK_NULL_HANDLE) {
+    for (index = XUD_FRAME_IN_FLIGHT_COUNT; index > 0u; index--) {
+        if (victim->renderFinished[index - 1u] == VK_NULL_HANDLE) {
+            continue;
+        }
         if (loader->deviceTable.vkDestroySemaphore == NULL) {
             return XUD_UNSUPPORTED;
         }
-        loader->deviceTable.vkDestroySemaphore(device->device, victim->imageAcquired, NULL);
-        victim->imageAcquired = VK_NULL_HANDLE;
+        loader->deviceTable.vkDestroySemaphore(device->device, victim->renderFinished[index - 1u], NULL);
+        victim->renderFinished[index - 1u] = VK_NULL_HANDLE;
     }
-    if (victim->renderFinished != VK_NULL_HANDLE) {
+    for (index = XUD_FRAME_IN_FLIGHT_COUNT; index > 0u; index--) {
+        if (victim->imageAcquired[index - 1u] == VK_NULL_HANDLE) {
+            continue;
+        }
         if (loader->deviceTable.vkDestroySemaphore == NULL) {
             return XUD_UNSUPPORTED;
         }
-        loader->deviceTable.vkDestroySemaphore(device->device, victim->renderFinished, NULL);
-        victim->renderFinished = VK_NULL_HANDLE;
+        loader->deviceTable.vkDestroySemaphore(device->device, victim->imageAcquired[index - 1u], NULL);
+        victim->imageAcquired[index - 1u] = VK_NULL_HANDLE;
     }
-    for (index = victim->imageFenceCount; index > 0u; index--) {
-        if (victim->imageFences[index - 1u] == VK_NULL_HANDLE) {
+    for (index = victim->frameFenceCount; index > 0u; index--) {
+        if (victim->frameFences[index - 1u] == VK_NULL_HANDLE) {
             continue;
         }
         if (loader->deviceTable.vkDestroyFence == NULL) {
             return XUD_UNSUPPORTED;
         }
-        loader->deviceTable.vkDestroyFence(device->device, victim->imageFences[index - 1u], NULL);
-        victim->imageFences[index - 1u] = VK_NULL_HANDLE;
+        loader->deviceTable.vkDestroyFence(device->device, victim->frameFences[index - 1u], NULL);
+        victim->frameFences[index - 1u] = VK_NULL_HANDLE;
     }
 
     /* The pool LAST: the command buffer belongs to the pool, and the spec requires the pool to outlive ever
@@ -1342,16 +1331,16 @@ XudResult xud_frame_close(XudFrame** ioFrame, const XudDevice* device, XudLoader
         victim->commandPool = VK_NULL_HANDLE;
     }
 
-    free(victim->imageFences);
-    victim->imageFences = NULL;
+    for (index = 0u; index < XUD_FRAME_IN_FLIGHT_COUNT; index++) {
+        victim->inFlight[index] = 0u;
+    }
+    victim->currentFrame = 0u;
     if (victim->imageLayouts != NULL) {
         free(victim->imageLayouts);
         victim->imageLayouts = NULL;
     }
     victim->imageLayoutCount = 0u;
-    victim->imageFenceCount = 0u;
-    victim->imageFenceCapacity = 0u;
-    victim->lastFrameFence = VK_NULL_HANDLE;
+    victim->frameFenceCount = 0u;
     victim->presentedSwapchain = VK_NULL_HANDLE;
     victim->recreateWanted = 0u;
     free(victim);

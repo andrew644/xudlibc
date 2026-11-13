@@ -243,8 +243,9 @@ static void xud_test_renderer_resize_gpu(void) {
     xud_check(result == XUD_OK, "gpu-resize/first-frame-draws",
         "a frame has to have been drawn, and presented, before there is anything for the rebuild's "
         "fence guard to wait for");
-    xud_check(context->renderer->frame->lastFrameFence == VK_NULL_HANDLE, "gpu-resize/nothing-in-flight-after-first",
-        "and the frame waited and reset its own fence, so the guard below has nothing left to wait");
+    xud_check(context->renderer->frame->inFlight[0u] == 1u, "gpu-resize/first-frame-in-flight",
+        "the pipelined loop does not wait its own frame, so the slot the draw used still bounds work - "
+        "the resize's frame-close guard is what waits it before anything is torn down");
 
     xud_check(xud_renderer_resize(&context->renderer, context->loader, context->device, &context->physicalDevice->caps, context->allocator,
                   context->physicalDevice, context->window, &context->swapchain)
@@ -293,7 +294,7 @@ static void xud_test_renderer_resize_gpu(void) {
         "and the new row's carve of allocator memory is live, so the old one was released and the n"
         "ew one was carved rather than the old one being left dangling");
     xud_check((context->renderer->framebuffers->count == context->swapchain->imageCount)
-            && (context->renderer->frame->imageFenceCount == context->swapchain->imageCount)
+            && (context->renderer->frame->frameFenceCount == XUD_FRAME_IN_FLIGHT_COUNT)
             && (context->renderer->framebufferCount == context->swapchain->imageCount),
         "gpu-resize/arrays-match-new-swapchain",
         "the rows, the fences and the count the draw hands down all match the NEW swapchain, which i"
