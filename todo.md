@@ -4,9 +4,6 @@ Renderer roadmap: each item only depends on items above it.
 
 ## Stage 2 - how the picture is built
 
-- **S2.3** Fix depth precision so nearby and distant objects both sort correctly. Do this
-  before shadows - shadows compare against depth, so the depth format has to be settled
-  first.
 - **S2.4** A cheap "who's in front" pass first, so hidden surfaces aren't shaded twice.
 - **S2.5** Shadows.
 - **S2.6** Glow/bloom and edge-smoothing.
