@@ -65,12 +65,18 @@ static void xudTestTransform(const float* m, float x, float y, float z, float* o
 }
 
 /* The depth the pinhole owes a point at distance d, stated as the pinhole states it rather than as
-   the matrix rows state it: the near plane is 0, the far plane is 1 (Vulkan's range, which the pip
-   eline's LESS compare is written against) and the mapping is hyperbolic rather than linear, which
-   is why the mid-distance check below is NOT a half. Deriving the closed form from the two endpo
-   ints and the pinhole's 1/d falloff is what makes it an independent statement of the same fact.
+   the matrix rows state it: the map is the REVERSED 1/z one - the near plane is 1, the far plane is
+   near/far (Vulkan's [0,1] range read backwards, which the pipeline's GREATER compare and the
+   pass's clear-to-0.0 are written against), and between them the depth is near/d, hyperbolic in
+   the distance. The closed form says the shape out loud: it is the reciprocal, not the (d-near)/
+   (far-near) line, and a matrix that wrote the linear map would miss every check below except
+   the two endpoints of a [0,1]-reversed variant, which the mid-distance and ordering checks catch.
 */
-static float xudTestExpectedDepth(float near, float far, float distance) { return (far * (distance - near)) / (distance * (far - near)); }
+static float xudTestExpectedDepth(float near, float far, float distance) {
+    (void)far;
+
+    return near / distance;
+}
 
 /* The framing the pinhole owes: a point h units off the eye's axis, at distance d, lands at h*foc
    al/d in the vertical NDC half and at h*focal/(d*aspect) in the horizontal one, where focal is
@@ -168,8 +174,8 @@ static void xud_test_camera_pure(void) {
     broken = camera;
     broken.near = 0.0f;
     xud_check(xud_camera_validate(&broken) == XUD_INVALID_ARG, "camera/validate-zero-near",
-        "a near plane at the eye is a frustum with no apex in front of the eye, and the depth map's "
-        "division reads it");
+        "a near plane at the eye is a frustum with no apex in front of the eye, and the reversed "
+        "1/z map reads it as a zero numerator - every surface would land at the far clear");
     broken = camera;
     broken.near = -1.0f;
     xud_check(xud_camera_validate(&broken) == XUD_INVALID_ARG, "camera/validate-negative-near",
@@ -181,8 +187,8 @@ static void xud_test_camera_pure(void) {
     broken = camera;
     broken.far = camera.near;
     xud_check(xud_camera_validate(&broken) == XUD_INVALID_ARG, "camera/validate-far-at-near",
-        "a far plane on the near one is a frustum with no depth, and the depth map's denominator is "
-        "near - far, which is zero there");
+        "a far plane on the near one is a frustum with no depth, and the reversed 1/z map's two "
+        "plane endpoints - 1 and near/far - would coincide there");
     broken = camera;
     broken.far = 0.5f;
     xud_check(
@@ -268,26 +274,30 @@ static void xud_test_camera_pure(void) {
     xudTestTransform(matrix, camera.position.x, camera.position.y, camera.position.z + 1.0f, clip);
     xud_check(clip[3] < 0.0f, "camera/behind-the-eye-is-clipped",
         "a point one unit BEHIND the eye has a negative clip w, which is the sign the -Z view con"
-        "vention and the LESS depth compare are both written against");
+        "vention and the GREATER depth compare are both written against");
 
     /* The depth of a point straight ahead, at the two planes and between them, against the pinhole
-      's own closed form: the near plane at 0, the far plane at 1 and the mid-distance at 2/3, which
-       is NOT a half - the mapping is hyperbolic, and a check that expected 0.5 at the mid-distance
-       would be a check of the wrong fact.
+      's own closed form: the near plane at 1, the far plane at near/far, and the mid-distance at
+       near/d - which for the camera below is 1/2, where the straight line between the planes would
+       have said 1/3. The hyperbola and the line disagree exactly where the checks look.
     */
     xudTestTransform(matrix, 0.0f, 0.0f, camera.position.z - camera.near, clip);
-    xud_check(xudTestNear(clip[2] / clip[3], xudTestExpectedDepth(camera.near, camera.far, camera.near)), "camera/near-plane-is-zero-depth",
-        "a point ON the near plane is at depth 0, which is the clear value's other end");
+    xud_check(xudTestNear(clip[2] / clip[3], xudTestExpectedDepth(camera.near, camera.far, camera.near)), "camera/near-plane-is-one-depth",
+        "a point ON the near plane is at depth 1, the near end of the reversed range and the end "
+        "the 0.0 clear is furthest from");
     xudTestTransform(matrix, 0.0f, 0.0f, camera.position.z - camera.far, clip);
-    xud_check(xudTestNear(clip[2] / clip[3], xudTestExpectedDepth(camera.near, camera.far, camera.far)), "camera/far-plane-is-one-depth",
-        "and a point ON the far plane is at depth 1, so nothing in the frustum is clamped");
+    xud_check(xudTestNear(clip[2] / clip[3], xudTestExpectedDepth(camera.near, camera.far, camera.far)),
+        "camera/far-plane-is-fraction-depth", "and a point ON the far plane is at near/far, so nothing in the frustum is clamped");
     xudTestTransform(matrix, 0.0f, 0.0f, camera.position.z - 2.0f, clip);
     xud_check(xudTestNear(clip[2] / clip[3], xudTestExpectedDepth(camera.near, camera.far, 2.0f)),
-        "camera/mid-distance-depth-is-the-pinhole's", "and the point two units ahead is at the pinhole's depth, not at a half");
+        "camera/mid-distance-depth-is-the-pinhole's",
+        "and the point two units ahead is at the pin"
+        "hole's 1/d depth, where the linear map would have said a third");
 
-    /* Nearer is smaller, which is the whole LESS-compare convention seen from the other side: three
-       distances in order, three depths in order. A matrix that mapped the frustum to [-1,1] and
-       then to [0,1] the wrong way round would put the near plane at 1 and fail this.
+    /* Nearer is LARGER, which is the whole GREATER-compare convention seen from the other side:
+       three distances in order, three depths in descending order. A matrix that kept the old
+       near-to-0 linear map would put the three in ascending order and fail this, and so would one
+       that mapped to [-1,1] without the reversal.
     */
     {
         float nearDepth = 0.0f;
@@ -300,12 +310,12 @@ static void xud_test_camera_pure(void) {
         midDepth = clip[2] / clip[3];
         xudTestTransform(matrix, 0.0f, 0.0f, camera.position.z - 3.0f, clip);
         farDepth = clip[2] / clip[3];
-        xud_check((nearDepth < midDepth) && (midDepth < farDepth), "camera/nearer-is-smaller-depth",
-            "three distances in order give three depths in order, so the pipeline's LESS compare "
-            "keeps the nearer of two surfaces rather than the farther");
-        xud_check((nearDepth >= 0.0f) && (farDepth <= 1.0f), "camera/frustum-stays-inside-the-range",
+        xud_check((nearDepth > midDepth) && (midDepth > farDepth), "camera/nearer-is-larger-depth",
+            "three distances in order give three depths in descending order, so the pipeline's "
+            "GREATER compare keeps the nearer of two surfaces rather than the farther");
+        xud_check((farDepth >= 0.0f) && (nearDepth <= 1.0f), "camera/frustum-stays-inside-the-range",
             "and the whole frustum stays inside [0,1], which is what says no part of the scene is "
-            "being clamped to the clear value");
+            "being clipped away by the depth range");
     }
 
     /* The framing, at the camera's own right and true-up axes: with a 90-degree aperture the focal

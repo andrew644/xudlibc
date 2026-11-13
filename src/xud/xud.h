@@ -218,8 +218,9 @@ static_assert(sizeof(XudColor) == 4u,
 /// nothing the library owns, and it has no lifetime, no close and no handle of its own. The camera
 /// is the one perspective camera the whole scope is drawn with (AGENTS.md: 3D only, one camera, one
 /// depth buffer, one render pass) and the two planes are the caller's because the scene's depth
-/// budget is the caller's - the library's depth buffer is D32_SFLOAT and maps [near,far] to [0,1],
-/// so a scene that states its own planes gets the whole depth range across its own geometry.
+/// budget is the caller's - the library's depth buffer is D32_SFLOAT and maps [near,far] to the
+/// reversed 1/z range (near at 1, far at near/far), which keeps precision at both ends of a wide
+/// frustum, so a scene that states its own planes gets the whole depth range across its own geometry.
 typedef struct XudCamera3D {
     XudVector3 position; /* the eye, in world units                                       */
     XudVector3 target; /* what it looks at - the forward vector is target - position    */

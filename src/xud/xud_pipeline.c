@@ -226,21 +226,24 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
     pipeline->multisample.alphaToOneEnable = VK_FALSE;
 
     /* --- depth stencil: one row per variant column, in the batch's variant order. THREE of the
-       four are depth test and depth write BOTH ON with LESS recorded, no depth bounds and no
+       four are depth test and depth write BOTH ON with GREATER recorded, no depth bounds and no
        stencil at all; the UI column is the axis's only row with the pair BOTH off. The ON pair is
        what the opaque variant of the plan's opaque/transparent pair carries, and it is only honest
        now because the render pass under this pipeline HAS a depth attachment (xud_renderpass.c
        creates the VkImage and the allocator owns its memory) - the spec makes the depth contents
        of a subpass with no depth attachment implementation-dependent, which is why the same two
        flags were VK_FALSE for the first-triangle step. With the attachment present and cleared to
-       XUD_RENDERPASS_CLEAR_DEPTH by the pass, LESS plus a write is the rule that makes a nearer
-       fragment replace a farther one, which is what a depth buffer is for. depthCompareOp is the
-       rule the test uses, and XUD_PIPELINE_DEPTH_COMPARE_OP is LESS, the one form the clear-to-1.0
-       convention needs: a nearer fragment has the SMALLER depth, so it passes against the larger
-       one already in the buffer. The UI column's off pair is the screen-space half of issues.md
-       #3: a quad that landed at depth 0.0 - the nearest the LESS compare admits - and WROTE that
-       depth back would occlude every 3D fragment appended after it in the same frame where the
-       glyph was, and the test would fail on a pixel that should show the 3D shape. The test and
+       XUD_RENDERPASS_CLEAR_DEPTH by the pass, GREATER plus a write is the rule that makes a nearer
+       fragment replace a farther one, which is what a depth buffer is for - nearer meaning the
+       LARGER depth, because the camera's projection writes the reversed 1/z map (xud_camera.c)
+       and the pass clears to 0.0 (xud_renderpass.h), so the buffer starts at the far side of the
+       frustum. depthCompareOp is the rule the test uses, and XUD_PIPELINE_DEPTH_COMPARE_OP is
+       GREATER, the one form that reversed-1/z clear-to-0.0 convention needs: a nearer fragment has
+       the LARGER depth, so it passes against the smaller one already in the buffer. The UI
+       column's off pair is the screen-space half of the overlay's contract: a quad that wrote its
+       depth back would be entered into the same GREATER contest as the 3D fragments - winning or
+       losing the glyph by an accident of the depth map where it should simply always win - and
+       every 3D fragment appended after it in the same frame would be at its mercy. The test and
        the write are both pipeline state, so the bypass lives on the column's own row here rather
        than a flag the frame loop would special-case; the vertex stage's skip of the viewProj for
        the same column (solid.vert's XUD_PUSH_FLAG_VARIANT_UI branch) is the other half of the

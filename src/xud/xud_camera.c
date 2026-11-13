@@ -22,11 +22,12 @@
  *       the matrix this rung produces is the PROJECTION times the VIEW, not the other way round:
  *       the point is a column vector, the model matrix is pushed per draw and the block's matrix is
  *       what maps the model-space point into clip space.
- *     - The depth RANGE. Vulkan's depth buffer is [0,1] and the pipeline compares LESS (xud_pipeline
- *       h), so nearer must be SMALLER, and the projection maps the near plane to 0 and the far plane
- *       to 1 rather than to -1 and +1 as the OpenGL convention does. A matrix built for [-1,1] is
- *       not "off by a scale of two": it puts the whole frustum below zero once clipped, which is
- *       what makes geometry past the near plane fail the depth test against the clear value of 1.0.
+ *     - The depth RANGE. Vulkan's depth buffer is [0,1], the pipeline compares GREATER
+ *       (xud_pipeline.h) and the pass clears to 0.0 (xud_renderpass.h), so the projection writes
+ *       the REVERSED 1/z map - near plane to 1, far plane to near/far - because 1/z is where the
+ *       depth precision lives at both ends of a wide frustum. The OpenGL convention neither maps
+ *       to [-1,1] nor to the old near-to-0 linear form: the clip test still discards what leaves
+ *       the range, and a surface nearer than the near plane still fails it above 1.
  *
  *   Copyright (c) 2026 xudlibc authors.
  *
@@ -205,8 +206,8 @@ XudResult xud_camera_fill_view_proj(const XudCamera3D* camera, float aspect, flo
        - for an orthonormal basis that inverse is the transpose plus the eye pushed back through the
        rows, which is what the three dot products below are. The view space's own forward is -forwa
        rd, which is what makes the camera look down -Z, the convention the projection below and the
-       pipeline's LESS compare are both written against. Column-major storage: element index = col
-       *4 + row.
+       pipeline's GREATER depth compare are both written against. Column-major storage: element
+       index = column*4 + row.
     */
     view[0u] = right[0];
     view[4u] = right[1];
@@ -229,17 +230,26 @@ XudResult xud_camera_fill_view_proj(const XudCamera3D* camera, float aspect, flo
        length is the cotangent of the half-angle: a point at distance d and height h above the eye
        lands at h*focal/d in NDC, the same pinhole a caller's framing is stated against. The horizon
        tal scale is the vertical one divided by the extent's aspect, so a wider window shows more
-       world to the sides rather than a stretched one. The two depth rows are the [0,1] mapping: at
-       z_view = -near the numerator is zero and at z_view = -far it is w_clip, so the near plane is
-       0 and the far plane is 1, and the -1 in the w row is what makes w_clip = -z_view = the dis
-       tance in front of the eye.
+       world to the sides rather than a stretched one. The two depth rows are the REVERSED 1/z
+       mapping: the numerator is the constant near (the z column is zeroed and the translation is
+       near) and the w row's -1 makes w_clip = -z_view = the distance in front of the eye, so
+       z_ndc = near/distance - the near plane at 1, the far plane at near/far, and the space
+       in between hyperbolically nearer to 1 the closer the surface is. This is the arrangement
+       that spends the depth buffer where the precision is needed: the [0,1] linear-in-1/d map
+       piles its resolution just past the near plane and leaves the far half of the frustum with
+       so little that distant coplanar surfaces fight, while 1/z on the pass's D32_SFLOAT depth
+       keeps every octave of distance about equally resolved. The pipeline's compare (LESS flipped
+       to GREATER, xud_pipeline.h) and the pass's clear flipped to 0.0 (xud_renderpass.h) are the
+       two other halves of the same convention, and a surface between the eye and the near plane
+       lands above 1 and is clipped by w - the near clip survives the flip because it was always
+       the clip test's, not the depth map's.
     */
     halfAngleRadians = (camera->fovy * 0.5f) / XUD_CAMERA_DEGREES_PER_RADIANS;
     focalLength = cosf(halfAngleRadians) / sinf(halfAngleRadians);
     projection[0u] = focalLength / aspect;
     projection[5u] = focalLength;
-    projection[10u] = camera->far / (camera->near - camera->far);
-    projection[14u] = (camera->near * camera->far) / (camera->near - camera->far);
+    projection[10u] = 0.0f;
+    projection[14u] = camera->near;
     projection[11u] = -1.0f;
 
     /* The product, projection times view - walked as a loop rather than spelled out: sixteen elems

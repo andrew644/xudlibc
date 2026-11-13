@@ -234,8 +234,8 @@ struct XudPipeline {
              attachment is a decision the render-pass step                                                                                 \
              takes, not one here */
 #define XUD_PIPELINE_DEPTH_COMPARE_OP                                                                                                      \
-    VK_COMPARE_OP_LESS /* the depth buffer's own rule, and                                                                                 \
-           the one the plan's depth buffer is written against */
+    VK_COMPARE_OP_GREATER /* the depth buffer's own rule, and the one the reversed 1/z                                                     \
+           projection writes against: nearer is LARGER, clear is 0.0 */
 #define XUD_PIPELINE_LOGIC_OP                                                                                                              \
     VK_LOGIC_OP_COPY /* the enum's value with logicOpEnable VK_FALSE,                                                                      \
                         written because the field must be a valid                                                                          \
@@ -307,15 +307,15 @@ static_assert(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST != VK_PRIMITIVE_TOPOLOGY_LINE_
 /// fill polygon mode, no cull, CCW front face, no depth bias, lineWidth 1 (the line
 /// pipeline variant is a later rung's, but lineWidth is a field of THIS row and 1 is the
 /// only honest value in it); VK_SAMPLE_COUNT_1_BIT with no sample shading and no alpha-
-/// to-coverage (see the note above); depth test and depth write BOTH ON with LESS recorded and
+/// to-coverage (see the note above); depth test and depth write BOTH ON with GREATER recorded and
 /// no depth bounds and no stencil (the render pass under this pipeline HAS a depth attachment now -
 /// xud_renderpass.c creates the VkImage and the allocator owns its memory, which is what the opa
 /// que variant of the plan's opaque/transparent pair needs: the spec makes the depth contents of a
 /// subpass with no depth attachment implementation-dependent, so the same two flags were VK_FALSE
 /// for the first-triangle step and are VK_TRUE against an attachment cleared to XUD_RENDERPASS_CLE
-/// AR_DEPTH; XUD_PIPELINE_DEPTH_COMPARE_OP is LESS, the one form that clear-to-1.0 convention need
-/// s, because a nearer fragment has the SMALLER depth and so passes against the larger one already
-/// in the buffer; and stencil does not exist in this library at all); one blend attachment with blen
+/// AR_DEPTH; XUD_PIPELINE_DEPTH_COMPARE_OP is GREATER, the one form the reversed 1/z projection
+/// needs, because a nearer fragment has the LARGER depth and so passes against the smaller one
+/// already in the buffer; and stencil does not exist in this library at all); one blend attachment with blen
 /// d DISABLED and both factor
 /// pairs ONE/ZERO - these headers spell the row as the core-1.0 form (srcColorBlendFactor
 /// / dstColorBlendFactor / colorBlendOp and the same three for the alpha half; grepped,

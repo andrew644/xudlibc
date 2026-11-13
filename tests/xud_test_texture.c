@@ -889,7 +889,7 @@ static void xud_test_texture_readback_gpu(void) {
     VkMemoryRequirements readbackReq;
     VkQueue queue;
     uint8_t* pixels = NULL;
-    const float quadPos[12] = { -1.0f, -1.0f, 0.0f, 1.0f, -1.0f, 0.0f, 1.0f, 1.0f, 0.0f, -1.0f, 1.0f, 0.0f };
+    const float quadPos[12] = { -1.0f, -1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, 1.0f, 1.0f };
     const float quadUv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
     const uint32_t quadIndex[6] = { 0u, 1u, 2u, 0u, 2u, 3u };
     uint8_t texels8x8[XUD_TEST_READBACK_SHEET * XUD_TEST_READBACK_SHEET * XUD_TEXTURE_BYTES_PER_TEXEL];
@@ -939,9 +939,12 @@ static void xud_test_texture_readback_gpu(void) {
 
     /* The full-screen quad: positions in NDC (the frame's block is the identity while no camera is
        begun, and the vertex stage flips the Y at the rasteriser, which is what makes this quad cover
-       the whole window), uv 0..1 over it, colour the NULL stream's opaque white and normal the NULL
-       stream's +Z - the two streams the textured stage does not read are defaults because the check
-       is about the texel, not the tint or the shade. */
+       the whole window), z at 1 - under the reversed 1/z convention an identity passthrough puts a
+       raw z of 1 at the NEAR end, where a raw 0 would sit at the far clear and lose every fragment,
+       so a screen-space draw without a camera asks for 1 the way it used to ask for 0 - uv 0..1 over
+       it, colour the NULL stream's opaque white and normal the NULL stream's +Z - the two streams
+       the textured stage does not read are defaults because the check is about the texel, not the
+       tint or the shade. */
     result = xud_upload_mesh(&quad, context,
         &(XudMeshData) {
             .vertexCount = 4u, .indexCount = 6u, .pos = quadPos, .texcoords = quadUv, .color = NULL, .normal = NULL, .index = quadIndex });

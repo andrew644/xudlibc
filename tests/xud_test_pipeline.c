@@ -175,9 +175,10 @@ static void xud_test_pipeline_pure(void) {
             && (pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].minDepthBounds == 0.0f)
             && (pipeline.depthStencil[XUD_BATCH_VARIANT_OPAQUE].maxDepthBounds == 1.0f),
         "pipeline/depth-row-values",
-        "at the opaque row: LESS, and it is the rule the enabled test above actually uses now: the pass"
-        " clears the buffer to XUD_RENDERPASS_CLEAR_DEPTH 1.0, the far value of this very rule, so the firs"
-        "t fragment of a frame always wins against a defined buffer rather than against whatever the a"
+        "at the opaque row: GREATER, and it is the rule the enabled test above actually uses now:"
+        " the pass clears the buffer to XUD_RENDERPASS_CLEAR_DEPTH 0.0, the far value of this very"
+        " rule under the reversed 1/z projection, so the first fragment of a frame always wins"
+        " against a defined buffer rather than against whatever the a"
         "llocator handed back; no stencil anywhere in this library, and both stencil rows are written as t"
         "he disabled set; and the full depth bounds, which is what a disabled depth-bounds test has to say"
         " beside it");

@@ -46,11 +46,13 @@ int main(void) {
 
     /* The three points are the shape's own, in the space the identity viewProj and the identity
        model matrix land a draw in, and the colour is the batch's COLOR stream read as its own
-       R,G,B,A bytes.
+       R,G,B,A bytes. The z of 1 is the near end of the reversed depth range (xud_camera.c's
+       convention note): with the identity in front of an open draw there is no frustum, and a raw
+       z of 0 would sit at the far clear and lose the depth test.
     */
-    const XudVector3 v0 = (XudVector3) { .x = -0.8f, .y = -0.8f, .z = 0.0f };
-    const XudVector3 v1 = (XudVector3) { .x = 0.8f, .y = -0.8f, .z = 0.0f };
-    const XudVector3 v2 = (XudVector3) { .x = 0.0f, .y = 0.8f, .z = 0.0f };
+    const XudVector3 v0 = (XudVector3) { .x = -0.8f, .y = -0.8f, .z = 1.0f };
+    const XudVector3 v1 = (XudVector3) { .x = 0.8f, .y = -0.8f, .z = 1.0f };
+    const XudVector3 v2 = (XudVector3) { .x = 0.0f, .y = 0.8f, .z = 1.0f };
     const XudColor red = (XudColor) { .r = 230u, .g = 40u, .b = 40u, .a = 255u };
     bool shouldClose = false;
 

@@ -89,17 +89,21 @@
 #define XUD_RENDERPASS_CLEAR_COLOR_B 0.05f
 #define XUD_RENDERPASS_CLEAR_COLOR_A 1.0f
 
-/* The depth the pass clears every attachment to, and the far side of the projection the camera
-   step will produce. 1.0 in a [0,1] depth buffer is "nothing has been drawn yet", which is what
-   a CLEAR load op has to mean: a clear to 0 would be a buffer that already holds the NEAREST
-   possible depth and would reject every fragment the draw produced, which is a pass that draws
-   nothing rather than a pass that draws the triangle. */
-#define XUD_RENDERPASS_CLEAR_DEPTH 1.0f
+/* The depth the pass clears every attachment to, and the far side of the reversed 1/z projection
+   the camera step produces (xud_camera.c): z_ndc = near/distance, so the FAR plane is the small
+   value and 0.0 is "nothing has been drawn yet", which is what a CLEAR load op has to mean: a
+   clear to 1.0 would be a buffer that already holds the NEAREST possible depth and, under the
+   pipeline's GREATER compare, would reject every fragment the draw produced - a pass that draws
+   nothing rather than a pass that draws the triangle. The clear and the compare and the
+   projection are one convention read three places. */
+#define XUD_RENDERPASS_CLEAR_DEPTH 0.0f
 
 /* The depth attachment's format. VK_FORMAT_D32_SFLOAT rather than D24_UNORM_S8_UINT because the
    24-bit form is a PAIR of aspects and the 8-bit one drags stencil state (a stencil test, a
    stencil op row, a stencil clear value) into a library that has no stencil at all; D32_SFLOAT
-   is one aspect, 4 bytes per texel, and the only cost is memory, which the allocator owns. The
+   is one aspect, 4 bytes per texel, and the only cost is memory, which the allocator owns. It is
+   also the precision half of the reversed-1/z contract: a float format resolves the near octaves
+   of distance down to the sub-millimetre, where the unorm forms quantise them into fighting. The
    format is NOT assumed to be available: this rung asks the driver what an image of exactly th
    is (format, tiling, usage) tuple needs (vkGetImageMemoryRequirements) and creates it, and a
    driver that cannot make one answers at vkCreateImage, which maps through xud_result_from_vk()
