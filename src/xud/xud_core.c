@@ -1047,6 +1047,8 @@ XudResult xud_get_batch_stats(XudBatchStats* outStats, XudContext* context) {
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_begin_camera_3d(XudContext* context, const XudCamera3D camera) {
+    XudResult result = XUD_OK;
+
     if (context == NULL) {
         return XUD_INVALID_ARG;
     }
@@ -1066,6 +1068,21 @@ XudResult xud_begin_camera_3d(XudContext* context, const XudCamera3D camera) {
     */
     if (xud_camera_validate(&camera) != XUD_OK) {
         return XUD_INVALID_ARG;
+    }
+
+    /* The shadow rows ride the same door the camera's matrix does (S2.5): the map is centred on
+       this camera's position, so the sun's view-projection is as much a per-frame camera fact as
+       the view-projection the draw will push beside it - and a camera that moved since the last
+       begin has, by the same token, moved its shadow box. The push happens BEFORE the store for
+       the same reason the validation above does: a refusal here must leave the live camera
+       exactly as it was, and the block write is the only step of this call that can still fail
+       on a real context. XUD_UNSUPPORTED is tolerated rather than forwarded: it says "no block
+       has ever been made", the state every other block writer answers with its own refusal, and
+       the camera record is still the caller's own fact to store.
+    */
+    result = xud_light_shadow_apply(context, &camera.position);
+    if ((result != XUD_OK) && (result != XUD_UNSUPPORTED)) {
+        return result;
     }
 
     context->renderer->camera = camera;

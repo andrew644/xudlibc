@@ -1169,6 +1169,8 @@ XudResult xud_draw_text_screen(XudContext* context, XudHandle handle, const uint
     XudBatch* batch = NULL;
     const XudFontRecord* record = NULL;
     uint32_t textureIndex = XUD_BATCH_NO_TEXTURE;
+    uint32_t extentWidth = 0u;
+    uint32_t extentHeight = 0u;
     XudResult result = XUD_INVALID_ARG;
 
     result = xud_font_context_batch(&batch, context);
@@ -1184,11 +1186,15 @@ XudResult xud_draw_text_screen(XudContext* context, XudHandle handle, const uint
         return result;
     }
 
-    /* The extent the pen's pixels divide by is the framebuffer's own: the swapchain's imageExtent
-       the window layer reports, refreshed on a resize rather than the size the caller asked for,
+    /* The extent the pen's pixels divide by is the framebuffer currently being drawn into: the
+       active scope's own while a render target is open, the window's swapchain extent otherwise,
        the same pair the UI's mapper divides by one rung up. */
+    result = xud_renderer_pixel_extent(context->renderer, context->width, context->height, &extentWidth, &extentHeight);
+    if (result != XUD_OK) {
+        return result;
+    }
     return xud_font_append_text_screen(
-        batch, record, textureIndex, text, textCount, (float)posX, (float)posY, pixelSize, spacing, color, context->width, context->height);
+        batch, record, textureIndex, text, textCount, (float)posX, (float)posY, pixelSize, spacing, color, extentWidth, extentHeight);
 }
 
 XudResult xud_get_glyph_atlas_rec(XudGlyphAtlasRec* outRec, XudContext* context, XudHandle handle, uint32_t codepoint) {

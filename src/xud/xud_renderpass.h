@@ -402,6 +402,53 @@ XudResult xud_renderpass_fill_prepass_state(XudRenderPass* pass, VkFormat colorF
 /// not this device's, the create/destroy rows are nil, or the driver refuses the pass.
 XudResult xud_renderpass_open_prepass(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, XudRenderPass* source);
 
+/// Pure: the shadow pass's own rows - a pass with ONE attachment. Unlike the pre-pass, which bor
+/// rows and a shared framebuffer, the shadow pass has no colour at all: the depth description
+/// MOVES to index 0 of the create-info list (the struct's two-row array keeps its shape - the
+/// frame loop reads the depth row by its old index for the barriers and the final-layout record,
+/// and the create-info's window starts one row in), the subpass names only that one reference at
+/// attachment 0, and the dependency row answers the cycle this image runs: last frame's fragment-
+/// stage SAMPLING on the source half, this frame's depth writes on the destination - the RAW pair
+/// the pass applies itself, before the clear and before any occluder's fragment test. finalLayout
+/// is SHADER_READ_ONLY: the map leaves every pass in the layout its sampler reads, and the frame
+/// loop's tracker says the same. XUD_INVALID_ARG on a NULL pass; XUD_UNSUPPORTED on
+/// VK_FORMAT_UNDEFINED (the colour format only stamps the row this pass will never hand the
+/// driver - it is named so fill_state can stamp a whole pass and this function step the colour
+/// out of it).
+XudResult xud_renderpass_fill_shadow_state(XudRenderPass* pass, VkFormat colorFormat);
+
+/// Pure: the shadow pass's create-info - fill_create_info with the one-row window stated:
+/// attachmentCount 1, pAttachments at the struct's depth row, whose reference the subpass names
+/// as attachment 0. XUD_INVALID_ARG on a NULL pass or out-pointer; XUD_UNSUPPORTED on a pass
+/// whose rows were never filled.
+XudResult xud_renderpass_fill_shadow_create_info(const XudRenderPass* pass, VkRenderPassCreateInfo* outCreateInfo);
+
+/// Driver: the shadow map's own pass - open_sized's order minus the colour: the shadow depth
+/// image (the pass's own, size on both axes, DEPTH_STENCIL_ATTACHMENT | SAMPLED - the second bit
+/// is the whole difference from every other depth image in the tree and the reason a fragment
+/// stage may hold it in a sampler at all), its depth-aspect view, the allocator's carve, the
+/// tracker's first word, and the VkRenderPass filled by fill_shadow_state. ownsDepth is 1: the
+/// generic xud_renderpass_close() retires this pass's depth exactly as it retires the screen
+/// pass's. The format is XUD_RENDERPASS_DEPTH_FORMAT and the `colorFormat` argument exists for
+/// the same reason it exists for fill_shadow_state. XUD_INVALID_ARG on a NULL out-pointer or one
+/// that already owns a pass, a NULL loader/device/caps/allocator/tracker, a handle-less device,
+/// or a size of 0; XUD_UNSUPPORTED when the loader is closed, its rows are not this device's, or
+/// a row this bring-up needs is nil.
+XudResult xud_renderpass_open_shadow(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, uint32_t size, VkFormat colorFormat, XudLayoutTracker* layout);
+
+/// Driver: the shadow pass's framebuffer - the one attachment the pass describes: the pass's OWN
+/// depth view, borrowed the way every row borrows it (the pass retires it, this row only names
+/// it). No colour view is created, so this row owns no view at all: `view` stays NULL and the
+/// generic xud_framebuffer_close() - which already tolerates that - destroys only the
+/// VkFramebuffer. `image` records the pass's depth image so the frame loop's barrier names the
+/// right image when this row is the one being opened. XUD_INVALID_ARG on a NULL out-pointer or
+/// one that already owns a framebuffer, a NULL loader/device/pass, a handle-less device or
+/// render pass, a pass whose depth view is not live, or a size of 0; XUD_UNSUPPORTED when the
+/// loader is closed, its rows are not this device's, or a row this rung needs is nil.
+XudResult xud_framebuffer_open_shadow(
+    XudFramebuffer** outFramebuffer, XudLoader* loader, const XudDevice* device, const XudRenderPass* pass, uint32_t size);
+
 /// Pure: re-state the borrowed depth row - the image, its view, both create-infos, the allocator's
 /// range and the tracker - from `source` into a borrowing pass, and clear ownsDepth so the borrower
 /// never tears the row down. The resize path calls this after xud_renderpass_recreate_depth() gives

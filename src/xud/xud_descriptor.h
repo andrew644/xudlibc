@@ -111,11 +111,21 @@ static_assert(XUD_DESCRIPTOR_SET_COUNT == (XUD_DESCRIPTOR_SET_MATERIAL + 1u),
 #define XUD_DESCRIPTOR_BINDINGS_PER_SET 1u
 #define XUD_DESCRIPTOR_BINDING 0u
 
+/* Set 0's second binding, the shadow map the fragment stages sample (S2.5): a COMBINED_IMAGE_
+   SAMPLER is a FRAGMENT-only read, so its stage row is narrower than the block's, and its
+   number is the row the bindings array holds at index 1 - a constant because the layout, like
+   every other binding here, is a bring-up decision and not a per-draw question.
+*/
+#define XUD_DESCRIPTOR_BINDINGS_PER_FRAME 2u
+#define XUD_DESCRIPTOR_SHADOW_BINDING 1u
+#define XUD_DESCRIPTOR_SHADOW_STAGE VK_SHADER_STAGE_FRAGMENT_BIT
+
 static_assert(XUD_DESCRIPTOR_BINDINGS_PER_SET == 1u,
-    "one binding per set today, so the bindings array is indexed by the set alone and a second binding is a layout decision, not a slot "
-    "that was left empty");
+    "one binding for the material set, so its write's dstBinding is the same constant as its number");
 static_assert(
     XUD_DESCRIPTOR_BINDING == 0u, "the binding number is 0 in both sets, which is what makes the write's dstBinding the same constant");
+static_assert((XUD_DESCRIPTOR_BINDINGS_PER_FRAME == XUD_DESCRIPTOR_SHADOW_BINDING + 1u) && (XUD_DESCRIPTOR_SHADOW_BINDING == 1u),
+    "the per-frame set's bindings are the block at 0 and the shadow sampler at 1, a contiguous list from 0 as the create-info asks");
 
 /* The set-1 sampler array's size: the CEILING on how many combined image samplers one material's
  *  set may name. It is this layer's own bound for the same reason XUD_HANDLE_SLOT_MAX_CAPACITY is
@@ -227,10 +237,18 @@ typedef struct XudFrameUniformRow {
     float time; /* 4 B - seconds since the context was brought up */
     float fog[4]; /* 16 B - rgb + density */
     float ambient[4]; /* 16 B - rgb + intensity */
+    float lightViewProj[16]; /* 64 B - the shadow-casting SUN's own view-projection, column-major: the matrix
+                                 the shadow pass's vertex stage maps world space through, and the matrix the
+                                 fragment stage maps the shaded point through to find its own texel. Identity
+                                 while no sun lives - the enable flag, not this matrix, is what tells the
+                                 fragment stage to ignore it */
+    float shadowParams[4]; /* 16 B - x and y the shadow map's texel size (1/size), z the depth compare's bias,
+                               w 1.0 when a shadow-casting sun lives and 0.0 otherwise - the one flag that
+                               folds the whole feature out of the shade's sum */
     uint32_t lightCount; /* 4 B - how many of the light array the light step will fill are live */
-    uint32_t reserved; /* 4 B - keeps the block a multiple of 4 with no hole anywhere */
-    float lightPad
-        [2]; /* 8 B - std140 aligns a struct array to 16 and a C struct member lands wherever the scalars end: the pad IS the difference, written once so both sides put the table at 128 */
+    uint32_t reserved; /* 4 B - keeps the scalars a multiple of 4 with no hole anywhere */
+    float tablePad
+        [2]; /* 8 B - std140 aligns a struct array to 16 and a C struct member lands wherever the scalars end: the pad IS the difference, written once so both sides put the table at 208 */
     XudLightRow lights[XUD_MAX_LIGHTS]; /* 512 B - the table; row i is live when i < lightCount */
 } XudFrameUniformRow;
 
@@ -248,7 +266,7 @@ typedef struct XudPushRow {
 } XudPushRow;
 
 #define XUD_DESCRIPTOR_PUSH_SIZE 96u /* sizeof(XudPushRow), asserted below */
-#define XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE 640u /* sizeof(XudFrameUniformRow) = 120 + the 8 B pad + 8 rows of 64 B, asserted below */
+#define XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE 720u /* sizeof(XudFrameUniformRow) = 200 + the 8 B pad + 8 rows of 64 B, asserted below */
 
 static_assert(sizeof(XudFrameUniformRow) == XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE,
     "the per-frame block's C layout is the size this layer states, so the buffer's size and the GLSL block's bytes are one number and not "
@@ -459,7 +477,9 @@ struct XudDescriptor {
                                                                    by xud_descriptor_close() in the reverse of creation order */
     VkDescriptorSetLayoutCreateInfo layoutCreateInfos[XUD_DESCRIPTOR_SET_COUNT]; /* what vkCreateDescriptorSetLayout was handed, per set */
     VkDescriptorSetLayoutBinding bindings[XUD_DESCRIPTOR_SET_COUNT]
-                                         [XUD_DESCRIPTOR_BINDINGS_PER_SET]; /* the rows the create-infos above point at */
+                                         [XUD_DESCRIPTOR_BINDINGS_PER_FRAME]; /* the rows the create-infos above point at - the material
+                                                                                 set fills only row 0 of its axis, its own bindingCount
+                                                                                 says so */
     VkPushConstantRange pushRange; /* the one range of the layout, recorded rather than discarded */
 
     /* --- the pool the sets are allocated from --- */
@@ -487,6 +507,11 @@ struct XudDescriptor {
     /* --- the write that bound it --- */
     VkWriteDescriptorSet writeInfo; /* what vkUpdateDescriptorSets was handed for set 0 */
     VkDescriptorBufferInfo bufferRow; /* the row the write above points at: (buffer, offset, range) */
+    VkWriteDescriptorSet shadowWriteInfo; /* what vkUpdateDescriptorSets was handed for set 0's shadow row - the one write that puts the
+                                             shadow view-and-sampler into binding 1, made once at renderer bring-up because the shadow
+                                             map outlives every frame exactly as the block's buffer does */
+    VkDescriptorImageInfo shadowImageRow; /* the (imageView, sampler, layout) triple that write names: written by the same call, read by
+                                             nothing after it - the record-of-the-create rule one rung up, on a descriptor */
 
     /* --- the writes that bound the slot sets, and the white pair every one of them names by default --- */
     VkWriteDescriptorSet slotWriteInfos[XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE]; /* one write per slot set: what
@@ -776,6 +801,21 @@ XudResult xud_descriptor_set_ambient(XudDescriptor* descriptor, const float* rgb
 /// every time rather than a patched one. XUD_INVALID_ARG on a NULL descriptor, a NULL rows when the
 /// count is non-zero, or a count past XUD_MAX_LIGHTS - the count that would read past the table.
 XudResult xud_descriptor_set_lights(XudDescriptor* descriptor, uint32_t count, const XudLightRow* rows);
+
+/// The block's shadow rows, one write: the casting sun's view-projection and its four parameters
+/// (texel size on both axes, the compare bias, the enable flag). A NULL descriptor or matrix is a
+/// bad argument; the values are the block's bytes until the frame uploads, the rule every other
+/// setter here states.
+XudResult xud_descriptor_set_shadow_view(XudDescriptor* descriptor, const float* lightViewProj, float texelSize, float bias, float enabled);
+
+/// Driver: the one write that names the shadow map in set 0's binding 1 - view and sampler handed
+/// in, SHADER_READ_ONLY the layout both the render pass's finalLayout and the sampler's read agree
+/// on. XUD_INVALID_ARG on a NULL descriptor/loader/device, a handle-less device, or a NULL view or
+/// sampler; XUD_UNSUPPORTED on a closed or unbound loader or a nil write row; the write's own
+/// XudResult otherwise. One call per shadow map, before the first frame binds set 0 - the same
+/// once-at-bring-up rule the block's own binding follows.
+XudResult xud_descriptor_set_shadow_texture(
+    XudDescriptor* descriptor, const XudLoader* loader, const XudDevice* device, VkImageView view, VkSampler sampler);
 
 /// Pure: the memory-type mask a staging arena needs - the AND of every caps memoryTypes row that
 /// carries VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, so a buffer bound to a type in this mask is a buffe

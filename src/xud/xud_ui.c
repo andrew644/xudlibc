@@ -401,6 +401,8 @@ XudResult xud_ui_frame_draw(XudUi* ui) {
     struct nk_convert_config config;
     uint32_t vertexCount = 0u;
     uint32_t elementCount = 0u;
+    uint32_t extentWidth = 0u;
+    uint32_t extentHeight = 0u;
 
     if (ui == NULL) {
         return XUD_INVALID_ARG;
@@ -436,11 +438,16 @@ XudResult xud_ui_frame_draw(XudUi* ui) {
     vertexCount = (uint32_t)(vertexBuffer.allocated / sizeof(XudUiVertex));
     elementCount = (uint32_t)(elementBuffer.allocated / sizeof(uint16_t));
 
-    /* The fold into the batch at the context's own extent. The extent is the framebuffer's, which
-       the mapper divides by; a window extent is the answer for a window that has not been resized
-       into a different framebuffer. */
+    /* The fold into the batch at the extent currently being drawn into: the active scope's own
+       while a render target is open, the framebuffer's otherwise - the mapper divides by it, and
+       a window extent is the answer for a window that has not been resized into a different
+       framebuffer. */
+    result = xud_renderer_pixel_extent(ui->context->renderer, ui->context->width, ui->context->height, &extentWidth, &extentHeight);
+    if (result != XUD_OK) {
+        return result;
+    }
     result = xud_ui_append_draw_list(ui->context->renderer->batch, ui->vertexStaging, vertexCount, ui->elementStaging, elementCount,
-        ui->context->width, ui->context->height, ui->atlasSlot);
+        extentWidth, extentHeight, ui->atlasSlot);
 
     /* Reset the context for the next frame: nk_clear() frees the windows and the command queue the
        frame used, and the convert has read them, so nothing of this frame's widgets is still owed.

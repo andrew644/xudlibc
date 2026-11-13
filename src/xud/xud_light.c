@@ -21,7 +21,11 @@
 
 #include "xud.h" /* Required for: XUD_LIGHT_KIND_*, XUD_MAX_LIGHTS - the axis and the bound */
 #include "xud_core.h" /* Required for: XudContext - the context whose inline fields hold the table */
-#include "xud_descriptor.h" /* Required for: xud_descriptor_set_lights, xud_descriptor_set_ambient - the one door to the block */
+#include "xud_descriptor.h" /* Required for: xud_descriptor_set_lights, xud_descriptor_set_ambient, xud_descriptor_set_shadow_view - the one door to the block */
+#include "xud_matrix.h" /* Required for: XUD_MATRIX_ELEMENT_COUNT - the 16 elements the shadow matrix is written as */
+
+#include <math.h> /* Required for: sqrtf/fabsf/isfinite - the basis lengths, the noon test and the finiteness the refusals read */
+#include <string.h> /* Required for: memset - the ortho row zeroed before its six members are stamped */
 
 #include <stddef.h> /* Required for: NULL */
 
@@ -262,4 +266,175 @@ XudResult xud_set_ambient_light(XudContext* context, XudColor color, float inten
     ambient[3u] = intensity;
 
     return xud_descriptor_set_ambient(context->descriptor, ambient);
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The shadow map's matrix (S2.5) - pure, then the one push
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xudLightCross(const float* left, const float* right, float* out) {
+    out[0u] = (left[1u] * right[2u]) - (left[2u] * right[1u]);
+    out[1u] = (left[2u] * right[0u]) - (left[0u] * right[2u]);
+    out[2u] = (left[0u] * right[1u]) - (left[1u] * right[0u]);
+}
+
+static float xudLightDot(const float* left, const float* right) {
+    return (left[0u] * right[0u]) + (left[1u] * right[1u]) + (left[2u] * right[2u]);
+}
+
+XudResult xud_light_shadow_view_proj(float* outViewProj, const XudVector3* focus, const XudVector3* sunDirection, float extent) {
+    float forward[3];
+    float right[3];
+    float up[3];
+    float eye[3];
+    float view[XUD_MATRIX_ELEMENT_COUNT];
+    float projection[XUD_MATRIX_ELEMENT_COUNT];
+    float length = 0.0f;
+    float sum = 0.0f;
+    uint32_t column = 0u;
+    uint32_t row = 0u;
+    uint32_t term = 0u;
+
+    if ((outViewProj == NULL) || (focus == NULL) || (sunDirection == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((isfinite(extent) == 0) || (extent <= 0.0f)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((isfinite(sunDirection->x) == 0) || (isfinite(sunDirection->y) == 0) || (isfinite(sunDirection->z) == 0)) {
+        return XUD_INVALID_ARG;
+    }
+    /* The light row's direction points TOWARD the sun; the map's eye looks the way light
+       travels, so forward is the negated row - the one flip that puts the eye on the sun's side
+       of the focus and every scene triangle inside the map's depth interval, not behind it. */
+    forward[0u] = -sunDirection->x;
+    forward[1u] = -sunDirection->y;
+    forward[2u] = -sunDirection->z;
+    length = sqrtf(xudLightDot(forward, forward));
+    if (length == 0.0f) {
+        return XUD_INVALID_ARG;
+    }
+    forward[0u] /= length;
+    forward[1u] /= length;
+    forward[2u] /= length;
+    if ((isfinite(focus->x) == 0) || (isfinite(focus->y) == 0) || (isfinite(focus->z) == 0)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* The basis, the camera's own recipe with the sun in the camera's seat: forward is where the
+       light travels, up is the world's +Y, right closes the triple and a fourth cross replaces
+       the caller's up with the perpendicular one. The noon exception: a sun straight down has no
+       world-up that is not its own axis, and cross(forward, up) of a parallel pair is the zero
+       vector no normalize can rescue - +Z stands in, and a scene photographed straight down from
+       the sun has more than enough compass left in +Z.
+    */
+    up[0u] = 0.0f;
+    up[1u] = 1.0f;
+    up[2u] = 0.0f;
+    if (fabsf(xudLightDot(forward, up)) > 0.999f) {
+        up[0u] = 0.0f;
+        up[1u] = 0.0f;
+        up[2u] = 1.0f;
+    }
+    xudLightCross(forward, up, right);
+    length = sqrtf(xudLightDot(right, right));
+    right[0u] /= length;
+    right[1u] /= length;
+    right[2u] /= length;
+    xudLightCross(right, forward, up);
+
+    /* The eye two extents behind the focus and the depth interval [extent, 3*extent] ahead of it:
+       centred on the focus, the box reaches one extent BEHIND the camera along the light (so the
+       ground the camera sits on is inside the map and casts) and one extent in front of it (so an
+       occluder between the camera and what it looks at casts too). The vertex stage's clip test
+       does the rest: what leaves the box never becomes a texel.
+    */
+    eye[0u] = focus->x - (forward[0u] * (2.0f * extent));
+    eye[1u] = focus->y - (forward[1u] * (2.0f * extent));
+    eye[2u] = focus->z - (forward[2u] * (2.0f * extent));
+
+    view[0u] = right[0];
+    view[4u] = right[1];
+    view[8u] = right[2];
+    view[12u] = -xudLightDot(right, eye);
+    view[1u] = up[0];
+    view[5u] = up[1];
+    view[9u] = up[2];
+    view[13u] = -xudLightDot(up, eye);
+    view[2u] = -forward[0];
+    view[6u] = -forward[1];
+    view[10u] = -forward[2];
+    view[14u] = xudLightDot(forward, eye);
+    view[3u] = 0.0f;
+    view[7u] = 0.0f;
+    view[11u] = 0.0f;
+    view[15u] = 1.0f;
+
+    /* The reversed ortho, spelled against the camera's perspective paragraph rather than beside
+       it: x and y are the box's own scale (2/(2*extent) is 1/extent, and the box is centred so
+       no translation term appears); the depth row maps view-space -z (the distance d ahead of
+       the eye) to (3*extent - d) / (2*extent), which is 1 at the eye-side plane and 0 at the far
+       one - linear because ortho has no 1/z to reverse and LINEAR is what D32's own precision
+       looks like over a fixed span anyway; and the w row is the identity 1, so the depth the map
+       stores is the number this paragraph states, with no divide between them. The GREATER
+       contest and the sampler's GREATER_OR_EQUAL read the SAME direction here as everywhere
+       in the tree: nearer is bigger.
+    */
+    memset(projection, 0, sizeof projection);
+    projection[0u] = 1.0f / extent;
+    projection[5u] = 1.0f / extent;
+    projection[10u] = 1.0f / (2.0f * extent);
+    projection[14u] = 1.5f;
+    projection[15u] = 1.0f;
+
+    for (column = 0u; column < 4u; column++) {
+        for (row = 0u; row < 4u; row++) {
+            sum = 0.0f;
+            for (term = 0u; term < 4u; term++) {
+                sum += projection[(term * 4u) + row] * view[(column * 4u) + term];
+            }
+            outViewProj[(column * 4u) + row] = sum;
+        }
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_light_shadow_apply(XudContext* context, const XudVector3* focus) {
+    float matrix[XUD_MATRIX_ELEMENT_COUNT];
+    float identity[XUD_MATRIX_ELEMENT_COUNT];
+    const XudLight* caster = NULL;
+    uint32_t index = 0u;
+
+    if ((context == NULL) || (focus == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if (context->descriptor == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+
+    for (index = 0u; index < XUD_MATRIX_ELEMENT_COUNT; index++) {
+        identity[index] = ((index % 5u) == 0u) ? 1.0f : 0.0f;
+    }
+
+    for (index = 0u; index < context->lightCount; index++) {
+        if ((context->lights[index].kind == XUD_LIGHT_KIND_SUN) && (context->lights[index].intensity > 0.0f)) {
+            caster = &context->lights[index];
+            break;
+        }
+    }
+
+    if (caster == NULL) {
+        return xud_descriptor_set_shadow_view(
+            context->descriptor, identity, 1.0f / (float)XUD_SHADOW_MAP_SIZE, XUD_SHADOW_DEPTH_BIAS, 0.0f);
+    }
+
+    if (xud_light_shadow_view_proj(matrix, focus, &caster->direction, XUD_SHADOW_EXTENT) != XUD_OK) {
+        /* Unreachable on a table that went through the validators - the same unreachable refusal
+           xudLightPublish() reads beside every row it builds, and answered the same way.
+        */
+        return XUD_INVALID_ARG;
+    }
+
+    return xud_descriptor_set_shadow_view(context->descriptor, matrix, 1.0f / (float)XUD_SHADOW_MAP_SIZE, XUD_SHADOW_DEPTH_BIAS, 1.0f);
 }

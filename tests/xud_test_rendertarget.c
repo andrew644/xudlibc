@@ -239,6 +239,17 @@ static uint32_t xud_test_rt_srgb_byte(uint8_t value) {
 
 static uint32_t xud_test_rt_aces_byte(uint8_t value) { return (uint32_t)(xud_test_rt_aces((float)value / 255.0f) * 255.0f + 0.5f); }
 
+static void xudTestRtFrame(XudContext* context, XudHandle target) {
+    (void)xud_begin_drawing(context);
+    (void)xud_clear_background(context, (XudColor) { .r = 255u, .g = 0u, .b = 0u, .a = 255u });
+    (void)xud_begin_texture_mode(context, target);
+    (void)xud_draw_rectangle(
+        context, 0, 0, (int32_t)XUD_TEST_RT_TARGET, (int32_t)XUD_TEST_RT_TARGET, (XudColor) { .r = 0u, .g = 0u, .b = 255u, .a = 255u });
+    (void)xud_end_texture_mode(context);
+    (void)xud_draw_texture(context, target, 0, 0, (XudColor) { .r = 255u, .g = 255u, .b = 255u, .a = 255u });
+    (void)xud_end_drawing(context);
+}
+
 static void xud_test_rendertarget_readback(void) {
     XudContext* context = NULL;
     XudResult result = XUD_OK;
@@ -253,6 +264,7 @@ static void xud_test_rendertarget_readback(void) {
     uint8_t* pixels = NULL;
     uint32_t acquired = 0u;
     uint32_t frame = 0u;
+    uint32_t acquireTry = 0u;
     uint32_t blueByte = 0u;
     uint32_t zeroByte = 0u;
 
@@ -269,28 +281,59 @@ static void xud_test_rendertarget_readback(void) {
         : xud_test_rt_aces_byte(255u);
     zeroByte = xud_test_rt_aces_byte(0u);
 
+    /* The window manager's late tile lands seconds after map on this compositor: a frame drawn
+       on the old swapchain and an image acquired from the new one would read as untouched
+       memory, so spin until the extent stops moving, present the full rotation, and only then
+       acquire - and present again if a late move still slips between the two. */
+    {
+        uint32_t stableFrames = 0u;
+        uint32_t spinFrames = 0u;
+        uint32_t lastWidth = context->swapchain->createInfo.imageExtent.width;
+        uint32_t lastHeight = context->swapchain->createInfo.imageExtent.height;
+        while ((stableFrames < 12u) && (spinFrames < 600u)) {
+            xudTestRtFrame(context, target);
+            if ((context->swapchain->createInfo.imageExtent.width == lastWidth)
+                && (context->swapchain->createInfo.imageExtent.height == lastHeight)) {
+                stableFrames++;
+            } else {
+                stableFrames = 0u;
+                lastWidth = context->swapchain->createInfo.imageExtent.width;
+                lastHeight = context->swapchain->createInfo.imageExtent.height;
+            }
+            spinFrames++;
+        }
+    }
     /* One frame per swapchain image plus one: every presentable image ends up holding the picture,
        so whichever one the acquire below returns carries the same bytes. */
     for (frame = 0u; frame < (context->swapchain->imageCount + 1u); frame++) {
-        (void)xud_begin_drawing(context);
-        (void)xud_clear_background(context, (XudColor) { .r = 255u, .g = 0u, .b = 0u, .a = 255u });
-        (void)xud_begin_texture_mode(context, target);
-        (void)xud_draw_rectangle(
-            context, 0, 0, (int32_t)XUD_TEST_RT_TARGET, (int32_t)XUD_TEST_RT_TARGET, (XudColor) { .r = 0u, .g = 0u, .b = 255u, .a = 255u });
-        (void)xud_end_texture_mode(context);
-        (void)xud_draw_texture(context, target, 0, 0, (XudColor) { .r = 255u, .g = 255u, .b = 255u, .a = 255u });
-        if (xud_end_drawing(context) != XUD_OK) {
-            break;
-        }
+        xudTestRtFrame(context, target);
     }
 
-    vk = context->loader->deviceTable.vkAcquireNextImageKHR(
-        context->device->device, context->swapchain->swapchain, UINT64_MAX, VK_NULL_HANDLE, VK_NULL_HANDLE, &acquired);
-    xud_check(vk == VK_SUCCESS, "rt-readback/acquired", "a presented image is acquired for the copy");
+    /* The acquire names a fence: the spec requires one of semaphore/fence to be live
+       (VUID-vkAcquireNextImageKHR-semaphore-01779), and the fence's wait is what makes the
+       image's previous present finished before the copy reads it. */
+    VkFence acquireFence = VK_NULL_HANDLE;
+    const VkFenceCreateInfo acquireFenceInfo
+        = (VkFenceCreateInfo) { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = NULL, .flags = 0u };
+    (void)context->loader->deviceTable.vkCreateFence(context->device->device, &acquireFenceInfo, NULL, &acquireFence);
+    for (acquireTry = 0u; acquireTry < 8u; acquireTry++) {
+        (void)context->loader->deviceTable.vkResetFences(context->device->device, 1u, &acquireFence);
+        vk = context->loader->deviceTable.vkAcquireNextImageKHR(
+            context->device->device, context->swapchain->swapchain, UINT64_MAX, VK_NULL_HANDLE, acquireFence, &acquired);
+        if ((vk != VK_ERROR_OUT_OF_DATE_KHR) && (vk != VK_SUBOPTIMAL_KHR)) {
+            break;
+        }
+        for (frame = 0u; frame < (context->swapchain->imageCount + 1u); frame++) {
+            xudTestRtFrame(context, target);
+        }
+    }
     if (vk != VK_SUCCESS) {
+        (void)context->loader->deviceTable.vkDestroyFence(context->device->device, acquireFence, NULL);
         (void)xud_close_context(&context);
         return;
     }
+    (void)context->loader->deviceTable.vkWaitForFences(context->device->device, 1u, &acquireFence, VK_TRUE, UINT64_MAX);
+    (void)context->loader->deviceTable.vkDestroyFence(context->device->device, acquireFence, NULL);
     {
         const uint32_t width = context->swapchain->createInfo.imageExtent.width;
         const uint32_t height = context->swapchain->createInfo.imageExtent.height;

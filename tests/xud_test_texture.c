@@ -969,11 +969,20 @@ static void xud_test_texture_readback_gpu(void) {
        swapchain-boundary code on its acquire or present, so end-drawing's resize rebuilds the
        swapchain at the window's current extent before the acquire is asked again. */
     uint32_t acquired = 0u;
+    /* The acquire names a fence, as the spec requires (VUID-vkAcquireNextImageKHR-semaphore-01779),
+       and every acquire's wait runs before the answer is read: the image is only the test's once
+       the fence says so, out-of-date or not. */
+    VkFence acquireFence = VK_NULL_HANDLE;
+    const VkFenceCreateInfo acquireFenceInfo
+        = (VkFenceCreateInfo) { .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO, .pNext = NULL, .flags = 0u };
+    (void)context->loader->deviceTable.vkCreateFence(context->device->device, &acquireFenceInfo, NULL, &acquireFence);
 
     for (uint32_t try = 0u;; try ++) {
         acquired = 0u;
+        (void)context->loader->deviceTable.vkResetFences(context->device->device, 1u, &acquireFence);
         vk = context->loader->deviceTable.vkAcquireNextImageKHR(
-            context->device->device, context->swapchain->swapchain, UINT64_MAX, VK_NULL_HANDLE, VK_NULL_HANDLE, &acquired);
+            context->device->device, context->swapchain->swapchain, UINT64_MAX, VK_NULL_HANDLE, acquireFence, &acquired);
+        (void)context->loader->deviceTable.vkWaitForFences(context->device->device, 1u, &acquireFence, VK_TRUE, UINT64_MAX);
         if (vk == VK_SUCCESS) {
             break;
         }
@@ -1004,6 +1013,7 @@ static void xud_test_texture_readback_gpu(void) {
 
         xud_test_readback_cover(context, material, quad, &pass);
     }
+    (void)context->loader->deviceTable.vkDestroyFence(context->device->device, acquireFence, NULL);
     xud_check(vk == VK_SUCCESS, "gpu-texture/readback-acquired", "an image of the swapchain is acquired for the copy");
     xud_check(acquired < context->swapchain->imageCount, "gpu-texture/readback-image-index", "and it names a live image of the swapchain");
     VkImage image = context->swapchain->images[acquired];

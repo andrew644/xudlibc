@@ -7,10 +7,20 @@
    the light rung (xud_light.c) from the caller's xud_set_lights() and xud_set_ambient_light().
    The block member order, widths and the 8 are the C layout of XudFrameUniformRow and
    XudLightRow (xud_descriptor.h) read against std140 - mat4 at 0, vec3 at 64, float at 76,
-   vec4s at 80 and 96, uints at 112 and 116, the 8-byte pad at 120, the struct array at 128
-   with stride 64 - and the asserts beside those structs are the same numbers from the other
-   side. The 8 restates XUD_MAX_LIGHTS because shader and C are two languages and one number
-   must be spelled in both, the way the UI variant's 3 is.
+   vec4s at 80 and 96, the sun's mat4 at 112, the shadow vec4 at 176, uints at 192 and 196,
+   the 8-byte pad at 200, the struct array at 208 with stride 64 - and the asserts beside
+   those structs are the same numbers from the other side. The 8 restates XUD_MAX_LIGHTS
+   because shader and C are two languages and one number must be spelled in both, the way
+   the UI variant's 3 is.
+
+   The sun's own two block rows and the shadow map at set 0's binding 1 are the depth pre-pass's
+   stage-mates (S2.5): the FIRST sun in the table casts, the shadow pass has just rasterized
+   the scene's opaque triangles from that sun's point of view into a depth-only map, and
+   xudShadowFactor() below asks that map, per shaded point, whether the sun's own ray reaches
+   it. One map, one casting sun, one enable flag - a table of eight shadow casters would be
+   eight passes and eight sampler slots, and the first sun is the one every scene lights its
+   floor with.
+
 
    The shade is a SUM and is deliberately not clamped: the scene draws into the renderer's
    float scratch image, a white sun at intensity 2 is legal, and the resolve stage's ACES
@@ -46,18 +56,23 @@ struct XudLightRow {
 };
 
 layout(binding = 0, std140) uniform XudFrameBlock {
-    mat4 viewProj;    // 0   - the VP matrix, column-major
-    vec3 cameraPos;   // 64  - unread here: Lambert needs no eye
-    float time;       // 76  - unread
-    vec4 fog;         // 80  - unread: the fog step's
-    vec4 ambient;     // 96  - rgb + intensity, the floor every face keeps
-    uint lightCount;  // 112 - how many table rows to sum
-    uint reserved;    // 116
-    vec2 lightPad;      // 120 - the std140 struct-array alignment, spelled vec2 and NOT float[2]:
+    mat4 viewProj;      // 0   - the VP matrix, column-major
+    vec3 cameraPos;     // 64  - unread here: Lambert needs no eye
+    float time;         // 76  - unread
+    vec4 fog;           // 80  - unread: the fog step's
+    vec4 ambient;       // 96  - rgb + intensity, the floor every face keeps
+    mat4 lightViewProj; // 112 - the casting sun's own VP: the matrix that folds the shaded point
+                        //     into the shadow map's texel space below
+    vec4 shadowParams;  // 176 - x,y texel size, z compare bias, w 1.0 while a casting sun lives
+    uint lightCount;    // 192 - how many table rows to sum
+    uint reserved;      // 196
+    vec2 tablePad;      // 200 - the std140 struct-array alignment, spelled vec2 and NOT float[2]:
                         //     a std140 scalar array strides to 8, which would slide this member to
-                        //     144 and shade the scene out of existence one language at a time
-    XudLightRow lights[8]; // 128 - XUD_MAX_LIGHTS (xud.h), restated for the shader's language
+                        //     216 and shade the scene out of existence one language at a time
+    XudLightRow lights[8]; // 208 - XUD_MAX_LIGHTS (xud.h), restated for the shader's language
 } xudFrame;
+
+layout(set = 0, binding = 1) uniform sampler2DShadow xudShadowMap;
 
 layout(push_constant) uniform XudPushRow {
     mat4 modelMatrix;    // 0  - the draw's own model matrix, column-major
@@ -77,7 +92,51 @@ const uint xudLightKindSun = 0u;   // XUD_LIGHT_KIND_SUN (xud.h), restated for t
 const uint xudLightKindSpot = 2u;  // XUD_LIGHT_KIND_SPOT (xud.h), same
 const uint xudPushFlagVariantUI = 3u; // XUD_BATCH_VARIANT_UI (xud_batch.h), same rule
 
-vec3 xudLightContribution(XudLightRow light, vec3 normal, vec3 worldPos)
+float xudShadowFactor(vec3 worldPos)
+{
+    if (xudFrame.shadowParams.w <= 0.0f) {
+        return 1.0f;
+    }
+
+    vec4 lightPos = xudFrame.lightViewProj * vec4(worldPos, 1.0f);
+    vec3 lightNdc = lightPos.xyz / lightPos.w;
+    /* The map's rows follow the framebuffer's y-down convention - the shadow vertex stage's
+       flip lands this surface's depth at row (−lightNdc.y * 0.5 + 0.5) * S - so the sample's
+       v is the negated light-space y. */
+    vec2 texel = vec2(lightNdc.x, -lightNdc.y) * 0.5 + 0.5;
+
+    /* Outside the sun's box there is no occluder the map could have recorded, and a clamp to the
+       edge would sample a neighbour's depth: out of range is LIT, stated, not sampled. Above 1 in
+       light depth is between the surface and the sun's near plane, which the shadow pass clips,
+       and it gets the same honest answer. */
+    if ((texel.x < 0.0) || (texel.x > 1.0) || (texel.y < 0.0) || (texel.y > 1.0) || (lightNdc.z > 1.0)) {
+        return 1.0f;
+    }
+
+    /* The compare: the map stores, per texel, the depth NEAREST the sun (the reversed contest
+       the shadow pass writes with GREATER, and D32 stores the larger value for nearer). A
+       comparison sampler evaluates compareOp(reference, texel) and the shadow sampler is built
+       GREATER_OR_EQUAL: lit when this surface's own biased depth reaches the stored owner's.
+       The surface that OWNS its texel stores its own depth, equal but for rounding, and the
+       bias (shadowParams.z) keeps that equality a hair toward LIT - rasterization slop across
+       a texel boundary is acne and acne walks in straight lines. An occluder nearer the sun
+       stored a larger value than the reference, the compare fails, and the surface is shadowed.
+    */
+    float reference = lightNdc.z + xudFrame.shadowParams.z;
+
+    /* 3x3 PCF: one tap is a hard edge of whole texels, and the map's texels are wide in world
+       space this far from the sun; nine taps cost nothing against the shade they smooth. */
+    float lit = 0.0;
+    for (int offsetY = -1; offsetY <= 1; offsetY++) {
+        for (int offsetX = -1; offsetX <= 1; offsetX++) {
+            vec2 tapped = texel + vec2(float(offsetX), float(offsetY)) * xudFrame.shadowParams.xy;
+            lit += texture(xudShadowMap, vec3(tapped, reference));
+        }
+    }
+    return lit / 9.0;
+}
+
+vec3 xudLightContribution(XudLightRow light, vec3 normal, vec3 worldPos, float shadow)
 {
     vec3 toLight;
     float distance = 0.0f;
@@ -102,7 +161,12 @@ vec3 xudLightContribution(XudLightRow light, vec3 normal, vec3 worldPos)
         attenuation *= smoothstep(light.params.z, light.params.y, dot(-toLight, light.target.xyz));
     }
 
-    return light.color.rgb * light.color.w * lambert * attenuation;
+    /* The shadow rides the sun's term alone: the map was rendered from the casting sun's point of
+       view, so its answer means nothing to a point or a spot, and the caller hands 1.0 for every
+       row that is not a sun rather than making this branch own the lookup.
+    */
+    float sunshade = (light.params.w == xudLightKindSun) ? shadow : 1.0f;
+    return light.color.rgb * light.color.w * lambert * attenuation * sunshade;
 }
 
 void main()
@@ -113,8 +177,9 @@ void main()
         shade = vec3(1.0f);
     } else {
         shade = xudFrame.ambient.rgb * xudFrame.ambient.w;
+        float sunShadow = xudShadowFactor(inWorldPos);
         for (uint index = 0u; index < xudFrame.lightCount; index++) {
-            shade += xudLightContribution(xudFrame.lights[index], normalize(inNormal), inWorldPos);
+            shade += xudLightContribution(xudFrame.lights[index], normalize(inNormal), inWorldPos, sunShadow);
         }
     }
 

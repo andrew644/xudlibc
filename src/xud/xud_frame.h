@@ -426,17 +426,29 @@ XudResult xud_frame_open(
    sampler-array size names no slot, so a real slot (0 .. size-1) says "this pass ends by drawing the
    full-screen triangle from that slot's image" - see xud_frame_record_pass in xud_frame.c. */
 #define XUD_FRAME_NO_RESOLVE 0xFFFFFFFFu
+/* The `depthOnly` value that names the SHADOW pass inside the frame's recording: 0 is a shaded
+   pass and 1 the depth pre-pass (S2.4); 2 draws only the batch's caster rows through the
+   pipeline's shadow row into the occluder map - see xud_frame_record_pass in xud_frame.c. */
+#define XUD_FRAME_DEPTH_PASS_SHADOW 2u
 /// One pass sequence among the recordings is the DEPTH PRE-PASS (S2.4): `prepassPass` and its own
 /// `prepassFramebuffer` are recorded once before `hdrPass`/`hdrFramebuffer` - the same scene batch
 /// drawn through the pipeline's colorless pre-pass row into the scratch pass's own depth buffer -
 /// and the scratch pass then LOADs that depth and rejects the fragments behind it at the
 /// rasterizer. The clear, the sort and the replay are one sequence owned at this level; the caller
 /// above hands over the pair and the pipeline list and knows nothing of the order.
+/// The optional third pair is the SHADOW PASS (S2.5): `shadowPass` and its one-attachment
+/// `shadowFramebuffer`, recorded between the pre-pass and the scratch pass - the casters' depth
+/// from the sun, in the map the scratch pass's fragment stage samples. Either BOTH or NEITHER:
+/// a NULL pair is the shadows-off configuration and the frame runs exactly as it did before this
+/// row existed; a half pair, or a pair whose pipeline row is not the third live handle the
+/// pipeline list must carry, is refused. The pair's layout record is the frame's like every
+/// other image's: the map ends each frame in the pass's own finalLayout - SHADER_READ_ONLY - and
+/// the tracker says so before the next frame's clear asks for it.
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
     const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, const XudRenderPass* prepassPass,
-    const XudFramebuffer* prepassFramebuffer, uint32_t hdrSlot, const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch,
-    XudDescriptor* descriptor, uint32_t* outImageIndex);
+    const XudFramebuffer* prepassFramebuffer, const XudRenderPass* shadowPass, const XudFramebuffer* shadowFramebuffer, uint32_t hdrSlot,
+    const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
 
 /// Driver: retire everything this rung owns, in the one order that is correct - vkWaitForFences on
 /// every fence still bounding a submission, then vkFreeCommandBuffers, vkDestroySemaphore, vkDestroyFence for ever

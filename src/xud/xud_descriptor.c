@@ -280,7 +280,7 @@ XudResult xud_descriptor_fill_set_layouts(XudDescriptor* descriptor) {
        frame block's contents move by a vkCmdCopyBuffer of the buffer's bytes rather than by a write
        of the descriptor that names the buffer. */
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].flags = 0u;
-    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].bindingCount = XUD_DESCRIPTOR_BINDINGS_PER_SET;
+    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].bindingCount = XUD_DESCRIPTOR_BINDINGS_PER_FRAME;
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].pBindings = descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME];
 
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -291,15 +291,24 @@ XudResult xud_descriptor_fill_set_layouts(XudDescriptor* descriptor) {
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].bindingCount = XUD_DESCRIPTOR_BINDINGS_PER_SET;
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].pBindings = descriptor->bindings[XUD_DESCRIPTOR_SET_MATERIAL];
 
-    /* set 0: the one uniform buffer of the per-frame block. descriptorCount is 1 because this set h
-       olds one buffer, and the binding is numbered XUD_DESCRIPTOR_BINDING so the binding list is th
-       e contiguous list starting at 0 the create-info's own rule asks for.
+    /* set 0: the per-frame block at binding 0 and the shadow map at binding 1. The block row is
+       the buffer the whole scene reads, the shadow row the depth the fragment stages sample -
+       COMBINED_IMAGE_SAMPLER with the FRAGMENT-only stage the sampler already uses for textures,
+       and descriptorCount 1 because one map is shadowed by: the casting sun is the FIRST sun in
+       the table and there is exactly one of it per frame. Both rows sit in the contiguous list
+       starting at 0 the create-info's own rule asks for.
      */
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].binding = XUD_DESCRIPTOR_BINDING;
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].descriptorCount = 1u;
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].stageFlags = XUD_DESCRIPTOR_BUFFER_STAGES;
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].pImmutableSamplers = NULL;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].binding = XUD_DESCRIPTOR_SHADOW_BINDING;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].descriptorType
+        = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].descriptorCount = 1u;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].stageFlags = XUD_DESCRIPTOR_SHADOW_STAGE;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].pImmutableSamplers = NULL;
 
     /* set 1: the one sampler of a slot set. descriptorCount is 1 because each slot owns its own set
        holding one view-and-sampler pair - the per-slot-set design the header states in place of a
@@ -364,7 +373,8 @@ XudResult xud_descriptor_fill_pool_info(XudDescriptor* descriptor) {
     descriptor->poolSizes[0u].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptor->poolSizes[0u].descriptorCount = 1u;
     descriptor->poolSizes[1u].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptor->poolSizes[1u].descriptorCount = XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE;
+    descriptor->poolSizes[1u].descriptorCount = XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u; /* +1: the shadow map's pair in set 0's
+                                                                                           binding 1 allocates from this same pool */
 
     return XUD_OK;
 }
@@ -927,6 +937,86 @@ XudResult xud_descriptor_set_lights(XudDescriptor* descriptor, uint32_t count, c
         descriptor->uniformBlock.lights[index] = rows[index];
     }
     descriptor->uniformBlock.lightCount = count;
+
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_set_shadow_view(
+    XudDescriptor* descriptor, const float* lightViewProj, float texelSize, float bias, float enabled) {
+    uint32_t index = 0u;
+
+    if ((descriptor == NULL) || (lightViewProj == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* Member for member, the rule set_view_proj's note states: this setter owns two members of a
+       block whose other members belong to the camera, the light and the clock, and a byte-count
+       copy would be a layout assumption rather than a field access. The matrix's element count
+       comes from the member's own sizeof; the four parameters are named one by one because each
+       is a different question the fragment stage asks.
+    */
+    for (index = 0u; index < (uint32_t)(sizeof(descriptor->uniformBlock.lightViewProj) / sizeof(descriptor->uniformBlock.lightViewProj[0]));
+        index++) {
+        descriptor->uniformBlock.lightViewProj[index] = lightViewProj[index];
+    }
+    descriptor->uniformBlock.shadowParams[0u] = texelSize;
+    descriptor->uniformBlock.shadowParams[1u] = texelSize;
+    descriptor->uniformBlock.shadowParams[2u] = bias;
+    descriptor->uniformBlock.shadowParams[3u] = enabled;
+
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_set_shadow_texture(
+    XudDescriptor* descriptor, const XudLoader* loader, const XudDevice* device, VkImageView view, VkSampler sampler) {
+    if ((descriptor == NULL) || (loader == NULL) || (device == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((view == VK_NULL_HANDLE) || (sampler == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if (!loader->open) {
+        return XUD_UNSUPPORTED;
+    }
+    if (device->device == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (!xud_loader_device_bound(loader, device->device)) {
+        return XUD_UNSUPPORTED;
+    }
+    if (descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if (loader->deviceTable.vkUpdateDescriptorSets == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+    /* Drain the in-flight frames, the same guard bind_texture_slot states: rewriting a binding a
+       submitted command buffer may still read is the race the guard exists for, and a bring-up
+       that runs after frames have drawn (a resize's re-open) is exactly when frames are in
+       flight. */
+    {
+        XudResult guard = xud_device_wait_idle(device, loader);
+        if (guard != XUD_OK) {
+            return guard;
+        }
+    }
+
+    descriptor->shadowImageRow.sampler = sampler;
+    descriptor->shadowImageRow.imageView = view;
+    descriptor->shadowImageRow.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    descriptor->shadowWriteInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptor->shadowWriteInfo.pNext = NULL;
+    descriptor->shadowWriteInfo.dstSet = descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME];
+    descriptor->shadowWriteInfo.dstBinding = XUD_DESCRIPTOR_SHADOW_BINDING;
+    descriptor->shadowWriteInfo.dstArrayElement = 0u;
+    descriptor->shadowWriteInfo.descriptorCount = 1u;
+    descriptor->shadowWriteInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptor->shadowWriteInfo.pImageInfo = &descriptor->shadowImageRow;
+    descriptor->shadowWriteInfo.pBufferInfo = NULL;
+    descriptor->shadowWriteInfo.pTexelBufferView = NULL;
+
+    loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->shadowWriteInfo, 0u, NULL);
 
     return XUD_OK;
 }

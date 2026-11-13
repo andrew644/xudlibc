@@ -149,6 +149,26 @@ struct XudRenderer {
                                               of colour references per subpass, and a framebuffer
                                               built against the scratch pass is not compatible with
                                               the pre-pass's zero-colour subpass */
+    XudRenderPass* shadowPass; /* owned: the occluder map's one-attachment pass (S2.5) - the
+                                  D32 image sized by XUD_SHADOW_MAP_SIZE, DEPTH_ATTACHMENT |
+                                  SAMPLED, cleared and written each frame before the scratch pass
+                                  samples it and left in SHADER_READ_ONLY for that sampling. It
+                                  is NOT swapchain-bound: a resize never touches it, and unlike
+                                  every other pass here it is created ONCE for the renderer's
+                                  life. */
+    XudFramebuffer* shadowFramebuffer; /* owned: the map's one-attachment framebuffer row - the
+                                          pass's own depth view attached, no colour view at all;
+                                          the row owns no view and the generic close destroys
+                                          only the VkFramebuffer */
+    VkSampler shadowSampler; /* owned: the comparison sampler every draw's set 0 binding 1 names
+                                - GREATER_OR_EQUAL against the surface asking, Vulkan reading
+                                compareOp(reference, texel), because the surface that OWNS its
+                                texel must pass its own test; and LINEAR, which
+                                comparison sampling answers without any filter-feature promise
+                                from the depth format: nine of these taps per fragment is the
+                                PCF the frag's helper counts */
+    VkSamplerCreateInfo shadowSamplerInfo; /* the bytes it was created from, recorded as every
+                                              create in this tree records its own */
     VkImage hdrColorImage; /* owned: the scratch image itself - COLOR_ATTACHMENT | SAMPLED, the two
                               uses the two passes give it */
     VkImageView hdrColorView; /* owned: the view the framebuffer attaches AND the sampler-array

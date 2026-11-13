@@ -18,12 +18,13 @@
  *          orbit is the clock's, not an input's - the same call reads the clock and moves the
  *          point, so the run is a function of wall time alone.
  *
- *   Missing : two things. (1) The house model: raylib's showcase puts its lights on a loaded
- *          glTF house; this scene is spheres, boxes and the grid, which are the same shapes the
- *          other examples draw and need no resources on disk. (2) The shadow map: raylib's
- *          default shader draws the floor's blob; this library has no shadow pass yet (todo.md
- *          S2.5), so the occlusion here is only Lambert - a sphere is dark on its far side and
- *          the floor under it is not.
+ *   Missing : the house model: raylib's showcase puts its lights on a loaded glTF house; this
+ *          scene is spheres, boxes and the grid, which are the same shapes the other examples
+ *          draw and need no resources on disk.
+ *
+ *          The shadow map is not missing: the sun in the table casts one (todo.md S2.5), so the
+ *          floor under each sphere and pedestal is darkened by its own occluder, and the far
+ *          side of a sphere goes dark twice over - Lambert and the sun's own map.
  *
  *   Controls: ESC quits. UP and DOWN lengthen and shorten the POINT's range - the distance its
  *          pool stops lighting. LEFT and RIGHT open and close the SPOT's outer cone. A and Z
@@ -128,7 +129,7 @@ int main(void) {
        frame's lights - the default sun the context was seeded with is gone from the first frame.
     */
     lights[0u].position = (XudVector3) { 0.0f, 0.0f, 0.0f };
-    lights[0u].direction = (XudVector3) { -0.45f, 1.0f, -0.3f };
+    lights[0u].direction = (XudVector3) { -1.6f, 0.4f, -0.3f };
     lights[0u].color = (XudColor) { 220u, 226u, 255u, 255u };
     lights[0u].intensity = 0.55f;
     lights[0u].range = 0.0f;

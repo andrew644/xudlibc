@@ -28,8 +28,11 @@ layout(binding = 0, std140) uniform XudFrameBlock {
     float time;       // 76
     vec4 fog;         // 80  - rgb + density
     vec4 ambient;     // 96  - rgb + intensity
-    uint lightCount;  // 112
-    uint reserved;    // 116
+    mat4 lightViewProj; // 112 - the shadow-casting sun's VP - unread here, declared so the offsets
+                        //     below stay true against the C block
+    vec4 shadowParams;  // 176 - texel size, compare bias, enable - unread here, same reason
+    uint lightCount;    // 192
+    uint reserved;      // 196
 } xudFrame;
 
 layout(push_constant) uniform XudPushRow {

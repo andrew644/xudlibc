@@ -360,43 +360,46 @@ static void xud_test_gpu_draw(void) {
        block are what say so - framesDrawn is the counter the loop below is about to move, and last
        FrameFence is the one field a frame that had started would have filled.
     */
-    xud_check(
-        xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-            context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->hdrPass,
-            context->renderer->hdrFramebuffer, context->renderer->prepassPass, context->renderer->hdrPrepassFramebuffer,
-            context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, context->renderer->descriptor, NULL)
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount,
+                  context->renderer->hdrPass, context->renderer->hdrFramebuffer, context->renderer->prepassPass,
+                  context->renderer->hdrPrepassFramebuffer, context->renderer->shadowPass, context->renderer->shadowFramebuffer,
+                  context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, context->renderer->descriptor, NULL)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-out-index", "a frame with nowhere to write the acquired index is a bad argument");
-    xud_check(
-        xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, NULL, context->renderer->renderPass,
-            context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->hdrPass, context->renderer->hdrFramebuffer,
-            context->renderer->prepassPass, context->renderer->hdrPrepassFramebuffer, context->renderer->hdrSlot, NULL, 0u,
-            context->renderer->batch, context->renderer->descriptor, &probeIndex)
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, NULL,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount,
+                  context->renderer->hdrPass, context->renderer->hdrFramebuffer, context->renderer->prepassPass,
+                  context->renderer->hdrPrepassFramebuffer, context->renderer->shadowPass, context->renderer->shadowFramebuffer,
+                  context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-pipeline", "a frame with no pipeline to bind is a bad argument, not a draw with no pipeline");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
                   NULL, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->hdrPass,
                   context->renderer->hdrFramebuffer, context->renderer->prepassPass, context->renderer->hdrPrepassFramebuffer,
-                  context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, context->renderer->descriptor, &probeIndex)
+                  context->renderer->shadowPass, context->renderer->shadowFramebuffer, context->renderer->hdrSlot, NULL, 0u,
+                  context->renderer->batch, context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-pass", "a frame with no render pass to begin is a bad argument");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
                   context->renderer->renderPass, NULL, context->swapchain->imageCount, context->renderer->hdrPass,
                   context->renderer->hdrFramebuffer, context->renderer->prepassPass, context->renderer->hdrPrepassFramebuffer,
-                  context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, context->renderer->descriptor, &probeIndex)
+                  context->renderer->shadowPass, context->renderer->shadowFramebuffer, context->renderer->hdrSlot, NULL, 0u,
+                  context->renderer->batch, context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-rows", "a frame with no framebuffer rows has no attachment to draw into");
     xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
                   context->renderer->renderPass, context->renderer->framebuffers, 0u, context->renderer->hdrPass,
                   context->renderer->hdrFramebuffer, context->renderer->prepassPass, context->renderer->hdrPrepassFramebuffer,
-                  context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, context->renderer->descriptor, &probeIndex)
+                  context->renderer->shadowPass, context->renderer->shadowFramebuffer, context->renderer->hdrSlot, NULL, 0u,
+                  context->renderer->batch, context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-zero-count", "a frame told it has no rows to attach is a bad argument");
-    xud_check(
-        xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-            context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount + 1u, context->renderer->hdrPass,
-            context->renderer->hdrFramebuffer, context->renderer->prepassPass, context->renderer->hdrPrepassFramebuffer,
-            context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, context->renderer->descriptor, &probeIndex)
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount + 1u,
+                  context->renderer->hdrPass, context->renderer->hdrFramebuffer, context->renderer->prepassPass,
+                  context->renderer->hdrPrepassFramebuffer, context->renderer->shadowPass, context->renderer->shadowFramebuffer,
+                  context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, context->renderer->descriptor, &probeIndex)
             == XUD_UNSUPPORTED,
         "gpu-draw/refuse-count-disagrees",
         "a count that is not the swapchain's is a frame this rung "
@@ -444,20 +447,20 @@ static void xud_test_gpu_draw(void) {
         "the staging arena the frame loop writes into is a real buffer and is mapped for the descriptor's life");
     xud_check(context->renderer->descriptor->uniformBlock.viewProj[0u] == 1.0f, "gpu-draw/block-identity-before",
         "the block the first frame uploads is the identity the context's camera left in it");
-    xud_check(
-        xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-            context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->hdrPass,
-            context->renderer->hdrFramebuffer, context->renderer->prepassPass, context->renderer->hdrPrepassFramebuffer,
-            context->renderer->hdrSlot, NULL, 0u, NULL, context->renderer->descriptor, &probeIndex)
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount,
+                  context->renderer->hdrPass, context->renderer->hdrFramebuffer, context->renderer->prepassPass,
+                  context->renderer->hdrPrepassFramebuffer, context->renderer->shadowPass, context->renderer->shadowFramebuffer,
+                  context->renderer->hdrSlot, NULL, 0u, NULL, context->renderer->descriptor, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-batch",
         "a frame with no batch to upload, bind or draw is a bad argument rather than a frame that clears and presents a whole screen of "
         "nothing");
-    xud_check(
-        xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
-            context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount, context->renderer->hdrPass,
-            context->renderer->hdrFramebuffer, context->renderer->prepassPass, context->renderer->hdrPrepassFramebuffer,
-            context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, NULL, &probeIndex)
+    xud_check(xud_frame_draw(context->renderer->frame, context->loader, context->device, context->swapchain, context->renderer->pipeline,
+                  context->renderer->renderPass, context->renderer->framebuffers, context->swapchain->imageCount,
+                  context->renderer->hdrPass, context->renderer->hdrFramebuffer, context->renderer->prepassPass,
+                  context->renderer->hdrPrepassFramebuffer, context->renderer->shadowPass, context->renderer->shadowFramebuffer,
+                  context->renderer->hdrSlot, NULL, 0u, context->renderer->batch, NULL, &probeIndex)
             == XUD_INVALID_ARG,
         "gpu-draw/refuse-no-descriptor",
         "a frame with no descriptor has no set 0 to upload and no set to bind, which is a bad argument "

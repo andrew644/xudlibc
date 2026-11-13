@@ -231,6 +231,31 @@ struct XudPipeline {
                     GEQUAL subtlety belongs to the SHADED pass, which is where the table lives */
     VkGraphicsPipelineCreateInfo prepassCreateInfo; /* what vkCreateGraphicsPipelines was handed for
                     the pre-pass row, same record-as-created-bytes rule */
+
+    /* --- the shadow pass's own pipeline (S2.5): the sun's colorless draw list. It joins beside
+         the pre-pass's because it IS the pre-pass's shape - one vertex module reading the
+         position stream, no fragment stage, no colour, depth test and write on - and differs
+         from it in exactly two bytes of state: the module (shadow.vert reads the SUN's matrix
+         out of the block where prepass.vert reads the camera's) and the pass handle it is bound
+         to (the one-attachment map, not the scratch pass's two-row pre-pass). Every other row -
+         vertex input, depth, blend, layout - is the pre-pass's row reused, because a pipeline
+         that disagreed with the pre-pass about the position stream would rasterize the occluder
+         differently than the camera rasterizes it, and a shadow is only trustworthy when it is
+         the same triangles. */
+    VkPipeline shadowPipeline; /* owned: created against the SHADOW render pass below; stays
+                    VK_NULL_HANDLE when open was handed no shadow pass, which is the
+                    shadows-off configuration the frame loop reads the same way */
+    VkRenderPass shadowRenderPass; /* BORROWED, like the other three pass fields: the one-depth-
+                    attachment pass xud_renderpass_open_shadow() builds - it shares nothing with
+                    the pre-pass's handle, and pass compatibility says so: one attachment versus
+                    two, SHADER_READ_ONLY final layout versus OPTIMAL */
+    XudShader* shadowVertexShader; /* owned: the sun's position-only module - a fourth vertex
+                    module for the same reason as the pre-pass's: the matrix it multiplies by is
+                    not the matrix the batch's or the pre-pass's multiplies by */
+    VkPipelineShaderStageCreateInfo shadowShaderStage; /* its ONE stage row, stamped the same way
+                    the pre-pass's is: a shadow pass with a fragment stage is not a shadow map */
+    VkGraphicsPipelineCreateInfo shadowCreateInfo; /* what vkCreateGraphicsPipelines was handed
+                    for the shadow row, same record-as-created-bytes rule */
 };
 
 /*-----------------------------------------------------------------------------------------------
@@ -487,25 +512,37 @@ XudResult xud_pipeline_fill_resolve_create_info(const XudPipeline* pipeline, VkG
 /// is this layer's own ordering error.
 XudResult xud_pipeline_fill_prepass_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo);
 
-/// Driver: as before, and additionally the resolve pipeline and the depth pre-pass pipeline: the
-/// two present modules and the pre-pass's position-only module opened after the batch's modules,
-/// and two more vkCreateGraphicsPipelines calls - the resolve row against the RESOLVE pass handle
-/// and the pre-pass row against the PRE-PASS handle - after the batch list is complete. `renderPass`
-/// binds the batch list's rows, `resolveRenderPass` binds the resolve row and `prepassRenderPass`
-/// binds the pre-pass row, and all three must be live handles: the passes differ in the format and
-/// the references of their attachments - the scene pipelines write the float scratch colour, the
-/// tonemap pipeline writes the swapchain colour, and the pre-pass writes nothing but depth - and
-/// pass compatibility is attachment-for-attachment, so no two of the three share a pass without
-/// dynamic rendering.
-XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
-    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass, VkRenderPass prepassRenderPass);
+/// Pure: the VkGraphicsPipelineCreateInfo the SHADOW pipeline will be created with - the
+/// pre-pass's fill read for the shadow's two different rows: shadowShaderStage (shadow.vert's
+/// one vertex stage) and shadowRenderPass (the one-attachment map). Every state row is the
+/// pre-pass's: prepassVertexInput, prepassDepthStencil, prepassBlending, the shared triangle
+/// assembly and the shared layout - the occluder must rasterize exactly as the camera rasterizes
+/// the same triangles, and one set of rows for both colorless passes is what makes that one fact
+/// rather than two that can drift. Refuses XUD_UNSUPPORTED when any shared row is unstamped, and
+/// XUD_INVALID_ARG on a NULL out-create-info or pipeline, a pipeline whose layout or
+/// shadowRenderPass handle is not live, or a shadow stage row naming no module.
+XudResult xud_pipeline_fill_shadow_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo);
 
-/// Driver: the teardown - vkDestroyPipeline for the pre-pass row, the resolve row and every row
-/// of the list, then vkDestroyPipelineLayout, then every module of the frag-module axis, the
-/// vertex module, the two present modules and the pre-pass module through xud_shader_close(), then
-/// free. That order is load-bearing: the pipelines name their layout and the layout's modules are
-/// the only thing keeping them alive, so anything else leaves a handle whose owner is already gone. XUD_ALREADY when the pointer
-/// owns no pipeline; XUD_INVALID_ARG on a NULL pointer-to-pointer, a NULL loader/device or
+/// Driver: as before, and additionally the shadow pass's pipeline (S2.5): `shadowRenderPass`
+/// binds the shadow row, and MAY be VK_NULL_HANDLE - the shadows-off configuration - in which
+/// case no fourth module opens and shadowPipeline stays a null handle for the frame loop to
+/// step around. When it is live: the sun's position-only module opens after the pre-pass's, its
+/// one stage row is stamped from it, and one more vkCreateGraphicsPipelines call binds the
+/// shadow row against the map's pass - after the pre-pass row is complete. The four pass
+/// arguments stay four different handles: the batch list writes the float scratch colour, the
+/// tonemap row writes the swapchain colour, the pre-pass row writes the scratch depth through a
+/// two-row pass, and the shadow row writes the map's depth through a one-row pass.
+XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
+    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass, VkRenderPass prepassRenderPass,
+    VkRenderPass shadowRenderPass);
+
+/// Driver: the teardown - vkDestroyPipeline for the shadow row, the pre-pass row, the resolve row
+/// and every row of the list, then vkDestroyPipelineLayout, then every module of the frag-module
+/// axis, the vertex module, the two present modules, the pre-pass module and the shadow module
+/// through xud_shader_close(), then free. That order is load-bearing: the pipelines name their
+/// layout and the layout's modules are the only thing keeping them alive, so anything else leaves
+/// a handle whose owner is already gone.
+/// XUD_ALREADY when the pointer owns no pipeline; XUD_INVALID_ARG on a NULL pointer-to-pointer, a NULL loader/device or
 /// a handle-less device; XUD_UNSUPPORTED when the device rows are not this device's or a
 /// destroy row is nil while a row of the list is live (the struct is not freed,
 /// because freeing it would leak the handles silently).

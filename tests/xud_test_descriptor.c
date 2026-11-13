@@ -133,17 +133,22 @@ static void xud_test_descriptor_pure(void) {
         "descriptor/layout-1-chain-clear",
         "nothing is chained into either layout and no flags are set: every slot set is written before it is bound and the frame rebinds "
         "the slot it samples rather than rewriting a bound one");
-    xud_check((d.layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].bindingCount == XUD_DESCRIPTOR_BINDINGS_PER_SET)
+    xud_check((d.layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].bindingCount == XUD_DESCRIPTOR_BINDINGS_PER_FRAME)
             && (d.layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].bindingCount == XUD_DESCRIPTOR_BINDINGS_PER_SET),
-        "descriptor/one-binding-each", "one binding per set, both counts paired with a real array");
+        "descriptor/bindings-per-set",
+        "the per-frame set's two rows (block, shadow map) and the material set's one, each count paired "
+        "with a real array");
     xud_check((d.layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].pBindings == d.bindings[XUD_DESCRIPTOR_SET_PER_FRAME])
             && (d.layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].pBindings == d.bindings[XUD_DESCRIPTOR_SET_MATERIAL]),
         "descriptor/binding-arrays-are-the-records",
         "each create-info points at the record's own binding row rather than a copy, so the layout "
         "the driver was handed and the one this rung records are one row");
     xud_check((d.bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].binding == XUD_DESCRIPTOR_BINDING)
+            && (d.bindings[XUD_DESCRIPTOR_SET_PER_FRAME][1u].binding == XUD_DESCRIPTOR_SHADOW_BINDING)
             && (d.bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].binding == XUD_DESCRIPTOR_BINDING),
-        "descriptor/both-bindings-zero", "both bindings are numbered 0, the contiguous list the create-info's own rule asks for");
+        "descriptor/contiguous-bindings",
+        "set 0 numbers its rows 0 and 1 - block then shadow map - and the material set its row 0, the "
+        "contiguous lists the create-infos' own rule asks for");
     xud_check(d.bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         "descriptor/set-0-is-a-uniform-buffer", "set 0 is the per-frame block, read as a UNIFORM_BUFFER");
     xud_check(d.bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].descriptorCount == 1u, "descriptor/set-0-count-one", "one buffer in that set");
@@ -200,10 +205,10 @@ static void xud_test_descriptor_pure(void) {
     xud_check((d.poolSizes[0u].type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) && (d.poolSizes[0u].descriptorCount == 1u),
         "descriptor/pool-uniform-row", "one uniform buffer");
     xud_check((d.poolSizes[1u].type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER)
-            && (d.poolSizes[1u].descriptorCount == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE),
+            && (d.poolSizes[1u].descriptorCount == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u),
         "descriptor/pool-sampler-row",
-        "the array's size rather than 1, because the count is the ceiling of what the pool's sets m"
-        "ay hold in total and the texture step's set 1 is this array");
+        "the array's size plus one, because the count is the ceiling of what the pool's sets may hold in total: the texture step's set 1 "
+        "is the array and set 0's binding 1 is the shadow map's one more");
 
     /* The allocate-infos, which name the pool and the layout rather than a set. BOTH sets of this
        layout are allocated, so there are two rows of the array below rather than one, and the index
@@ -807,15 +812,16 @@ static void xud_test_gpu_descriptor(void) {
     */
     xud_check(
         xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytes, &cursor) == XUD_OK, "gpu-desc/stats-answers", "answers");
-    xud_check(blockCount == 7u, "gpu-desc/five-blocks",
-        "seven VkDeviceMemory: the descriptor's uniform buffer, the render pass's depth image, the white default's own image (the second "
+    xud_check(blockCount == 8u, "gpu-desc/eight-blocks",
+        "eight VkDeviceMemory: the descriptor's uniform buffer, the render pass's depth image, the white default's own image (the second "
         "thing in this tree that asked for an IMAGE's requirements, and its alignment does not fit a hole in the depth image's block "
-        "either), the renderer's scratch image and the scratch pass's own depth image, and the two host-visible arenas, this rung's "
-        "staging arena and the batch's, which are blocks of their own because a mapping is per-VkDeviceMemory rather than per-range");
-    xud_check(liveCount == 12u, "gpu-desc/ten-live-ranges",
-        "twelve live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, the "
-        "scratch pass's depth, the two arenas each of which is a whole block, and the batch's four streams plus its index buffer, which "
-        "is what a completed context owns now");
+        "either), the renderer's scratch image, the scratch pass's own depth image and the shadow map - three more images for the same "
+        "alignment reason - and the two host-visible arenas, this rung's staging arena and the batch's, which are blocks of their own "
+        "because a mapping is per-VkDeviceMemory rather than per-range");
+    xud_check(liveCount == 13u, "gpu-desc/thirteen-live-ranges",
+        "thirteen live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, "
+        "the scratch pass's depth, the shadow map, the two arenas each of which is a whole block, and the batch's four streams plus "
+        "its index buffer, which is what a completed context owns now");
     {
         uint32_t stream = 0u;
         VkDeviceSize batchCarves = 0u;
@@ -827,7 +833,8 @@ static void xud_test_gpu_descriptor(void) {
         xud_check(bytes
                 == (context->descriptor->uniformRange.size + context->descriptor->uniformStagingRange.size
                     + context->descriptor->whiteRange.size + context->renderer->renderPass->depthRange.size
-                    + context->renderer->hdrColorRange.size + context->renderer->hdrPass->depthRange.size + batchCarves),
+                    + context->renderer->hdrColorRange.size + context->renderer->hdrPass->depthRange.size
+                    + context->renderer->shadowPass->depthRange.size + batchCarves),
             "gpu-desc/bytes-are-every-carve",
             "the reserved bytes are exactly every carve added up, which is what makes the counter a fa"
             "ct rather than an estimate - and the batch's six are in that sum, so the rung below this o"

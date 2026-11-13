@@ -60,4 +60,53 @@ XudResult xud_light_row_fill(XudLightRow* outRow, const XudLight* light);
 /// descriptor never came up.
 XudResult xud_light_reset(XudContext* context);
 
+/*-----------------------------------------------------------------------------------------------
+ * The shadow map's geometry (S2.5): the box the casting sun sees, and the matrix that maps it
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_SHADOW_MAP_SIZE                                                                                                                \
+    2048u /* the occluder map's edge in texels, and the one place that edge is written down: the   \
+             renderer sizes its depth image and framebuffer by it, and the block's texel-size      \
+             row is its reciprocal - the compare that reads one had better read the other too.     \
+             A power of two because clamp-to-edge texel math wants one.                            \
+     */
+#define XUD_SHADOW_EXTENT                                                                                                                  \
+    40.0f /* half-edge of the world cube the map covers, centred on the camera: the box is the     \
+             camera's neighbourhood rather than the whole scene because a fixed box around the      \
+             action spends its 2048 texels where the player can see them, and a scene-sized box    \
+             spends most of them on empty ground. Outside the box a surface is LIT by the          \
+             fragment's own out-of-range answer - a stated limit, not a wrong shadow.              \
+     */
+#define XUD_SHADOW_DEPTH_BIAS                                                                                                              \
+    0.0025f /* the depth the compare moves away from the surface asking: reversed-linear depth     \
+               over the box's own span, so this is about two parts in a thousand of the near       \
+               half of it. Zero bias is acne - rasterization lands a surface's fragment a hair     \
+               past the depth its own triangles wrote, and the hair walks in straight lines.       \
+     */
+
+/// Pure: the casting sun's view-projection - the 64 bytes the block's lightViewProj row carries,
+/// in the same column-major order as the camera's own. The view half is xud_camera_fill_view_proj
+///()'s basis (right/up/minus-forward rows, the eye pushed back through them) with the sun's
+/// direction as forward and the world +Y as up - swapped to +Z when the sun shines along Y, since
+/// a basis whose up is parallel to its forward is no basis. The eye sits two extents behind the
+/// focus so the map's depth interval [-extent, +extent] along the light is centred on the camera.
+/// The projection half is the REVERSED ORTHO the map's compare reads: x and y scaled by 1/extent,
+/// z linear in the distance (1 at the eye-side plane, 0 at the far one - ortho has no perspective
+/// divide to fight), w pinned at 1 so what the vertex stage writes IS what the map stores. XUD_
+/// INVALID_ARG on a NULL out, focus or direction, a non-finite or non-positive extent, or a non-
+/// finite or zero direction - the same refusals the validator makes for a sun's direction.
+XudResult xud_light_shadow_view_proj(float* outViewProj, const XudVector3* focus, const XudVector3* sunDirection, float extent);
+
+/// The per-frame push xud_begin_camera_3d() makes beside the camera's own: the FIRST sun in the
+/// context's table with a positive intensity is the casting sun, its matrix is filled from the
+/// camera's position as the focus, and the block's four shadow rows - matrix, texel size, bias,
+/// enable - go to the descriptor in one call. No sun with something to cast: the identity matrix
+/// and enable 0.0, which is the fragment stage's standing order to answer every lookup LIT
+/// before it reads a texel - the map is still sampled by every draw (binding 1 has contents),
+/// it is just asked no more. Several suns: the FIRST casts and ALL read its map - the block
+/// carries one matrix, and a second sun's shadows would need a second map and a second row.
+/// XUD_INVALID_ARG on a NULL context or focus; XUD_UNSUPPORTED on a context whose descriptor
+/// never came up; the setter's own answer otherwise.
+XudResult xud_light_shadow_apply(XudContext* context, const XudVector3* focus);
+
 #endif /* XUD_LIGHT_H_ */

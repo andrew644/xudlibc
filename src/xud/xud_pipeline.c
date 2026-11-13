@@ -679,6 +679,66 @@ XudResult xud_pipeline_fill_prepass_create_info(const XudPipeline* pipeline, VkG
     return XUD_OK;
 }
 
+XudResult xud_pipeline_fill_shadow_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo) {
+    if (outCreateInfo == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((pipeline == NULL) || (pipeline->layout == VK_NULL_HANDLE) || (pipeline->shadowRenderPass == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if (pipeline->shadowShaderStage.module == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    if ((pipeline->prepassVertexInput.sType != VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO)
+        || (pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES].sType != VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO)
+        || (pipeline->viewportState.sType != VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO)
+        || (pipeline->rasterizer.sType != VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO)
+        || (pipeline->multisample.sType != VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO)
+        || (pipeline->prepassBlending.sType != VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
+        || (pipeline->dynamicState.sType != VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO)
+        || (pipeline->prepassDepthStencil.sType != VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    outCreateInfo->sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    outCreateInfo->pNext = NULL;
+    outCreateInfo->flags = 0u;
+    outCreateInfo->stageCount = 1u; /* one stage, and the same reason the pre-pass gives: a shadow
+                                        pass with a fragment stage is the shaded pass again */
+    outCreateInfo->pStages = &pipeline->shadowShaderStage; /* the sun's module, not the
+                                                                pre-pass's: the only two rows
+                                                                that differ are this one and the
+                                                                pass below */
+    outCreateInfo->pTessellationState = NULL;
+    outCreateInfo->pVertexInputState = &pipeline->prepassVertexInput; /* the position stream, the
+                                                                          same row: the occluder
+                                                                          is the same triangles */
+    outCreateInfo->pInputAssemblyState = &pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES];
+    outCreateInfo->pViewportState = &pipeline->viewportState;
+    outCreateInfo->pRasterizationState = &pipeline->rasterizer;
+    outCreateInfo->pMultisampleState = &pipeline->multisample;
+    outCreateInfo->pDepthStencilState = &pipeline->prepassDepthStencil; /* test ON, write ON,
+                                                                            GREATER: the map is the
+                                                                            same reversed-depth
+                                                                            contest as the
+                                                                            pre-pass's */
+    outCreateInfo->pColorBlendState = &pipeline->prepassBlending; /* attachmentCount 0 - and the
+                                                                       shadow pass has literally
+                                                                       no colour attachment, not
+                                                                       merely an unreferenced one */
+    outCreateInfo->pDynamicState = &pipeline->dynamicState;
+    outCreateInfo->layout = pipeline->layout; /* the ONE layout: the shadow draw pushes the same
+                                                   row and binds the same set 0 - which is how the
+                                                   sun's matrix reaches the vertex stage without a
+                                                   second block anywhere */
+    outCreateInfo->renderPass = pipeline->shadowRenderPass;
+    outCreateInfo->subpass = XUD_PIPELINE_FIRST_SUBPASS;
+    outCreateInfo->basePipelineHandle = VK_NULL_HANDLE;
+    outCreateInfo->basePipelineIndex = -1;
+
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * Retiring the variant rows that got made - file-local, the ladder below and xud_pipeline_close()
  * both call it
@@ -718,12 +778,38 @@ static void xud_pipeline_close_modules(XudShader** vertexShader, XudShader** fra
     }
 }
 
+/* Everything the create ladder has made BEFORE the shadow row is built - the variant list, the
+   resolve row, the two present modules, the layout, the batch's modules, and the pre-pass row
+   with its module. The shadow block's three failure paths all retire exactly this set, and one
+   function states it once instead of the ladder growing a fourth and fifth and sixth copy of
+   itself; the inline ladders above it predate the shadow row and stay as they were made. */
+static void xud_pipeline_retire_up_to_prepass(XudPipeline* pipeline, XudLoader* loader, const XudDevice* device) {
+    xud_pipeline_destroy_rows(loader, device, pipeline->pipeline);
+    if (pipeline->resolvePipeline != VK_NULL_HANDLE) {
+        (void)loader->deviceTable.vkDestroyPipeline(device->device, pipeline->resolvePipeline, NULL);
+        pipeline->resolvePipeline = VK_NULL_HANDLE;
+    }
+    (void)xud_shader_close(&pipeline->presentFragmentShader, device, loader);
+    (void)xud_shader_close(&pipeline->presentVertexShader, device, loader);
+    if (pipeline->layout != VK_NULL_HANDLE) {
+        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, pipeline->layout, NULL);
+        pipeline->layout = VK_NULL_HANDLE;
+    }
+    xud_pipeline_close_modules(&pipeline->vertexShader, pipeline->fragmentShader, device, loader);
+    if (pipeline->prepassPipeline != VK_NULL_HANDLE) {
+        (void)loader->deviceTable.vkDestroyPipeline(device->device, pipeline->prepassPipeline, NULL);
+        pipeline->prepassPipeline = VK_NULL_HANDLE;
+    }
+    (void)xud_shader_close(&pipeline->prepassVertexShader, device, loader);
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The create rung - the driver half
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
-    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass, VkRenderPass prepassRenderPass) {
+    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass, VkRenderPass prepassRenderPass,
+    VkRenderPass shadowRenderPass) {
     XudPipeline* pipeline = NULL;
     XudShader* vertexShader = NULL;
     XudShader* fragModule[XUD_PIPELINE_FRAG_MODULE_COUNT] = { NULL }; /* one per entry of the FRAG axis,
@@ -741,6 +827,10 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     XudShader* prepassVertexShader = NULL; /* the pre-pass pipeline's one module, opened after the
                             resolve row exists - like the present pair, it is only ever its stage */
     VkPipeline prepassCreated = VK_NULL_HANDLE;
+    XudShader* shadowVertexShader = NULL; /* the shadow pass's one module, opened after the
+                            pre-pass row exists - and only opened when the rung was handed a
+                            shadow pass at all: no pass, no module, no row */
+    VkPipeline shadowCreated = VK_NULL_HANDLE;
     VkPipelineLayout layout = VK_NULL_HANDLE;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
@@ -838,6 +928,9 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     pipeline->prepassRenderPass = prepassRenderPass; /* and the third of the trio, borrowed the
                             same way: the pre-pass row names it at create */
 
+    pipeline->shadowRenderPass = shadowRenderPass; /* the optional fourth: VK_NULL_HANDLE here is
+                            the shadows-off configuration, and the shadow row below is simply
+                            never built; every other pass row of the struct is unconditional */
     /* The modules first: one vertex module for the whole list and one module per entry of the FRAG
        axis, so the two untextured columns share one VkShaderModule and only the textured column
        names the second. The layout and the pipelines are built from what these hand back.
@@ -1078,6 +1171,45 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     pipeline->prepassVertexShader = prepassVertexShader;
     pipeline->prepassPipeline = prepassCreated;
 
+    /* The shadow pass's pipeline, last: the sun's module, the pre-pass's rows, the map's pass.
+       The whole row is conditional on having been handed a shadow pass - the frame loop reads
+       the same null handle as the same shadows-off answer the renderer gave. */
+    if (shadowRenderPass != VK_NULL_HANDLE) {
+        result = xud_shader_open(&shadowVertexShader, loader, device, xudShadowVertSpv, sizeof(xudShadowVertSpv));
+        if (result != XUD_OK) {
+            xud_pipeline_retire_up_to_prepass(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        pipeline->shadowShaderStage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipeline->shadowShaderStage.pNext = NULL;
+        pipeline->shadowShaderStage.flags = 0u;
+        pipeline->shadowShaderStage.stage = VK_SHADER_STAGE_VERTEX_BIT;
+        pipeline->shadowShaderStage.module = shadowVertexShader->module;
+        pipeline->shadowShaderStage.pName = XUD_PIPELINE_ENTRY_POINT;
+        pipeline->shadowShaderStage.pSpecializationInfo = NULL;
+        result = xud_pipeline_fill_shadow_create_info(pipeline, &pipeline->shadowCreateInfo);
+        if (result != XUD_OK) {
+            (void)xud_shader_close(&shadowVertexShader, device, loader);
+            pipeline->shadowShaderStage.module = VK_NULL_HANDLE;
+            xud_pipeline_retire_up_to_prepass(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        vk = loader->deviceTable.vkCreateGraphicsPipelines(
+            device->device, VK_NULL_HANDLE, 1u, &pipeline->shadowCreateInfo, NULL, &shadowCreated);
+        result = xud_result_from_vk(vk);
+        if (result != XUD_OK) {
+            (void)xud_shader_close(&shadowVertexShader, device, loader);
+            pipeline->shadowShaderStage.module = VK_NULL_HANDLE;
+            xud_pipeline_retire_up_to_prepass(pipeline, loader, device);
+            free(pipeline);
+            return result;
+        }
+        pipeline->shadowVertexShader = shadowVertexShader;
+        pipeline->shadowPipeline = shadowCreated;
+    }
+
     *outPipeline = pipeline;
     return XUD_OK;
 }
@@ -1131,7 +1263,16 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
             return XUD_UNSUPPORTED;
         }
     }
+    if (victim->shadowPipeline != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroyPipeline == NULL) {
+            return XUD_UNSUPPORTED;
+        }
+    }
     xud_pipeline_destroy_rows(loader, device, victim->pipeline);
+    if (victim->shadowPipeline != VK_NULL_HANDLE) {
+        loader->deviceTable.vkDestroyPipeline(device->device, victim->shadowPipeline, NULL);
+        victim->shadowPipeline = VK_NULL_HANDLE;
+    }
     if (victim->prepassPipeline != VK_NULL_HANDLE) {
         loader->deviceTable.vkDestroyPipeline(device->device, victim->prepassPipeline, NULL);
         victim->prepassPipeline = VK_NULL_HANDLE;
@@ -1177,6 +1318,12 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
     }
     if (victim->prepassVertexShader != NULL) {
         closedModule = xud_shader_close(&victim->prepassVertexShader, device, loader);
+        if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
+            first = closedModule;
+        }
+    }
+    if (victim->shadowVertexShader != NULL) {
+        closedModule = xud_shader_close(&victim->shadowVertexShader, device, loader);
         if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
             first = closedModule;
         }

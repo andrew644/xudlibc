@@ -82,6 +82,7 @@
 #include "xud_descriptor.h"
 #include "xud_device.h"
 #include "xud_frame.h"
+#include "xud_light.h" /* Required for: XUD_SHADOW_MAP_SIZE - the occluder map's edge, sized where it is stated */
 #include "xud_loader.h"
 #include "xud_physical.h"
 #include "xud_pipeline.h"
@@ -289,6 +290,78 @@ static void xud_renderer_hdr_retire(
     }
 }
 
+/* Reverse of the make, and every step tolerates its own absence: the framebuffer before the
+   pass whose view it attaches (the pass owns that view), the pass - its depth image, view,
+   range and tracker entry all inside xud_renderpass_close's hands - before the sampler, since
+   the descriptor write that names view and sampler is history the moment the pass is gone:
+   nothing can bind a set whose renderer is retired, and the descriptor itself goes one rung
+   above this one, after this teardown returns. */
+static void xud_renderer_shadow_retire(XudRenderer* renderer, XudLoader* loader, const XudDevice* device, XudAllocator* alloc) {
+    if ((renderer == NULL) || (loader == NULL) || (device == NULL)) {
+        return;
+    }
+    if (renderer->shadowFramebuffer != NULL) {
+        (void)xud_framebuffer_close(&renderer->shadowFramebuffer, device, loader);
+    }
+    if (renderer->shadowPass != NULL) {
+        (void)xud_renderpass_close(&renderer->shadowPass, device, loader, alloc);
+    }
+    if ((renderer->shadowSampler != VK_NULL_HANDLE) && (loader->deviceTable.vkDestroySampler != NULL)) {
+        loader->deviceTable.vkDestroySampler(device->device, renderer->shadowSampler, NULL);
+        renderer->shadowSampler = VK_NULL_HANDLE;
+    }
+}
+
+/* The shadow map's bring-up (S2.5): the comparison sampler, the map's own pass (its depth image
+   and view ride inside it, ownsDepth-style, and the tracker gets the image's first word from
+   the renderpass rung), the one-attachment framebuffer row, and the ONE descriptor write that
+   puts the pair into set 0's binding 1. It sits beside the scratch bring-up rather than inside
+   it because it does not follow the swapchain: nothing in here is sized by the extent, nothing
+   in here is retired by a resize, and the pair is made once per renderer. The order is the
+   dependency's: the sampler before the write that names it, the pass before the row that
+   attaches its view, and all of it before the pipeline that is bound to this pass - the call
+   that needs shadowPass->renderPass lives at step 1c of the bring-up below. */
+static XudResult xud_renderer_shadow_open(
+    XudRenderer* renderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps, XudAllocator* alloc) {
+    XudResult result = XUD_OK;
+
+    memset(&renderer->shadowSamplerInfo, 0, sizeof renderer->shadowSamplerInfo);
+    renderer->shadowSamplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    renderer->shadowSamplerInfo.magFilter = VK_FILTER_LINEAR;
+    renderer->shadowSamplerInfo.minFilter = VK_FILTER_LINEAR;
+    renderer->shadowSamplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    renderer->shadowSamplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    renderer->shadowSamplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    renderer->shadowSamplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    renderer->shadowSamplerInfo.compareEnable = VK_TRUE;
+    renderer->shadowSamplerInfo.compareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+    renderer->shadowSamplerInfo.minLod = 0.0f;
+    renderer->shadowSamplerInfo.maxLod = 0.0f;
+    if (loader->deviceTable.vkCreateSampler(device->device, &renderer->shadowSamplerInfo, NULL, &renderer->shadowSampler) != VK_SUCCESS) {
+        return XUD_VULKAN_ERROR;
+    }
+
+    result = xud_renderpass_open_shadow(
+        &renderer->shadowPass, loader, device, caps, alloc, XUD_SHADOW_MAP_SIZE, renderer->hdrFormat, renderer->layout);
+    if (result != XUD_OK) {
+        xud_renderer_shadow_retire(renderer, loader, device, alloc);
+        return result;
+    }
+    result = xud_framebuffer_open_shadow(&renderer->shadowFramebuffer, loader, device, renderer->shadowPass, XUD_SHADOW_MAP_SIZE);
+    if (result != XUD_OK) {
+        xud_renderer_shadow_retire(renderer, loader, device, alloc);
+        return result;
+    }
+
+    result
+        = xud_descriptor_set_shadow_texture(renderer->descriptor, loader, device, renderer->shadowPass->depthView, renderer->shadowSampler);
+    if (result != XUD_OK) {
+        xud_renderer_shadow_retire(renderer, loader, device, alloc);
+        return result;
+    }
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The one retirement order, shared by the teardown and by every failure path of the bring-up
  *-----------------------------------------------------------------------------------------------*/
@@ -320,6 +393,10 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
                                go after the pipeline that names the scratch pass and before the
                                screen pass rung below; the descriptor outlives the renderer, so the
                                slot it releases is still a live slot here */
+    xud_renderer_shadow_retire(renderer, loader, device, alloc); /* the map goes with its own
+                               sampler and pass, after the pipeline that named the pass and (as
+                               set 0's binding 1) its view - and before the screen pass rung,
+                               which owns nothing of it */
     rung = xud_renderpass_close(&renderer->renderPass, device, loader, alloc);
     (void)rung;
 }
@@ -422,6 +499,18 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
         return result;
     }
 
+    /* 1c. the shadow map: comparison sampler, map pass, one-view framebuffer row, and set 0's
+       binding-1 write - before the pipeline, because the shadow pipeline is BOUND to this pass
+       the same way the scene list is bound to the scratch pass, and before the first frame,
+       because set 0 may not be bound while one of its bindings is unwritten.
+    */
+    result = xud_renderer_shadow_open(renderer, loader, device, caps, alloc);
+    if (result != XUD_OK) {
+        xud_renderer_retire(renderer, device, loader, alloc);
+        free(renderer);
+        return result;
+    }
+
     /* 2. the batch rung, below the pipeline in the ladder and above the allocator: its five
        buffers are carved out of the allocator's memory, which is already in hand from the pass
        above, and its vertex-input state is gated on the caps' vertex-input limits. It is handed
@@ -456,7 +545,7 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
        the pipeline that names those handles.
      */
     result = xud_pipeline_open(&renderer->pipeline, loader, device, descriptor, renderer->batch, renderer->hdrPass->renderPass,
-        renderer->renderPass->renderPass, renderer->prepassPass->renderPass);
+        renderer->renderPass->renderPass, renderer->prepassPass->renderPass, renderer->shadowPass->renderPass);
     if (result != XUD_OK) {
         xud_renderer_retire(renderer, device, loader, alloc);
         free(renderer);
@@ -508,7 +597,8 @@ XudResult xud_renderer_draw(
     }
     if ((renderer->pipeline == NULL) || (renderer->renderPass == NULL) || (renderer->hdrPass == NULL) || (renderer->hdrFramebuffer == NULL)
         || (renderer->prepassPass == NULL) || (renderer->hdrPrepassFramebuffer == NULL) || (renderer->framebuffers == NULL)
-        || (renderer->frame == NULL) || (renderer->descriptor == NULL)) {
+        || (renderer->shadowPass == NULL) || (renderer->shadowFramebuffer == NULL) || (renderer->frame == NULL)
+        || (renderer->descriptor == NULL)) {
         return XUD_INVALID_ARG;
     }
 
@@ -586,7 +676,8 @@ XudResult xud_renderer_draw(
 
     result = xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
         renderer->framebufferCount, renderer->hdrPass, renderer->hdrFramebuffer, renderer->prepassPass, renderer->hdrPrepassFramebuffer,
-        renderer->hdrSlot, renderer->scopes, renderer->scopeCount, renderer->screenBatch, renderer->descriptor, outImageIndex);
+        renderer->shadowPass, renderer->shadowFramebuffer, renderer->hdrSlot, renderer->scopes, renderer->scopeCount, renderer->screenBatch,
+        renderer->descriptor, outImageIndex);
     if (result == XUD_OK) {
         renderer->drawCount++;
     }

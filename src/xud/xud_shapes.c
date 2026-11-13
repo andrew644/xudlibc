@@ -2758,6 +2758,8 @@ XudResult xud_draw_rectangle(XudContext* context, int32_t posX, int32_t posY, in
     uint32_t oldVariant = 0u;
     uint32_t oldMaterial = 0u;
     uint32_t oldTexture = 0u;
+    uint32_t extentWidth = 0u;
+    uint32_t extentHeight = 0u;
     float clipX0 = 0.0f;
     float clipY0 = 0.0f;
     float clipX1 = 0.0f;
@@ -2777,23 +2779,27 @@ XudResult xud_draw_rectangle(XudContext* context, int32_t posX, int32_t posY, in
         return XUD_INVALID_ARG;
     }
 
-    /* The extent the quad's pixels divide by is the framebuffer's own, the swapchain's imageExtent
-       the window layer reports rather than the size the caller asked for: a zero extent is the
-       state a window with no presentable extent is in, and a divide by it is an inf in a float
-       stream rather than a draw. */
-    if ((context->width == 0u) || (context->height == 0u)) {
+    /* The extent the quad's pixels divide by is the framebuffer currently being drawn into: the
+       active scope's own while a render target is open, the window's swapchain extent otherwise -
+       the one rule xud_renderer_pixel_extent states. A zero extent is the state a window with no
+       presentable extent is in, and a divide by it is an inf in a float stream rather than a
+       draw. */
+    result = xud_renderer_pixel_extent(context->renderer, context->width, context->height, &extentWidth, &extentHeight);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if ((extentWidth == 0u) || (extentHeight == 0u)) {
         return XUD_INVALID_ARG;
     }
 
     /* The two corners in pixels, the top-left and the bottom-right of the caller's extent at the
        caller's position, mapped to clip before they become the corners the quad takes: the
        rectangle's full box in uv space is the quad's, so the uv is the whole of [0, 1]. */
-    result = xud_shapes_pixel_to_clip(context->width, context->height, (float)posX, (float)posY, &clipX0, &clipY0);
+    result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, (float)posX, (float)posY, &clipX0, &clipY0);
     if (result != XUD_OK) {
         return result;
     }
-    result = xud_shapes_pixel_to_clip(
-        context->width, context->height, (float)posX + (float)width, (float)posY + (float)height, &clipX1, &clipY1);
+    result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, (float)posX + (float)width, (float)posY + (float)height, &clipX1, &clipY1);
     if (result != XUD_OK) {
         return result;
     }
@@ -2841,6 +2847,8 @@ XudResult xud_draw_line(XudContext* context, int32_t startPosX, int32_t startPos
     uint32_t oldVariant = 0u;
     uint32_t oldMaterial = 0u;
     uint32_t oldTexture = 0u;
+    uint32_t extentWidth = 0u;
+    uint32_t extentHeight = 0u;
     float clipX = 0.0f;
     float clipY = 0.0f;
     XudResult result = XUD_INVALID_ARG;
@@ -2850,21 +2858,25 @@ XudResult xud_draw_line(XudContext* context, int32_t startPosX, int32_t startPos
         return result;
     }
 
-    /* The extent the endpoints divide by is the framebuffer's own, for the same reason the
-       rectangle above refuses a zero one: a divide by it is an inf in a float stream rather than
-       a draw. */
-    if ((context->width == 0u) || (context->height == 0u)) {
+    /* The extent the endpoints divide by is the framebuffer currently being drawn into, for the
+       same reason the rectangle above refuses a zero one: a divide by it is an inf in a float
+       stream rather than a draw. */
+    result = xud_renderer_pixel_extent(context->renderer, context->width, context->height, &extentWidth, &extentHeight);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if ((extentWidth == 0u) || (extentHeight == 0u)) {
         return XUD_INVALID_ARG;
     }
 
-    result = xud_shapes_pixel_to_clip(context->width, context->height, (float)startPosX, (float)startPosY, &clipX, &clipY);
+    result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, (float)startPosX, (float)startPosY, &clipX, &clipY);
     if (result != XUD_OK) {
         return result;
     }
     start.x = clipX;
     start.y = clipY;
     start.z = 0.0f;
-    result = xud_shapes_pixel_to_clip(context->width, context->height, (float)endPosX, (float)endPosY, &clipX, &clipY);
+    result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, (float)endPosX, (float)endPosY, &clipX, &clipY);
     if (result != XUD_OK) {
         return result;
     }
@@ -2914,6 +2926,8 @@ XudResult xud_draw_rectangle_lines(XudContext* context, int32_t posX, int32_t po
     uint32_t oldVariant = 0u;
     uint32_t oldMaterial = 0u;
     uint32_t oldTexture = 0u;
+    uint32_t extentWidth = 0u;
+    uint32_t extentHeight = 0u;
     float clipX = 0.0f;
     float clipY = 0.0f;
     uint32_t edge = 0u;
@@ -2940,12 +2954,16 @@ XudResult xud_draw_rectangle_lines(XudContext* context, int32_t posX, int32_t po
         return XUD_INVALID_ARG;
     }
 
-    if ((context->width == 0u) || (context->height == 0u)) {
+    result = xud_renderer_pixel_extent(context->renderer, context->width, context->height, &extentWidth, &extentHeight);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if ((extentWidth == 0u) || (extentHeight == 0u)) {
         return XUD_INVALID_ARG;
     }
 
     for (edge = 0u; edge < 4u; edge++) {
-        result = xud_shapes_pixel_to_clip(context->width, context->height, cornerX[edge], cornerY[edge], &clipX, &clipY);
+        result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, cornerX[edge], cornerY[edge], &clipX, &clipY);
         if (result != XUD_OK) {
             return result;
         }
@@ -2995,6 +3013,8 @@ XudResult xud_draw_triangle(XudContext* context, XudVector2 v0, XudVector2 v1, X
     uint32_t oldVariant = 0u;
     uint32_t oldMaterial = 0u;
     uint32_t oldTexture = 0u;
+    uint32_t extentWidth = 0u;
+    uint32_t extentHeight = 0u;
     float clipX = 0.0f;
     float clipY = 0.0f;
     XudResult result = XUD_INVALID_ARG;
@@ -3004,27 +3024,32 @@ XudResult xud_draw_triangle(XudContext* context, XudVector2 v0, XudVector2 v1, X
         return result;
     }
 
-    /* The extent the points divide by is the framebuffer's own, for the same reason the rectangle
-       above refuses a zero one: a divide by it is an inf in a float stream rather than a draw. */
-    if ((context->width == 0u) || (context->height == 0u)) {
+    /* The extent the points divide by is the framebuffer currently being drawn into, for the same
+       reason the rectangle above refuses a zero one: a divide by it is an inf in a float stream
+       rather than a draw. */
+    result = xud_renderer_pixel_extent(context->renderer, context->width, context->height, &extentWidth, &extentHeight);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if ((extentWidth == 0u) || (extentHeight == 0u)) {
         return XUD_INVALID_ARG;
     }
 
-    result = xud_shapes_pixel_to_clip(context->width, context->height, v0.x, v0.y, &clipX, &clipY);
+    result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, v0.x, v0.y, &clipX, &clipY);
     if (result != XUD_OK) {
         return result;
     }
     p0.x = clipX;
     p0.y = clipY;
     p0.z = 0.0f;
-    result = xud_shapes_pixel_to_clip(context->width, context->height, v1.x, v1.y, &clipX, &clipY);
+    result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, v1.x, v1.y, &clipX, &clipY);
     if (result != XUD_OK) {
         return result;
     }
     p1.x = clipX;
     p1.y = clipY;
     p1.z = 0.0f;
-    result = xud_shapes_pixel_to_clip(context->width, context->height, v2.x, v2.y, &clipX, &clipY);
+    result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, v2.x, v2.y, &clipX, &clipY);
     if (result != XUD_OK) {
         return result;
     }

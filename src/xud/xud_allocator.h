@@ -82,9 +82,13 @@ static_assert(VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO == 5u,
    create a block creates one of at least MIN and rounds up to the next doubling step. MAX is the
    ceiling of that doubling sequence: a request larger than MAX is refused rather than served by
    one unbounded block, because an unbounded host-side free list is an unbounded bookkeeping cost.
-   The doubling shape is the one the rest of this tree uses. */
+   The doubling shape is the one the rest of this tree uses. The ceiling is what it is because the
+   biggest object the renderer makes is the shadow map's depth image: 2048² D32 is 16 MiB of
+   texels and the driver's own vkGetImageMemoryRequirements reports MORE than that (18 MiB on the
+   probed Intel driver, whose clear-CCS rides in the size of every SAMPLED depth image), so a 16
+   MiB ceiling refuses the map outright and the whole renderer open comes down with it. */
 #define XUD_ALLOCATOR_BLOCK_MIN_SIZE (64u * 1024u)
-#define XUD_ALLOCATOR_BLOCK_MAX_SIZE (16u * 1024u * 1024u)
+#define XUD_ALLOCATOR_BLOCK_MAX_SIZE (32u * 1024u * 1024u)
 
 static_assert(XUD_ALLOCATOR_BLOCK_MIN_SIZE > 0u,
     "xud_allocator.h: a block must have room for at least one byte, or the first block is a growth step and a zero-size allocation is what "

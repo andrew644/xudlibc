@@ -22,10 +22,14 @@
 #include "xud_core.h" /* Required for: XudContext's fields - the table and the floor the public pair stores (the GPU half only) */
 #include "xud_descriptor.h" /* Required for: XudDescriptor's uniformBlock - the bytes the setters must leave behind (the GPU half only) */
 #include "xud_light.h" /* Required for: xud_light_validate, xud_light_row_fill - the pure half */
+#include "xud_renderer.h" /* TEMP */
+#include "xud_renderpass.h" /* TEMP */
 #include "xud_solid_spv.h" /* Required for: the shipped SPIR-V words - the decorations of the very modules the pipeline builds */
 #include "xud_test_harness.h" /* Required for: xud_check, xud_gpu_tests_enabled */
 
+#include "xud_allocator.h" /* Required for: XudMemoryRange, xud_allocator_acquire_host_visible - the probe's block */
 #include <math.h> /* Required for: NAN, sqrtf - the refusals' input and the helper's yardstick */
+#include <string.h> /* Required for: memset, the zeroed infos the readback stamps */
 
 static int xudTestNear(float actual, float expected, float tolerance) {
     float difference = actual - expected;
@@ -306,7 +310,7 @@ static void xud_test_light_spv(void) {
        is a bug no C assert can see and every pixel shows - the numbers below stop matching and
        the scene's lights land in the wrong members.
     */
-    static const uint32_t frameOffsets[9] = { 0u, 64u, 76u, 80u, 96u, 112u, 116u, 120u, 128u };
+    static const uint32_t frameOffsets[11] = { 0u, 64u, 76u, 80u, 96u, 112u, 176u, 192u, 196u, 200u, 208u };
     static const uint32_t rowOffsets[4] = { 0u, 16u, 32u, 48u };
     uint32_t ids[64];
     uint32_t members[64];
@@ -356,7 +360,7 @@ static void xud_test_light_spv(void) {
                 count++;
             }
         }
-        if (count == 9u) {
+        if (count == 11u) {
             frameId = id;
             frameCount = count;
             frameFound = true;
@@ -368,11 +372,11 @@ static void xud_test_light_spv(void) {
     }
     (void)frameCount;
     (void)rowCount;
-    xud_check(frameFound, "light/spv-frame-struct", "one nine-member offset-decorated struct: the frame block");
+    xud_check(frameFound, "light/spv-frame-struct", "one eleven-member offset-decorated struct: the frame block");
     xud_check(rowFound, "light/spv-row-struct", "and a four-member one: the light row");
 
     for (candidate = 0u; candidate < decorations; candidate++) {
-        if ((ids[candidate] == frameId) && (members[candidate] < 9u)) {
+        if ((ids[candidate] == frameId) && (members[candidate] < 11u)) {
             xud_check(offsets[candidate] == frameOffsets[members[candidate]], "light/spv-frame-offset",
                 "every frame-block member's Offset equals the C offset beside its struct");
         }
@@ -386,7 +390,7 @@ static void xud_test_light_spv(void) {
        matrix the frame writes is read by that stage, so a drift there clips the scene away.
     */
     {
-        static const uint32_t vertFrameOffsets[7] = { 0u, 64u, 76u, 80u, 96u, 112u, 116u };
+        static const uint32_t vertFrameOffsets[9] = { 0u, 64u, 76u, 80u, 96u, 112u, 176u, 192u, 196u };
         decorations = 0u;
         index = 5u;
         frameFound = false;
@@ -416,19 +420,339 @@ static void xud_test_light_spv(void) {
                     count++;
                 }
             }
-            if (count == 7u) {
+            if (count == 9u) {
                 frameId = ids[candidate];
                 frameFound = true;
             }
         }
-        xud_check(frameFound, "light/spv-vert-frame-struct", "the vertex module carries the seven-member prefix block");
+        xud_check(frameFound, "light/spv-vert-frame-struct", "the vertex module carries the nine-member prefix block");
         for (candidate = 0u; candidate < decorations; candidate++) {
-            if ((ids[candidate] == frameId) && (members[candidate] < 7u)) {
+            if ((ids[candidate] == frameId) && (members[candidate] < 9u)) {
                 xud_check(offsets[candidate] == vertFrameOffsets[members[candidate]], "light/spv-vert-frame-offset",
                     "and its matrix, camera, time, fog, ambient and counters sit where the C row puts them");
             }
         }
     }
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The shadow's proof by pixels: a white floor and a white box under one sun, read back off the
+ * swapchain twice - once with the sun leaning over +x and once with the same sun leaning the
+ * other way. The shadow map is the only thing in the tree that moves a dark floor pixel when
+ * the sun vector flips, so the two reads must swap their answers: no shadow pass, a flipped
+ * compare or a dead matrix shows up as the pair NOT swapping.
+ *-----------------------------------------------------------------------------------------------*/
+
+#define XUD_TEST_SHADOW_WINDOW 192u /* the square window; the two probe columns mirror on its middle */
+#define XUD_TEST_SHADOW_ACQUIRE_TRIES 8u /* the out-of-date repair's bound, the readback tests' bound */
+#define XUD_TEST_SHADOW_LIT_MIN 120u /* a sunlit byte under zero ambient sits near 200; anything above this is lit */
+#define XUD_TEST_SHADOW_DARK_MAX 40u /* and the shadowed one sits at zero; anything below this is dark */
+
+/* One frame of the probe scene: the floor's top face is y = 0 and the box stands on it centred,
+   both white, so the only thing that separates the two probe columns is whether the sun reaches
+   them. */
+static XudResult xudTestShadowFrame(XudContext* context, XudCamera3D camera) {
+    XudResult step;
+
+    step = xud_begin_drawing(context);
+    if (step == XUD_OK) {
+        step = xud_clear_background(context, (XudColor) { 0u, 0u, 0u, 255u });
+    }
+    if (step == XUD_OK) {
+        step = xud_begin_camera_3d(context, camera);
+    }
+    if (step == XUD_OK) {
+        step = xud_draw_cube(context, (XudVector3) { 0.0f, -0.5f, 0.0f }, 20.0f, 1.0f, 20.0f, (XudColor) { 255u, 255u, 255u, 255u });
+    }
+    if (step == XUD_OK) {
+        step = xud_draw_cube(context, (XudVector3) { 0.0f, 1.0f, 0.0f }, 2.0f, 2.0f, 2.0f, (XudColor) { 255u, 255u, 255u, 255u });
+    }
+    if (step == XUD_OK) {
+        step = xud_end_camera_3d(context);
+    }
+    if (step == XUD_OK) {
+        step = xud_end_drawing(context);
+    }
+    return step;
+}
+
+static void xud_test_light_shadow(void) {
+    XudContext* context = NULL;
+    XudLight sun;
+    XudCamera3D camera;
+    XudResult result;
+    XudResult step;
+    XudMemoryRange readbackRange;
+    VkResult vk = VK_SUCCESS;
+    VkBuffer readback = VK_NULL_HANDLE;
+    VkMemoryRequirements readbackReq;
+    VkCommandPool pool = VK_NULL_HANDLE;
+    VkCommandBuffer copyCommand = VK_NULL_HANDLE;
+    VkFence acquireFence = VK_NULL_HANDLE;
+    VkFence copyFence = VK_NULL_HANDLE;
+    uint8_t* pixels = NULL;
+    uint32_t frame = 0u;
+    uint32_t phase = 0u;
+    uint32_t extentBeforeWidth = 0u;
+    uint32_t extentBeforeHeight = 0u;
+    uint32_t resizeRetries = 0u;
+    uint32_t redIndex = 0u;
+    uint32_t probeRow = 0u;
+    uint32_t probeOffset = 0u;
+    uint32_t leftByte = 0u;
+    uint32_t rightByte = 0u;
+
+    const float sunLean = 0.70710678f;
+    const float probeDepth = 11.6619f; /* |(0,6,10)|: the view depth of every floor point on the probe row */
+    const float halfTan = 0.41421356f; /* tan(fovy / 2) at the camera's 45 degrees */
+
+    result = xud_init_context(&context, XUD_TEST_SHADOW_WINDOW, XUD_TEST_SHADOW_WINDOW, "xud_test");
+    xud_check(result == XUD_OK, "light-shadow/bringup", "the probe scene needs a completed context");
+    if (context == NULL) {
+        return;
+    }
+    (void)xud_set_ambient_light(context, (XudColor) { 0u, 0u, 0u, 255u }, 0.0f);
+    camera = (XudCamera3D) { .position = (XudVector3) { 0.0f, 6.0f, 10.0f },
+        .target = (XudVector3) { 0.0f, 0.0f, 0.0f },
+        .up = (XudVector3) { 0.0f, 1.0f, 0.0f },
+        .fovy = 45.0f,
+        .near = 0.1f,
+        .far = 100.0f };
+
+    if (vk == VK_SUCCESS) {
+        VkCommandPoolCreateInfo poolInfo;
+        VkCommandBufferAllocateInfo allocationInfo;
+        VkFenceCreateInfo fenceInfo;
+        memset(&poolInfo, 0, sizeof poolInfo);
+        poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+        poolInfo.queueFamilyIndex = context->device->graphicsQueue.queueFamilyIndex;
+        vk = context->loader->deviceTable.vkCreateCommandPool(context->device->device, &poolInfo, NULL, &pool);
+        memset(&allocationInfo, 0, sizeof allocationInfo);
+        allocationInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        allocationInfo.commandPool = pool;
+        allocationInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        allocationInfo.commandBufferCount = 1u;
+        vk = context->loader->deviceTable.vkAllocateCommandBuffers(context->device->device, &allocationInfo, &copyCommand);
+        memset(&fenceInfo, 0, sizeof fenceInfo);
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+        vk = context->loader->deviceTable.vkCreateFence(context->device->device, &fenceInfo, NULL, &acquireFence);
+        vk = context->loader->deviceTable.vkCreateFence(context->device->device, &fenceInfo, NULL, &copyFence);
+        xud_check(vk == VK_SUCCESS, "light-shadow/plumbing", "the copy's pool, command buffer and fences are live");
+    }
+
+    /* The window manager's late tile - the pair of resize recreates that lands seconds after
+       map on this compositor - must land BEFORE the probes, or a phase reads an image whose
+       extent moved under it. Spin frames until the extent answers the same size three times. */
+    if (vk == VK_SUCCESS) {
+        uint32_t stableFrames = 0u;
+        uint32_t spinFrames = 0u;
+        uint32_t lastWidth = context->swapchain->createInfo.imageExtent.width;
+        uint32_t lastHeight = context->swapchain->createInfo.imageExtent.height;
+        while ((stableFrames < 12u) && (spinFrames < 600u)) {
+            (void)xudTestShadowFrame(context, camera);
+            if ((context->swapchain->createInfo.imageExtent.width == lastWidth)
+                && (context->swapchain->createInfo.imageExtent.height == lastHeight)) {
+                stableFrames++;
+            } else {
+                stableFrames = 0u;
+                lastWidth = context->swapchain->createInfo.imageExtent.width;
+                lastHeight = context->swapchain->createInfo.imageExtent.height;
+            }
+            spinFrames++;
+        }
+    }
+
+    /* Two reads of one scene, the sun's lean the only thing that moves between them: the dark
+       column must travel with the lean. A missing shadow pass leaves the pair identical, a
+       flipped compare leaves it swapped against the expectation, and a dead matrix leaves both
+       columns lit - three different failures, none of them invisible to this pair. */
+    for (phase = 0u; (phase < 2u) && (vk == VK_SUCCESS); phase++) {
+        uint32_t acquired = 0u;
+        uint32_t tries = 0u;
+
+        extentBeforeWidth = context->swapchain->createInfo.imageExtent.width;
+        extentBeforeHeight = context->swapchain->createInfo.imageExtent.height;
+        const float lean = (phase == 0u) ? sunLean : -sunLean;
+        sun = xudTestSun((XudVector3) { lean, sunLean, 0.0f }, (XudColor) { 255u, 255u, 255u, 255u }, 1.0f);
+        step = xud_set_lights(context, &sun, 1u);
+        xud_check(step == XUD_OK, "light-shadow/lights-set", "the one-sun table publishes");
+        for (frame = 0u; frame < (context->swapchain->imageCount + 1u); frame++) {
+            (void)xudTestShadowFrame(context, camera);
+        }
+        for (;;) {
+            (void)context->loader->deviceTable.vkResetFences(context->device->device, 1u, &acquireFence);
+            vk = context->loader->deviceTable.vkAcquireNextImageKHR(
+                context->device->device, context->swapchain->swapchain, UINT64_MAX, VK_NULL_HANDLE, acquireFence, &acquired);
+            (void)context->loader->deviceTable.vkWaitForFences(context->device->device, 1u, &acquireFence, VK_TRUE, UINT64_MAX);
+            if (vk == VK_ERROR_OUT_OF_DATE_KHR) {
+                VkPresentInfoKHR presentInfo;
+                memset(&presentInfo, 0, sizeof presentInfo);
+                presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+                presentInfo.swapchainCount = 1u;
+                presentInfo.pSwapchains = &context->swapchain->swapchain;
+                presentInfo.pImageIndices = &acquired;
+                (void)context->loader->deviceTable.vkQueuePresentKHR(context->device->graphicsQueue.queue, &presentInfo);
+                (void)xudTestShadowFrame(context, camera);
+                tries++;
+                if (tries < XUD_TEST_SHADOW_ACQUIRE_TRIES) {
+                    continue;
+                }
+            }
+            break;
+        }
+        xud_check(
+            (vk == VK_SUCCESS) || (vk == VK_SUBOPTIMAL_KHR), "light-shadow/acquired", "a presented image of the scene is ours to copy");
+        if ((vk != VK_SUCCESS) && (vk != VK_SUBOPTIMAL_KHR)) {
+            break;
+        }
+        vk = VK_SUCCESS;
+        {
+            const uint32_t width = context->swapchain->createInfo.imageExtent.width;
+            const uint32_t height = context->swapchain->createInfo.imageExtent.height;
+
+            const VkFormat format = context->swapchain->createInfo.imageFormat;
+            const float aspect = (float)width / (float)height;
+            VkCommandBufferBeginInfo beginInfo;
+            VkImageMemoryBarrier imageBarrier;
+            VkImageSubresourceLayers subresource;
+            VkBufferImageCopy region;
+            VkSubmitInfo submitInfo;
+
+            VkBufferCreateInfo bufferInfo;
+            memset(&bufferInfo, 0, sizeof bufferInfo);
+            bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            bufferInfo.size = (VkDeviceSize)width * (VkDeviceSize)height * 4u;
+            bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+            bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            vk = context->loader->deviceTable.vkCreateBuffer(context->device->device, &bufferInfo, NULL, &readback);
+            xud_check(vk == VK_SUCCESS, "light-shadow/buffer", "the probe's destination buffer is sized to the LIVE extent");
+            if (vk != VK_SUCCESS) {
+                break;
+            }
+            context->loader->deviceTable.vkGetBufferMemoryRequirements(context->device->device, readback, &readbackReq);
+            {
+                const VkMemoryType* memTypes = context->physicalDevice->caps.memoryProperties.memoryProperties.memoryTypes;
+                const uint32_t memTypeCount = context->physicalDevice->caps.memoryProperties.memoryProperties.memoryTypeCount;
+                uint32_t hostVisibleMask = 0u;
+                uint32_t type = 0u;
+                for (type = 0u; type < memTypeCount; type++) {
+                    if ((memTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0u) {
+                        hostVisibleMask |= (1u << type);
+                    }
+                }
+                readbackReq.memoryTypeBits &= hostVisibleMask;
+            }
+            result = xud_allocator_acquire_host_visible(
+                &readbackRange, context->allocator, context->loader, context->device, &context->physicalDevice->caps, &readbackReq);
+            xud_check(result == XUD_OK, "light-shadow/block", "a host-visible block is carved for it");
+            vk = context->loader->deviceTable.vkBindBufferMemory(
+                context->device->device, readback, readbackRange.memory, readbackRange.offset);
+            xud_check(vk == VK_SUCCESS, "light-shadow/bound", "and the buffer binds into it");
+            vk = context->loader->deviceTable.vkMapMemory(
+                context->device->device, readbackRange.memory, readbackRange.offset, readbackRange.size, 0u, (void**)&pixels);
+            xud_check((vk == VK_SUCCESS) && (pixels != NULL), "light-shadow/mapped", "and the mapping is live");
+            if ((vk != VK_SUCCESS) || (pixels == NULL)) {
+                break;
+            }
+
+            redIndex = ((format == VK_FORMAT_B8G8R8A8_SRGB) || (format == VK_FORMAT_B8G8R8A8_UNORM)) ? 2u : 0u;
+            probeRow = height / 2u;
+            probeOffset = (uint32_t)(((2.5f / (halfTan * aspect * probeDepth)) * (float)(width / 2u)) + 0.5f);
+            xud_check((probeOffset > 4u) && (probeOffset < ((width / 2u) - 4u)), "light-shadow/probes-in-view",
+                "both probe columns land on the floor: clear of the image's edge and of the box's silhouette");
+
+            (void)context->loader->deviceTable.vkResetCommandBuffer(copyCommand, 0u);
+            memset(&beginInfo, 0, sizeof beginInfo);
+            beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+            vk = context->loader->deviceTable.vkBeginCommandBuffer(copyCommand, &beginInfo);
+            memset(&imageBarrier, 0, sizeof imageBarrier);
+            imageBarrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            imageBarrier.srcAccessMask = 0u;
+            imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            imageBarrier.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            imageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            imageBarrier.image = context->swapchain->images[acquired];
+            imageBarrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            imageBarrier.subresourceRange.levelCount = 1u;
+            imageBarrier.subresourceRange.layerCount = 1u;
+            context->loader->deviceTable.vkCmdPipelineBarrier(copyCommand, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 0u, 0u, NULL, 0u, NULL, 1u, &imageBarrier);
+            memset(&subresource, 0, sizeof subresource);
+            subresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            subresource.layerCount = 1u;
+            memset(&region, 0, sizeof region);
+            region.bufferImageHeight = height;
+            region.imageSubresource = subresource;
+            region.imageExtent.width = width;
+            region.imageExtent.height = height;
+            region.imageExtent.depth = 1u;
+            context->loader->deviceTable.vkCmdCopyImageToBuffer(
+                copyCommand, context->swapchain->images[acquired], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readback, 1u, &region);
+            imageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            imageBarrier.dstAccessMask = 0u;
+            imageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            imageBarrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            context->loader->deviceTable.vkCmdPipelineBarrier(copyCommand, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0u, 0u, NULL, 0u, NULL, 1u, &imageBarrier);
+            vk = context->loader->deviceTable.vkEndCommandBuffer(copyCommand);
+            (void)context->loader->deviceTable.vkResetFences(context->device->device, 1u, &copyFence);
+            memset(&submitInfo, 0, sizeof submitInfo);
+            submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            submitInfo.commandBufferCount = 1u;
+            submitInfo.pCommandBuffers = &copyCommand;
+            vk = context->loader->deviceTable.vkQueueSubmit(context->device->graphicsQueue.queue, 1u, &submitInfo, copyFence);
+            vk = context->loader->deviceTable.vkWaitForFences(context->device->device, 1u, &copyFence, VK_TRUE, UINT64_MAX);
+            xud_check(vk == VK_SUCCESS, "light-shadow/copied", "the copy's fence signals and the bytes are host-visible");
+            if (vk != VK_SUCCESS) {
+                break;
+            }
+            leftByte = pixels[((((size_t)probeRow * (size_t)width) + ((size_t)width / 2u)) - (size_t)probeOffset) * 4u + (size_t)redIndex];
+            rightByte = pixels[((((size_t)probeRow * (size_t)width) + ((size_t)width / 2u)) + (size_t)probeOffset) * 4u + (size_t)redIndex];
+        }
+        (void)context->loader->deviceTable.vkUnmapMemory(context->device->device, readbackRange.memory);
+        pixels = NULL;
+        context->loader->deviceTable.vkDestroyBuffer(context->device->device, readback, NULL);
+        readback = VK_NULL_HANDLE;
+        (void)xud_allocator_release(context->allocator, &readbackRange);
+        memset(&readbackRange, 0, sizeof readbackRange);
+        if ((resizeRetries < 6u)
+            && ((context->swapchain->createInfo.imageExtent.width != extentBeforeWidth)
+                || (context->swapchain->createInfo.imageExtent.height != extentBeforeHeight))) {
+            resizeRetries++;
+            phase--;
+            continue;
+        }
+        if (phase == 0u) {
+            xud_check(leftByte <= XUD_TEST_SHADOW_DARK_MAX, "light-shadow/sun-plus-x-left-dark",
+                "with the sun leaning over +x the floor left of the box is in its shadow");
+            xud_check(rightByte >= XUD_TEST_SHADOW_LIT_MIN, "light-shadow/sun-plus-x-right-lit",
+                "and the mirrored column on the sun's own side of the box is lit");
+        } else {
+            xud_check(leftByte >= XUD_TEST_SHADOW_LIT_MIN, "light-shadow/sun-minus-x-left-lit",
+                "lean the same sun the other way and the left column is the lit one");
+            xud_check(rightByte <= XUD_TEST_SHADOW_DARK_MAX, "light-shadow/sun-minus-x-right-dark",
+                "while the right column, lit a moment ago, is now in the shadow - the map moved with the sun");
+        }
+    }
+
+    if (pixels != NULL) {
+        context->loader->deviceTable.vkUnmapMemory(context->device->device, readbackRange.memory);
+    }
+    if (acquireFence != VK_NULL_HANDLE) {
+        context->loader->deviceTable.vkDestroyFence(context->device->device, acquireFence, NULL);
+    }
+    if (copyFence != VK_NULL_HANDLE) {
+        context->loader->deviceTable.vkDestroyFence(context->device->device, copyFence, NULL);
+    }
+    if (pool != VK_NULL_HANDLE) {
+        context->loader->deviceTable.vkFreeCommandBuffers(context->device->device, pool, 1u, &copyCommand);
+        context->loader->deviceTable.vkDestroyCommandPool(context->device->device, pool, NULL);
+    }
+    if (readback != VK_NULL_HANDLE) {
+        context->loader->deviceTable.vkDestroyBuffer(context->device->device, readback, NULL);
+    }
+    (void)xud_close_context(&context);
 }
 
 void xud_test_light(void) {
@@ -437,5 +761,6 @@ void xud_test_light(void) {
     xud_test_light_spv();
     if (xud_gpu_tests_enabled()) {
         xud_test_light_gpu();
+        xud_test_light_shadow();
     }
 }

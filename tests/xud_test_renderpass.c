@@ -654,19 +654,20 @@ static void xud_test_renderpass_gpu(void) {
         "e-derived guess");
     xud_check(xud_allocator_stats(context->allocator, &blocks, &live, &bytes, &cursor) == XUD_OK, "gpu-renderpass/stats-answers",
         "the counters answer");
-    xud_check(blocks == 7u, "gpu-renderpass/five-blocks",
-        "SEVEN blocks now rather than the descriptor rung's one: the depth image's requirements (alignment 65536 on this driver) do not "
+    xud_check(blocks == 8u, "gpu-renderpass/eight-blocks",
+        "EIGHT blocks now rather than the descriptor rung's one: the depth image's requirements (alignment 65536 on this driver) do not "
         "fit the block the uniform buffer was carved out of, so the image's block is a second VkDeviceMemory rather than a "
         "suballocation, and the white default every entry of set 1's sampler array names is a third because its own alignment does not "
-        "fit a hole in the depth image's block either, and the renderer's scratch image and the scratch pass's own depth image are a "
-        "fourth and fifth for the same alignment reason, and the two host-visible arenas - the batch's and the descriptor's staging "
-        "arena - are two more, because vkMapMemory maps a VkDeviceMemory rather than a range and a carve inside a block someone else "
-        "already mapped cannot be mapped at all. The batch's five data buffers are the carves that do share a block, which is the "
-        "suballocation half of the repo's allocate-once rule seen from above");
-    xud_check(live == 12u, "gpu-renderpass/ten-live-ranges",
-        "twelve live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, the "
-        "scratch pass's depth, the two arenas each of which is a whole block, and the batch's four streams plus its index buffer, which "
-        "is what a completed context owns now and is the baseline every number in the allocator area is read as a delta on");
+        "fit a hole in the depth image's block either, and the renderer's scratch image, the scratch pass's own depth image and the "
+        "shadow map are a fourth, fifth and sixth for the same alignment reason, and the two host-visible arenas - the batch's and "
+        "the descriptor's staging arena - are two more, because vkMapMemory maps a VkDeviceMemory rather than a range and a carve "
+        "inside a block someone else already mapped cannot be mapped at all. The batch's five data buffers are the carves that do "
+        "share a block, which is the suballocation half of the repo's allocate-once rule seen from above");
+    xud_check(live == 13u, "gpu-renderpass/thirteen-live-ranges",
+        "thirteen live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, "
+        "the scratch pass's depth, the shadow map, the two arenas each of which is a whole block, and the batch's four streams plus "
+        "its index buffer, which is what a completed context owns now and is the baseline every number in the allocator area is read "
+        "as a delta on");
     xud_check(bytes >= pass->depthRange.size, "gpu-renderpass/bytes-count-the-image",
         "the reserved-bytes counter includes the image's own range, so the counter is a fact about the rows"
         " rather than an estimate");
