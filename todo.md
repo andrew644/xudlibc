@@ -2,11 +2,6 @@
 
 Renderer roadmap: each item only depends on items above it.
 
-## Stage 1 - plumbing (invisible, but everything later pays for skipping it)
-
-- **S1.4** Allow drawing into off-screen images, not just the window. Shadows, glow, motion
-  blur and reflections all need scratch images. This is the single biggest unlock.
-
 ## Stage 2 - how the picture is built
 
 - **S2.1** Draw into a high-precision scratch image, then convert it to the screen at the

@@ -72,6 +72,7 @@ int main(void) {
     xud_test_mesh();
     xud_test_generate();
     xud_test_texture();
+    xud_test_rendertarget();
     xud_test_model();
     xud_test_time();
     xud_test_font();

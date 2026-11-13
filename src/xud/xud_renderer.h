@@ -95,6 +95,21 @@ struct XudRenderer {
                         before it because the pipeline's vertex-input state names these buffers, so
                         they have to exist before the pipeline is built against them and must outl
                         ive it - and the frame loop uploads, binds and draws them every frame. */
+    XudBatch* screenBatch; /* the SAME pointer as batch whenever no render-target scope is open, and
+                              the batch the draw paths return to when one closes. Owned here exactly
+                              as batch is - this is the pointer xud_renderer_close() retires, because
+                              `batch` alone cannot say which batch it names mid-frame: a target's own
+                              batch belongs to the render target's record above this rung. */
+    XudFramePassScope scopes[XUD_FRAME_SCOPE_MAX]; /* the off-screen pass scopes collected for THIS
+                                                     frame, in begin order; xud_renderer_draw() hands
+                                                     them to the frame loop and the count says how
+                                                     many rows are live */
+    uint32_t scopeCount; /* live rows of scopes */
+    uint32_t inTarget; /* 0: the draw paths append to screenBatch; non-zero: batch names a target's batch */
+    const XudFramebuffer* activeFramebuffer; /* the framebuffer of the scope that is open right now,
+                                                NULL when none is: a render target whose row this is
+                                                cannot be closed mid-scope, and the rung above reads
+                                                this to say so */
     XudPipeline* pipeline; /* owned: the one graphics pipeline of this rung, with its layout
                               and its two VkShaderModules inside it */
     XudDescriptor* descriptor; /* NOT owned: the descriptor rung the context below this one
@@ -197,6 +212,29 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
 /// image, framebuffer row and fence index in here dies with it.
 XudResult xud_renderer_draw(
     XudRenderer* renderer, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain, uint32_t* outImageIndex);
+
+/// Driver: open one off-screen pass scope for this frame - the triple the frame loop records before
+/// the screen pass - and move the draw paths onto the target's own batch. Re-opening the same target
+/// in the same frame reuses its row rather than clearing its content twice. XUD_INVALID_ARG on a NULL
+/// triple member or a NULL renderer; XUD_UNSUPPORTED when the scope list is already full.
+XudResult xud_renderer_begin_target(XudRenderer* renderer, XudRenderPass* pass, const XudFramebuffer* framebuffer, XudBatch* batch);
+
+/// Driver: close the open scope - the draw paths go back to the screen batch. The scope's row stays
+/// in this frame's list; it is the frame that replays it, not this call. XUD_INVALID_ARG on a NULL
+/// renderer; XUD_ALREADY when no scope is open.
+XudResult xud_renderer_end_target(XudRenderer* renderer);
+
+/// Driver: the frame boundary - the scope list empties and the draw paths come back to the screen
+/// batch. xud_begin_drawing() runs it, the same rung that resets the batch. XUD_INVALID_ARG on a
+/// NULL renderer.
+XudResult xud_renderer_reset_targets(XudRenderer* renderer);
+
+/// Pure: the extent pixel coordinates mean RIGHT NOW - the active scope's when a target's scope is
+/// open, the screen's otherwise. The 2D draw paths map pixels to clip through this rather than the
+/// window's size, so a rectangle drawn inside a 256x256 target covers the target the way the same
+/// call covers the window outside any scope. XUD_INVALID_ARG on a NULL renderer or either out.
+XudResult xud_renderer_pixel_extent(
+    const XudRenderer* renderer, uint32_t screenWidth, uint32_t screenHeight, uint32_t* outWidth, uint32_t* outHeight);
 
 /// Pure: whether the recreate ask the frame loop left behind needs a rebuild. (fbWidth) / (fbHe
 /// ight) is the window's framebuffer extent as xud_window_framebuffer_size() read it, (swapchain

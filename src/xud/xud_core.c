@@ -54,6 +54,7 @@
 #include "xud_model.h" /* Required for: xud_model_close_all, the MODEL kind's half of the same teardown rung - and the rung above the MESH and the MATERIAL kinds', because a model record names slots of both rather than owning driver objects of its own */
 #include "xud_physical.h"
 #include "xud_renderer.h"
+#include "xud_rendertarget.h" /* Required for: xud_rendertarget_close_all, the RENDERTEXTURE kind's half of the same teardown rung - the rung that runs right after the TEXTURE kind's, because a target record owns an image, a view, a sampler, a pass, a framebuffer row and a batch, and gives its sampler-array entry back before those die */
 #include "xud_sound.h" /* Required for: xud_sound_close, the sound rung's half of the same teardown rung - it runs ABOVE xud_audio_close_all() because a row is a node reading a block an audio record owns, and it is the one rung of the context that bring-up leaves NULL, which is why its close answers XUD_ALREADY on a context that never played anything */
 #include "xud_swapchain.h"
 #include "xud_texture.h" /* Required for: xud_texture_close_all, the TEXTURE kind's half of the same teardown rung - the rung above the MESH kind's, because a texture record owns an image, a view, a sampler and one host-visible block */
@@ -484,6 +485,7 @@ XudResult xud_close_context(XudContext** context) {
     uint32_t materialRecordsClosed = 0u;
     uint32_t meshRecordsClosed = 0u;
     uint32_t textureRecordsClosed = 0u;
+    uint32_t renderTargetRecordsClosed = 0u;
     uint32_t modelRecordsClosed = 0u;
     uint32_t fontRecordsClosed = 0u;
     uint32_t audioRecordsClosed = 0u;
@@ -576,6 +578,10 @@ XudResult xud_close_context(XudContext** context) {
             first = rung;
         rung = xud_texture_close_all(
             victim->handleTable, victim->loader, victim->device, victim->allocator, victim->descriptor, &textureRecordsClosed);
+        if ((rung != XUD_OK) && (first == XUD_OK))
+            first = rung;
+        rung = xud_rendertarget_close_all(
+            victim->handleTable, victim->loader, victim->device, victim->allocator, victim->descriptor, &renderTargetRecordsClosed);
         if ((rung != XUD_OK) && (first == XUD_OK))
             first = rung;
         rung = xud_mesh_close_all(victim->handleTable, victim->loader, victim->device, victim->allocator, &meshRecordsClosed);
@@ -848,6 +854,11 @@ XudResult xud_begin_drawing(XudContext* context) {
     }
 
     result = xud_batch_reset(context->renderer->batch);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    result = xud_renderer_reset_targets(context->renderer);
     if (result != XUD_OK) {
         return result;
     }

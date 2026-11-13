@@ -568,8 +568,8 @@ static void xud_renderpass_retire(XudRenderPass* pass, const XudDevice* device, 
     xud_renderpass_retire_depth(pass, device, loader, alloc);
 }
 
-XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout) {
+static XudResult xud_renderpass_open_sized(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, VkFormat colorFormat, uint32_t width, uint32_t height, VkImageLayout colorFinalLayout, XudLayoutTracker* layout) {
     XudRenderPass* pass = NULL;
     VkRenderPassCreateInfo createInfo;
     VkMemoryRequirements needs;
@@ -584,7 +584,7 @@ XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const 
     if (loader == NULL) {
         return XUD_INVALID_ARG;
     }
-    if ((device == NULL) || (caps == NULL) || (alloc == NULL) || (swapchain == NULL)) {
+    if ((device == NULL) || (caps == NULL) || (alloc == NULL)) {
         return XUD_UNSUPPORTED;
     }
     if (!loader->open) {
@@ -596,13 +596,10 @@ XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const 
     if (layout == NULL) {
         return XUD_INVALID_ARG;
     }
-    if ((swapchain->swapchain == VK_NULL_HANDLE) || (swapchain->images == NULL) || (swapchain->imageCount == 0u)) {
-        return XUD_INVALID_ARG;
-    }
-    if (swapchain->createInfo.imageFormat == VK_FORMAT_UNDEFINED) {
+    if (colorFormat == VK_FORMAT_UNDEFINED) {
         return XUD_UNSUPPORTED;
     }
-    if ((swapchain->createInfo.imageExtent.width == 0u) || (swapchain->createInfo.imageExtent.height == 0u)) {
+    if ((width == 0u) || (height == 0u)) {
         return XUD_INVALID_ARG;
     }
 
@@ -635,14 +632,15 @@ XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const 
 
     /* 1. the pass's rows, then its create-info: the attachment description is what says an image of
        that format and that extent exists, so it is filled before the image is asked for rather tha
-       n after it. format is the swapchain's chosen format, read off the swapchain's own record rat
-       her than passed in as a scalar - the extent the depth image is created at comes from the sam
-       e record, and a create-info and the record of it must not be able to disagree. */
-    result = xud_renderpass_fill_state(pass, swapchain->createInfo.imageFormat);
+       n after it. The format, the extent and the colour attachment's finalLayout come from the call
+       er: the swapchain's own record for the screen pass, and the render target's own size and SHA
+       DER_READ_ONLY answer for an off-screen one. */
+    result = xud_renderpass_fill_state(pass, colorFormat);
     if (result != XUD_OK) {
         free(pass);
         return result;
     }
+    pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout = colorFinalLayout;
 
     result = xud_renderpass_fill_create_info(pass, &createInfo);
     if (result != XUD_OK) {
@@ -650,11 +648,10 @@ XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const 
         return result;
     }
 
-    /* 2. the depth image. Its extent is the swapchain's because VUID-VkFramebufferCreateInfo-attach
+    /* 2. the depth image. Its extent is the pass's because VUID-VkFramebufferCreateInfo-attach
        ments-02702 requires every attachment of one framebuffer to have the same extent, so a depth
        buffer of a different size is a framebuffer the driver is entitled to refuse outright. */
-    result = xud_renderpass_fill_depth_info(
-        &pass->depthImageInfo, swapchain->createInfo.imageExtent.width, swapchain->createInfo.imageExtent.height);
+    result = xud_renderpass_fill_depth_info(&pass->depthImageInfo, width, height);
     if (result != XUD_OK) {
         free(pass);
         return result;
@@ -767,6 +764,24 @@ XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const 
 
     *outPass = pass;
     return XUD_OK;
+}
+
+XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout) {
+    if (swapchain == NULL) {
+        return XUD_UNSUPPORTED;
+    }
+    if ((swapchain->swapchain == VK_NULL_HANDLE) || (swapchain->images == NULL) || (swapchain->imageCount == 0u)) {
+        return XUD_INVALID_ARG;
+    }
+    return xud_renderpass_open_sized(outPass, loader, device, caps, alloc, swapchain->createInfo.imageFormat,
+        swapchain->createInfo.imageExtent.width, swapchain->createInfo.imageExtent.height, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, layout);
+}
+
+XudResult xud_renderpass_open_offscreen(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, VkFormat colorFormat, uint32_t width, uint32_t height, XudLayoutTracker* layout) {
+    return xud_renderpass_open_sized(
+        outPass, loader, device, caps, alloc, colorFormat, width, height, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, layout);
 }
 
 XudResult xud_renderpass_close(XudRenderPass** ioPass, const XudDevice* device, XudLoader* loader, XudAllocator* alloc) {

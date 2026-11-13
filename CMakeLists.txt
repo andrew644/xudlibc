@@ -187,6 +187,7 @@ add_library(xud STATIC
     src/xud/xud_shader.c
     src/xud/xud_pipeline.c
     src/xud/xud_renderpass.c
+    src/xud/xud_rendertarget.c
     src/xud/xud_frame.c
     src/xud/xud_renderer.c
 )
@@ -236,6 +237,7 @@ add_executable(xud_test
     tests/xud_test_generate.c
     tests/xud_test_model.c
     tests/xud_test_texture.c
+    tests/xud_test_rendertarget.c
     tests/xud_test_time.c
     tests/xud_test_font.c
     tests/xud_test_ui.c
@@ -317,6 +319,12 @@ add_executable(core_3d_picking
 )
 
 target_link_libraries(core_3d_picking PRIVATE xud)
+
+add_executable(core_rendertarget
+    examples/core_rendertarget.c
+)
+
+target_link_libraries(core_rendertarget PRIVATE xud)
 
 add_executable(models_box_collisions
     examples/models_box_collisions.c

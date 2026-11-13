@@ -497,15 +497,231 @@ fail:
     return result;
 }
 
+/* Flush one batch - the pending run closed into a draw row - and answer whether it has content
+   at all. Pure host work, so the loop runs it for EVERY batch it will replay (each scope's own
+   batch first, the screen batch last) BEFORE the command buffer is begun - the rule xud_frame_dra
+   w() states for the screen batch, kept as one rung-wide discipline rather than one batch's lucky
+   path. The counts come from the batch's own accessor, not its fields - the repo's accessor rule.
+*/
+static XudResult xud_frame_flush_batch(XudBatch* batch, uint32_t* outHasContent) {
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+
+    if (xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes) != XUD_OK) {
+        return XUD_INTERNAL_ERROR;
+    }
+    *outHasContent = ((vertexCount > 0u) && (indexCount > 0u)) ? 1u : 0u;
+    if (*outHasContent != 0u) {
+        if (xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial, batch->currentTexture)
+            != XUD_OK) {
+            return XUD_OUT_OF_MEMORY;
+        }
+    }
+    return XUD_OK;
+}
+
+/* One pass scope, end to end inside an ALREADY BEGUN command buffer: the two dynamic states for
+   this pass's extent, the opening layout transitions read from the tracker (the rule the swapchain
+   path stated first - a barrier's oldLayout has no other source in this tree), the batch's upload
+   and binds, the pass, the replay of the batch's draw rows, the pass's end. Every comment that
+   made the swapchain recording correct makes this recording correct for ANY pass - the rows it
+   names (pass, framebuffer row, batch) are arguments now, so the screen pass and an off-screen
+   pass run the same code. `sampledAfter` is the off-screen half of the contract: the pass's own
+   finalLayout has already moved the colour image to SHADER_READ_ONLY inside the pass, and the
+   barrier this flag adds puts the WRITE before the screen pass's sample on the same command
+   buffer - an execution and memory dependency between the two passes, which no subpass
+   dependency of either pass covers on its own. A failure after the begins ends the command
+   buffer before returning, which keeps the rung's claim that a begun buffer is always ended
+   checkable rather than a promise.
+*/
+static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudPipeline* pipeline,
+    const XudRenderPass* pass, const XudFramebuffer* row, XudBatch* batch, XudDescriptor* descriptor, uint32_t hasContent,
+    uint32_t sampledAfter) {
+    XudBatchDraw drawRow;
+    XudBatchGeometry geometryRow;
+    XudPushRow pushRow;
+    XudResult result;
+    VkCommandBufferBeginInfo begin;
+    VkViewport viewport;
+    VkRect2D scissor;
+    VkRenderPassBeginInfo passBegin;
+    VkImageMemoryBarrier imageBarriers[XUD_RENDERPASS_ATTACHMENT_COUNT];
+    VkImageMemoryBarrier filledBarriers[XUD_RENDERPASS_ATTACHMENT_COUNT];
+    uint32_t vertexCount = 0u;
+    uint32_t indexCount = 0u;
+    uint32_t vertexCapacity = 0u;
+    uint32_t drawCount = 0u;
+    VkDeviceSize stagingBytes = 0u;
+    uint32_t draw = 0u;
+    uint32_t boundGeometry = XUD_BATCH_GEOMETRY_NONE;
+    uint32_t boundTexture = XUD_BATCH_NO_TEXTURE;
+
+    result = xud_frame_fill_recording(&begin, &viewport, &scissor, row->createInfo.width, row->createInfo.height);
+    if (result != XUD_OK) {
+        (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
+        return result;
+    }
+    loader->deviceTable.vkCmdSetViewport(frame->commandBuffer, 0u, 1u, &viewport);
+    loader->deviceTable.vkCmdSetScissor(frame->commandBuffer, 0u, 1u, &scissor);
+
+    passBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    passBegin.pNext = NULL;
+    passBegin.framebuffer = row->framebuffer;
+    passBegin.renderPass = pass->renderPass;
+    passBegin.renderArea.offset.x = 0;
+    passBegin.renderArea.offset.y = 0;
+    passBegin.renderArea.extent.width = row->createInfo.width;
+    passBegin.renderArea.extent.height = row->createInfo.height;
+    passBegin.pClearValues = pass->clearValues;
+    passBegin.clearValueCount = XUD_RENDERPASS_ATTACHMENT_COUNT;
+
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].pNext = NULL;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].srcAccessMask
+        = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].dstAccessMask
+        = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].srcQueueFamilyIndex = 0u;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].dstQueueFamilyIndex = 0u;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].newLayout = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].initialLayout;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].image = row->image;
+    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].subresourceRange = row->viewInfo.subresourceRange;
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT] = imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT];
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].srcAccessMask
+        = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].dstAccessMask
+        = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].newLayout = pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].initialLayout;
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].image = pass->depthImage;
+    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].subresourceRange = pass->depthViewInfo.subresourceRange;
+
+    if ((xud_layout_barrier_fill(&filledBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT], frame->layout,
+             imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].image, &imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT])
+            != XUD_OK)
+        || (xud_layout_barrier_fill(&filledBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT], frame->layout,
+                imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].image, &imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT])
+            != XUD_OK)) {
+        (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
+        return XUD_INTERNAL_ERROR;
+    }
+    loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, XUD_FRAME_BARRIER_STAGES, XUD_FRAME_BARRIER_STAGES, 0u, 0u, NULL, 0u,
+        NULL, XUD_RENDERPASS_ATTACHMENT_COUNT, filledBarriers);
+
+    if (xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes) != XUD_OK) {
+        (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
+        return XUD_INTERNAL_ERROR;
+    }
+    if (hasContent != 0u) {
+        if (xud_batch_upload(batch, loader, device, frame->commandBuffer) != XUD_OK) {
+            (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
+            return XUD_INTERNAL_ERROR;
+        }
+        {
+            const VkMemoryBarrier transferToReads = (VkMemoryBarrier) { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                .pNext = NULL,
+                .srcAccessMask = XUD_FRAME_TRANSFER_WRITE_ACCESS,
+                .dstAccessMask = XUD_FRAME_VERTEX_READ_ACCESS };
+            loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, XUD_FRAME_BARRIER_TRANSFER_STAGE,
+                XUD_FRAME_BARRIER_VERTEX_READ_STAGES, 0u, 1u, &transferToReads, 0u, NULL, 0u, NULL);
+        }
+        {
+            VkBuffer streamRows[XUD_BATCH_STREAM_COUNT];
+            VkDeviceSize streamOffsets[XUD_BATCH_STREAM_COUNT];
+            uint32_t stream = 0u;
+            for (stream = 0u; stream < XUD_BATCH_STREAM_COUNT; stream++) {
+                streamRows[stream] = batch->stream[stream].buffer;
+                streamOffsets[stream] = 0u;
+            }
+            loader->deviceTable.vkCmdBindVertexBuffers(
+                frame->commandBuffer, XUD_FRAME_FIRST_BINDING, XUD_BATCH_STREAM_COUNT, streamRows, streamOffsets);
+        }
+        loader->deviceTable.vkCmdBindIndexBuffer(frame->commandBuffer, batch->indexBuffer, 0u, XUD_FRAME_INDEX_TYPE);
+        boundGeometry = XUD_BATCH_GEOMETRY_OWN;
+    }
+
+    loader->deviceTable.vkCmdBeginRenderPass(frame->commandBuffer, &passBegin, VK_SUBPASS_CONTENTS_INLINE);
+    /* Set 0 is bound HERE - inside the pass, after vkCmdBeginRenderPass - once per recorded pass,
+       against the pipeline's OWN layout: the layout the pipeline was created with is the layout the
+       set was allocated against, so naming pipeline->layout makes the two agree rather than two re-
+       cords that happen to match. The bind sits after BeginRenderPass and not beside the frame's
+       other state-setting because that is where the draws' read of it was measured to work: with
+       the bind recorded before BeginRenderPass the pass's clears landed but every draw that reads
+       the block drew nothing, and the same bytes read back intact from the buffer - probed on this
+       machine 2026-11-13. One bind per pass, not one per frame, because each recorded pass is its
+       own state scope: an off-screen scope and the screen pass both read the block and neither may
+       inherit a bind recorded outside it. The slot sets (set 1) stay a per-draw bind below: the set
+       a draw samples depends on that draw's texture, and binding the right one per draw is what
+       keeps every descriptor written before its set is bound.
+    */
+    {
+        const VkDescriptorSet setRows[XUD_FRAME_SET_COUNT] = { descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] };
+        loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
+            XUD_FRAME_FIRST_SET, XUD_FRAME_SET_COUNT, setRows, 0u, NULL);
+    }
+    for (draw = 0u; draw < drawCount; draw++) {
+        if (xud_batch_draw_get(batch, draw, &drawRow) != XUD_OK) {
+            break;
+        }
+        if ((drawRow.topology >= XUD_BATCH_TOPOLOGY_COUNT) || (drawRow.variant >= XUD_BATCH_VARIANT_COUNT)) {
+            break;
+        }
+        if (drawRow.geometryIndex != boundGeometry) {
+            if (xud_batch_geometry_get(batch, drawRow.geometryIndex, &geometryRow) != XUD_OK) {
+                break;
+            }
+            loader->deviceTable.vkCmdBindVertexBuffers(
+                frame->commandBuffer, XUD_FRAME_FIRST_BINDING, XUD_BATCH_STREAM_COUNT, geometryRow.buffer, geometryRow.offset);
+            loader->deviceTable.vkCmdBindIndexBuffer(frame->commandBuffer, geometryRow.buffer[XUD_BATCH_STREAM_COUNT],
+                geometryRow.offset[XUD_BATCH_STREAM_COUNT], XUD_FRAME_INDEX_TYPE);
+            boundGeometry = drawRow.geometryIndex;
+        }
+        loader->deviceTable.vkCmdBindPipeline(
+            frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline[XUD_PIPELINE_ROW(drawRow.topology, drawRow.variant)]);
+        if (xud_frame_fill_push_row(&pushRow, &drawRow) != XUD_OK) {
+            break;
+        }
+        if (pushRow.textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
+            break;
+        }
+        if (pushRow.textureIndex != boundTexture) {
+            const VkDescriptorSet slotSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(pushRow.textureIndex)];
+            loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
+                XUD_DESCRIPTOR_SET_MATERIAL, 1u, &slotSet, 0u, NULL);
+            boundTexture = pushRow.textureIndex;
+        }
+        loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
+            descriptor->pushRange.offset, descriptor->pushRange.size, &pushRow);
+        loader->deviceTable.vkCmdDrawIndexed(frame->commandBuffer, drawRow.indexCount, 1u, drawRow.firstIndex, 0, 0u);
+    }
+    loader->deviceTable.vkCmdEndRenderPass(frame->commandBuffer);
+
+    if (sampledAfter != 0u) {
+        const VkImageMemoryBarrier toSample = (VkImageMemoryBarrier) { .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+            .pNext = NULL,
+            .srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+            .dstAccessMask = VK_ACCESS_SHADER_READ_BIT,
+            .oldLayout = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout,
+            .newLayout = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout,
+            .image = row->image,
+            .subresourceRange = row->viewInfo.subresourceRange,
+            .srcQueueFamilyIndex = 0u,
+            .dstQueueFamilyIndex = 0u };
+        loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0u, 0u, NULL, 0u, NULL, 1u, &toSample);
+    }
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * One frame, end to end - the driver half
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
-    XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex) {
-    XudBatchDraw drawRow;
-    XudBatchGeometry geometryRow;
+    const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex) {
     XudQueue graphicsQueue;
     XudQueue presentQueue;
     XudFramebuffer* row = NULL;
@@ -514,9 +730,6 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     VkCommandBufferBeginInfo begin;
     VkViewport viewport;
     VkRect2D scissor;
-    VkRenderPassBeginInfo passBegin;
-    VkImageMemoryBarrier imageBarriers[XUD_RENDERPASS_ATTACHMENT_COUNT];
-    VkImageMemoryBarrier filledBarriers[XUD_RENDERPASS_ATTACHMENT_COUNT];
     VkSubmitInfo submit;
     VkPresentInfoKHR present;
     VkSubmitInfo presentWaitSubmit;
@@ -524,18 +737,23 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     uint32_t acquireRecreateWanted = 0u;
     uint32_t presentRecreateWanted = 0u;
     VkFence frameFence = VK_NULL_HANDLE;
-    uint32_t vertexCount = 0u;
-    uint32_t indexCount = 0u;
-    uint32_t vertexCapacity = 0u;
-    uint32_t drawCount = 0u;
     uint32_t hasContent = 0u;
-    VkDeviceSize stagingBytes = 0u;
-    uint32_t draw = 0u;
     uint32_t pipelineRow = 0u;
-    uint32_t boundGeometry = XUD_BATCH_GEOMETRY_NONE;
-    uint32_t boundTexture = XUD_BATCH_NO_TEXTURE;
-    XudPushRow pushRow;
+    uint32_t scope = 0u;
+    uint32_t scopeContent[XUD_FRAME_SCOPE_MAX];
     uint32_t slot = 0u;
+
+    if (((scopes == NULL) && (scopeCount > 0u)) || (scopeCount > XUD_FRAME_SCOPE_MAX)) {
+        return XUD_INVALID_ARG;
+    }
+    for (scope = 0u; scope < scopeCount; scope++) {
+        if ((scopes[scope].pass == NULL) || (scopes[scope].pass->renderPass == VK_NULL_HANDLE)
+            || (scopes[scope].pass->depthImage == VK_NULL_HANDLE) || (scopes[scope].framebuffer == NULL)
+            || (scopes[scope].framebuffer->framebuffer == VK_NULL_HANDLE) || (scopes[scope].framebuffer->view == VK_NULL_HANDLE)
+            || (scopes[scope].batch == NULL)) {
+            return XUD_INVALID_ARG;
+        }
+    }
 
     if ((frame == NULL) || (loader == NULL) || (device == NULL) || (swapchain == NULL) || (pipeline == NULL) || (pass == NULL)
         || (framebuffers == NULL) || (outImageIndex == NULL) || (batch == NULL) || (descriptor == NULL)) {
@@ -715,41 +933,22 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         return XUD_INVALID_ARG;
     }
 
-    /* --- 3b. the batch is flushed HERE, before the command buffer is begun. Closing the pending run
-       into a draw row and reading the row list are both PURE host work - they need no command buffer -
-       so doing them here is what keeps every failure path below the begin call one that ends the buffer
-       it began rather than returning out of a begun one. The counts come from the batch's own accessor
-       rather than from its fields, which is the repo's accessor rule read one rung below: the frame loop
-       asks, it does not reach.
+    /* --- 3b. EVERY batch this frame replays is flushed HERE, before the command buffer is begun:
+       each off-screen scope's own batch first and the screen batch last. Closing the pending run
+       into a draw row and reading the row list are both PURE host work - they need no command buf
+       fer - so doing them here is what keeps every failure path below the begin call one that end
+       s the buffer it began rather than returning out of a begun one. What the flush records is t
+       he whole list that pass replays; xud_frame_flush_batch() carries the reasoning.
     */
-    result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
-    if (result != XUD_OK) {
-        return result;
-    }
-    hasContent = ((vertexCount > 0u) && (indexCount > 0u)) ? 1u : 0u;
-    if (hasContent != 0u) {
-        /* The pending batch is closed into a draw row here, which is what makes "the frame loop is the
-           flush" a fact rather than a promise: the rows read below are the whole list the frame replays,
-           and the topology/variant/material the row names is the one the appends were made under. A
-           frame CAN be more than one row already: xud_batch_set_topology() closes a run mid-frame when
-           a shape changes the topology, so a frame that draws a box and a line records two rows and
-           this loop replays both. What this loop does NOT do is act on xud_batch_should_flush() - a
-           variant or material change is still a flush, and no caller above has acted on that decision
-           yet, so one frame still cannot mix blend modes. What has changed since the material rung
-           landed is that a caller no longer has to: xud_batch_set_material() splits a run mid-frame
-           on a material change, so a frame that goes through the public material pair records one
-           row per material and this loop replays all of them. The decision above is still unact
-           ed on, and what is left for a caller above to act on is the capacity half of it - the on
-           ly change that cannot be expressed as a row inside a batch that is still open.
-        */
-        if (xud_batch_record_draw(batch, batch->currentTopology, batch->currentVariant, batch->currentMaterial, batch->currentTexture)
-            != XUD_OK) {
-            return XUD_OUT_OF_MEMORY;
-        }
-        result = xud_batch_stats(batch, &vertexCount, &indexCount, &vertexCapacity, &drawCount, &stagingBytes);
+    for (scope = 0u; scope < scopeCount; scope++) {
+        result = xud_frame_flush_batch(scopes[scope].batch, &scopeContent[scope]);
         if (result != XUD_OK) {
             return result;
         }
+    }
+    result = xud_frame_flush_batch(batch, &hasContent);
+    if (result != XUD_OK) {
+        return result;
     }
 
     result = xud_frame_fill_recording(&begin, &viewport, &scissor, row->createInfo.width, row->createInfo.height);
@@ -773,132 +972,9 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         return xud_result_from_vk(vk);
     }
 
-    /* The two dynamic states, set inside the pass rather than baked into the pipeline - which is what the
-       plan's "the framebuffer array is recreated with the swapchain" buys against a fixed-extent pipeline.
-       The Cmd* calls below are void: they cannot answer a VkResult, so the repo's zero-state-before-the-c
-       all rule is what applies here, and the only point a recording can fail at is vkEndCommandBuffer. */
-    loader->deviceTable.vkCmdSetViewport(frame->commandBuffer, 0u, 1u, &viewport);
-    loader->deviceTable.vkCmdSetScissor(frame->commandBuffer, 0u, 1u, &scissor);
+    /* The two dynamic states belong to the pass whose extent they cover, so they move into
+       xud_frame_record_pass() - one pair per pass, the screen pass's included. */
 
-    /* The pipeline is NOT bound here any more: the variant a recorded draw row names is what picks the
-       row of the pipeline list to bind, and the bind is command-buffer state, so it moves into the draw
-       loop below, one bind per row. Binding once here would be binding one variant for every row of a
-       list that can name either, which is a transparent draw replayed through the opaque pipeline - the
-       blend row the batch asked for silently not the blend row the draw gets. */
-
-    passBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-    passBegin.pNext = NULL;
-    passBegin.framebuffer = row->framebuffer;
-    passBegin.renderPass = pass->renderPass;
-    passBegin.renderArea.offset.x = 0;
-    passBegin.renderArea.offset.y = 0;
-    passBegin.renderArea.extent.width = row->createInfo.width;
-    passBegin.renderArea.extent.height = row->createInfo.height;
-    passBegin.pClearValues = pass->clearValues; /* the pass's OWN clear values, in attachment order - the sp
-                                                  ec's rule that pClearValues is indexed by attachment index,
-                                                  and the reason the array lives in the pass rather than in a
-                                                  frame-local temporary */
-    passBegin.clearValueCount = XUD_RENDERPASS_ATTACHMENT_COUNT; /* the count beside the array, because the
-                                                    spec's rule is about the COUNT: clearValueCount must be
-                                                    greater than the largest attachment index that is cleared
-                                                    (VUID-VkRenderPassBeginInfo-clearValueCount-00902), and an
-                                                    array handed without its count is an array the driver
-                                                    cannot size - the validation layer reports a zero count
-                                                    here as a hard error, probed today */
-
-    /* The layout transition, and it has to happen BEFORE the pass begins: the image this frame writes is
-       in the layout the last frame left it in (VK_IMAGE_LAYOUT_UNDEFINED for an image that has never been
-       drawn into, the pass's finalLayout for one that has), and the pass requires its attachment to be in
-       the attachment's initialLayout from the first sample. A barrier is the only way across, and it names
-       the source layout the image is actually in - which is why the frame loop records one layout per
-       image rather than assuming one. Both stage masks are XUD_FRAME_BARRIER_STAGES, ALL_GRAPHICS: the
-       access flags this barrier names are a colour-attachment read AND a write, and the spec's table of
-       supported access types puts the write at the fragment-test stages, which a shader-stage-only mask
-       does not cover (the validation layer says so, probed today). The barrier is outside the render
-       pass, before vkCmdBeginRenderPass, so no subset-of-the-bound-pipeline rule reaches it. */
-    /* The layout transitions, and they have to happen BEFORE the pass begins: the image this frame wri
-       tes is in the layout the last frame left it in (VK_IMAGE_LAYOUT_UNDEFINED for an image that has ne
-       ver been drawn into, the pass's finalLayout for one that has), and the pass requires its attachme
-       nt to be in the attachment's initialLayout from the first sample. A barrier is the only way acros
-       s, and it names the source layout the image is actually in - which is why the frame loop records
-       one layout per colour image and one for the depth image rather than assuming one. ONE barrier ca
-       rrying TWO image-barrier entries rather than two barriers, because the entries are independent la
-       yout transitions of two images and one call is one dependency in the command buffer rather than t
-       wo: the array is indexed in the pass's attachment order, the same order the clear-value array abo
-       ve is, and the count beside it is the array's own constant so the two cannot disagree. Both stage
-       masks are XUD_FRAME_BARRIER_STAGES, ALL_GRAPHICS: the access flags this barrier names are a colou
-       r-attachment read AND a write AND the depth-stencil pair, and the spec's table of supported access
-       types puts the attachment writes at the fragment-test stages, which a shader-stage-only mask does
-       not cover (probed today: TOP_OF_PIPE alone and VERTEX|FRAGMENT alone are both refused for the colo
-       ur-write bit, and the depth-write bit has the same rule against VK_PIPELINE_STAGE_DEPTH_ATTACHMENT
-       _OUTPUT_BIT, which ALL_GRAPHICS covers). The barrier is outside the render pass, before vkCmdBeg
-       inRenderPass, so no subset-of-the-bound-pipeline rule reaches it.
-     */
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].pNext = NULL;
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].srcAccessMask
-        = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].dstAccessMask
-        = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].srcQueueFamilyIndex = 0u; /* the same family on both halves: this barrier is a LAYOUT
-                                              transition, not an ownership transfer, and the pair being
-                                              equal is what says so - the spec's rule for an EXCLUSIVE
-                                              image is that a non-equal pair must name EXTERNAL or a
-                                              real family, and an unset pair is garbage the validation
-                                              layer reads as an invalid family index */
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].dstQueueFamilyIndex = 0u;
-    /* oldLayout is NOT filled here: the tracker answers it at the fill below, which is the only
-       source a barrier's oldLayout has in this tree. */
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].newLayout = pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].initialLayout;
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].image = row->image; /* the swapchain's own image, borrowed into the framebuffer row - the
-                                        view of it and the framebuffer of it were built for this same image */
-    imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].subresourceRange = row->viewInfo.subresourceRange; /* the range the view was created for,
-                                        which is the range the framebuffer attaches: one colour aspect, one
-                                        mip, one layer */
-
-    /* The SECOND entry: the pass's depth image. The access masks are the DEPTH-STENCIL pair rather th
-       an the colour pair, because an access mask that names the colour bits against a depth image is a
-       barrier claiming an access the image cannot take (VUID-VkImageMemoryBarrier-srcAccessMask-03096 /
-       VUID-VkImageMemoryBarrier-dstAccessMask-03097 are the pair, and the validation layer reads the as
-       pect mask of the range against the bits). The subresource range is the one the depth VIEW was cre
-       ated for - VK_IMAGE_ASPECT_DEPTH_BIT alone - read off the pass's own depthViewInfo rather than re
-       assembled here, so a barrier and the view it guards cannot drift apart. oldLayout is the frame's
-       own record rather than a guess, exactly as the colour half's is; for the first frame it is UNDEFIN
-       ED and for every frame after it it is the pass's depth finalLayout, which equals the pass's depth
-       initialLayout, so the transition is a no-op from the second frame on - which is what a depth atta
-       chment being never presented buys. */
-    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT] = imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT];
-    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].srcAccessMask
-        = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].dstAccessMask
-        = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-    /* oldLayout again comes from the map at the fill, never from a row kept beside the handles. */
-    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].newLayout = pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].initialLayout;
-    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].image = pass->depthImage; /* the pass's OWN image, not a row's:
-                                        one depth image for every framebuffer row, which is the reason th
-                                        e image and its one view belong to the pass rather than to a row
-                                        of the array */
-    imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].subresourceRange = pass->depthViewInfo.subresourceRange;
-
-    if ((xud_layout_barrier_fill(&filledBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT], frame->layout,
-             imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT].image, &imageBarriers[XUD_RENDERPASS_COLOR_ATTACHMENT])
-            != XUD_OK)
-        || (xud_layout_barrier_fill(&filledBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT], frame->layout,
-                imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT].image, &imageBarriers[XUD_RENDERPASS_DEPTH_ATTACHMENT])
-            != XUD_OK)) {
-        (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
-        return XUD_INTERNAL_ERROR; /* an image the map does not name: the swapchain and the pass reg
-                                     ister every attachment they create, so this is a handle that dr
-                                     ifted out of the map, not a layout question */
-    }
-
-    loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, XUD_FRAME_BARRIER_STAGES, XUD_FRAME_BARRIER_STAGES, 0u, 0u, NULL, 0u,
-        NULL, XUD_RENDERPASS_ATTACHMENT_COUNT, filledBarriers);
-
-    /* The layout record moves AFTER the submit, below - see the note there. The fill above read t
-       he map but wrote nothing to it: a barrier that was recorded into a command buffer is not a
-       transition that happened yet, and a map that moved at record time would name the wrong old
-       Layout for the next frame if this frame's submit never ran. */
     /* --- 5a. set 0's block is uploaded EVERY frame, whether or not the batch has content in it: the
        pipeline's fragment stage reads this block, so a frame that never uploaded it is a frame whose
        shader reads a buffer that was never written. The write is the descriptor rung's (a memcpy into
@@ -931,72 +1007,6 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
             1u, &hostToTransfer, 0u, NULL, 0u, NULL);
     }
 
-    /* --- 5b. the batch's content is uploaded, bound and drawn only when the batch has content in it:
-       a frame whose batch is empty clears and presents with no draw at all, which is a legal frame
-       rather than an error, and the honest answer to "nothing has appended yet".
-    */
-    if (hasContent != 0u) {
-        /* The five vkCmdCopyBuffer calls, from the batch's own copy rows, over the live byte counts and
-           not the capacity: the arena's bytes are rewritten in place every frame, never appended to, so
-           the copy is of what is live and the rest of the buffer is stale bytes no draw reads. The call
-           is legal only OUTSIDE a render pass instance, which is where it sits - before the begin below.
-           A failure here ends the buffer before returning, which is what keeps the rung's claim that a
-           begun command buffer is always ended before it returns checkable rather than a promise.
-        */
-        if (xud_batch_upload(batch, loader, device, frame->commandBuffer) != XUD_OK) {
-            (void)loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
-            return XUD_INTERNAL_ERROR;
-        }
-
-        /* The barrier that makes the copies' results visible to the reads that follow them: the streams
-           are read as vertex attributes and the uniform block as a uniform, and the validation layer's
-           supported-access-type rule is what refuses a dstStageMask that covers neither.
-        */
-        {
-            const VkMemoryBarrier transferToReads = (VkMemoryBarrier) { .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
-                .pNext = NULL,
-                .srcAccessMask = XUD_FRAME_TRANSFER_WRITE_ACCESS,
-                .dstAccessMask = XUD_FRAME_VERTEX_READ_ACCESS };
-            loader->deviceTable.vkCmdPipelineBarrier(frame->commandBuffer, XUD_FRAME_BARRIER_TRANSFER_STAGE,
-                XUD_FRAME_BARRIER_VERTEX_READ_STAGES, 0u, 1u, &transferToReads, 0u, NULL, 0u, NULL);
-        }
-
-        /* ONE call over the whole array of the batch's four streams, at the binding numbers the batch's
-           vertex-input rows named - four separate calls would be four calls each leaving three of the
-           pipeline's four bindings unbound, which is a draw reading a binding nothing wrote. The offsets
-           are INTO THE BUFFER, not the buffer's address in the allocator's block: each stream is its own
-           VkBuffer bound at its range's offset, so the vertex data starts at buffer offset 0. The call is
-           void and cannot fail, and the arrays are this frame's own, read during the call.
-        */
-        {
-            VkBuffer streamRows[XUD_BATCH_STREAM_COUNT];
-            VkDeviceSize streamOffsets[XUD_BATCH_STREAM_COUNT];
-            uint32_t stream = 0u;
-            for (stream = 0u; stream < XUD_BATCH_STREAM_COUNT; stream++) {
-                streamRows[stream] = batch->stream[stream].buffer;
-                streamOffsets[stream] = 0u;
-            }
-            loader->deviceTable.vkCmdBindVertexBuffers(
-                frame->commandBuffer, XUD_FRAME_FIRST_BINDING, XUD_BATCH_STREAM_COUNT, streamRows, streamOffsets);
-        }
-
-        /* The index buffer is bound HERE, not passed to the draw: vkCmdDrawIndexed names no index buffer
-           at all, the bind is the state and the draw reads it. The offset is 0 because the batch's indices
-           start at the beginning of its own buffer, and the type is UINT32 because XUD_BATCH_INDEX_SIZE is
-           four bytes an entry - a bind that named another type would be a draw reading part of an index.
-           The bind is recorded OUTSIDE the render pass, beside the vertex bind above it, which is where
-           state-setting belongs.
-        */
-        loader->deviceTable.vkCmdBindIndexBuffer(frame->commandBuffer, batch->indexBuffer, 0u, XUD_FRAME_INDEX_TYPE);
-
-        /* The two binds above are the batch's own arena, so from here on the arena IS the bound
-           geometry and a row that names it needs no rebind. A frame whose arena is empty binds
-           nothing here, and boundGeometry stays NONE - which is what makes the loop's first row
-           rebind unconditionally rather than a fact about which row happened to come first.
-        */
-        boundGeometry = XUD_BATCH_GEOMETRY_OWN;
-    }
-
     /* The block's upload: ONE vkCmdCopyBuffer carrying ONE region, from the block's arena into set 0's
        buffer. One call rather than five because this upload has one source and one destination, which
        is the opposite of the batch's five-call shape, where the five destinations are five buffers. It
@@ -1025,123 +1035,25 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
             1u, &transferToUniform, 0u, NULL, 0u, NULL);
     }
 
-    /* Set 0 is bound HERE, once per frame, against the pipeline's OWN layout - the layout the pipeline
-       was created with is the layout the set was allocated against, so naming pipeline->layout rather
-       than a layout of this rung's is what makes the two agree rather than two records that happen to
-       match. One set, firstSet 0: the slot sets (set 1) are bound per draw below rather than once here,
-       because the set a draw samples depends on that draw's texture, and binding the right one per draw
-       is what keeps every descriptor written before its set is bound. The bind is recorded OUTSIDE the
-       render pass, beside the other binds, which is where state-setting belongs; the draw inside the pass
-       reads this state. The call is void and cannot fail, and the row is this frame's own, read during the
-       call.
+    /* --- 5c. the off-screen scopes are recorded FIRST: their passes run before the screen pass,
+       so an image one of them wrote is in SHADER_READ_ONLY - the pass's own finalLayout, followed
+       by the record pass's sampled-sync barrier - before any fragment stage of the screen pass r
+       eads it. Every scope ran its own opening barriers from the tracker, uploaded its own batch
+       and replayed its own draw rows; the screen pass that follows needs nothing else of theirs.
     */
-    {
-        const VkDescriptorSet setRows[XUD_FRAME_SET_COUNT] = { descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] };
-        loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
-            XUD_FRAME_FIRST_SET, XUD_FRAME_SET_COUNT, setRows, 0u, NULL);
+    for (scope = 0u; scope < scopeCount; scope++) {
+        result = xud_frame_record_pass(frame, loader, device, pipeline, scopes[scope].pass, scopes[scope].framebuffer, scopes[scope].batch,
+            descriptor, scopeContent[scope], 1u);
+        if (result != XUD_OK) {
+            return result;
+        }
     }
 
-    /* boundTexture is the no-texture sentinel rather than a slot number for a reason of its own: the
-       first row of this frame must bind a slot set even when its texture happens to match whatever a
-       last frame bound, because this frame's slot-set bind is recorded after the clear-and-barrier pro-
-       logue and no earlier bind of set 1 is in force. The sentinel is what makes that first row always
-       bind, one slot-set bind per texture change rather than per draw, the same shape the geometry
-       rebind above the pass keeps for the batch's buffers.
-    */
-
-    loader->deviceTable.vkCmdBeginRenderPass(frame->commandBuffer, &passBegin, VK_SUBPASS_CONTENTS_INLINE);
-
-    /* The draws: one vkCmdDrawIndexed per recorded row of the batch, which is the plan's multi-draw
-       shape - the batch's rows are the flush list and the frame loop replays them. The row's firstIndex/
-       indexCount are what the batch recorded when it flushed, and the index buffer itself was bound above,
-       so the geometry is the batch's and no longer a hard-coded three-vertex triangle. A batch with
-       nothing in it has no rows at all, so this loop records nothing and the frame is a clear-and-present
-       frame. The row accessor is read inside the pass and a row that cannot be read ENDS the list rather
-       than returning out of a begun pass: the count above came from the same batch, so the branch is not
-       one this loop reaches, and the draws made so far are the whole list either way, which is what keeps
-       the command buffer well formed. instanceCount 1 is the "draw once" form - the PFN's order is
-       (indexCount, instanceCount, firstIndex, vertexOffset, firstInstance), so the instance count is the
-       SECOND argument, and a 0 there is a legal draw of zero instances, which is a frame that records a
-       draw and renders nothing. vertexOffset 0 is the "no shift" form of the int32_t argument.
-    */
-    for (draw = 0u; draw < drawCount; draw++) {
-        if (xud_batch_draw_get(batch, draw, &drawRow) != XUD_OK) {
-            break;
-        }
-        /* The pair the row names is the row of the pipeline list this draw binds, and either axis at
-           or past its count ends the list rather than reading a row off the end of the array - the
-           same rule the batch's own invariant check applies to the topology and variant a draw row
-           names, read here at the use side because this loop is what indexes the array. */
-        if ((drawRow.topology >= XUD_BATCH_TOPOLOGY_COUNT) || (drawRow.variant >= XUD_BATCH_VARIANT_COUNT)) {
-            break;
-        }
-        /* The geometry is rebound only when the row names a different set of buffers than the one
-           already bound, so a frame of nothing but shapes - the case every example ran before the
-           mesh rung landed - records exactly the two binds above the pass and pays nothing here.
-           A mesh's row is the other case: its four streams and its own index buffer are bound at
-           the SAME four binding numbers, because the pipeline's vertex-input state is four binding
-           rows and four attribute rows whose strides and formats are the batch's, and a mesh's
-           streams were created against those same four widths and four formats (xud_mesh.h reads
-           them off xud_batch.h for exactly that reason). Binding is command-buffer state, so the
-           last bind before a draw is the one that draw reads - the same rule the pipeline bind and
-           the push row beside it already state, one channel over.
-        */
-        if (drawRow.geometryIndex != boundGeometry) {
-            if (xud_batch_geometry_get(batch, drawRow.geometryIndex, &geometryRow) != XUD_OK) {
-                break;
-            }
-            loader->deviceTable.vkCmdBindVertexBuffers(
-                frame->commandBuffer, XUD_FRAME_FIRST_BINDING, XUD_BATCH_STREAM_COUNT, geometryRow.buffer, geometryRow.offset);
-            loader->deviceTable.vkCmdBindIndexBuffer(frame->commandBuffer, geometryRow.buffer[XUD_BATCH_STREAM_COUNT],
-                geometryRow.offset[XUD_BATCH_STREAM_COUNT], XUD_FRAME_INDEX_TYPE);
-            boundGeometry = drawRow.geometryIndex;
-        }
-        /* The pipeline is bound per draw row, not once per frame: the pair is what picks the row, and
-           a bind is command-buffer state, so the last bind before a draw is the one that draw uses.
-           This is the Vulkan form of rlgl re-selecting its shader/blend state per batch (rlSetBlendMode
-           flushes the batch on a mode change, rlgl.h 2121, then sets the state) and of its replay
-           handing batch->draws[i].mode to glDrawArrays (rlgl.h 3116) - here the mode is a row of a
-           list of PIPELINES, because topology is pipeline state rather than a draw-call argument.
-        */
-        loader->deviceTable.vkCmdBindPipeline(
-            frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline[XUD_PIPELINE_ROW(drawRow.topology, drawRow.variant)]);
-        /* The push row is filled and pushed HERE, beside the draw it belongs to, rather than once per
-           frame: a push-constant range is command-buffer STATE that the last push before a draw bound,
-           which is exactly what makes it the per-draw channel and set 0 the per-frame one. The row is a
-           local of this iteration and that is legal where every other recorded row in this tree is a mem
-           ber: vkCmdPushConstants takes const void* and the driver COPIES the bytes into the command
-           buffer during the call, so nothing above reads them after it - the rule about members instead
-           of temporaries is about rows the driver reads by pointer later, and this is not one of those.
-           The stage flags are the layout's own range flags, which is the subset rule read as an equalit
-           y: the pipeline layout declared this range for exactly these two stages.
-        */
-        if (xud_frame_fill_push_row(&pushRow, &drawRow) != XUD_OK) {
-            break;
-        }
-        /* The texture channel of the same per-draw row, on the BIND side rather than the write side: each
-           slot owns its own descriptor set whose single sampler names that slot's view and sampler, and
-           the textured frag samples the one sampler of the set the row's slot holds. The frame therefore
-           binds the slot set the row samples, one bind per texture change of the frame rather than per
-           draw, and a bind is command-buffer state so the last bind before a draw is the one that draw
-           uses - the same shape the pipeline rebind above keeps. The set was written before it is bound
-           (at open for the white default, at bind and release for a texture's own pair), so no update
-           ever lands on a set this buffer has already recorded. A row that names no map binds slot 0's
-           set, the white default's own. */
-        if (pushRow.textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
-            break;
-        }
-        if (pushRow.textureIndex != boundTexture) {
-            const VkDescriptorSet slotSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(pushRow.textureIndex)];
-            loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
-                XUD_DESCRIPTOR_SET_MATERIAL, 1u, &slotSet, 0u, NULL);
-            boundTexture = pushRow.textureIndex;
-        }
-        loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
-            descriptor->pushRange.offset, descriptor->pushRange.size, &pushRow);
-        loader->deviceTable.vkCmdDrawIndexed(frame->commandBuffer, drawRow.indexCount, 1u, drawRow.firstIndex, 0, 0u);
+    /* --- 5d. the screen pass, the same recording through the same helper. */
+    result = xud_frame_record_pass(frame, loader, device, pipeline, pass, row, batch, descriptor, hasContent, 0u);
+    if (result != XUD_OK) {
+        return result;
     }
-
-    loader->deviceTable.vkCmdEndRenderPass(frame->commandBuffer);
 
     vk = loader->deviceTable.vkEndCommandBuffer(frame->commandBuffer);
     result = xud_result_from_vk(vk);
@@ -1172,6 +1084,12 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
        ich is what keeps the next frame's barrier's oldLayout a fact rather than a guess. */
     (void)xud_layout_set(frame->layout, row->image, pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout);
     (void)xud_layout_set(frame->layout, pass->depthImage, pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].finalLayout);
+    for (scope = 0u; scope < scopeCount; scope++) {
+        (void)xud_layout_set(
+            frame->layout, scopes[scope].framebuffer->image, scopes[scope].pass->attachments[XUD_RENDERPASS_COLOR_ATTACHMENT].finalLayout);
+        (void)xud_layout_set(
+            frame->layout, scopes[scope].pass->depthImage, scopes[scope].pass->attachments[XUD_RENDERPASS_DEPTH_ATTACHMENT].finalLayout);
+    }
 
     /* --- 5b. the present queue's no-command wait submit, BEFORE the present itself. This is the render
        -finished boundary spelled as a queue-side submit rather than as the present's own wait pair, and
@@ -1222,6 +1140,11 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     */
     if (xud_batch_reset(batch) != XUD_OK) {
         return XUD_INTERNAL_ERROR;
+    }
+    for (scope = 0u; scope < scopeCount; scope++) {
+        if (xud_batch_reset(scopes[scope].batch) != XUD_OK) {
+            return XUD_INTERNAL_ERROR;
+        }
     }
 
     frame->framesDrawn++;

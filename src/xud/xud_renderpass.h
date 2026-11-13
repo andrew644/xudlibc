@@ -358,6 +358,12 @@ XudResult xud_framebuffer_fill_create_info(
 XudResult xud_renderpass_open(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
     XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout);
 
+/// Driver: the same bring-up for an off-screen render target: the colour format, extent and a depth image
+/// of that extent, with the colour attachment's finalLayout SHADER_READ_ONLY_OPTIMAL - the pass itself
+/// leaves the image ready to sample, and the layout tracker records the same. Same guards, same codes.
+XudResult xud_renderpass_open_offscreen(XudRenderPass** outPass, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, VkFormat colorFormat, uint32_t width, uint32_t height, XudLayoutTracker* layout);
+
 /// Driver: vkDestroyRenderPass, then vkDestroyImageView, then vkDestroyImage, then the alloca
 /// tor's release of the image's range, then free. That order is the only one that is correct
 /// and every step of it is load-bearing: the pass's attachment description names the depth i

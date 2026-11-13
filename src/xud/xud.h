@@ -303,9 +303,11 @@ typedef struct XudHandle {
 #define XUD_HANDLE_KIND_MATERIAL 4u /* a material: a pipeline variant and its set-1 bindings, once the pipelines land */
 #define XUD_HANDLE_KIND_MODEL 5u /* a model: the meshes and materials a load produced, once model loading lands */
 #define XUD_HANDLE_KIND_AUDIOSTREAM 6u /* an audio stream: the decoded frames and their format, once the audio rung lands */
+#define XUD_HANDLE_KIND_RENDERTEXTURE                                                                                                      \
+    7u /* an off-screen render target: the image, its sampler entry and the pass that draws it, once the target rung lands */
 #define XUD_HANDLE_KIND_MAX                                                                                                                \
-    XUD_HANDLE_KIND_AUDIOSTREAM /* the highest kind value in use today - a new caller-addressable kind moves this and its own value,       \
-                                    which is why the table's row count below is derived rather than written */
+    XUD_HANDLE_KIND_RENDERTEXTURE /* the highest kind value in use today - a new caller-addressable kind moves this and its own value,      \
+                                      which is why the table's row count below is derived rather than written */
 #define XUD_HANDLE_KIND_COUNT                                                                                                              \
     (XUD_HANDLE_KIND_MAX + 1u) /* one past the highest kind value, which is the row count of the table's per-kind arrays */
 
@@ -1469,6 +1471,39 @@ XudResult xud_set_texture_filter(XudContext* context, XudHandle handle, uint32_t
 /// needs are not there; the driver's own code when the recreate's create or the set's rewrite
 /// refuses.
 XudResult xud_set_texture_wrap(XudContext* context, XudHandle handle, uint32_t addressMode);
+
+/// Create an off-screen draw target: raylib's LoadRenderTexture, whose image is the caller's extent.
+/// The target owns a colour image (drawable AND sampleable), a depth image of the same extent, the
+/// render pass and framebuffer that draw into them, a batch of its own for the geometry appended
+/// while its scope is open, and one entry of set 1's sampler array so xud_draw_texture() can sample
+/// the result by this same handle. The colour format is the swapchain's; depth always exists. On
+/// XUD_OK *outTarget names a live RENDERTEXTURE slot of THIS context's table. XUD_INVALID_ARG on a
+/// NULL out-handle or context, or a zero extent; XUD_UNSUPPORTED on a context that never completed
+/// bring-up; XUD_OUT_OF_RESOURCES at the handle layer's slot bound; the target rung's and the
+/// allocator's own codes on the objects they bring up.
+XudResult xud_create_render_texture(XudHandle* outTarget, XudContext* context, uint32_t width, uint32_t height);
+
+/// Release one render target: its image, sampler entry, pass, framebuffer and batch, in the order
+/// that leaves no descriptor entry naming a destroyed object. A target whose scope is open right
+/// now cannot be closed - XUD_UNSUPPORTED - because the renderer still points its draw paths at
+/// that target's batch; xud_end_texture_mode() first. XUD_INVALID_ARG on a NULL context or a
+/// handle that does not name a live RENDERTEXTURE slot of this context; the rung's own codes on
+/// the objects it retires.
+XudResult xud_close_render_texture(XudContext* context, XudHandle target);
+
+/// Open one target's scope for this frame: raylib's BeginTextureMode. Every draw appended from here
+/// to xud_end_texture_mode() lands in the target's own batch, and the frame records the target's
+/// pass BEFORE the screen's, so the image is sampleable by the screen pass of the same frame. The
+/// target clears to the current background colour when its pass opens. Re-opening a target already
+/// open this frame is the same scope, not a second one. One scope may be open at a time. XUD_
+/// INVALID_ARG on a NULL context or a handle that names no live RENDERTEXTURE slot; XUD_ALREADY
+/// when a DIFFERENT target's scope is already open; XUD_UNSUPPORTED when this frame's scope rows
+/// are all live.
+XudResult xud_begin_texture_mode(XudContext* context, XudHandle target);
+
+/// Close the open scope: raylib's EndTextureMode. Draws return to the screen. XUD_INVALID_ARG on a
+/// NULL context; XUD_ALREADY when no scope is open.
+XudResult xud_end_texture_mode(XudContext* context);
 
 /// Load a model this context owns: the object half of the model rung, and the fourth public create
 /// pair whose record owns driver objects - and the first whose record owns OTHER handles. A model is

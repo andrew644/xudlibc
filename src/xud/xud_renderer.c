@@ -120,7 +120,10 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
     (void)rung;
     rung = xud_pipeline_close(&renderer->pipeline, device, loader);
     (void)rung;
-    rung = xud_batch_close(&renderer->batch, device, loader, alloc);
+    rung = xud_batch_close(&renderer->screenBatch, device, loader, alloc);
+    renderer->batch = NULL; /* the ACTIVE pointer may name a target's batch, which that target's
+                               record owns - the retirement goes to the owned one, and the alias
+                               is cleared so nothing reads it again */
     (void)rung;
     rung = xud_renderpass_close(&renderer->renderPass, device, loader, alloc);
     (void)rung;
@@ -212,6 +215,9 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
        and xud_pipeline_open() below takes the batch for exactly that reason.
      */
     result = xud_batch_open(&renderer->batch, loader, device, caps, alloc);
+    renderer->screenBatch = renderer->batch; /* the batch the draw paths come back to when a target
+                                                scope closes; `batch` is the ACTIVE one and may be
+                                                a target's for the length of a scope */
     if (result != XUD_OK) {
         free(renderer);
         return result;
@@ -277,6 +283,7 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
 XudResult xud_renderer_draw(
     XudRenderer* renderer, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain, uint32_t* outImageIndex) {
     float aspect = 0.0f;
+    uint32_t scope = 0u;
     const XudCamera3D* camera = NULL;
 
     if ((renderer == NULL) || (outImageIndex == NULL)) {
@@ -334,8 +341,18 @@ XudResult xud_renderer_draw(
         return XUD_INVALID_ARG;
     }
 
+    /* The same background clears the off-screen passes: a target whose first frame drew nothing
+       shows this frame's background rather than whatever its allocation handed over. */
+    for (scope = 0u; scope < renderer->scopeCount; scope++) {
+        if (xud_renderpass_set_clear_color(renderer->scopes[scope].pass, (float)renderer->background.r / 255.0f,
+                (float)renderer->background.g / 255.0f, (float)renderer->background.b / 255.0f, (float)renderer->background.a / 255.0f)
+            != XUD_OK) {
+            return XUD_INVALID_ARG;
+        }
+    }
+
     return xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
-        renderer->framebufferCount, renderer->batch, renderer->descriptor, outImageIndex);
+        renderer->framebufferCount, renderer->scopes, renderer->scopeCount, renderer->screenBatch, renderer->descriptor, outImageIndex);
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -516,7 +533,10 @@ XudResult xud_renderer_close(XudRenderer** ioRenderer, const XudDevice* device, 
     victim->framebuffers = NULL;
     free(victim->pipeline);
     victim->pipeline = NULL;
-    free(victim->batch);
+    free(victim->screenBatch); /* the screen batch is retired by pointer-to-the-owned-one, never by
+                                  `batch`: a renderer closed with a scope still open would otherwise
+                                  free a target's batch and leak the screen's */
+    victim->screenBatch = NULL;
     victim->batch = NULL;
     free(victim->renderPass);
     victim->renderPass = NULL;
@@ -527,5 +547,78 @@ XudResult xud_renderer_close(XudRenderer** ioRenderer, const XudDevice* device, 
     free(victim);
     *ioRenderer = NULL;
 
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
+ * The render-target scope entries - the batch swap and the frame's scope list
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_renderer_begin_target(XudRenderer* renderer, XudRenderPass* pass, const XudFramebuffer* framebuffer, XudBatch* batch) {
+    uint32_t scope = 0u;
+
+    if ((renderer == NULL) || (pass == NULL) || (framebuffer == NULL) || (batch == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    for (scope = 0u; scope < renderer->scopeCount; scope++) {
+        if (renderer->scopes[scope].framebuffer == framebuffer) {
+            renderer->batch = batch;
+            renderer->inTarget = 1u;
+            renderer->activeFramebuffer = framebuffer;
+            return XUD_OK;
+        }
+    }
+    if (renderer->scopeCount >= XUD_FRAME_SCOPE_MAX) {
+        return XUD_UNSUPPORTED;
+    }
+    renderer->scopes[renderer->scopeCount].pass = pass;
+    renderer->scopes[renderer->scopeCount].framebuffer = framebuffer;
+    renderer->scopes[renderer->scopeCount].batch = batch;
+    renderer->scopeCount++;
+    renderer->batch = batch;
+    renderer->inTarget = 1u;
+    renderer->activeFramebuffer = framebuffer;
+    return XUD_OK;
+}
+
+XudResult xud_renderer_end_target(XudRenderer* renderer) {
+    if (renderer == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if (renderer->inTarget == 0u) {
+        return XUD_ALREADY;
+    }
+    renderer->batch = renderer->screenBatch;
+    renderer->inTarget = 0u;
+    renderer->activeFramebuffer = NULL;
+    return XUD_OK;
+}
+
+XudResult xud_renderer_reset_targets(XudRenderer* renderer) {
+    if (renderer == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    renderer->scopeCount = 0u;
+    renderer->batch = renderer->screenBatch;
+    renderer->inTarget = 0u;
+    renderer->activeFramebuffer = NULL;
+    return XUD_OK;
+}
+
+XudResult xud_renderer_pixel_extent(
+    const XudRenderer* renderer, uint32_t screenWidth, uint32_t screenHeight, uint32_t* outWidth, uint32_t* outHeight) {
+    if ((renderer == NULL) || (outWidth == NULL) || (outHeight == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((renderer->inTarget != 0u) && (renderer->activeFramebuffer != NULL)) {
+        /* The scope's own extent, read off the row's create-info: pixels inside a scope are the
+           target's pixels, and the 256x256 target's full box is the same [0,1] box the window's
+           full box is on screen. */
+        *outWidth = renderer->activeFramebuffer->createInfo.width;
+        *outHeight = renderer->activeFramebuffer->createInfo.height;
+        return XUD_OK;
+    }
+    *outWidth = screenWidth;
+    *outHeight = screenHeight;
     return XUD_OK;
 }

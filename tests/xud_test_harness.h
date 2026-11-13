@@ -86,6 +86,9 @@ void xud_test_audio(void); /* the audio rung and the public audio API: the descr
                              the stride arithmetic and its ceiling, the two conversions between frames and seconds, the decode over six
                              real files of four containers through a bare table, the header's own declared numbers beside the record's,
                              the three containers this vendored copy has no decoder for, and the teardown rung above the table's close */
+void xud_test_rendertarget(
+    void); /* the render target rung and its public quartet: the colour create-info, the guards, the scope's move of the renderer's batch,
+              the per-frame layout walk to SHADER_READ_ONLY, and the readback that sees the off-screen box's blue through the sampler */
 void xud_test_core(void);
 void xud_test_vendor(void); /* the three vendored single-header rungs: cgltf, stb_truetype, miniaudio */
 

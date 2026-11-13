@@ -85,6 +85,10 @@
     1u /* one VkSubmitInfo per submit: the plan's one batch flushed                                                                        \
           per frame, and the batch layer that would make this more th                                                                      \
           an one is not in the tree */
+#define XUD_FRAME_SCOPE_MAX                                                                                                                \
+    8u /* how many off-screen pass scopes one frame may carry. The bound is the frame's, not            \
+          the engine's: live render targets are bounded elsewhere (the sampler array), and a frame      \
+          that names more scopes than this is a caller bug, refused rather than recorded wrong */
 #define XUD_FRAME_FIRST_BINDING                                                                                                            \
     0u /* vkCmdBindVertexBuffers' firstBinding: the batch's four streams are bindings 0..3, the same                                       \
           numbers xud_batch_fill_binding writes and the same ones the pipeline's vertex-input row                                          \
@@ -278,6 +282,21 @@ struct XudFrame {
 };
 
 /*-----------------------------------------------------------------------------------------------
+ * One off-screen pass scope: the triple the loop records BEFORE the swapchain pass, so a render
+ * target's image is sampled-ready when the screen pass reads it. The colour and depth images need
+ * no rows here: the framebuffer row carries the borrowed colour image and the pass carries its own
+ * depth image, and both are read through their owners - the repo's accessor rule, one rung below.
+ *-----------------------------------------------------------------------------------------------*/
+
+typedef struct XudFramePassScope {
+    XudRenderPass* pass; /* the target's own pass, whose colour finalLayout is SHADER_READ_ONLY -
+                            non-const because the renderer writes the frame's background into the
+                            row's clear value every frame, the way it writes the screen pass's */
+    const XudFramebuffer* framebuffer; /* the target's one framebuffer row */
+    XudBatch* batch; /* the target's own batch: the geometry this pass draws */
+} XudFramePassScope;
+
+/*-----------------------------------------------------------------------------------------------
  * The layer's contract
  *-----------------------------------------------------------------------------------------------*/
 
@@ -405,7 +424,7 @@ XudResult xud_frame_open(
 /// atrix is a transform the step above this one has to choose.
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
-    XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
+    const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
 
 /// Driver: retire everything this rung owns, in the one order that is correct - vkWaitForFences on
 /// every fence still bounding a submission, then vkFreeCommandBuffers, vkDestroySemaphore, vkDestroyFence for ever

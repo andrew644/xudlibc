@@ -47,6 +47,7 @@
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
 #include "xud_loader.h" /* Required for: XudLoader, xud_loader_device_bound - the device-table rows and the bound-handle check */
 #include "xud_physical.h" /* Required for: XudDeviceCaps - the image limits every gate below is read off */
+#include "xud_rendertarget.h" /* Required for: xud_rendertarget_get - the second kind the public draw resolves, and the record whose slot, view and extent the sampled quad reads */
 #include "xud_shapes.h" /* Required for: xud_shapes_pixel_to_clip and xud_shapes_append_glyph_quad - the screen-space quad the public draw below appends */
 #include "xud_vulkan.h" /* Required for: xud_result_from_vk - the one VkResult funnel, and why this rung uses the general one and never the swapchain's */
 
@@ -1592,6 +1593,12 @@ XudResult xud_draw_texture(XudContext* context, XudHandle handle, int32_t posX, 
     float clipY0 = 0.0f;
     float clipX1 = 0.0f;
     float clipY1 = 0.0f;
+    uint32_t samplerSlotLive = 0u;
+    uint32_t samplerSlot = 0u;
+    uint32_t imageWidth = 0u;
+    uint32_t imageHeight = 0u;
+    uint32_t extentWidth = 0u;
+    uint32_t extentHeight = 0u;
     XudResult result = XUD_INVALID_ARG;
 
     if (context == NULL) {
@@ -1604,29 +1611,52 @@ XudResult xud_draw_texture(XudContext* context, XudHandle handle, int32_t posX, 
 
     result = xud_texture_get(context->handleTable, handle, &record);
     if (result != XUD_OK) {
-        return result;
+        /* A handle naming a live RENDERTEXTURE slot draws the same way: set 1's sampler array does
+           not distinguish where the (view, sampler) pair it names came from, and the target's
+           record carries its own slot, width and height beside the image. */
+        const XudRenderTargetRecord* target = NULL;
+        result = xud_rendertarget_get(context->handleTable, handle, &target);
+        if (result != XUD_OK) {
+            return result;
+        }
+        samplerSlotLive = target->samplerSlotLive;
+        samplerSlot = target->samplerSlot;
+        imageWidth = target->width;
+        imageHeight = target->height;
+    } else {
+        samplerSlotLive = record->samplerSlotLive;
+        samplerSlot = record->samplerSlot;
+        imageWidth = record->width;
+        imageHeight = record->height;
     }
 
     /* The extent the quad's pixels divide by is the framebuffer's own, the swapchain's imageExtent
        the window layer reports rather than the size the caller asked for: a zero extent is the
        state a window with no presentable extent is in, and a divide by it is an inf in a float
        stream rather than a draw. */
-    if ((context->width == 0u) || (context->height == 0u)) {
+    if ((context->renderer->inTarget == 0u) && ((context->width == 0u) || (context->height == 0u))) {
+        return XUD_INVALID_ARG;
+    }
+    result = xud_renderer_pixel_extent(context->renderer, context->width, context->height, &extentWidth, &extentHeight);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if ((extentWidth == 0u) || (extentHeight == 0u)) {
         return XUD_INVALID_ARG;
     }
 
-    textureIndex = (record->samplerSlotLive != 0u) ? record->samplerSlot : XUD_BATCH_NO_TEXTURE;
+    textureIndex = (samplerSlotLive != 0u) ? samplerSlot : XUD_BATCH_NO_TEXTURE;
 
     /* The two corners in pixels, the top-left and the bottom-right of the texture's own extent at
        the caller's position, mapped to clip before they become the corners the quad takes: the
        texture's full box in uv space is the quad's, so the atlas-box divide the glyph walk does is
        the whole of [0, 1] here. */
-    result = xud_shapes_pixel_to_clip(context->width, context->height, (float)posX, (float)posY, &clipX0, &clipY0);
+    result = xud_shapes_pixel_to_clip(extentWidth, extentHeight, (float)posX, (float)posY, &clipX0, &clipY0);
     if (result != XUD_OK) {
         return result;
     }
     result = xud_shapes_pixel_to_clip(
-        context->width, context->height, (float)posX + (float)record->width, (float)posY + (float)record->height, &clipX1, &clipY1);
+        extentWidth, extentHeight, (float)posX + (float)imageWidth, (float)posY + (float)imageHeight, &clipX1, &clipY1);
     if (result != XUD_OK) {
         return result;
     }
