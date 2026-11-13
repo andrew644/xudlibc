@@ -176,6 +176,22 @@ struct XudRenderer {
                               back into the NULL the camera rung reads as "write the identity matrix"
                               - which is what makes the block's matrix a function of THIS frame's
                               camera state rather than of whatever the last frame's camera wrote. */
+    uint32_t cameraLatched; /* 0 = nothing latched, non-zero = the scope opened with the record above
+                              has CLOSED since the last draw, and the draw below still projects with
+                              it once. The close and the flush are not the same moment: a caller who
+                              opens the camera, records draws under it and closes it before the frame
+                              boundary (raylib's BeginMode3D/EndMode3D inside BeginDrawing/EndDrawing)
+                              has recorded a frame that MEANS that camera, and the deferred flush at
+                              the boundary must honour it - which is the one thing the flag above,
+                              cleared by the close, can no longer say. Consumed by the draw, so a
+                              camera begun and ended inside one frame still does not leak into the next. */
+    uint32_t cameraLatchDraw; /* drawCount as of the close that set the latch: the latch belongs to
+                              the draws recorded since the last flush, and this is the flush it waits
+                              for. A close after draw 7 latches for draw 8; a close at frame 9 of a
+                              camera that had been live through draw 8 is the same statement, and the
+                              next draw is the same draw either way. */
+    uint32_t drawCount; /* the draws the draw entry below has completed, counted from the open: the
+                              stamp the latch is set with, and nothing else */
     XudHandle material; /* the material the caller last asked for, AS GIVEN: a value this rung owns
                           rather than a pointer into the handle table, so this rung cannot hold a
                           record of a table it does not own. The index of that handle is what the

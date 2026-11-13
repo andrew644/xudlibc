@@ -478,6 +478,7 @@ XudResult xud_renderer_draw(
     float aspect = 0.0f;
     uint32_t scope = 0u;
     const XudCamera3D* camera = NULL;
+    XudResult result = XUD_OK;
 
     if ((renderer == NULL) || (outImageIndex == NULL)) {
         return XUD_INVALID_ARG;
@@ -494,14 +495,21 @@ XudResult xud_renderer_draw(
        ndow's requested one (AGENTS.md: on a scaled session the two differ, and the one that is a
        fact about this frame is the one the viewport is set from) - and recomputed every frame rather
        than stored, which is what keeps a resize from leaving a matrix built for the old extent in
-       the block. No camera live is not "leave the block alone": it is the identity matrix, so the
-       block's matrix is a function of THIS frame's camera state rather than of whatever the last
-       frame's camera wrote.
+       the block. No camera is two facts, not one: none live AND nothing latched by a close that has
+       not been drawn yet is the identity matrix - the block's matrix is a function of THIS frame's
+       camera state, never of whatever the last frame's camera wrote - while a closed-but-latched
+       scope is the record itself, because the draws this flush carries were recorded under it.
     */
     if (swapchain->createInfo.imageExtent.height > 0u) {
         aspect = (float)swapchain->createInfo.imageExtent.width / (float)swapchain->createInfo.imageExtent.height;
     }
-    camera = (renderer->cameraWanted != 0u) ? &renderer->camera : NULL;
+    camera = NULL;
+    if (renderer->cameraWanted != 0u) {
+        camera = &renderer->camera;
+    } else if ((renderer->cameraLatched != 0u) && (renderer->cameraLatchDraw == renderer->drawCount)) {
+        camera = &renderer->camera;
+    }
+    renderer->cameraLatched = 0u;
     if (xud_camera_apply(renderer->descriptor, camera, aspect) != XUD_OK) {
         /* A camera the renderer holds that is no longer usable - a caller that tampered the record
            after the begin call that validated it, or a zero-height extent, which is the state a
@@ -552,9 +560,13 @@ XudResult xud_renderer_draw(
         }
     }
 
-    return xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
+    result = xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
         renderer->framebufferCount, renderer->hdrPass, renderer->hdrFramebuffer, renderer->hdrSlot, renderer->scopes, renderer->scopeCount,
         renderer->screenBatch, renderer->descriptor, outImageIndex);
+    if (result == XUD_OK) {
+        renderer->drawCount++;
+    }
+    return result;
 }
 
 /*-----------------------------------------------------------------------------------------------

@@ -56,6 +56,7 @@ void xud_test_descriptor(void);
 void xud_test_batch(void);
 void xud_test_shapes(void); /* the shapes rung and the public drawing API: the atomic append, the frame pair */
 void xud_test_camera(void); /* the camera rung and the public camera pair: the basis, the frustum, the matrix's geometry */
+void xud_test_light(void); /* the light rung: the refusals, the row's bytes per kind, the context's table and the block it pushes */
 void xud_test_collision(
     void); /* the collision rung's nine calls: the three tests, the five casts, a mesh's bounds, the normals they answer */
 void xud_test_matrix(

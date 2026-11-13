@@ -125,6 +125,25 @@ extern "C" {
    ceiling. */
 #define XUD_MAX_TEXTURES 15u
 
+/* The ceiling of lights one context can shade by: the frame's uniform block carries a fixed table
+   of XUD_MAX_LIGHTS rows (xud_descriptor.h's XudLightRow) and the pipeline layout freezes that
+   width into every pipeline, so the number is fixed per context. Dozens of dynamic lights want the
+   clustered path todo.md's S4.2 states, not a wider table on this rung. */
+#define XUD_MAX_LIGHTS 8u
+
+/* The three kinds the fragment stage branches on. The numbers are the light table's params.w
+   values, so they are the wire format between the C record and the shader and the tokens are their
+   names - the same convention XUD_CAMERA_MODE_* gives the camera's axis. */
+#define XUD_LIGHT_KIND_SUN 0u /* light from a direction at infinity: a direction, a colour, no position, no range */
+#define XUD_LIGHT_KIND_POINT 1u /* light from one world point: fades with range, no cone */
+#define XUD_LIGHT_KIND_SPOT 2u /* light from one world point inside one cone: fades with range AND cone angle */
+#define XUD_LIGHT_KIND_COUNT 3u /* the length of this axis */
+
+static_assert(XUD_LIGHT_KIND_COUNT == (XUD_LIGHT_KIND_SPOT + 1u),
+    "xud.h: the kind count is one past the last token, so the setter's range check is one "
+    "comparison rather than a list of three cases - the same shape XUD_CAMERA_MODE_COUNT gives the "
+    "camera's modes");
+
 /*-----------------------------------------------------------------------------------------------
  * Error codes - the return type of every public function
  *-----------------------------------------------------------------------------------------------*/
@@ -893,13 +912,14 @@ XudResult xud_draw_grid(
 /// ver completed bring-up.
 XudResult xud_begin_camera_3d(XudContext* context, const XudCamera3D camera);
 
-/// Take the 3D camera away: the public EndCamera3D() of the same pair. The frames drawn after here
-/// are drawn with no camera at all, which is the identity matrix the descriptor rung opens set 0's
-/// block with - the block's matrix is rewritten every frame from the camera state the renderer hol
-/// ds rather than left at whatever the previous frame's camera put in it, which is what makes a
-/// camera that began and ended inside one frame a no-op rather than a leak of state into the next
-/// frame. XUD_ALREADY when no camera was live (the state is already the one this call asks for);
-/// XUD_INVALID_ARG on a NULL context; XUD_UNSUPPORTED on a context that never completed bring-up.
+/// Take the 3D camera away: the public EndCamera3D() of the same pair. The flush that carries this
+/// frame's draws still projects with this camera - the close sits before that flush (the raylib pair
+/// lives INSIDE BeginDrawing/EndDrawing, and this library's draws are recorded, not executed, until
+/// the boundary), so a camera begun and ended inside one frame draws THAT frame and no later one:
+/// the frames drawn after the next boundary are drawn with no camera at all, the identity matrix
+/// the descriptor rung opens set 0's block with. XUD_ALREADY when no camera was live (the state is
+/// already the one this call asks for); XUD_INVALID_ARG on a NULL context; XUD_UNSUPPORTED on a
+/// context that never completed bring-up.
 XudResult xud_end_camera_3d(XudContext* context);
 
 /*-----------------------------------------------------------------------------------------------
@@ -998,6 +1018,54 @@ XudResult xud_update_camera(XudContext* context, XudCamera3D* camera, uint32_t m
 /// own input - a gamepad, a replay, a recorded path - drives. The same refusals as xud_update_
 /// camera()'s, minus the ones that need a context.
 XudResult xud_update_camera_pro(XudCamera3D* camera, XudVector3 movement, XudVector3 rotation, float zoom);
+
+/*-----------------------------------------------------------------------------------------------
+ * The lights a frame is shaded by
+ *
+ * raylib has no lighting API to mirror: its examples hand a custom shader three uniform arrays and
+ * run the attenuation loop themselves. What is mirrored here is the SHAPE those examples keep
+ * landing on - a table of lights as state, replaced whole, plus one ambient floor - stated as
+ * context state the way the camera and the audio listener are: the frame reads whatever the last
+ * call left, and no frame has to be open to change it.
+ *
+ * The table defaults to ONE white SUN along normalize(1, 2, 3) and an ambient floor of white at a
+ * quarter: that is the fixed light and floor the fragment stage used to compile in, so a context
+ * that never calls either setter shades its frames exactly as it shaded them before this rung
+ * existed. The first xud_set_lights() call replaces that default whole - lights never accumulate
+ * across calls, and an empty table is a legal one: it leaves the ambient floor alone.
+ *-----------------------------------------------------------------------------------------------*/
+
+/// One light: sun, point or spot, named by the fields its kind reads. Which fields a kind reads is
+/// stated per member below and checked by xud_set_lights(); fields a kind does not read are free to
+/// hold anything, which is what lets one record serve the three kinds the way raylib's example's
+/// single Light struct does.
+typedef struct XudLight {
+    XudVector3 position; /* POINT and SPOT: the world point the light shines from; SUN: ignored */
+    XudVector3
+        direction; /* SUN: the direction TOWARD the light (a vector at infinity); SPOT: the cone axis, pointing AWAY from the light; POINT: ignored */
+    XudColor color; /* the light's rgb; its alpha byte is not read - intensity is its own float */
+    float intensity; /* >= 0: the rgb is scaled by this before the shade is summed, so > 1 is a light brighter than white */
+    float range; /* POINT and SPOT: >= 0; the light fades to nothing AT this distance, and 0 means it never fades; SUN: ignored */
+    float innerConeDegrees; /* SPOT: 0..180, fully lit out to this angle off the axis; SUN and POINT: ignored */
+    float outerConeDegrees; /* SPOT: innerConeDegrees..180, nothing past this angle; SUN and POINT: ignored */
+    uint32_t kind; /* one of the XUD_LIGHT_KIND_* tokens */
+} XudLight;
+
+/// Replace the context's whole light table: raylib's examples' `lights` array and its count, as
+/// one call. The table becomes `lights[0..count)` for every frame from now until the next call -
+/// the fragment stage sums exactly these, in this order, over its Lambert terms. count 0 (and a
+/// NULL lights) is legal and asks for a table with no lights in it: faces then keep only the
+/// ambient floor. XUD_INVALID_ARG on a NULL context, a NULL lights beside a non-zero count, a count
+/// past XUD_MAX_LIGHTS, a kind outside the tokens, a NaN or infinite float anywhere the kind
+/// reads, a negative intensity or range, a SUN or SPOT whose direction is the zero vector (a light
+/// that points nowhere has no Lambert term to take), or a SPOT whose outer cone is narrower than
+/// its inner; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_set_lights(XudContext* context, const XudLight* lights, uint32_t count);
+
+/// The floor every face keeps where no light reaches: the ambient row of the frame's block.
+/// The default is white at intensity 0.25, the constant the fragment stage used to compile in.
+/// XUD_INVALID_ARG on a NULL context; XUD_UNSUPPORTED on a context that never completed bring-up.
+XudResult xud_set_ambient_light(XudContext* context, XudColor color, float intensity);
 
 /*-----------------------------------------------------------------------------------------------
  * The two ways between the frame's pixels and the world the camera frames

@@ -441,11 +441,15 @@ static void xud_test_camera_pure(void) {
 
     xud_check(xud_end_camera_3d(NULL) == XUD_INVALID_ARG, "camera/end-no-context", "a camera cannot be taken away with no context");
     xud_check(xud_end_camera_3d(&shell) == XUD_OK, "camera/end-ok",
-        "a live camera is taken away, which is the state the next frame's block is written from");
+        "a live camera is taken away, which is the state the pending flush still projects from");
     xud_check(renderer.cameraWanted == 0u, "camera/end-clears-the-flag",
-        "the flag is cleared, so the next frame's block carries the identity matrix rather than whatever the last frame's camera wrote");
+        "the live flag is cleared, so no frame after the pending flush is drawn with this camera");
+    xud_check(renderer.cameraLatched == 1u, "camera/end-sets-the-latch",
+        "and the close latches the record for the one flush the recorded draws wait behind");
+    xud_check(renderer.cameraLatchDraw == renderer.drawCount, "camera/end-stamps-the-latch",
+        "the latch is stamped with the draws so far: it belongs to the flush the close waited for, not to a later one");
     xud_check(renderer.camera.fovy == 60.0f, "camera/end-leaves-the-record",
-        "the record itself is left as it was - the flag is what governs, and a begin after here replaces the whole record");
+        "the record itself is left as it was - the flags are what govern, and a begin after here replaces the whole record");
     xud_check(xud_end_camera_3d(&shell) == XUD_ALREADY, "camera/end-no-camera-live",
         "and taking away a camera that is not live is the repo's idempotent ask rather than a refusal");
     xud_check(renderer.cameraWanted == 0u, "camera/end-twice-changes-nothing",
@@ -933,14 +937,41 @@ static void xud_test_camera_gpu(void) {
 
     xud_check(xud_end_camera_3d(context) == XUD_OK, "gpu-camera/end-ok", "the camera is taken away");
     xud_check(context->renderer->cameraWanted == 0u, "gpu-camera/flag-cleared", "and the renderer says no camera is live");
+    xud_check(context->renderer->cameraLatched == 1u, "gpu-camera/close-latches",
+        "but the close latches the record: the draws recorded under this camera flush at the next boundary, one step after here");
 
-    xud_check(xud_begin_drawing(context) == XUD_OK, "gpu-camera/begin-drawing-after-end", "the next frame opens with no camera live");
+    xud_check(xud_begin_drawing(context) == XUD_OK, "gpu-camera/begin-drawing-latched", "the next frame opens with the camera closed");
     xud_check(xud_draw_cube(context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f }, 0.5f, 0.5f, 0.5f,
                   (XudColor) { .r = 60u, .g = 200u, .b = 60u, .a = 255u })
             == XUD_OK,
-        "gpu-camera/cube-appended-no-camera", "a box is appended with no camera live");
+        "gpu-camera/cube-appended-latched", "a box is appended after the close, inside the frame the camera was closed in");
     result = xud_end_drawing(context);
-    xud_check(result == XUD_OK, "gpu-camera/end-drawing-no-camera", "and the frame closed");
+    xud_check(result == XUD_OK, "gpu-camera/end-drawing-latched", "and the frame closed");
+
+    /* The flush honoured the close rather than erasing it: the block carries the camera the draws
+       were recorded under - the raylib BeginMode3D/EndMode3D-inside-the-frame order, which is the
+       whole reason the latch exists.
+    */
+    xud_check(context->renderer->cameraLatched == 0u, "gpu-camera/latch-consumed", "the draw consumed the latch");
+    xud_check(xud_camera_fill_view_proj(&context->renderer->camera, aspect, matrix) == XUD_OK, "gpu-camera/pure-matrix-latched",
+        "the pure function at this aspect again");
+    match = 0u;
+    for (element = 0u; element < XUD_CAMERA_MATRIX_ELEMENT_COUNT; element++) {
+        if (xudTestNear(context->renderer->descriptor->uniformBlock.viewProj[element], matrix[element])) {
+            match++;
+        }
+    }
+    xud_check(match == XUD_CAMERA_MATRIX_ELEMENT_COUNT, "gpu-camera/latched-flush-keeps-camera",
+        "the frame drawn AFTER the close still projects with the camera closed inside it, all sixteen elements");
+
+    xud_check(
+        xud_begin_drawing(context) == XUD_OK, "gpu-camera/begin-drawing-after-latch", "and one frame later, nothing is live or latched");
+    xud_check(xud_draw_cube(context, (XudVector3) { .x = 0.0f, .y = 0.0f, .z = 0.0f }, 0.5f, 0.5f, 0.5f,
+                  (XudColor) { .r = 60u, .g = 200u, .b = 60u, .a = 255u })
+            == XUD_OK,
+        "gpu-camera/cube-appended-no-camera", "a box is appended with no camera and nothing latched");
+    result = xud_end_drawing(context);
+    xud_check(result == XUD_OK, "gpu-camera/end-drawing-no-camera", "and that frame closed");
 
     identity = 0u;
     for (element = 0u; element < XUD_CAMERA_MATRIX_ELEMENT_COUNT; element++) {
@@ -949,12 +980,12 @@ static void xud_test_camera_gpu(void) {
         }
     }
     xud_check(identity == 4u, "gpu-camera/block-back-at-identity",
-        "the block's matrix is the identity again, so the camera that began and ended inside these two frames left nothing behind in the "
-        "frame that drew without one");
+        "the block's matrix is the identity again two frames on: the latched flush was the camera's last, and it leaked into no frame "
+        "after it");
 
     if (context->validate != 0u) {
         xud_check(context->diagnostics->errorMessages == 0u, "gpu-camera/validation-clean",
-            "two frames drew a real box through a real pipeline with a real camera and the messenger heard nothing");
+            "three frames drew a real box through a real pipeline with a real camera and the messenger heard nothing");
     }
 
     /* xud_update_camera() against the context it reads: the mode's two rungs are bring-up's, so the
@@ -963,6 +994,24 @@ static void xud_test_camera_gpu(void) {
        nothing else - the eye stays where it is, which is the property a first-person loop needs before
        it trusts any of the input below it.
     */
+
+    /* The pointer-still premise, stated the way the input rung can state it: a cursor delta belongs
+       to the frame that carried it, and a window the compositor is still placing re-issues its
+       cursor-entry jump into one of the early frames - a jump the modes below would then read as
+       the caller's mouse. Empty frames run until one closes with nothing to report, which is the
+       placement settling; from there the delta window the updates read is a quiet pair of polls.
+    */
+    {
+        XudVector2 settle;
+        uint32_t attempt = 0u;
+        for (attempt = 0u; attempt < 16u; attempt++) {
+            (void)xud_begin_drawing(context);
+            (void)xud_end_drawing(context);
+            if ((xud_get_mouse_delta(&settle, context) == XUD_OK) && (settle.x == 0.0f) && (settle.y == 0.0f)) {
+                break;
+            }
+        }
+    }
     xud_check(xud_update_camera(NULL, &camera, XUD_CAMERA_MODE_FREE) == XUD_INVALID_ARG, "gpu-camera/update-no-context",
         "an update with no context is refused");
     xud_check(xud_update_camera(context, NULL, XUD_CAMERA_MODE_FREE) == XUD_INVALID_ARG, "gpu-camera/update-no-camera",

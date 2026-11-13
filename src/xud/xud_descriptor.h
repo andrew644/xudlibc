@@ -193,18 +193,34 @@ static_assert(XUD_DESCRIPTOR_POOL_SIZE_COUNT == XUD_DESCRIPTOR_SET_COUNT,
  *   identical. That is why every member below is a float array or a scalar and not a vec3.
  *-----------------------------------------------------------------------------------------------*/
 
-/* set 0's one uniform buffer: the per-frame block of the design sketch - VP matrix, camera pos, t
- *  ime, fog, ambient, light count. Only viewProj is LIVE today: xud_descriptor_open() zeroes the
- *  whole block, xud_descriptor_fill_uniform_block() puts the identity in viewProj and the camera
- *  rung (xud_camera.h/.c, S28) overwrites it every frame with xud_descriptor_set_view_proj(), and
- *  solid.vert reads nothing else out of the block - cameraPos, time, fog, ambient and lightCount
- *  are the sketch's placeholders, zero forever until the step that wants one lands. The sketch's
- *  block also names a fixed-size light ARRAY, and the light element type (position, colour, inten
- *  sity, direction, type) is the light step's decision, not one this rung can make without invent
- *  ing that subsystem; XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE is the one place that decision has to
- *  grow, and growing it is a recreate at init, which is legal - it is the runtime recreate the sam
- *  e rule forbids that is at issue.
+/* set 0's one uniform buffer: the per-frame block - VP matrix, camera pos, time, fog, ambient
+ *  and the light table. The table is XUD_MAX_LIGHTS rows of XudLightRow, the light rung's
+ *  (xud_light.h/.c) row element: position, cone axis, colour-and-intensity and range-and-cone
+ *  are the four vec4 a sun, a point and a spot all fill, so ONE element serves the three kinds
+ *  and the shader reads a flat array rather than three parallel ones. The rung WRITES them
+ *  through xud_descriptor_set_lights() - the public xud_set_lights() is what calls it - and
+ *  xud_descriptor_open() zeroes the whole block, xud_descriptor_fill_uniform_block() puts the
+ *  identity in viewProj, and the camera rung (xud_camera.h/.c, S28) overwrites that every
+ *  frame. cameraPos, time and fog are the sketch's remaining placeholders, zero forever until
+ *  the step that wants one lands - the fragment stage reads ambient and the table, not them.
+ *  The row is spelled with float arrays for the same reason every other member below is: a
+ *  std140 struct and a C struct agree byte-for-byte only when both spell their own padding.
  */
+/* One light's bytes: the table element the light rung builds and the fragment stage reads. The
+ *  meaning of each member is the KIND's - params.w carries the kind (xud.h's XUD_LIGHT_KIND_*)
+ *  and the other three floats say which of the members above mean attenuation and which mean a
+ *  cone. A SUN has no position to light from (it is at infinity), so its position member holds
+ *  the direction TOWARD the light, the one vector a sun does have.
+*/
+typedef struct {
+    float position[4]; /* 16 B - the light's world position; a SUN stores its unit direction-THERE instead, w = 0 */
+    float target[4]; /* 16 B - a SPOT's cone axis pointing AWAY from the light, w = 0; zero for the other kinds */
+    float color[4]; /* 16 B - rgb 0..1 and w = the intensity the rgb is scaled by before the shade is summed */
+    float params[4]; /* 16 B - x range (0 = no distance falloff), y inner cone cosine, z outer cone cosine, w kind */
+} XudLightRow; /* 64 B: std140 aligns a struct to its strictest member (16) and rounds its size up to that, so the array stride is the same 64 both sides agree on */
+
+static_assert(sizeof(XudLightRow) == 64u, "the light table's row is the 64 B the GLSL struct's std140 layout answers, on both sides");
+
 typedef struct XudFrameUniformRow {
     float viewProj[16]; /* 64 B - the VP matrix, column-major, the same 64 B the push row carries */
     float cameraPos[3]; /* 12 B - the camera position, the sketch's fog input, zero today: no shader reads it */
@@ -213,6 +229,9 @@ typedef struct XudFrameUniformRow {
     float ambient[4]; /* 16 B - rgb + intensity */
     uint32_t lightCount; /* 4 B - how many of the light array the light step will fill are live */
     uint32_t reserved; /* 4 B - keeps the block a multiple of 4 with no hole anywhere */
+    float lightPad
+        [2]; /* 8 B - std140 aligns a struct array to 16 and a C struct member lands wherever the scalars end: the pad IS the difference, written once so both sides put the table at 128 */
+    XudLightRow lights[XUD_MAX_LIGHTS]; /* 512 B - the table; row i is live when i < lightCount */
 } XudFrameUniformRow;
 
 /* The push-constant range of the design sketch: the model matrix + material index + texture index
@@ -229,7 +248,7 @@ typedef struct XudPushRow {
 } XudPushRow;
 
 #define XUD_DESCRIPTOR_PUSH_SIZE 96u /* sizeof(XudPushRow), asserted below */
-#define XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE 120u /* sizeof(XudFrameUniformRow), asserted below */
+#define XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE 640u /* sizeof(XudFrameUniformRow) = 120 + the 8 B pad + 8 rows of 64 B, asserted below */
 
 static_assert(sizeof(XudFrameUniformRow) == XUD_DESCRIPTOR_UNIFORM_BLOCK_SIZE,
     "the per-frame block's C layout is the size this layer states, so the buffer's size and the GLSL block's bytes are one number and not "
@@ -740,6 +759,23 @@ XudResult xud_descriptor_fill_uniform_block(XudDescriptor* descriptor);
 /// upward. XUD_INVALID_ARG on a NULL descriptor or a NULL matrix; the copy is element for element,
 /// so a matrix that aliases the block's own member is a copy rather than an overwrite.
 XudResult xud_descriptor_set_view_proj(XudDescriptor* descriptor, const float* viewProj);
+
+/// Pure: set 0's block ambient row - rgb and intensity, the four floats the fragment stage adds to
+/// the lights' sum. The setter exists for the same reason viewProj's does: the ambient's MEANING is
+/// the light rung's (xud_light.h) and the block's BYTES are this rung's, so the rung above hands
+/// four floats down rather than reaching into the field. XUD_INVALID_ARG on a NULL descriptor or a
+/// NULL rgba; the copy is element for element, so a row that aliases the block's own member is a
+/// copy rather than an overwrite.
+XudResult xud_descriptor_set_ambient(XudDescriptor* descriptor, const float* rgba);
+
+/// Pure: the block's whole light table and its live count, written together because they are one
+/// statement - a count that reaches past the rows just written would have the shader read stale
+/// bytes, and a table written under an old count has the shader skip fresh rows. Rows live in order:
+/// row i is read when i < count, and rows from count to XUD_MAX_LIGHTS keep whatever the last call
+/// left in them - the shader never looks at them, and the light rung hands a freshly built array
+/// every time rather than a patched one. XUD_INVALID_ARG on a NULL descriptor, a NULL rows when the
+/// count is non-zero, or a count past XUD_MAX_LIGHTS - the count that would read past the table.
+XudResult xud_descriptor_set_lights(XudDescriptor* descriptor, uint32_t count, const XudLightRow* rows);
 
 /// Pure: the memory-type mask a staging arena needs - the AND of every caps memoryTypes row that
 /// carries VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT, so a buffer bound to a type in this mask is a buffe

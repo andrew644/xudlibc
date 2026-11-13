@@ -55,6 +55,11 @@ layout(location = 3) in vec3 inNormal;
 layout(location = 0) out vec2 outUv;
 layout(location = 1) out vec4 outColor;
 layout(location = 2) out vec3 outNormal;
+/* The fragment stage's point and spot lights shade by DISTANCE, and a distance needs the
+   fragment's world position: the draw's model matrix applied to the vertex, the same space the
+   light table's positions live in. Unused by the textured and UI fragment stages, which discard
+   it. */
+layout(location = 3) out vec3 outWorldPos;
 
 void main(void)
 {
@@ -76,4 +81,5 @@ void main(void)
     outUv = inUv;
     outColor = inColor;
     outNormal = (xudPush.modelMatrix * vec4(inNormal, 0.0f)).xyz;
+    outWorldPos = localPos.xyz;
 }

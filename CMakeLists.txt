@@ -175,6 +175,7 @@ add_library(xud STATIC
     src/xud/xud_core.c
     src/xud/xud_diagnostics.c
     src/xud/xud_loader.c
+    src/xud/xud_light.c
     src/xud/xud_vulkan.c
     src/xud/xud_instance.c
     src/xud/xud_physical.c
@@ -246,6 +247,7 @@ add_executable(xud_test
     tests/xud_test_batch.c
     tests/xud_test_shapes.c
     tests/xud_test_camera.c
+    tests/xud_test_light.c
     tests/xud_test_collision.c
     tests/xud_test_matrix.c
     tests/xud_test_material.c
@@ -377,6 +379,12 @@ add_executable(models_waving_cubes
 )
 
 target_link_libraries(models_waving_cubes PRIVATE xud)
+
+add_executable(models_lighting
+    examples/models_lighting.c
+)
+
+target_link_libraries(models_lighting PRIVATE xud)
 
 add_executable(models_yaw_pitch_roll
     examples/models_yaw_pitch_roll.c

@@ -3,11 +3,14 @@
 /* solid_textured.frag - the textured column of the pipeline list's variant axis, the third column
    of the same axis the opaque and transparent columns are the first two of.
 
-   It differs from solid.frag in exactly two things, and both are why a second fragment module
-   exists at all: it reads set 1, and it multiplies the interpolated colour by the sampled texel
-   instead of by a fixed light's Lambert term. The vertex stage, the attribute locations, the set-0
-   block and the push row are shared unchanged - which is what lets the whole list stay ONE
-   pipeline layout and every vkCmdBindDescriptorSets name one layout.
+   It differs from solid.frag in three things, and each is why a second fragment module exists
+   at all: it reads set 1, it multiplies the interpolated colour by the sampled texel, and it
+   takes NO light. Glyph atlases, UI atlases and model maps are authored as the final colour - a
+   glyph that darkens when it turns away from a lamp is a bug report, not a lighting effect - so
+   this stage shades by nothing and the shade sum, the kinds and the ambient of solid.frag all
+   stay over there. The vertex stage, the attribute locations and the push row are shared
+   unchanged - which is what lets the whole list stay ONE pipeline layout and every
+   vkCmdBindDescriptorSets name one layout.
 
    The tint is the interpolated vertex colour rather than a member of the push row: the push row
    XudPushRow has no colour in it (mat4 + four uints, the C layout of XudPushRow in xud_descriptor.h

@@ -892,6 +892,45 @@ XudResult xud_descriptor_set_view_proj(XudDescriptor* descriptor, const float* v
     return XUD_OK;
 }
 
+XudResult xud_descriptor_set_ambient(XudDescriptor* descriptor, const float* rgba) {
+    uint32_t index = 0u;
+
+    if ((descriptor == NULL) || (rgba == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    for (index = 0u; index < (uint32_t)(sizeof(descriptor->uniformBlock.ambient) / sizeof(descriptor->uniformBlock.ambient[0])); index++) {
+        descriptor->uniformBlock.ambient[index] = rgba[index];
+    }
+
+    return XUD_OK;
+}
+
+XudResult xud_descriptor_set_lights(XudDescriptor* descriptor, uint32_t count, const XudLightRow* rows) {
+    uint32_t index = 0u;
+
+    if ((descriptor == NULL) || ((rows == NULL) && (count != 0u))) {
+        return XUD_INVALID_ARG;
+    }
+    if (count > XUD_MAX_LIGHTS) {
+        return XUD_INVALID_ARG;
+    }
+
+    /* Row for row by struct assignment rather than one memcpy over the table: the rows are members
+       of a block whose other members this rung does not touch, and a byte-count-and-offset copy
+       would be a layout assumption rather than a field access - the same rule set_view_proj's note
+       states for the matrix. The count is written LAST: a block a concurrent reader could catch
+       (there is none today, the frame loop is single-threaded) sees a count that never names a row
+       the rows above did not already fill.
+    */
+    for (index = 0u; index < count; index++) {
+        descriptor->uniformBlock.lights[index] = rows[index];
+    }
+    descriptor->uniformBlock.lightCount = count;
+
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The staging arena of set 0's block - the pure half: its create-info, its memory rule and the
  * upload's one region

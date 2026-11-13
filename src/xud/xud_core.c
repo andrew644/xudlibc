@@ -48,6 +48,7 @@
 #include "xud_handle.h"
 #include "xud_input.h"
 #include "xud_instance.h"
+#include "xud_light.h" /* Required for: xud_light_reset, the seeding of the default light table and floor right after the renderer opened */
 #include "xud_loader.h"
 #include "xud_material.h" /* Required for: xud_material_close_all, the teardown rung xud_close_context() runs above the handle table it closes */
 #include "xud_mesh.h" /* Required for: xud_mesh_close_all, the MESH kind's half of the same teardown rung - and the reason a second kind's name appears here is that a mesh record, unlike a material's, owns driver objects */
@@ -439,6 +440,16 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
      */
     result = xud_renderer_open(&context->renderer, context->loader, context->device, context->physicalDevice->physicalDevice,
         &context->physicalDevice->caps, context->descriptor, context->allocator, context->swapchain, context->layout);
+    if (result != XUD_OK)
+        goto fail;
+
+    /* The light table and the ambient floor, seeded here and nowhere else: the descriptor's block
+       exists - the renderer above just opened - and a context that comes back XUD_OK must already
+       shade with the default sun and floor, because the fragment stage keeps no compile-in light
+       to fall back to now that the table is the only light there is. Pure host state over a
+       memcpy: the only answers are XUD_OK and the NULL-field refusals bring-up cannot hit.
+    */
+    result = xud_light_reset(context);
     if (result != XUD_OK)
         goto fail;
 
@@ -1078,7 +1089,15 @@ XudResult xud_end_camera_3d(XudContext* context) {
         return XUD_ALREADY;
     }
 
+    /* The scope closes, but the frame it closed inside may not have flushed yet: the draws recorded
+       under this camera reach the shader at the end_drawing boundary, one step after here, and they
+       mean this camera. The latch is that step - the draw entry consumes it once (xud_renderer.h),
+       so the close makes the pending flush project correctly and still leaves no camera for the
+       frame after it.
+    */
     context->renderer->cameraWanted = 0u;
+    context->renderer->cameraLatched = 1u;
+    context->renderer->cameraLatchDraw = context->renderer->drawCount;
 
     return XUD_OK;
 }

@@ -251,6 +251,19 @@ struct XudContext {
      */
     XudDescriptor* descriptor; /* the layouts, the pool, set 0 and the uniform buffer inside it  */
 
+    /* The light table and the ambient floor: context state, held INLINE - no rung object, no allo
+       cation, no teardown row - because the only bytes that outlive a call are the descriptor's b
+       lock and those are republished whole by xud_light.c on every change. xud_init_context() see
+       ds them with xud_light_reset() right after the renderer opened (the publish needs the block
+       to exist), and from there the table is whatever the last xud_set_lights() replaced it with.
+       The meaning of the fields - which of them each kind reads - is xud_light.h's and xud.h's; t
+       he struct just keeps them beside the owner.
+     */
+    XudLight lights[XUD_MAX_LIGHTS]; /* the table the last xud_set_lights() replaced whole */
+    uint32_t lightCount; /* how many rows are live; 0 is a legal table */
+    XudColor ambientColor; /* the floor's rgb; the alpha byte is not read */
+    float ambientIntensity; /* the floor's scalar */
+
     /* Owned from the first play rather than from bring-up: this is the one rung of this struct tha
        t xud_init_context() leaves NULL on a context that comes back XUD_OK, and the reason is in t
        he rung's own header note - an audio device is a driver resource, and a context that only ev
