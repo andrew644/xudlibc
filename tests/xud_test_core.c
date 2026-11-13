@@ -281,9 +281,9 @@ static void xud_test_gpu_context(void) {
 
     xud_check(context->device != NULL, "context/owns-device", "and a VkDevice");
     xud_check(context->device->device != VK_NULL_HANDLE, "context/device-live", "whose handle is live");
-    xud_check(context->device->queueRow.queueFamilyIndex == context->physicalDevice->caps.queueFamilyIndex,
+    xud_check(context->device->queueRows[0].queueFamilyIndex == context->physicalDevice->caps.queueFamilyIndex,
         "context/device-row-is-the-chosen-family", "the device was created for the family the physical layer chose, not another one");
-    xud_check(context->device->queueRow.pQueuePriorities == context->device->queuePriorities, "context/priorities-live",
+    xud_check(context->device->queueRows[0].pQueuePriorities == context->device->queuePriorities, "context/priorities-live",
         "the row's pointer points into the owning struct, which is what keeps it valid past the "
         "call");
     xud_check(context->device->graphicsQueue.queue != VK_NULL_HANDLE, "context/graphics-queue-resolved", "the graphics role resolved");

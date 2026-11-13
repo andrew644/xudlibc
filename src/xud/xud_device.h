@@ -72,19 +72,24 @@
    thing frees one of these, and nothing may hold one past xud_device_close(). */
 
 /*-----------------------------------------------------------------------------------------------
- * The queue row: one family, the two roles the frame loop needs
+ * The queue rows: the graphics family, an optional dedicated transfer family, and the three
+ * roles that submit to them
  *-----------------------------------------------------------------------------------------------*/
 
-/* The two roles the frame loop submits to. These are **not** Vulkan queue flags: VK_QUEUE_PRESE
+/* The three roles this layer submits to. These are **not** Vulkan queue flags: VK_QUEUE_PRESE
    NT_BIT does not exist in these headers (xud_physical.h's grep across the whole vulkan include
    tree: zero hits), so "which queue do I present on" is this layer's decision and not a questio
    n the driver answers. The family itself was chosen by the physical layer on the graphics bit
-   plus GLFW's presentation check at S7. */
+   plus GLFW's presentation check at S7. The transfer role is the staging upload's queue - textu
+   res copy on it so a load cannot queue behind the frames still drawing; xud_physical_select_tr
+   ansfer_queue_family picks a dedicated family when the driver rowed one and falls back to the
+   graphics family when it did not. */
 typedef enum XudQueueRole {
     XUD_QUEUE_ROLE_GRAPHICS = 0, /* the queue draws are submitted to   */
-    XUD_QUEUE_ROLE_PRESENT = 1 /* the queue presents are submitted to */
+    XUD_QUEUE_ROLE_PRESENT = 1, /* the queue presents are submitted to  */
+    XUD_QUEUE_ROLE_TRANSFER = 2 /* the staging uploads are submitted to */
 } XudQueueRole;
-#define XUD_DEVICE_QUEUE_ROLE_COUNT 2u
+#define XUD_DEVICE_QUEUE_ROLE_COUNT 3u
 
 /* The ceiling on the queues this layer asks the chosen family for: the row asks for
    min(family.queueCount, this). A driver must give every queue family at least one queue, so a
@@ -93,6 +98,13 @@ typedef enum XudQueueRole {
    back the same handle for both roles). Asking for more than the roles need would be a request
    nothing above this layer can use. */
 #define XUD_DEVICE_QUEUE_MAX_COUNT 2u
+
+/* The ceiling on the family rows vkCreateDevice may be handed: row 0 is always the graphics fa
+   mily (both roles that draw and present live there), and row 1 exists only when the transfer f
+   amily the physical layer chose is a DIFFERENT family - a second row for the same family is th
+   e exact shape the validation layer calls out ("pCreateInfo->pQueueCreateInfos[1] uses the same
+   queueFamilyIndex"), so the count is 1 or 2 and never more. */
+#define XUD_DEVICE_QUEUE_ROW_MAX_COUNT 2u
 
 /* vkDeviceQueueCreateInfo's pQueuePriorities values must be inside [0,1], higher wins. The defau
    lt is Vulkan's own default (1.0f): neutral, so a driver is free to reorder the two queues if it
@@ -129,6 +141,8 @@ static_assert(
     VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO != 0u, "a stamp of zero is the unstamped state, and neither struct may ever be stamped zero");
 
 static_assert(XUD_DEVICE_QUEUE_MAX_COUNT >= 1u, "a device with no queue row is not a device this layer can create");
+static_assert(XUD_DEVICE_QUEUE_ROW_MAX_COUNT >= XUD_DEVICE_QUEUE_ROLE_COUNT - 1u,
+    "every role but the present twin of graphics must find its family in a row this layer can ask for");
 static_assert(XUD_DEVICE_MAX_DEVICE_EXTENSIONS >= 1u, "the extension storage must hold at least one name");
 
 /*-----------------------------------------------------------------------------------------------
@@ -153,15 +167,25 @@ typedef struct XudDevice XudDevice;
 struct XudDevice {
     VkDevice device; /* VK_NULL_HANDLE until xud_device_open() creates it, and destroyed by
                         xud_device_close() - this is the one Vulkan object the layer owns */
-    VkDeviceQueueCreateInfo queueRow; /* the one row vkCreateDevice was handed, kept as this layer's own record of what
-                                         it asked for: the accessor below checks a queue request against this row, and
-                                         the physical layer's caps are queried once, so nothing above re-queries the
-                                         families */
-    float queuePriorities[XUD_DEVICE_QUEUE_MAX_COUNT]; /* what queueRow.pQueuePriorities points at -
+    VkDeviceQueueCreateInfo queueRows[XUD_DEVICE_QUEUE_ROW_MAX_COUNT]; /* the rows vkCreateDevice was handed, kept as this
+                                                                          layer's own record of what it asked for: row 0
+                                                                          is the graphics family, row 1 the dedicated
+                                                                          transfer family - and pQueueCreateInfos points
+                                                                          AT THIS ARRAY, so the two rows must be adjacent
+                                                                          here and not two fields. The accessor below
+                                                                          checks a queue request against its row, and the
+                                                                          physical layer's caps are queried once, so
+                                                                          nothing above re-queries the families */
+    uint32_t queueRowCount; /* 1u when the transfer family IS the graphics family (one row, the fallback shape), 2u when
+                               the driver rowed a dedicated one; never a third shape */
+    float queuePriorities[XUD_DEVICE_QUEUE_MAX_COUNT]; /* what queueRows[0].pQueuePriorities points at -
                                                           the row's pointer must stay valid as long
                                                           as the record is read, which is why the
                                                           array lives beside it in the same heap
                                                           block rather than on a frame that ends */
+    float transferQueuePriorities[XUD_DEVICE_QUEUE_MAX_COUNT]; /* what queueRows[1].pQueuePriorities points at when row 1
+                                                                  is asked for; unused - but never dangling, since it is
+                                                                  struct storage - when the transfer role shares row 0 */
     VkPhysicalDeviceFeatures enabledFeatures; /* what was enabled: the physical layer's wanted-intersection, copied here
                                                  so the record says what the device was created with, not what the caps
                                                  say the driver can do */
@@ -172,15 +196,17 @@ struct XudDevice {
     XudQueue graphicsQueue; /* the XUD_QUEUE_ROLE_GRAPHICS queue, resolved once at open */
     XudQueue presentQueue; /* the XUD_QUEUE_ROLE_PRESENT queue, resolved once at open - the same
                               handle when the family rowed one queue */
+    XudQueue transferQueue; /* the XUD_QUEUE_ROLE_TRANSFER queue, resolved once at open - the graphics queue's own
+                               handle when the transfer family is the graphics family */
 };
 
 /*-----------------------------------------------------------------------------------------------
  * The layer's contract
  *-----------------------------------------------------------------------------------------------*/
 
-/// Pure: the one VkDeviceQueueCreateInfo (the plan's "one VkQueueCreateInfo" - these headers name
-/// the struct VkDeviceQueueCreateInfo and stamp it VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO)
-/// the device will be created with, from the physical layer's chosen family. The row is stamped
+/// Pure: the graphics row - VkDeviceQueueCreateInfo row 0 of the two these headers name
+/// VkDeviceQueueCreateInfo and stamp VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO - the device
+/// will be created with, from the physical layer's chosen graphics family. The row is stamped
 /// and its pNext cleared before it is ever handed to the driver, the same rule xud_physical.c fo
 /// llows for every *2 wrapper it stamps: the validation layer refuses an unstamped row (probed 20
 /// 26-10-18: "pCreateInfo->pQueueCreateInfos[0].sType must be VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREAT
@@ -197,6 +223,15 @@ struct XudDevice {
 /// queue in it is not a family this layer can ask for - the physical layer's rule already insists a
 /// chosen row has at least one).
 XudResult xud_device_fill_queue_create_info(VkDeviceQueueCreateInfo* outQueueRow, const float* priorities, const XudDeviceCaps* caps);
+
+/// Pure: the transfer row - the same shape read off caps.transferQueueFamilyIndex and the
+/// transfer family's recorded row instead of the graphics one. Filled whenever the caps name a
+/// transfer family; whether it JOINS the create-info is the caller's row-count decision, because
+/// a second row naming the SAME family as row 0 is the shape the validation layer refuses. The
+/// same stamp/NULL/priorities/cap rules as the graphics row apply, against the transfer row's
+/// own fields.
+XudResult xud_device_fill_transfer_queue_create_info(
+    VkDeviceQueueCreateInfo* outQueueRow, const float* priorities, const XudDeviceCaps* caps);
 
 /// Pure: which of the driver's advertised device-level extensions this layer enables - the ones
 /// xudlibc wants that the caps actually advertise, in wanted order (the wanted list itself lives
@@ -217,23 +252,26 @@ XudResult xud_device_select_extensions(XudDevice* outDevice, const VkExtensionPr
 /// Pure: the VkDeviceCreateInfo the device will be created with, assembled from the device's own
 /// record - stamped, pNext NULL (this layer chains nothing into the device's pNext: the caps' thre
 /// e *2 chains came back empty on this driver, probed 2026-10-18, so there is nothing to carry and
-/// a driver that chained a struct xud_physical.c could not model was refused at the caps there), on
-/// e queue row (queueCreateInfoCount 1, pQueueCreateInfos -> the device's own queueRow), the extens
-/// ion names through `nameSlots` (a caller-provided array of XUD_DEVICE_MAX_DEVICE_EXTENSIONS
+/// a driver that chained a struct xud_physical.c could not model was refused at the caps there), one
+/// or two queue rows (queueCreateInfoCount is the device's own queueRowCount - 1 when the transfer
+/// family shares the graphics family, 2 when the driver rowed a dedicated one - and pQueueCreateInfos
+/// points at the device's own queueRows array, which is why the rows are an array and not two fields),
+/// the extension names through `nameSlots` (a caller-provided array of XUD_DEVICE_MAX_DEVICE_EXTENSIONS
 /// slots, filled from the device's storage and always fully NULLed past the live count so a stale
 /// pointer cannot survive - the instance layer's shape), and pEnabledFeatures -> the device's own
-/// enabledFea tures. enabledLayerCount/ppEnabledLayerNames are set to 0/NULL because these headers
+/// enabledFeatures. enabledLayerCount/ppEnabledLayerNames are set to 0/NULL because these headers
 /// say they are legacy and not used (the comment above both fields in vulkan_core.h:3747/:3749
 /// reads "legacy and not used" from Vulkan-Headers 1.4.363 here) - the layers this library enables
 /// are instance-level and are the diagnostics layer's answer, carried on VkInstanceCreateInfo,
 /// never here. XUD_INVALID_ARG on a NULL out-create-info or NULL nameSlots; on a device whose
-/// queueRow is not a t the state this layer's own fill helper produces (unstamped, or a
-/// pQueuePriorities that does not point at the struct's own priorities array - a row whose pointer
-/// points at a frame that ended is exactly the bug this struct layout exists to prevent).
+/// queue rows are not in the state this layer's own fill helpers produce (unstamped, a queueRowCount
+/// outside 1..2, a row named by the count that does not point at the struct's own priorities arrays -
+/// a row whose pointer points at a frame that ended is exactly the bug this struct layout exists to
+/// prevent).
 XudResult xud_device_fill_create_info(
     VkDeviceCreateInfo* outCreateInfo, const char* nameSlots[XUD_DEVICE_MAX_DEVICE_EXTENSIONS], const XudDevice* device);
 
-/// Pure: the queue a caller above this layer submits to, for one of the two roles - a lookup into
+/// Pure: the queue a caller above this layer submits to, for one of the three roles - a lookup into
 /// what xud_device_open() resolved, no driver call, so the headless run covers it. The answer is th
 /// e handle plus the coordinates it was resolved at, so the caller can see which queue of which
 /// fami ly it holds. With one queue in the row both roles answer the same handle and the same
@@ -241,9 +279,10 @@ XudResult xud_device_fill_create_info(
 /// hands back the same handle for both roles - presenting on the graphics queue is legal,
 /// presentation is not a queu e flag, see xud_physical.h). XUD_INVALID_ARG on a NULL out-record or
 /// NULL device; on a device with no handle (VK_NULL_HANDLE - there is no queue to hand back for a
-/// device that does not exist); on a role at or above XUD_DEVICE_QUEUE_ROLE_COUNT (the enum has two
+/// device that does not exist); on a role at or above XUD_DEVICE_QUEUE_ROLE_COUNT (the enum has three
 /// values and a caller can still pass 7, and the two validation-layer VUIDs above are what a wrong
-/// pair would trip, so the pair is check ed here before it is ever asked).
+/// pair would trip, so the pair is check ed here before it is ever asked). The transfer role's queue
+/// is the graphics queue's handle itself when the driver rowed no dedicated transfer family.
 XudResult xud_device_queue_get(XudQueue* outQueue, const XudDevice* device, XudQueueRole role);
 
 /// Driver: bring the device layer up - bind the four slots this layer calls through the live
@@ -254,8 +293,10 @@ XudResult xud_device_queue_get(XudQueue* outQueue, const XudDevice* device, XudQ
 /// device **from physical->physicalDevice** (PFN_ vkCreateDevice takes four arguments in these
 /// headers - the physical handle, the create-info, the all locator, the out handle - so the device
 /// is created from the handle the layer below chose, which is th e link between the two layers),
-/// then resolve the two role queues with vkGetDeviceQueue through the row' s own family index and
-/// index. vkGetDeviceQueue returns **void** in these headers (:4547), so there is n o VkResult for
+/// then resolve the three role queues with vkGetDeviceQueue - graphics and present from row 0's own
+/// family, transfer from row 1's when the driver rowed a dedicated family and from row 0's when the
+/// caps say the transfer family IS the graphics family. vkGetDeviceQueue returns **void** in these
+/// headers (:4547), so there is n o VkResult for
 /// xud_result_from_vk to map for it: the out handle is VK_NULL_HANDLE before the call and a handle
 /// that is still VK_NULL_HANDLE after it is refused (XUD_VULKAN_ERROR - the driver claimed success
 /// b y doing nothing), the same zero-state-before/check-after discipline xud_physical.h states for

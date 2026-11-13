@@ -332,6 +332,52 @@ XudResult xud_physical_select_queue_family(
     return XUD_UNSUPPORTED;
 }
 
+/// See xud_physical.h for the contract. Dedicated TRANSFER family first (the copy engine, if the
+/// driver rowed one), graphics family as the fallback - VK_QUEUE_GRAPHICS_BIT families always co
+/// py too, a graphics queue subsumes transfer, so the fallback never names a family that cannot
+/// do the copies.
+XudResult xud_physical_select_transfer_queue_family(uint32_t* outIndex, VkQueueFamilyProperties2* outChosen,
+    const VkQueueFamilyProperties2* families, uint32_t familyCount, uint32_t graphicsFamilyIndex) {
+    uint32_t i;
+
+    if ((outIndex == NULL) || (outChosen == NULL))
+        return XUD_INVALID_ARG;
+    if ((families == NULL) && (familyCount != 0u))
+        return XUD_INVALID_ARG;
+
+    if (familyCount == 0u) {
+        *outIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
+        memset(outChosen, 0, sizeof(*outChosen));
+        return XUD_UNSUPPORTED;
+    }
+    if ((graphicsFamilyIndex == XUD_PHYSICAL_NO_QUEUE_FAMILY) || (graphicsFamilyIndex >= familyCount))
+        return XUD_INVALID_ARG; /* the exclusion and the fallback are both this array's rows; one
+                                   the array cannot answer for is a caller holding on, not a driver */
+
+    for (i = 0u; i < familyCount; i++) {
+        if (i == graphicsFamilyIndex)
+            continue;
+        if ((families[i].queueFamilyProperties.queueFlags & VK_QUEUE_TRANSFER_BIT) != VK_QUEUE_TRANSFER_BIT)
+            continue;
+
+        *outIndex = i;
+        *outChosen = families[i];
+        outChosen->sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+        outChosen->pNext = NULL;
+
+        return XUD_OK;
+    }
+
+    /* No dedicated family: the graphics family itself, row copied the same stamped way so the
+       caps own both rows the same way. */
+    *outIndex = graphicsFamilyIndex;
+    *outChosen = families[graphicsFamilyIndex];
+    outChosen->sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+    outChosen->pNext = NULL;
+
+    return XUD_OK;
+}
+
 /*-----------------------------------------------------------------------------------------------
  * The apiVersion read-back
  *-----------------------------------------------------------------------------------------------*/
@@ -572,6 +618,7 @@ XudResult xud_physical_open(XudPhysicalDevice** outPhysicalDevice, XudLoader* lo
     uint32_t extensionCapacity = 0u;
     uint32_t chosenIndex = 0u;
     uint32_t familyIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
+    uint32_t transferIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
     uint32_t candidate = 0u;
 
     if ((outPhysicalDevice == NULL) || (*outPhysicalDevice != NULL) || (loader == NULL) || (instance == VK_NULL_HANDLE))
@@ -585,10 +632,12 @@ XudResult xud_physical_open(XudPhysicalDevice** outPhysicalDevice, XudLoader* lo
     caps = &physicalDevice->caps;
 
     /* The zero state the void getters need: the handle is NULL until the driver answers, and t
-       he queue-family slot is the sentinel xud_physical.h states, so a caps that got no family s
-       ays "no family" instead of "family zero, all zeroes". */
+       he queue-family slots are the sentinel xud_physical.h states, so a caps that got no family
+       says "no family" instead of "family zero, all zeroes" - both of them, graphics and transf
+       er. */
     physicalDevice->physicalDevice = VK_NULL_HANDLE;
     caps->queueFamilyIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
+    caps->transferQueueFamilyIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
 
     /* The rows this layer calls through belong to the instance-level table the instance layer
        filled in bulk (xud_loader_bind_instance, immediately after vkCreateInstance answered): t
@@ -688,10 +737,17 @@ XudResult xud_physical_open(XudPhysicalDevice** outPhysicalDevice, XudLoader* lo
         goto fail; /* XUD_UNSUPPORTED: no family here carries the graphics bit; the sentinel and a
                       zeroed row are already in the caps, and this struct is about to be freed */
 
+    result = xud_physical_select_transfer_queue_family(
+        &transferIndex, &caps->chosenTransferQueueFamilyProperties, families, familyCount, familyIndex);
+    if (result != XUD_OK)
+        goto fail; /* only the no-family-at-all shape refuses here, and the graphics selection
+                      above already refused that shape; this arm is a driver-answer disagreement */
+
     caps->queueFamilyCount = familyCount;
     caps->queueFamilyIndex = familyIndex;
+    caps->transferQueueFamilyIndex = transferIndex;
     free(families);
-    families = NULL; /* the rows were a query result; the chosen one was copied into the caps */
+    families = NULL; /* the rows were a query result; the chosen ones were copied into the caps */
 
     result = xud_physical_record_api_version(caps);
     if (result != XUD_OK)

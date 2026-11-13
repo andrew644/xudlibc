@@ -905,7 +905,7 @@ XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoade
     */
     {
         VkCommandPoolCreateInfo poolInfo = { .sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, .pNext = NULL };
-        if (xud_frame_fill_pool_info(&poolInfo, device->queueRow.queueFamilyIndex) != XUD_OK) {
+        if (xud_frame_fill_pool_info(&poolInfo, device->transferQueue.queueFamilyIndex) != XUD_OK) {
             result = XUD_UNSUPPORTED;
             goto fail;
         }
@@ -1034,9 +1034,14 @@ XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoade
         }
     }
 
-    /* The submit, on the graphics queue, with the upload buffer as its only command buffer and the
+    /* The submit, on the TRANSFER queue, with the upload buffer as its only command buffer and the
        fence as its own: no wait semaphore, because this upload is not a frame and has no acquire to
-       be gated behind.
+       be gated behind. The copy engine is the point - a texture load submitted here does not queue
+       behind the frames the graphics queue is still drawing, which is the freeze this rung used to
+       cause. The cross-queue boundary is the fence below: this rung waits it before handing the te
+       xture out, so every graphics submission that will ever sample the image is recorded after th
+       e copies completed - the external synchronization the exclusive-mode image needs between the
+       two families, taken one fence early rather than with an ownership barrier.
     */
     {
         VkSubmitInfo submitInfo = { .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = NULL };
@@ -1047,7 +1052,7 @@ XudResult xud_texture_open(XudHandle* outHandle, XudHandleTable* table, XudLoade
         submitInfo.pCommandBuffers = &uploadBuffer;
         submitInfo.signalSemaphoreCount = 0u;
         submitInfo.pSignalSemaphores = NULL;
-        vk = loader->deviceTable.vkQueueSubmit(device->graphicsQueue.queue, 1u, &submitInfo, uploadFence);
+        vk = loader->deviceTable.vkQueueSubmit(device->transferQueue.queue, 1u, &submitInfo, uploadFence);
         result = xud_result_from_vk(vk);
         if (result != XUD_OK) {
             goto fail;

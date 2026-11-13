@@ -163,6 +163,17 @@ typedef struct XudDeviceCaps {
                                                              (S6's VkQueueCreateInfo input), timestampValidBits,
                                                              minImageTransferGranularity - queried once, S6 and S7 must
                                                              not re-query */
+    uint32_t transferQueueFamilyIndex; /* the family the staging uploads copy on, chosen by
+                                          xud_physical_select_transfer_queue_family after the graphics
+                                          family: a dedicated TRANSFER family when the driver rowed
+                                          one, the graphics family's own index when it did not - the
+                                          fallback is not a compromise, a graphics queue subsumes
+                                          transfer. XUD_PHYSICAL_NO_QUEUE_FAMILY until chosen */
+    VkQueueFamilyProperties2 chosenTransferQueueFamilyProperties; /* the transfer family's row, copied the
+                                                                     same way the graphics row above was:
+                                                                     queried once, read by xud_device.c
+                                                                     to fill its second row, never
+                                                                     re-queried */
 } XudDeviceCaps;
 
 typedef struct XudPhysicalDevice {
@@ -229,9 +240,9 @@ XudResult xud_physical_select(
 /// XUD_INVALID_ARG on a NULL out-struct or NULL caps.
 XudResult xud_physical_record_features(VkPhysicalDeviceFeatures* outEnabledFeatures, const XudDeviceCaps* caps);
 
-/// Pure: choose the one queue family the rest of the library will use - AGENTS.md's one-family
-/// rule, so the answer is recorded in the caps and S6/S7 never query again. The rule is a family
-/// whose queueFlags carry VK_QUEUE_GRAPHICS_BIT; the first such family in driver order wins.
+/// Pure: choose the queue family the draws go through - the family S6 rows first and S7 presents
+/// on; the answer is recorded in the caps and S6/S7 never query again. The rule is a family whose
+/// queueFlags carry VK_QUEUE_GRAPHICS_BIT; the first such family in driver order wins.
 /// VK_QUEUE_PRESENT_BIT does not exist in these headers (grepped across the whole vulkan include
 /// tree: zero hits) - presentation is not a queue flag, it is a per-window-system query (vkGet
 /// PhysicalDeviceWaylandPresentationSupportKHR, Xcb, Xlib, Win32, DirectFB, UBM, Screen: the
@@ -249,6 +260,21 @@ XudResult xud_physical_record_features(VkPhysicalDeviceFeatures* outEnabledFeatu
 /// out-chosen row.
 XudResult xud_physical_select_queue_family(
     uint32_t* outIndex, VkQueueFamilyProperties2* outChosen, const VkQueueFamilyProperties2* families, uint32_t familyCount);
+
+/// Pure: choose the family the staging uploads copy on, after the graphics family is known. The
+/// rule is the FIRST family that carries VK_QUEUE_TRANSFER_BIT and is NOT the graphics family - a
+/// driver that rowed a dedicated copy engine gets it, and the frame loop never waits behind a text
+///ure load. When no such family exists the answer is the graphics family itself: a graphics queue
+/// subsumes transfer, so the fallback names a family that can always do the copies, and the devic
+/// e layer rows one family instead of two. `graphicsFamilyIndex` must be a chosen family (a real
+/// index below familyCount), because it is both the exclusion and the fallback. The chosen row is
+/// copied - stamped, pNext NULL - exactly as the graphics row is, so the caps own the record and
+/// nothing above re-queries.
+/// XUD_INVALID_ARG on a NULL out-index or out-row, a NULL families array with a non-zero count, or
+/// a graphicsFamilyIndex the array cannot answer for (the sentinel, or at/above familyCount); XUD
+/// _UNSUPPORTED when familyCount is 0 - nothing to choose from, and *outIndex is the sentinel.
+XudResult xud_physical_select_transfer_queue_family(uint32_t* outIndex, VkQueueFamilyProperties2* outChosen,
+    const VkQueueFamilyProperties2* families, uint32_t familyCount, uint32_t graphicsFamilyIndex);
 
 /// Pure: read caps.properties.properties.apiVersion back into caps.apiVersion and compare it
 /// with the floor the instance layer asked for (XUD_INSTANCE_API_FLOOR, xud_instance.h - one

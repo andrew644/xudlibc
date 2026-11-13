@@ -198,6 +198,46 @@ static void xud_test_physical_pure(void) {
             "a null out-index must be rejected");
         xud_check(xud_physical_select_queue_family(&index, NULL, families, 3u) == XUD_INVALID_ARG, "physical/queue-family-null-out-row",
             "a null out-chosen row must be rejected");
+
+        /* The transfer family, chosen over the same three-row table: the graphics family is 1,
+           and the dedicated copy engine - family 0, transfer-capable and not graphics - wins eve
+           n though it is not the first row the draw would pick.
+         */
+        memset(&chosen, 0, sizeof(chosen));
+        index = 0xA5A5u;
+        result = xud_physical_select_transfer_queue_family(&index, &chosen, families, 3u, 1u);
+        xud_check(result == XUD_OK, "physical/transfer-family-ok", "a dedicated transfer family exists here");
+        xud_check(index == 0u, "physical/transfer-family-dedicated", "the first transfer family that is not the graphics one wins");
+        xud_check(chosen.sType == VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2, "physical/transfer-family-s-type",
+            "the row copied into the caps names its own struct type");
+        xud_check(chosen.pNext == NULL, "physical/transfer-family-p-next-null", "and carries no chain");
+        xud_check(chosen.queueFamilyProperties.queueFlags == (VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT),
+            "physical/transfer-family-flags", "the whole row is copied, flags included");
+
+        /* A driver whose only family draws: the fallback is the graphics family itself. */
+        memset(&chosen, 0, sizeof(chosen));
+        index = 0xA5A5u;
+        result = xud_physical_select_transfer_queue_family(&index, &chosen, &families[2], 1u, 0u);
+        xud_check(result == XUD_OK, "physical/transfer-family-fallback", "no dedicated family answers the graphics family itself");
+        xud_check(index == 0u, "physical/transfer-family-fallback-index", "the graphics index, because a graphics queue copies too");
+        xud_check(chosen.queueFamilyProperties.queueFlags == VK_QUEUE_GRAPHICS_BIT, "physical/transfer-family-fallback-flags",
+            "the row copied is the graphics row");
+
+        /* And the guards: the fallback is an array row, not anything the caller names. */
+        index = 0xA5A5u;
+        xud_check(xud_physical_select_transfer_queue_family(&index, &chosen, families, 3u, XUD_PHYSICAL_NO_QUEUE_FAMILY) == XUD_INVALID_ARG,
+            "physical/transfer-family-no-graphics", "a caps with no graphics family cannot have a transfer one");
+        xud_check(xud_physical_select_transfer_queue_family(&index, &chosen, families, 3u, 5u) == XUD_INVALID_ARG,
+            "physical/transfer-family-graphics-out-of-range", "a graphics index the array cannot answer for is rejected");
+        xud_check(index == 0xA5A5u, "physical/transfer-family-invalid-untouched", "a rejected choice leaves the index alone");
+        index = 0xA5A5u;
+        result = xud_physical_select_transfer_queue_family(&index, &chosen, NULL, 0u, 0u);
+        xud_check(result == XUD_UNSUPPORTED, "physical/transfer-family-none", "no family at all is unsupported");
+        xud_check(index == XUD_PHYSICAL_NO_QUEUE_FAMILY, "physical/transfer-family-none-sentinel", "with the sentinel");
+        xud_check(xud_physical_select_transfer_queue_family(NULL, &chosen, families, 3u, 1u) == XUD_INVALID_ARG,
+            "physical/transfer-family-null-out-index", "a null out-index must be rejected");
+        xud_check(xud_physical_select_transfer_queue_family(&index, NULL, families, 3u, 1u) == XUD_INVALID_ARG,
+            "physical/transfer-family-null-out-row", "a null out-chosen row must be rejected");
     }
 
     /* The free-only rung of the teardown ladder: no driver call at all, because Vulkan has no

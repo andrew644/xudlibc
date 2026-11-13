@@ -46,7 +46,7 @@ static void xud_test_device_pure(void) {
     uint32_t index = 0u;
     uint64_t fakeHandleStorage[4] = { 0u, 0u, 0u, 0u };
     const VkDevice fakeDeviceHandle = (VkDevice)&fakeHandleStorage[0];
-    const VkQueue fakeQueueHandles[2] = { (VkQueue)&fakeHandleStorage[1], (VkQueue)&fakeHandleStorage[2] };
+    const VkQueue fakeQueueHandles[3] = { (VkQueue)&fakeHandleStorage[1], (VkQueue)&fakeHandleStorage[2], (VkQueue)&fakeHandleStorage[3] };
 
     memset(&caps, 0, sizeof(caps));
     memset(&row, 0, sizeof(row));
@@ -96,16 +96,43 @@ static void xud_test_device_pure(void) {
     xud_check(row.queueCount == 1u, "device/row-one-count", "the clamp is an upper bound only, one queue stays one");
     xud_check(row.queueFamilyIndex == 0u, "device/row-family-zero", "family 0 is a real choice, the sentinel is not");
 
+    /* ---- the transfer row, from the same standing-in caps ---- */
+    memset(&row, 0, sizeof(row));
+    caps.transferQueueFamilyIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
+    xud_check(xud_device_fill_transfer_queue_create_info(&row, priorities, &caps) == XUD_INVALID_ARG, "device/transfer-row-no-family",
+        "caps whose transfer family was never chosen are not a usable input");
+    caps.transferQueueFamilyIndex = 4u;
+    caps.chosenTransferQueueFamilyProperties.queueFamilyProperties.queueCount = 0u;
+    xud_check(xud_device_fill_transfer_queue_create_info(&row, priorities, &caps) == XUD_INVALID_ARG,
+        "device/transfer-row-zero-queue-count", "a family with no queue in it is not a family to ask for");
+    caps.chosenTransferQueueFamilyProperties.sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
+    caps.chosenTransferQueueFamilyProperties.queueFamilyProperties.queueFlags = VK_QUEUE_TRANSFER_BIT;
+    caps.chosenTransferQueueFamilyProperties.queueFamilyProperties.queueCount = 8u;
+    xud_check(xud_device_fill_transfer_queue_create_info(&row, priorities, &caps) == XUD_OK, "device/transfer-row-ok",
+        "a caps with a chosen transfer family fills a second row");
+    xud_check(row.sType == VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, "device/transfer-row-stamp", "the row is stamped");
+    xud_check(row.pNext == NULL, "device/transfer-row-p-next", "nothing is chained onto it");
+    xud_check(row.queueFamilyIndex == 4u, "device/transfer-row-family", "the transfer family, not the graphics one");
+    xud_check(row.queueCount == XUD_DEVICE_QUEUE_MAX_COUNT, "device/transfer-row-count-clamped", "and the same clamp applies to it");
+    xud_check(row.pQueuePriorities == priorities, "device/transfer-row-priorities", "the row points at the caller's array");
+    xud_check(xud_device_fill_transfer_queue_create_info(NULL, priorities, &caps) == XUD_INVALID_ARG, "device/transfer-row-null-out",
+        "a null out-row must be rejected");
+    xud_check(xud_device_fill_transfer_queue_create_info(&row, NULL, &caps) == XUD_INVALID_ARG, "device/transfer-row-null-priorities",
+        "a row with no priorities array is refused");
+    xud_check(xud_device_fill_transfer_queue_create_info(&row, priorities, NULL) == XUD_INVALID_ARG, "device/transfer-row-null-caps",
+        "null caps must be rejected");
+
     /* ---- the device struct, and the extension selection over it ---- */
     device = calloc(1u, sizeof(XudDevice));
     xud_check(device != NULL, "device/alloc", "the struct is heap-allocated, it must allocate");
     if (device == NULL)
         return;
 
-    xud_check(xud_device_fill_queue_create_info(&device->queueRow, device->queuePriorities, &caps) == XUD_OK, "device/own-row",
+    xud_check(xud_device_fill_queue_create_info(&device->queueRows[0], device->queuePriorities, &caps) == XUD_OK, "device/own-row",
         "the row filled into the struct");
-    xud_check(device->queueRow.pQueuePriorities == device->queuePriorities, "device/own-row-priorities",
+    xud_check(device->queueRows[0].pQueuePriorities == device->queuePriorities, "device/own-row-priorities",
         "and it points at the struct's own array");
+    device->queueRowCount = 1u;
 
     xud_check(xud_name_copy(&advertised[0].extensionName[0], VK_MAX_EXTENSION_NAME_SIZE, "VK_NOT_A_REAL_NAME") == XUD_OK,
         "device/advertised-first-name", "a name the library does not want");
@@ -144,8 +171,11 @@ static void xud_test_device_pure(void) {
     xud_check(createInfo.sType == VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, "device/create-info-stamp", "the create-info is stamped");
     xud_check(createInfo.pNext == NULL, "device/create-info-p-next", "and nothing is chained onto it");
     xud_check(createInfo.flags == 0, "device/create-info-flags", "no device-level flag is set today");
-    xud_check(createInfo.queueCreateInfoCount == 1u, "device/create-info-one-row", "exactly one queue row, the one-family rule");
-    xud_check(createInfo.pQueueCreateInfos == &device->queueRow, "device/create-info-row-address", "the row it names is the struct's own");
+    xud_check(createInfo.queueCreateInfoCount == 1u, "device/create-info-one-row",
+        "one row while the transfer family shares the graphics "
+        "family - the count is the struct's own");
+    xud_check(
+        createInfo.pQueueCreateInfos == &device->queueRows[0], "device/create-info-row-address", "the row it names is the struct's own");
     xud_check(createInfo.enabledLayerCount == 0u, "device/create-info-legacy-layers-zero",
         "the legacy layer count is written, not left uninitialised");
     xud_check(createInfo.ppEnabledLayerNames == NULL, "device/create-info-legacy-layers-null",
@@ -158,36 +188,59 @@ static void xud_test_device_pure(void) {
     xud_check(createInfo.pEnabledFeatures == &device->enabledFeatures, "device/create-info-features",
         "the features it carries are the struct's own record");
 
-    device->queueRow.sType = 0u;
+    device->queueRows[1] = device->queueRows[0];
+    device->queueRows[1].queueFamilyIndex = 4u;
+    device->queueRows[1].pQueuePriorities = device->transferQueuePriorities;
+    device->queueRowCount = 2u;
+    result = xud_device_fill_create_info(&createInfo, nameSlots, device);
+    xud_check(result == XUD_OK, "device/create-info-two-rows-ok", "the dedicated transfer family assembles too");
+    xud_check(
+        createInfo.queueCreateInfoCount == 2u, "device/create-info-two-rows", "row 1 joins the count when the transfer family differs");
+    xud_check(createInfo.pQueueCreateInfos == device->queueRows, "device/create-info-rows-address",
+        "both rows travel in the struct's own adjacent array, which is why they are an array");
+    device->queueRows[1].queueFamilyIndex = device->queueRows[0].queueFamilyIndex;
+    xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG, "device/create-info-duplicate-family",
+        "a second row naming the same family as the first is refused here, not left to the validation layer's message");
+    device->queueRows[1].queueFamilyIndex = 4u;
+    device->queueRows[1].pQueuePriorities = device->queuePriorities;
+    xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG,
+        "device/create-info-transfer-foreign-priorities", "row 1 must point at the struct's own transfer priorities too");
+    device->queueRows[1].pQueuePriorities = device->transferQueuePriorities;
+    device->queueRowCount = 0u;
+    xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG, "device/create-info-zero-row-count",
+        "a count that names no rows is not a device shape this layer produces");
+    device->queueRowCount = 1u;
+
+    device->queueRows[0].sType = 0u;
     xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG, "device/create-info-unstamped-row",
         "an unstamped row is refused here, not left to a validation layer");
     xud_check(createInfo.sType == VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, "device/create-info-rejected-untouched",
         "a rejected assembly leaves the create-info alone");
-    device->queueRow.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    device->queueRows[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
 
-    device->queueRow.queueCount = 0u;
+    device->queueRows[0].queueCount = 0u;
     xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG, "device/create-info-zero-queue-count",
         "a row that asks for no queue is refused");
-    device->queueRow.queueCount = XUD_DEVICE_QUEUE_MAX_COUNT + 1u;
+    device->queueRows[0].queueCount = XUD_DEVICE_QUEUE_MAX_COUNT + 1u;
     xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG, "device/create-info-count-too-big",
         "a row longer than the priorities array is refused, the row would point past its end");
-    device->queueRow.queueCount = 1u;
+    device->queueRows[0].queueCount = 1u;
 
-    device->queueRow.queueFamilyIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
+    device->queueRows[0].queueFamilyIndex = XUD_PHYSICAL_NO_QUEUE_FAMILY;
     xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG, "device/create-info-sentinel-family",
         "the no-family sentinel is not a family to ask for");
-    device->queueRow.queueFamilyIndex = 0u;
+    device->queueRows[0].queueFamilyIndex = 0u;
 
-    device->queueRow.pQueuePriorities = frameLocalPriorities;
+    device->queueRows[0].pQueuePriorities = frameLocalPriorities;
     xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG, "device/create-info-foreign-priorities",
         "a row pointing at another array is refused - the dangling-pointer bug this struct layout "
         "exists to prevent");
-    device->queueRow.pQueuePriorities = device->queuePriorities;
+    device->queueRows[0].pQueuePriorities = device->queuePriorities;
 
-    device->queueRow.pNext = (void*)&caps;
+    device->queueRows[0].pNext = (void*)&caps;
     xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG, "device/create-info-row-chained",
         "a chained row is refused, this layer chains nothing");
-    device->queueRow.pNext = NULL;
+    device->queueRows[0].pNext = NULL;
 
     device->enabledExtensionCount = XUD_DEVICE_MAX_DEVICE_EXTENSIONS + 1u;
     xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_INVALID_ARG, "device/create-info-count-too-big-ext",
@@ -207,7 +260,7 @@ static void xud_test_device_pure(void) {
     device->presentQueue.queue = fakeQueueHandles[1];
     device->presentQueue.queueFamilyIndex = 0u;
     device->presentQueue.queueIndex = 1u;
-    device->queueRow.queueCount = 2u;
+    device->queueRows[0].queueCount = 2u;
     got.queue = (VkQueue)&fakeHandleStorage[3];
     xud_check(
         xud_device_queue_get(&got, device, XUD_QUEUE_ROLE_GRAPHICS) == XUD_OK, "device/queue-get-graphics", "the graphics role resolves");
@@ -218,6 +271,25 @@ static void xud_test_device_pure(void) {
         xud_device_queue_get(&got, device, XUD_QUEUE_ROLE_PRESENT) == XUD_OK, "device/queue-get-present", "the present role resolves");
     xud_check(got.queue == fakeQueueHandles[1], "device/queue-get-present-handle", "a second queue in the family means a second handle");
     xud_check(got.queueIndex == 1u, "device/queue-get-present-index", "at index 1");
+    device->transferQueue.queue = fakeQueueHandles[0];
+    device->transferQueue.queueFamilyIndex = 0u;
+    device->transferQueue.queueIndex = 0u;
+    xud_check(xud_device_queue_get(&got, device, XUD_QUEUE_ROLE_TRANSFER) == XUD_OK, "device/queue-get-transfer",
+        "the transfer role resolves, sharing the graphics queue while the family is shared");
+    xud_check(got.queue == fakeQueueHandles[0], "device/queue-get-transfer-shared-handle", "...with the graphics queue's own handle");
+    device->queueRowCount = 2u;
+    device->transferQueue.queue = fakeQueueHandles[2];
+    device->transferQueue.queueFamilyIndex = 4u;
+    xud_check(xud_device_queue_get(&got, device, XUD_QUEUE_ROLE_TRANSFER) == XUD_OK, "device/queue-get-transfer-dedicated",
+        "with a second row the transfer queue is the one in the family that row names");
+    xud_check(got.queue == fakeQueueHandles[2], "device/queue-get-transfer-dedicated-handle", "a queue of the other family entirely");
+    xud_check(got.queueFamilyIndex == 4u, "device/queue-get-transfer-dedicated-family", "and the coordinates it was resolved at say so");
+    device->transferQueue.queueFamilyIndex = 9u;
+    xud_check(xud_device_queue_get(&got, device, XUD_QUEUE_ROLE_TRANSFER) == XUD_INTERNAL_ERROR, "device/queue-get-transfer-unrowed",
+        "a queue whose family no row names was not resolved by open and is refused");
+    device->queueRowCount = 1u;
+    device->transferQueue.queue = fakeQueueHandles[0];
+    device->transferQueue.queueFamilyIndex = 0u;
     got.queue = (VkQueue)&fakeHandleStorage[3];
     xud_check(xud_device_queue_get(&got, device, (XudQueueRole)XUD_DEVICE_QUEUE_ROLE_COUNT) == XUD_INVALID_ARG,
         "device/queue-get-role-range", "a role at the enum's end is refused");
@@ -253,7 +325,7 @@ static void xud_test_device_pure(void) {
        2026-10-18, where the one family rowed one queue and vkGetDeviceQueue answers the same han
        dle for both roles.
      */
-    device->queueRow.queueCount = 1u;
+    device->queueRows[0].queueCount = 1u;
     device->presentQueue.queue = fakeQueueHandles[0];
     device->presentQueue.queueIndex = 0u;
     xud_check(xud_device_queue_get(&graphics, device, XUD_QUEUE_ROLE_GRAPHICS) == XUD_OK, "device/queue-one-graphics",

@@ -87,7 +87,7 @@ static_assert(XUD_DEVICE_WANTED_DEVICE_COUNT <= XUD_DEVICE_MAX_DEVICE_EXTENSIONS
     "the wanted device-extension list must fit the device struct's storage");
 
 /*-----------------------------------------------------------------------------------------------
- * The one queue row, from the physical layer's chosen family
+ * The queue rows: the graphics family's, and the dedicated transfer family's when there is one
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_device_fill_queue_create_info(VkDeviceQueueCreateInfo* outQueueRow, const float* priorities, const XudDeviceCaps* caps) {
@@ -116,6 +116,30 @@ XudResult xud_device_fill_queue_create_info(VkDeviceQueueCreateInfo* outQueueRow
     outQueueRow->queueCount = (familyQueues < XUD_DEVICE_QUEUE_MAX_COUNT) ? familyQueues : XUD_DEVICE_QUEUE_MAX_COUNT;
     outQueueRow->pQueuePriorities = priorities; /* the parameter is const float * and the field is
                                                    const float *, so the two match with no cast */
+    return XUD_OK;
+}
+
+XudResult xud_device_fill_transfer_queue_create_info(
+    VkDeviceQueueCreateInfo* outQueueRow, const float* priorities, const XudDeviceCaps* caps) {
+    uint32_t familyQueues = 0u;
+
+    if ((outQueueRow == NULL) || (priorities == NULL) || (caps == NULL))
+        return XUD_INVALID_ARG;
+
+    if (caps->transferQueueFamilyIndex == XUD_PHYSICAL_NO_QUEUE_FAMILY)
+        return XUD_INVALID_ARG; /* the physical layer chooses the transfer family beside the graphics
+                                   one; caps without it are caps its open never produced */
+    familyQueues = caps->chosenTransferQueueFamilyProperties.queueFamilyProperties.queueCount;
+    if (familyQueues == 0u)
+        return XUD_INVALID_ARG; /* a family with no queue in it is not a family this layer can ask
+                                   for */
+
+    outQueueRow->sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    outQueueRow->pNext = NULL;
+    outQueueRow->flags = 0; /* the same protected-memory decision as row 0 */
+    outQueueRow->queueFamilyIndex = caps->transferQueueFamilyIndex;
+    outQueueRow->queueCount = (familyQueues < XUD_DEVICE_QUEUE_MAX_COUNT) ? familyQueues : XUD_DEVICE_QUEUE_MAX_COUNT;
+    outQueueRow->pQueuePriorities = priorities;
     return XUD_OK;
 }
 
@@ -195,32 +219,49 @@ XudResult xud_device_fill_create_info(
     if ((outCreateInfo == NULL) || (nameSlots == NULL) || (device == NULL))
         return XUD_INVALID_ARG;
 
-    /* The row must be the one this layer's own fill helper produced, and it must still point at t
-       he struct's own priorities array: a row assembled from a frame-local array is exactly the d
-      angling-pointer bug the struct layout in xud_device.h exists to prevent, and lavvk accepts t
-       he row without checking (probed 2026-10-18), so the check is here rather than in the drive
-       r. */
-    if ((device->queueRow.sType != VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO) || (device->queueRow.pNext != NULL))
+    /* Every row named by the count must be one this layer's own fill helpers produced, and it
+       must still point at the struct's own priorities array: a row assembled from a frame-local
+       array is exactly the dangling-pointer bug the struct layout in xud_device.h exists to pre
+       vent, and lavvk accepts the row without checking (probed 2026-10-18), so the check is her
+       e rather than in the driver. */
+    if ((device->queueRowCount < 1u) || (device->queueRowCount > XUD_DEVICE_QUEUE_ROW_MAX_COUNT))
         return XUD_INVALID_ARG;
-    if ((device->queueRow.queueCount < 1u) || (device->queueRow.queueCount > XUD_DEVICE_QUEUE_MAX_COUNT))
+    if ((device->queueRows[0].sType != VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO) || (device->queueRows[0].pNext != NULL))
         return XUD_INVALID_ARG;
-    if (device->queueRow.queueFamilyIndex == XUD_PHYSICAL_NO_QUEUE_FAMILY)
+    if ((device->queueRows[0].queueCount < 1u) || (device->queueRows[0].queueCount > XUD_DEVICE_QUEUE_MAX_COUNT))
         return XUD_INVALID_ARG;
-    if (device->queueRow.pQueuePriorities != device->queuePriorities)
+    if (device->queueRows[0].queueFamilyIndex == XUD_PHYSICAL_NO_QUEUE_FAMILY)
         return XUD_INVALID_ARG;
+    if (device->queueRows[0].pQueuePriorities != device->queuePriorities)
+        return XUD_INVALID_ARG;
+    if (device->queueRowCount == 2u) {
+        if ((device->queueRows[1].sType != VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO) || (device->queueRows[1].pNext != NULL))
+            return XUD_INVALID_ARG;
+        if ((device->queueRows[1].queueCount < 1u) || (device->queueRows[1].queueCount > XUD_DEVICE_QUEUE_MAX_COUNT))
+            return XUD_INVALID_ARG;
+        if (device->queueRows[1].queueFamilyIndex == XUD_PHYSICAL_NO_QUEUE_FAMILY)
+            return XUD_INVALID_ARG;
+        if (device->queueRows[1].queueFamilyIndex == device->queueRows[0].queueFamilyIndex)
+            return XUD_INVALID_ARG; /* a second row for the SAME family is the shape the validation
+                                       layer calls out ("pCreateInfo->pQueueCreateInfos[1] uses the
+                                       same queueFamilyIndex"), so the count and the families may
+                                       not disagree */
+        if (device->queueRows[1].pQueuePriorities != device->transferQueuePriorities)
+            return XUD_INVALID_ARG;
+    }
     if (device->enabledExtensionCount > XUD_DEVICE_MAX_DEVICE_EXTENSIONS)
         return XUD_INVALID_ARG; /* the count does not fit the storage it came from */
 
     outCreateInfo->sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     outCreateInfo->pNext = NULL;
     outCreateInfo->flags = 0;
-    outCreateInfo->queueCreateInfoCount = 1u;
-    outCreateInfo->pQueueCreateInfos = &device->queueRow;
+    outCreateInfo->queueCreateInfoCount = device->queueRowCount;
+    outCreateInfo->pQueueCreateInfos = device->queueRows;
 
-    /* AGENTS.md's one-family rule, carried: exactly one row, the family the physical layer chose,
-       and the validation layer's complaint about a second row for the same family (probed 2026-1
-       0-18: "pCreateInfo->pQueueCreateInfos[1] uses the same queueFamilyIndex (0) and flags ... a
-       s pCreateInfo->pQueueCreateInfos[0]") is a shape this layer cannot produce. */
+    /* The row rule, carried from the families the physical layer chose: row 0 is always the gra
+       phics family, and row 1 joins the count only when the transfer family is a DIFFERENT fami
+       ly - the two rows above are what make a same-family pair a refusal rather than a driver m
+       essage. */
 
     /* Legacy in these headers - vulkan_core.h:3747/:3749 carry the comment "legacy and not used"
        above both fields from Vulkan-Headers 1.4.363 here. They are still fields, so they are wri
@@ -248,35 +289,48 @@ XudResult xud_device_fill_create_info(
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The two role queues, looked up in what open resolved
+ * The three role queues, looked up in what open resolved
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_device_queue_get(XudQueue* outQueue, const XudDevice* device, XudQueueRole role) {
     const XudQueue* stored = NULL;
+    const VkDeviceQueueCreateInfo* row = NULL;
+    uint32_t index = 0u;
 
     if ((outQueue == NULL) || (device == NULL))
         return XUD_INVALID_ARG;
     if (role >= (XudQueueRole)XUD_DEVICE_QUEUE_ROLE_COUNT)
-        return XUD_INVALID_ARG; /* the enum has two values and a caller can still pass 7 */
+        return XUD_INVALID_ARG; /* the enum has three values and a caller can still pass 7 */
     if (device->device == VK_NULL_HANDLE)
         return XUD_INVALID_ARG; /* no device: there is no queue to hand back for a device that does
                                    not exist */
 
-    stored = (role == XUD_QUEUE_ROLE_PRESENT) ? &device->presentQueue : &device->graphicsQueue;
+    stored = (role == XUD_QUEUE_ROLE_PRESENT) ? &device->presentQueue
+        : (role == XUD_QUEUE_ROLE_TRANSFER)   ? &device->transferQueue
+                                              : &device->graphicsQueue;
     if (stored->queue == VK_NULL_HANDLE)
         return XUD_INTERNAL_ERROR; /* a struct that claims a live device but has no queue in it:
-                                      xud_device_open() resolves both roles before it hands the
+                                      xud_device_open() resolves every role before it hands the
                                       struct out, so this state was not produced here */
 
-    /* The pair is checked against this layer's own row before it is ever handed to vkGetDeviceQue
-       ue above - the same two rules the validation layer states (VUID-vkGetDeviceQueue-queueFamil
-       yIndex-00384, VUID-vkGetDeviceQueue-queueIndex-00385, both probed 2026-10-18 by asking with
-       family 99 and with index 1 against a row that asked for one queue). Catching it here is an
-       answer rather than a message stream, and lavvk accepts both wrong pairs without the layer.
+    /* The pair is checked against the row that names this queue's family before it is ever hand
+       ed to vkGetDeviceQueue above - the same two rules the validation layer states (VUID-vkGetD
+       eviceQueue-queueFamilyIndex-00384, VUID-vkGetDeviceQueue-queueIndex-00385, both probed 2026
+       -10-18 by asking with family 99 and with index 1 against a row that asked for one queue).
+       The loop is what lets the transfer queue name row 1's family while graphics and present na
+       me row 0's: a queue whose family no row names is a record open never resolved. Catching i
+       t here is an answer rather than a message stream, and lavvk accepts both wrong pairs witho
+       ut the layer.
      */
-    if (stored->queueFamilyIndex != device->queueRow.queueFamilyIndex)
+    for (index = 0u; index < device->queueRowCount; index++) {
+        if (device->queueRows[index].queueFamilyIndex == stored->queueFamilyIndex) {
+            row = &device->queueRows[index];
+            break;
+        }
+    }
+    if (row == NULL)
         return XUD_INTERNAL_ERROR;
-    if (stored->queueIndex >= device->queueRow.queueCount)
+    if (stored->queueIndex >= row->queueCount)
         return XUD_INTERNAL_ERROR;
 
     *outQueue = *stored;
@@ -284,7 +338,7 @@ XudResult xud_device_queue_get(XudQueue* outQueue, const XudDevice* device, XudQ
 }
 
 /*-----------------------------------------------------------------------------------------------
- * Bring-up: bind, assemble, create, resolve the two queues
+ * Bring-up: bind, assemble, create, resolve the three queues
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader, const XudPhysicalDevice* physical, VkInstance instance) {
@@ -313,13 +367,18 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader, const XudPhy
         return XUD_OUT_OF_MEMORY;
 
     /* The zero state the driver needs before it answers: the handle is NULL until vkCreateDevice
-       writes it (and a failed create must leave the fail ladder nothing to destroy), and both que
-       ue records are empty until the two lookups write them. */
+       writes it (and a failed create must leave the fail ladder nothing to destroy), all three qu
+       eue records are empty until the three lookups write them, and the count starts at the fall
+       back shape - one row - because the second row is earned by the caps, not assumed. */
     device->device = VK_NULL_HANDLE;
     device->graphicsQueue.queue = VK_NULL_HANDLE;
     device->presentQueue.queue = VK_NULL_HANDLE;
-    for (role = 0u; role < XUD_DEVICE_QUEUE_MAX_COUNT; role++)
+    device->transferQueue.queue = VK_NULL_HANDLE;
+    device->queueRowCount = 1u;
+    for (role = 0u; role < XUD_DEVICE_QUEUE_MAX_COUNT; role++) {
         device->queuePriorities[role] = XUD_DEVICE_QUEUE_PRIORITY_DEFAULT;
+        device->transferQueuePriorities[role] = XUD_DEVICE_QUEUE_PRIORITY_DEFAULT;
+    }
 
     /* The row this layer creates the device through is instance-level: vkCreateDevice is resolv
        ed through vkGetInstanceProcAddr, which the instance layer resolved in bulk when it bound
@@ -366,9 +425,19 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader, const XudPhy
     if (result != XUD_OK)
         goto fail;
 
-    result = xud_device_fill_queue_create_info(&device->queueRow, device->queuePriorities, &physical->caps);
+    result = xud_device_fill_queue_create_info(&device->queueRows[0], device->queuePriorities, &physical->caps);
     if (result != XUD_OK)
         goto fail;
+
+    /* The transfer row is filled either way; whether it JOINS the create-info is the count's deci
+       sion below, because a second row naming the same family as row 0 is the shape the validatio
+       n layer refuses. When the caps' transfer family IS the graphics family the device rows one
+       family and the transfer role resolves from row 0's queues - the fallback the physical layer
+       chose, carried through untouched. */
+    result = xud_device_fill_transfer_queue_create_info(&device->queueRows[1], device->transferQueuePriorities, &physical->caps);
+    if (result != XUD_OK)
+        goto fail;
+    device->queueRowCount = (physical->caps.transferQueueFamilyIndex != physical->caps.queueFamilyIndex) ? 2u : 1u;
 
     result = xud_device_fill_create_info(&createInfo, nameSlots, device);
     if (result != XUD_OK)
@@ -389,7 +458,7 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader, const XudPhy
 
     /* The device-level table, filled in bulk now that the device exists: volkLoadDeviceTable res
        olves every row through vkGetDeviceProcAddr(device, name), so a row can only name code the
-       device this layer just created backs. It is filled before the two queue lookups below and
+       device this layer just created backs. It is filled before the three queue lookups below and
        before anything can call xud_device_wait_idle()/xud_device_close() on this device, which i
        s what makes xud_loader_device_bound() the invariant those two rungs check. The row was ch
        ecked non-NULL above, so the bind cannot refuse here; if it ever does, the device leaks a
@@ -405,19 +474,25 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader, const XudPhy
         goto fail;
     }
 
-    /* The two role queues, resolved once here rather than on every frame: a queue handle lives a
+    /* The three role queues, resolved once here rather than on every frame: a queue handle lives a
        s long as the device that owns it does, and there is no vkDestroyQueue, so there is nothing
-       above this layer can do with a re-resolve. The family index is the row's own and the index
-       is the role clamped into the count the row asked for - the two rules the validation layer's
-       queue VUIDs state, satisfied by construction rather than by hoping. */
+       above this layer can do with a re-resolve. The family index is the row the role belongs to -
+       row 0 for graphics and present, row 1 for the transfer role when the driver rowed a dedicat
+       ed transfer family and row 0 when it did not - and the queue index is the role clamped into
+       the count that row asked for: the two rules the validation layer's queue VUIDs state, satis
+       fied by construction rather than by hoping. */
     for (role = 0u; role < XUD_DEVICE_QUEUE_ROLE_COUNT; role++) {
-        XudQueue* record = (role == XUD_QUEUE_ROLE_PRESENT) ? &device->presentQueue : &device->graphicsQueue;
+        XudQueue* record = (role == XUD_QUEUE_ROLE_PRESENT) ? &device->presentQueue
+            : (role == XUD_QUEUE_ROLE_TRANSFER)             ? &device->transferQueue
+                                                            : &device->graphicsQueue;
+        const VkDeviceQueueCreateInfo* row
+            = (role == XUD_QUEUE_ROLE_TRANSFER && device->queueRowCount == 2u) ? &device->queueRows[1] : &device->queueRows[0];
 
-        queueIndex = (role < device->queueRow.queueCount) ? role : (device->queueRow.queueCount - 1u);
+        queueIndex = (role == XUD_QUEUE_ROLE_TRANSFER) ? 0u : ((role < row->queueCount) ? role : (row->queueCount - 1u));
         record->queue = VK_NULL_HANDLE; /* the zero state before the call: PFN_vkGetDeviceQueue returns void
                                            in these headers (vulkan_core.h:4547), so there is no VkResult to
                                            map and the out handle is the only answer available */
-        loader->deviceTable.vkGetDeviceQueue(device->device, device->queueRow.queueFamilyIndex, queueIndex, &record->queue);
+        loader->deviceTable.vkGetDeviceQueue(device->device, row->queueFamilyIndex, queueIndex, &record->queue);
         if (record->queue == VK_NULL_HANDLE) {
             /* A driver that answers nothing for a family/index pair the row itself asked for: the
                caps and the driver disagree, and a device handed out with no queue in it would be a
@@ -426,7 +501,7 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader, const XudPhy
             result = XUD_VULKAN_ERROR;
             goto fail;
         }
-        record->queueFamilyIndex = device->queueRow.queueFamilyIndex;
+        record->queueFamilyIndex = row->queueFamilyIndex;
         record->queueIndex = queueIndex;
     }
 

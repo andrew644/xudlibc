@@ -38,6 +38,7 @@ static void xud_test_device_gpu(XudLoader* loader, const XudPhysicalDevice* phys
     XudDevice* synthetic = NULL;
     XudQueue graphics;
     XudQueue present;
+    XudQueue transfer;
     XudResult result;
     uint32_t index = 0u;
     uint32_t advertisedIndex = 0u;
@@ -74,21 +75,22 @@ static void xud_test_device_gpu(XudLoader* loader, const XudPhysicalDevice* phys
     xud_check(loader->deviceTable.vkWaitSemaphores != NULL, "gpu/floor-1_2-name-live",
         "a core-1.2-only name resolves at the 1.3 floor, so the floor reached the driver");
 
-    xud_check(device->queueRow.sType == VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, "device-gpu-row-stamp",
+    xud_check(device->queueRows[0].sType == VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, "device-gpu-row-stamp",
         "the row the driver was handed is stamped");
-    xud_check(device->queueRow.pNext == NULL, "device-gpu-row-p-next", "and nothing is chained onto it");
-    xud_check(device->queueRow.flags == 0, "device-gpu-row-flags", "no protected-memory flag");
-    xud_check(device->queueRow.queueFamilyIndex == physical->caps.queueFamilyIndex, "device-gpu-row-family",
+    xud_check(device->queueRows[0].pNext == NULL, "device-gpu-row-p-next", "and nothing is chained onto it");
+    xud_check(device->queueRows[0].flags == 0, "device-gpu-row-flags", "no protected-memory flag");
+    xud_check(device->queueRows[0].queueFamilyIndex == physical->caps.queueFamilyIndex, "device-gpu-row-family",
         "the row asks the family the physical layer chose");
-    xud_check(device->queueRow.queueCount >= 1u, "device-gpu-row-count-nonzero", "a row that asks for no queue is refused before the call");
-    xud_check(device->queueRow.queueCount <= XUD_DEVICE_QUEUE_MAX_COUNT, "device-gpu-row-count-ceiling",
+    xud_check(
+        device->queueRows[0].queueCount >= 1u, "device-gpu-row-count-nonzero", "a row that asks for no queue is refused before the call");
+    xud_check(device->queueRows[0].queueCount <= XUD_DEVICE_QUEUE_MAX_COUNT, "device-gpu-row-count-ceiling",
         "and never for more than this layer's ceiling");
     expectedQueueCount = (physical->caps.chosenQueueFamilyProperties.queueFamilyProperties.queueCount < XUD_DEVICE_QUEUE_MAX_COUNT)
         ? physical->caps.chosenQueueFamilyProperties.queueFamilyProperties.queueCount
         : XUD_DEVICE_QUEUE_MAX_COUNT;
-    xud_check(device->queueRow.queueCount == expectedQueueCount, "device-gpu-row-count-min",
+    xud_check(device->queueRows[0].queueCount == expectedQueueCount, "device-gpu-row-count-min",
         "the row asks for min(what the family rowed, the ceiling)");
-    xud_check(device->queueRow.pQueuePriorities == device->queuePriorities, "device-gpu-row-own-array",
+    xud_check(device->queueRows[0].pQueuePriorities == device->queuePriorities, "device-gpu-row-own-array",
         "the row points at the struct's own array, so it cannot dangle past the call");
     for (index = 0u; index < XUD_DEVICE_QUEUE_MAX_COUNT; index++) {
         if ((device->queuePriorities[index] < XUD_DEVICE_QUEUE_PRIORITY_MIN)
@@ -135,19 +137,42 @@ static void xud_test_device_gpu(XudLoader* loader, const XudPhysicalDevice* phys
     xud_check(xud_device_queue_get(&graphics, device, XUD_QUEUE_ROLE_GRAPHICS) == XUD_OK, "device-gpu-queue-graphics",
         "the graphics role resolves");
     xud_check(graphics.queue != VK_NULL_HANDLE, "device-gpu-queue-graphics-handle", "the handle must be live");
-    xud_check(graphics.queueFamilyIndex == device->queueRow.queueFamilyIndex, "device-gpu-queue-graphics-family",
+    xud_check(graphics.queueFamilyIndex == device->queueRows[0].queueFamilyIndex, "device-gpu-queue-graphics-family",
         "the pair the lookup hands back is the row's own");
-    xud_check(graphics.queueIndex < device->queueRow.queueCount, "device-gpu-queue-graphics-index",
+    xud_check(graphics.queueIndex < device->queueRows[0].queueCount, "device-gpu-queue-graphics-index",
         "...and the index is inside the count asked for");
     xud_check(
         xud_device_queue_get(&present, device, XUD_QUEUE_ROLE_PRESENT) == XUD_OK, "device-gpu-queue-present", "the present role resolves");
     xud_check(present.queue != VK_NULL_HANDLE, "device-gpu-queue-present-handle", "...with a live handle");
-    xud_check(present.queueFamilyIndex == device->queueRow.queueFamilyIndex, "device-gpu-queue-present-family", "from the same family");
-    xud_check(present.queueIndex < device->queueRow.queueCount, "device-gpu-queue-present-index", "at an index inside the row");
-    if (device->queueRow.queueCount == 1u)
+    xud_check(present.queueFamilyIndex == device->queueRows[0].queueFamilyIndex, "device-gpu-queue-present-family", "from the same family");
+    xud_check(present.queueIndex < device->queueRows[0].queueCount, "device-gpu-queue-present-index", "at an index inside the row");
+    if (device->queueRows[0].queueCount == 1u)
         xud_check(graphics.queue == present.queue, "device-gpu-queue-same-handle",
             "machine-specific: one queue in the family, both roles answer the same handle - "
             "presentation is not a queue flag (see xud_physical.h)");
+
+    xud_check(device->queueRowCount == 1u || device->queueRowCount == 2u, "device-gpu-row-count-shape",
+        "one row when the transfer family is the graphics family, two when the driver rowed a dedicated one");
+    xud_check(xud_device_queue_get(&transfer, device, XUD_QUEUE_ROLE_TRANSFER) == XUD_OK, "device-gpu-queue-transfer",
+        "the transfer role resolves");
+    xud_check(transfer.queue != VK_NULL_HANDLE, "device-gpu-queue-transfer-handle", "...with a live handle");
+    xud_check(transfer.queueFamilyIndex == physical->caps.transferQueueFamilyIndex, "device-gpu-queue-transfer-family",
+        "the queue belongs to the family the physical layer chose for it");
+    if (physical->caps.transferQueueFamilyIndex == physical->caps.queueFamilyIndex) {
+        xud_check(device->queueRowCount == 1u, "device-gpu-transfer-shared-one-row", "the shared family was asked for once, not twice");
+        xud_check(transfer.queue == graphics.queue, "device-gpu-transfer-shared-handle",
+            "the shared family answers the graphics queue "
+            "itself, the fallback path");
+    } else {
+        xud_check(device->queueRowCount == 2u, "device-gpu-transfer-dedicated-two-rows", "the dedicated family joined as a second row");
+        xud_check(device->queueRows[1].queueFamilyIndex == physical->caps.transferQueueFamilyIndex, "device-gpu-transfer-dedicated-row",
+            "row 1 asks the dedicated family");
+        xud_check(device->queueRows[1].pQueuePriorities == device->transferQueuePriorities, "device-gpu-transfer-dedicated-priorities",
+            "and points at the struct's own transfer priorities");
+        xud_check(transfer.queue != graphics.queue, "device-gpu-transfer-dedicated-handle",
+            "machine-specific: a dedicated family answers "
+            "a queue of its own, which is what S1.2 exists for");
+    }
 
     xud_check(xud_device_wait_idle(device, loader) == XUD_OK, "device-gpu-wait-idle", "a device with nothing in flight is already idle");
     xud_check(xud_device_close(&device, loader) == XUD_OK, "device-gpu-close", "the guard ran, the device was destroyed, the struct freed");
@@ -159,7 +184,7 @@ static void xud_test_device_gpu(XudLoader* loader, const XudPhysicalDevice* phys
     xud_check(result == XUD_OK, "device-gpu-open-second", "the four cached slots survive a teardown, a recreation path works");
     if (second != NULL) {
         xud_check(second->device != VK_NULL_HANDLE, "device-gpu-second-handle", "the second device is live");
-        xud_check(second->queueRow.queueFamilyIndex == physical->caps.queueFamilyIndex, "device-gpu-second-family",
+        xud_check(second->queueRows[0].queueFamilyIndex == physical->caps.queueFamilyIndex, "device-gpu-second-family",
             "...from the same recorded family");
         xud_check(xud_device_close(&second, loader) == XUD_OK, "device-gpu-close-second", "and tears down");
         xud_check(second == NULL, "device-gpu-second-null", "...cleared");

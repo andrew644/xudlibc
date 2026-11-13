@@ -402,7 +402,7 @@ XudResult xud_frame_open(XudFrame** outFrame, XudLoader* loader, const XudDevice
        struct keeps, and a stage row left at 0 would wait the acquire semaphore at no stage at all. */
     frame->waitStages[0u] = XUD_FRAME_WAIT_STAGE;
 
-    result = xud_frame_fill_pool_info(&frame->poolInfo, device->queueRow.queueFamilyIndex);
+    result = xud_frame_fill_pool_info(&frame->poolInfo, device->queueRows[0].queueFamilyIndex);
     if (result != XUD_OK) {
         free(frame->imageLayouts);
         free(frame);
