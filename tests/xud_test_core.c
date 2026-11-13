@@ -323,14 +323,15 @@ static void xud_test_gpu_context(void) {
         "written is an invalid descriptor, so the set and the white default behind every entry of it are this rung's, and the texture step "
         "is what puts a different view into a different row of it");
     xud_check(context->descriptor->whiteImageView != VK_NULL_HANDLE, "context/white-default-live",
-        "and the one view behind all 16 rows of that array is live, which is what makes the array a slot axis and not a texture axis");
+        "and the one view behind all 17 rows of that array is live, which is what makes the array a slot axis and not a texture axis");
     xud_check(context->descriptor->uniformBuffer != VK_NULL_HANDLE, "context/descriptor-buffer-live",
         "the per-frame uniform buffer is live and bound to the allocator's memory");
-    xud_check(context->allocator->blockCount == 5u, "context/allocator-five-blocks-now",
-        "and the allocator owns five VkDeviceMemory now: the descriptor rung's uniform buffer, the render pass's depth image - the image "
-        "is the first thing above the allocator that asked for an IMAGE's requirements, and its alignment (65536 on this driver) does not "
-        "fit a hole in the buffer's block, so it is a second block rather than a suballocation - the white default every entry of set 1's "
-        "sampler array names, a second image whose alignment does not fit a hole in the depth image's block either, and the two "
+    xud_check(context->allocator->blockCount == 7u, "context/allocator-five-blocks-now",
+        "and the allocator owns seven VkDeviceMemory now: the descriptor rung's uniform buffer, the render pass's depth image - the "
+        "image is the first thing above the allocator that asked for an IMAGE's requirements, and its alignment (65536 on this driver) "
+        "does not fit a hole in the buffer's block, so it is a second block rather than a suballocation - the white default every "
+        "entry of set 1's sampler array names, a second image whose alignment does not fit a hole in the depth image's block either, "
+        "the renderer's scratch image and the scratch pass's own depth image - two more images, two more alignments - and the two "
         "host-visible arenas, the batch's and the descriptor's staging arena, which are blocks of their own because vkMapMemory maps a "
         "VkDeviceMemory rather than a range. The batch's five data buffers are the carves that do share a block, which is the "
         "suballocation half of the repo's allocate-once rule seen from above");

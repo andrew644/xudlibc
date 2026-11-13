@@ -422,9 +422,15 @@ XudResult xud_frame_open(
 /// s frame's viewProj times this draw's model matrix - the per-draw channel and the per-frame set are
 /// both live, and what is still identity in both is the matrices themselves, because a non-identity m
 /// atrix is a transform the step above this one has to choose.
+/* The sentinel a recorded pass carries when it is NOT the resolve pass: any value at or past the
+   sampler-array size names no slot, so a real slot (0 .. size-1) says "this pass ends by drawing the
+   full-screen triangle from that slot's image" - see xud_frame_record_pass in xud_frame.c. */
+#define XUD_FRAME_NO_RESOLVE 0xFFFFFFFFu
+
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
-    const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
+    const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, uint32_t hdrSlot, const XudFramePassScope* scopes,
+    uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
 
 /// Driver: retire everything this rung owns, in the one order that is correct - vkWaitForFences on
 /// every fence still bounding a submission, then vkFreeCommandBuffers, vkDestroySemaphore, vkDestroyFence for ever

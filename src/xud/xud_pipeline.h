@@ -171,6 +171,35 @@ struct XudPipeline {
                                                             the record and the create call read the
                                                             same bytes, which is the rule xud_swapchain
                                                             .c states for its create-info, one rung up */
+
+    /* --- the resolve pass's own pipeline: the one that turns the high-dynamic-range scratch image
+         into the window's picture. It joins the rung rather than becoming a second rung because it
+         shares the ONE layout (its set 1 binding is the slot set the frame binds, exactly as a
+         textured batch draw's is) and every fixed-state row it needs is one this struct already
+         carries - triangle input assembly, dynamic viewport and scissor, blend-disabled attachment -
+         and because the two passes it binds to are both arguments of the one open below --- */
+    VkPipeline resolvePipeline; /* owned: the full-screen-triangle pipeline, created against the
+                    SCREEN pass handle below - the pass whose format it writes */
+    VkRenderPass resolveRenderPass; /* BORROWED, like renderPass: the screen pass this pipeline is
+                    bound to at create (the same core-1.4 pair the note in
+                    xud_pipeline_fill_create_info() quotes); renderPass above is the HIGH-DYNAMIC-
+                    RANGE pass the batch rows' pipelines are bound to, and the two must differ -
+                    pass compatibility is format-for-format, and the scratch image is float */
+    XudShader* presentVertexShader; /* owned: the module that builds the triangle from gl_VertexIndex
+                    alone - a second vertex module, not the batch's: the batch's reads four attribute
+                    streams and this one reads none */
+    XudShader* presentFragmentShader; /* owned: the tonemap module - the only stage in the tree that
+                    converts linear high-dynamic-range light to the display's coded range */
+    VkPipelineShaderStageCreateInfo resolveShaderStages[XUD_PIPELINE_STAGE_COUNT]; /* the resolve
+                    pipeline's own stage pair, filled by xud_pipeline_fill_shader_stages() from the
+                    two present modules */
+    VkPipelineDepthStencilStateCreateInfo resolveDepthStencil; /* its own depth row, and the reason
+                    it is not one of the variant rows: the resolve pass neither tests nor writes
+                    depth - every pixel it runs is written, and a depth test against a buffer the
+                    scratch pass already resolved would be a second, later answer to a question the
+                    scratch pass answered */
+    VkGraphicsPipelineCreateInfo resolveCreateInfo; /* what vkCreateGraphicsPipelines was handed for
+                    the resolve row, same record-as-created-bytes rule as createInfo above */
 };
 
 /*-----------------------------------------------------------------------------------------------
@@ -378,11 +407,33 @@ XudResult xud_pipeline_fill_create_info(
 /// XUD_UNSUPPORTED when the loader is closed, its device rows are not this device's, a row this rung needs is nil, or the SPI R-V is not
 /// SPIR-V; XUD_OUT_OF_MEMORY/XUD_OUT_OF_RESOURCES when the driver refuses on host or device memory; XUD_VULKAN_ERROR otherwise (a pipeline
 /// that fails to compile is the common one, VK_ERROR_PIPELINE_COMPILE_SHADER_INTERNAL_ERROR and its neighbours).
-XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
-    const XudBatch* batch, VkRenderPass renderPass);
 
-/// Driver: the teardown - vkDestroyPipeline for every row of the list, then vkDestroyPipelineLayout,
-/// then every module of the frag-module axis and the vertex module through xud_shader_close(), then
+/// Pure: the VkGraphicsPipelineCreateInfo the RESOLVE pipeline will be created with. The rows it
+/// points at are the rung's own: the triangle row of inputAssembly, the shared viewport/rasterizer/
+/// multisample/dynamic rows, the OPAQUE column's blend pair (blend DISABLED - the resolve pass writes
+/// every pixel it covers and composites against nothing), the struct's OWN resolveDepthStencil row,
+/// and the resolve stage pair. The vertex input is the zero row xud_pipeline_fill_state() wrote and
+/// xud_pipeline_fill_vertex_input() never overwrote for this pipeline: the triangle's only input is
+/// gl_VertexIndex, and a vertex-input row naming the batch's streams would be a pipeline that waits
+/// for buffers its pass never binds. Refuses XUD_UNSUPPORTED when any shared row is unstamped, and
+/// XUD_INVALID_ARG on a NULL out-create-info or pipeline or a pipeline whose layout or resolveRender
+/// Pass handle is not live.
+XudResult xud_pipeline_fill_resolve_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo);
+
+/// Driver: as before, and additionally the resolve pipeline: the two present modules opened after
+/// the batch's modules, and one more vkCreateGraphicsPipelines call against the RESOLVE pass handle
+/// (the screen pass) after the batch list is complete. `renderPass` binds the batch list's rows and
+/// `resolveRenderPass` binds the resolve row, and both must be live handles: the two passes differ
+/// in the format of their colour attachment, and pass compatibility - the rule that lets one
+/// pipeline serve two passes - is format-for-format, so the scene pipelines belong to the scratch
+/// pass and the tonemap pipeline to the screen pass, and no third option is legal without
+/// dynamic rendering.
+XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
+    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass);
+
+/// Driver: the teardown - vkDestroyPipeline for the resolve row and every row of the list, then
+/// vkDestroyPipelineLayout, then every module of the frag-module axis, the vertex module and the
+/// two present modules through xud_shader_close(), then
 /// free. That order is load-bearing: the pipelines name their layout and the layout's modules are
 /// the only thing keeping them alive, so anything else leaves a handle whose owner is already gone. XUD_ALREADY when the pointer
 /// owns no pipeline; XUD_INVALID_ARG on a NULL pointer-to-pointer, a NULL loader/device or

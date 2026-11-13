@@ -539,7 +539,7 @@ static XudResult xud_frame_flush_batch(XudBatch* batch, uint32_t* outHasContent)
 */
 static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudPipeline* pipeline,
     const XudRenderPass* pass, const XudFramebuffer* row, XudBatch* batch, XudDescriptor* descriptor, uint32_t hasContent,
-    uint32_t sampledAfter) {
+    uint32_t sampledAfter, uint32_t resolveSlot) {
     XudBatchDraw drawRow;
     XudBatchGeometry geometryRow;
     XudPushRow pushRow;
@@ -661,7 +661,23 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
         loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
             XUD_FRAME_FIRST_SET, XUD_FRAME_SET_COUNT, setRows, 0u, NULL);
     }
-    for (draw = 0u; draw < drawCount; draw++) {
+    if (resolveSlot != XUD_FRAME_NO_RESOLVE) {
+        /* The resolve pass's own recording: the scratch image's slot set takes set 1 exactly the
+           way a textured batch draw's slot set does - one set per slot, this pass's slot chosen at
+           the renderer's bring-up - and the resolve pipeline draws the three vertices the command
+           buffer itself invents. No vertex buffers are bound and none may be: the pipeline has zero
+           vertex bindings, and the batch's streams bound above belong to the scratch pass that came
+           BEFORE this one, not to a pass that records no batch rows at all. */
+        const VkDescriptorSet slotSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(resolveSlot)];
+        loader->deviceTable.vkCmdBindDescriptorSets(
+            frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, XUD_DESCRIPTOR_SET_MATERIAL, 1u, &slotSet, 0u, NULL);
+        loader->deviceTable.vkCmdBindPipeline(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->resolvePipeline);
+        loader->deviceTable.vkCmdDraw(frame->commandBuffer, 3u, 1u, 0u, 0u);
+    }
+    /* The second half of the condition is the batch rows' gate: a resolve pass records no draws,
+       the triangle above is its whole content, and the stats row read above still counts the scene
+       batch's rows - they belong to the pass that ran BEFORE this one. */
+    for (draw = 0u; (draw < drawCount) && (resolveSlot == XUD_FRAME_NO_RESOLVE); draw++) {
         if (xud_batch_draw_get(batch, draw, &drawRow) != XUD_OK) {
             break;
         }
@@ -721,7 +737,8 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
 
 XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudSwapchain* swapchain,
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
-    const XudFramePassScope* scopes, uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex) {
+    const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, uint32_t hdrSlot, const XudFramePassScope* scopes,
+    uint32_t scopeCount, XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex) {
     XudQueue graphicsQueue;
     XudQueue presentQueue;
     XudFramebuffer* row = NULL;
@@ -763,7 +780,13 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         return XUD_UNSUPPORTED;
     }
     if ((device->device == VK_NULL_HANDLE) || (swapchain->swapchain == VK_NULL_HANDLE) || (pipeline->layout == VK_NULL_HANDLE)
-        || (pass->renderPass == VK_NULL_HANDLE) || (frame->commandPool == VK_NULL_HANDLE) || (frame->commandBuffer == VK_NULL_HANDLE)) {
+        || (pass->renderPass == VK_NULL_HANDLE) || (frame->commandPool == VK_NULL_HANDLE) || (frame->commandBuffer == VK_NULL_HANDLE)
+        || (hdrPass == NULL) || (hdrPass->renderPass == VK_NULL_HANDLE) || (hdrFramebuffer == NULL)
+        || (hdrFramebuffer->framebuffer == VK_NULL_HANDLE) || (pipeline->resolvePipeline == VK_NULL_HANDLE)
+        || (hdrSlot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
+        /* The scratch pass, its framebuffer and its slot are as load-bearing as the screen pass's
+           own three: the frame draws the scene into them BEFORE the screen pass exists to show it,
+           and the resolve triangle names the slot by number. */
         return XUD_INVALID_ARG;
     }
     /* Every row of the pipeline list has to be live, not just the two the variant axis names: a draw
@@ -1043,14 +1066,31 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     */
     for (scope = 0u; scope < scopeCount; scope++) {
         result = xud_frame_record_pass(frame, loader, device, pipeline, scopes[scope].pass, scopes[scope].framebuffer, scopes[scope].batch,
-            descriptor, scopeContent[scope], 1u);
+            descriptor, scopeContent[scope], 1u, XUD_FRAME_NO_RESOLVE);
         if (result != XUD_OK) {
             return result;
         }
     }
 
-    /* --- 5d. the screen pass, the same recording through the same helper. */
-    result = xud_frame_record_pass(frame, loader, device, pipeline, pass, row, batch, descriptor, hasContent, 0u);
+    /* --- 5d. the scratch pass: the scene, at the swapchain's extent into the float image, through
+       the same recording helper with no swapchain image to wait on - the scratch image's and its
+       depth's opening barriers come from the tracker exactly as a target scope's do. The sampled-
+       sync barrier fires after the pass (sampledAfter on): the resolve pass one recording later
+       samples this very image, and the barrier is the same write-before-read guarantee an off-screen
+       target gets before the screen pass samples it. The pass ends in SAMPLED - its own finalLayout
+       - and the tracker keeps that honest for next frame.
+    */
+    result = xud_frame_record_pass(
+        frame, loader, device, pipeline, hdrPass, hdrFramebuffer, batch, descriptor, hasContent, 1u, XUD_FRAME_NO_RESOLVE);
+    if (result != XUD_OK) {
+        return result;
+    }
+
+    /* --- 5e. the screen pass, the same recording through the same helper, with the resolve
+       triangle as its only content: it names the scratch image's slot, so set 1 is bound to the
+       scratch pair rather than to a batch draw's, and no batch row is replayed here - the scene is
+       already drawn, into the scratch image, one pass ago. */
+    result = xud_frame_record_pass(frame, loader, device, pipeline, pass, row, batch, descriptor, 0u, 0u, hdrSlot);
     if (result != XUD_OK) {
         return result;
     }

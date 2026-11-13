@@ -124,6 +124,43 @@ struct XudRenderer {
                                   render-pass decision */
     XudFramebufferArray* framebuffers; /* owned: one VkFramebuffer (and one VkImageView) per
                                           swapchain image, in image-index order */
+    XudRenderPass* hdrPass; /* owned: the off-screen high-dynamic-range pass the batch rows draw
+                               into - the same two-attachment shape as the screen pass (colour + D32
+                               depth) with one difference: its colour format is a float format and
+                               its colour finalLayout is SHADER_READ_ONLY, because the resolve pass
+                               samples it. The batch list's pipelines are bound to THIS pass; the
+                               screen pass above binds only the resolve pipeline. */
+    XudFramebuffer* hdrFramebuffer; /* owned: the one framebuffer row attaching the scratch colour
+                                       view above and the scratch pass's own depth view - one row
+                                       because the scratch image is one image, recreated (with the
+                                       pass) at the swapchain's extent whenever the swapchain is */
+    VkImage hdrColorImage; /* owned: the scratch image itself - COLOR_ATTACHMENT | SAMPLED, the two
+                              uses the two passes give it */
+    VkImageView hdrColorView; /* owned: the view the framebuffer attaches AND the sampler-array
+                                 slot names - one view, two readers, the render target's rule */
+    VkSampler hdrSampler; /* owned: linear, clamped - the same sampling state a render target's
+                             pair carries, for the same reason: a full-screen sample of an image
+                             at its own extent never resamples, so the filter only shows at the
+                             resolve's edges and linear is what an edge wants */
+    VkImageCreateInfo hdrColorImageInfo; /* what vkCreateImage was handed, recorded as every rung
+                                            in this tree records its create-infos */
+    VkImageViewCreateInfo hdrColorViewInfo;
+    VkSamplerCreateInfo hdrSamplerInfo;
+    XudMemoryRange hdrColorRange; /* BORROWED from the allocator, released before the allocator closes */
+    uint32_t hdrSlot; /* the descriptor sampler-array slot the scratch pair occupies - the frame
+                         loop binds it as the resolve pass's set 1, and it is one slot of the same
+                         pool the textures take (the ceiling holds XUD_MAX_TEXTURES textures plus
+                         this one row) */
+    uint32_t hdrSlotLive; /* 1 once the slot is bound, the guard the retire reads */
+    uint32_t hdrWidth; /* the scratch extent, kept because the resize ask compares against it */
+    uint32_t hdrHeight;
+    VkFormat hdrFormat; /* the chosen float format (or the swapchain's, on a driver that offers no
+                           float colour-attachment-and-sampled format - the resolve still runs and
+                           still tonemaps, so the pipeline works everywhere and only the extra
+                           headroom is a hardware courtesy). xud_create_render_texture() builds the
+                           caller's targets in THIS format: pass compatibility is format-for-format,
+                           and a target in another format would be a pass the scene pipelines
+                           cannot draw into. */
     XudFrame* frame; /* owned: the command pool, the command buffer, the acquire semaphore and
                         the per-image fences */
     uint32_t framebufferCount; /* the count xud_frame_draw() is handed, recorded here so the
@@ -189,14 +226,19 @@ struct XudRenderer {
 /// depth image this rung creates and whose memory the allocator owns - the renderer does not own
 /// the allocator, the context does, one rung below, and closes it after this rung's teardown has
 /// released the range. On XUD_OK the five fields above are live and framebufferCount == swapcha
-/// in->imageCount. XUD_INVALID_ARG on a NULL out-pointer or one that already owns a renderer, a
-/// NULL loader/device/swapchain/tracker, a handle-less device, or a swapchain with no handle and
-/// no images; XUD_UNSUPPORTED when the loader is closed, its device rows are not this device's,
-/// a row of one of the five rungs needs is nil, the caps cannot hold the batch's four vertex-inp
-/// ut bindings and four attributes, or the swapchain has no chosen format. XUD_OUT_OF_MEMORY whe
-/// n a host allocation of one of the rungs fails.
-XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout);
+/// in->imageCount, the scratch pass and its one framebuffer row and one float colour image exist at
+/// the swapchain's extent, and the pipeline list's rows are bound to the SCRATCH pass while the
+/// resolve row is bound to the screen pass. `physicalDevice` is queried for the scratch format - the
+/// first of R16G16B16A16_SFLOAT, R32G32B32A32_SFLOAT that answers COLOR_ATTACHMENT | SAMPLED, and
+/// the swapchain's own format otherwise - so the choice is this driver's answer and not a guess.
+/// XUD_INVALID_ARG on a NULL out-pointer or one that already owns a renderer, a
+/// NULL loader/device/swapchain/tracker, a handle-less device or physicalDevice, or a swapchain with
+/// no handle and no images; XUD_UNSUPPORTED when the loader is closed, its device rows are not this
+/// device's, a row of one of the five rungs needs is nil, the caps cannot hold the batch's four
+/// vertex-input bindings and four attributes, or the swapchain has no chosen format. XUD_OUT_OF_MEMORY
+/// when a host allocation of one of the rungs fails.
+XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, VkPhysicalDevice physicalDevice,
+    const XudDeviceCaps* caps, XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout);
 
 /// Driver: one frame through the four rungs this rung owns - the caller above names no pipeline,
 /// no pass, no framebuffer array and no fence, which is what keeps the whole Vulkan half of the

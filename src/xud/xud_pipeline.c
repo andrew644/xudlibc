@@ -273,6 +273,25 @@ XudResult xud_pipeline_fill_state(XudPipeline* pipeline) {
         }
     }
 
+    /* --- the resolve pipeline's own depth row: neither test nor write. The scratch pass has already
+       resolved visibility for every pixel the triangle samples, and the resolve pass covers every
+       pixel exactly once, so a depth test would ask a second buffer the same question the first one
+       answered, and a depth write would overwrite the scratch pass's answer with a constant. The
+       remaining fields are written because the row must be a complete depth row even when both
+       enables are off - the same completeness rule the variant rows above follow. --- */
+    pipeline->resolveDepthStencil.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    pipeline->resolveDepthStencil.pNext = NULL;
+    pipeline->resolveDepthStencil.flags = 0u;
+    pipeline->resolveDepthStencil.depthTestEnable = VK_FALSE;
+    pipeline->resolveDepthStencil.depthWriteEnable = VK_FALSE;
+    pipeline->resolveDepthStencil.depthCompareOp = XUD_PIPELINE_DEPTH_COMPARE_OP;
+    pipeline->resolveDepthStencil.depthBoundsTestEnable = VK_FALSE;
+    pipeline->resolveDepthStencil.stencilTestEnable = VK_FALSE;
+    pipeline->resolveDepthStencil.front = pipeline->depthStencil[XUD_BATCH_VARIANT_UI].front;
+    pipeline->resolveDepthStencil.back = pipeline->depthStencil[XUD_BATCH_VARIANT_UI].front;
+    pipeline->resolveDepthStencil.minDepthBounds = 0.0f;
+    pipeline->resolveDepthStencil.maxDepthBounds = 1.0f;
+
     /* --- blend: one row per variant column, in the batch's variant order. blendEnable is the
        variant, and the two factor pairs are written even
        where blending is off because the row must say a complete blend - these headers spell the row
@@ -485,6 +504,60 @@ XudResult xud_pipeline_fill_create_info(
 }
 
 /*-----------------------------------------------------------------------------------------------
+ * The RESOLVE pipeline's create-info - pure, assembled from the rung's own rows
+ *-----------------------------------------------------------------------------------------------*/
+
+XudResult xud_pipeline_fill_resolve_create_info(const XudPipeline* pipeline, VkGraphicsPipelineCreateInfo* outCreateInfo) {
+    if (outCreateInfo == NULL) {
+        return XUD_INVALID_ARG;
+    }
+    if ((pipeline == NULL) || (pipeline->layout == VK_NULL_HANDLE) || (pipeline->resolveRenderPass == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    if ((pipeline->resolveShaderStages[XUD_PIPELINE_VERTEX_STAGE].module == VK_NULL_HANDLE)
+        || (pipeline->resolveShaderStages[XUD_PIPELINE_FRAGMENT_STAGE].module == VK_NULL_HANDLE)) {
+        return XUD_INVALID_ARG;
+    }
+    /* The shared rows must be stamped, the same rule xud_pipeline_fill_create_info() applies to the
+       rows it points at; the resolve row's depth-stencil row is its own and is checked beside them. */
+    if ((pipeline->vertexInput.sType != VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO)
+        || (pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES].sType != VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO)
+        || (pipeline->viewportState.sType != VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO)
+        || (pipeline->rasterizer.sType != VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO)
+        || (pipeline->multisample.sType != VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO)
+        || (pipeline->blending[XUD_BATCH_VARIANT_OPAQUE].sType != VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO)
+        || (pipeline->dynamicState.sType != VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO)
+        || (pipeline->resolveDepthStencil.sType != VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO)) {
+        return XUD_UNSUPPORTED;
+    }
+
+    outCreateInfo->sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    outCreateInfo->pNext = NULL;
+    outCreateInfo->flags = 0u;
+    outCreateInfo->stageCount = XUD_PIPELINE_STAGE_COUNT;
+    outCreateInfo->pStages = pipeline->resolveShaderStages;
+    outCreateInfo->pTessellationState = NULL;
+    outCreateInfo->pVertexInputState = &pipeline->vertexInput; /* the zero row, deliberately: see the
+        declaration's note - the triangle's only input is gl_VertexIndex and the resolve pass binds no
+        vertex buffer, so the row that names nothing IS the correct row here */
+    outCreateInfo->pInputAssemblyState = &pipeline->inputAssembly[XUD_BATCH_TOPOLOGY_TRIANGLES];
+    outCreateInfo->pViewportState = &pipeline->viewportState;
+    outCreateInfo->pRasterizationState = &pipeline->rasterizer;
+    outCreateInfo->pMultisampleState = &pipeline->multisample;
+    outCreateInfo->pDepthStencilState = &pipeline->resolveDepthStencil;
+    outCreateInfo->pColorBlendState = &pipeline->blending[XUD_BATCH_VARIANT_OPAQUE]; /* blend DISABLED:
+        the resolve pass replaces every pixel it covers */
+    outCreateInfo->pDynamicState = &pipeline->dynamicState;
+    outCreateInfo->layout = pipeline->layout;
+    outCreateInfo->renderPass = pipeline->resolveRenderPass;
+    outCreateInfo->subpass = XUD_PIPELINE_FIRST_SUBPASS;
+    outCreateInfo->basePipelineHandle = VK_NULL_HANDLE;
+    outCreateInfo->basePipelineIndex = -1;
+
+    return XUD_OK;
+}
+
+/*-----------------------------------------------------------------------------------------------
  * Retiring the variant rows that got made - file-local, the ladder below and xud_pipeline_close()
  * both call it
  *-----------------------------------------------------------------------------------------------*/
@@ -528,7 +601,7 @@ static void xud_pipeline_close_modules(XudShader** vertexShader, XudShader** fra
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const XudDevice* device, const XudDescriptor* descriptor,
-    const XudBatch* batch, VkRenderPass renderPass) {
+    const XudBatch* batch, VkRenderPass renderPass, VkRenderPass resolveRenderPass) {
     XudPipeline* pipeline = NULL;
     XudShader* vertexShader = NULL;
     XudShader* fragModule[XUD_PIPELINE_FRAG_MODULE_COUNT] = { NULL }; /* one per entry of the FRAG axis,
@@ -538,6 +611,11 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
     VkPipeline created[XUD_PIPELINE_ROW_COUNT] = { VK_NULL_HANDLE }; /* zeroed in full: only the
                             rows a create call reached have a handle in them, and the ladder below
                             retires the rows that did get made by skipping the ones that did not */
+    XudShader* presentVertexShader = NULL; /* the resolve pipeline's two modules, opened after the
+                            batch list exists - they are only ever its stages */
+    XudShader* presentFragmentShader = NULL;
+    VkPipeline resolveCreated = VK_NULL_HANDLE; /* the resolve row, created last and recorded into
+                            the struct only when it exists, the ladder shape the batch list uses */
     VkPipelineLayout layout = VK_NULL_HANDLE;
     XudResult result = XUD_INVALID_ARG;
     VkResult vk = VK_ERROR_UNKNOWN;
@@ -565,6 +643,12 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
        is a bad argument: the core-1.4 VUID that makes the binding a requirement is quoted where
        xud_pipeline_fill_create_info() writes it. */
     if (renderPass == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
+    }
+    /* The resolve pass is the second half of the same pair: the core-1.4 binding binds the resolve
+       pipeline to the SCREEN pass at create, and a handle-less one is as bad an argument as a
+       handle-less batch pass. */
+    if (resolveRenderPass == VK_NULL_HANDLE) {
         return XUD_INVALID_ARG;
     }
 
@@ -608,6 +692,9 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
        this rung's xud_pipeline_close() has retired the pipeline that names it - the one teardown
        order xud_renderer.c states. */
     pipeline->renderPass = renderPass;
+    pipeline->resolveRenderPass = resolveRenderPass; /* the screen pass, borrowed exactly as the
+                            batch pass above is: the resolve row names it at create and outlives
+                            this rung's teardown into that pass's destroy */
 
     /* The modules first: one vertex module for the whole list and one module per entry of the FRAG
        axis, so the two untextured columns share one VkShaderModule and only the textured column
@@ -714,6 +801,78 @@ XudResult xud_pipeline_open(XudPipeline** outPipeline, XudLoader* loader, const 
         pipeline->pipeline[row] = created[row];
     }
 
+    /* The resolve pipeline, last: its two present modules open now - nothing before this line reads
+       them - and the create binds them to the SCREEN pass recorded above, where the batch list above
+       is bound to the high-dynamic-range pass. The two bindings cannot be one handle: pass
+       compatibility - the rule that lets one pipeline serve two passes - is format-for-format on
+       every attachment, and the two colour attachments differ in format, so the scene rows belong
+       to the scratch pass and this row to the screen pass, one pipeline each. The failure ladder
+       retires the recorded batch rows, the layout and every module, present ones first.
+    */
+    result = xud_shader_open(&presentVertexShader, loader, device, xudPresentVertSpv, sizeof(xudPresentVertSpv));
+    if (result != XUD_OK) {
+        xud_pipeline_destroy_rows(loader, device, pipeline->pipeline);
+        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, pipeline->layout, NULL);
+        pipeline->layout = VK_NULL_HANDLE;
+        xud_pipeline_close_modules(&pipeline->vertexShader, pipeline->fragmentShader, device, loader);
+        free(pipeline);
+        return result;
+    }
+    result = xud_shader_open(&presentFragmentShader, loader, device, xudPresentFragSpv, sizeof(xudPresentFragSpv));
+    if (result != XUD_OK) {
+        (void)xud_shader_close(&presentVertexShader, device, loader);
+        xud_pipeline_destroy_rows(loader, device, pipeline->pipeline);
+        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, pipeline->layout, NULL);
+        pipeline->layout = VK_NULL_HANDLE;
+        xud_pipeline_close_modules(&pipeline->vertexShader, pipeline->fragmentShader, device, loader);
+        free(pipeline);
+        return result;
+    }
+    pipeline->presentVertexShader = presentVertexShader;
+    pipeline->presentFragmentShader = presentFragmentShader;
+    result = xud_pipeline_fill_shader_stages(pipeline->resolveShaderStages, presentVertexShader->module, presentFragmentShader->module);
+    if (result != XUD_OK) {
+        (void)xud_shader_close(&presentFragmentShader, device, loader);
+        (void)xud_shader_close(&presentVertexShader, device, loader);
+        pipeline->presentVertexShader = NULL;
+        pipeline->presentFragmentShader = NULL;
+        xud_pipeline_destroy_rows(loader, device, pipeline->pipeline);
+        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, pipeline->layout, NULL);
+        pipeline->layout = VK_NULL_HANDLE;
+        xud_pipeline_close_modules(&pipeline->vertexShader, pipeline->fragmentShader, device, loader);
+        free(pipeline);
+        return result;
+    }
+    result = xud_pipeline_fill_resolve_create_info(pipeline, &pipeline->resolveCreateInfo);
+    if (result != XUD_OK) {
+        (void)xud_shader_close(&presentFragmentShader, device, loader);
+        (void)xud_shader_close(&presentVertexShader, device, loader);
+        pipeline->presentVertexShader = NULL;
+        pipeline->presentFragmentShader = NULL;
+        xud_pipeline_destroy_rows(loader, device, pipeline->pipeline);
+        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, pipeline->layout, NULL);
+        pipeline->layout = VK_NULL_HANDLE;
+        xud_pipeline_close_modules(&pipeline->vertexShader, pipeline->fragmentShader, device, loader);
+        free(pipeline);
+        return result;
+    }
+    vk = loader->deviceTable.vkCreateGraphicsPipelines(
+        device->device, VK_NULL_HANDLE, 1u, &pipeline->resolveCreateInfo, NULL, &resolveCreated);
+    result = xud_result_from_vk(vk);
+    if (result != XUD_OK) {
+        (void)xud_shader_close(&presentFragmentShader, device, loader);
+        (void)xud_shader_close(&presentVertexShader, device, loader);
+        pipeline->presentVertexShader = NULL;
+        pipeline->presentFragmentShader = NULL;
+        xud_pipeline_destroy_rows(loader, device, pipeline->pipeline);
+        (void)loader->deviceTable.vkDestroyPipelineLayout(device->device, pipeline->layout, NULL);
+        pipeline->layout = VK_NULL_HANDLE;
+        xud_pipeline_close_modules(&pipeline->vertexShader, pipeline->fragmentShader, device, loader);
+        free(pipeline);
+        return result;
+    }
+    pipeline->resolvePipeline = resolveCreated;
+
     *outPipeline = pipeline;
     return XUD_OK;
 }
@@ -757,7 +916,16 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
             break;
         }
     }
+    if (victim->resolvePipeline != VK_NULL_HANDLE) {
+        if (loader->deviceTable.vkDestroyPipeline == NULL) {
+            return XUD_UNSUPPORTED;
+        }
+    }
     xud_pipeline_destroy_rows(loader, device, victim->pipeline);
+    if (victim->resolvePipeline != VK_NULL_HANDLE) {
+        loader->deviceTable.vkDestroyPipeline(device->device, victim->resolvePipeline, NULL);
+        victim->resolvePipeline = VK_NULL_HANDLE;
+    }
 
     if (victim->layout != VK_NULL_HANDLE) {
         if (loader->deviceTable.vkDestroyPipelineLayout == NULL) {
@@ -777,6 +945,18 @@ XudResult xud_pipeline_close(XudPipeline** ioPipeline, const XudDevice* device, 
     }
     if (victim->vertexShader != NULL) {
         closedModule = xud_shader_close(&victim->vertexShader, device, loader);
+        if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
+            first = closedModule;
+        }
+    }
+    if (victim->presentFragmentShader != NULL) {
+        closedModule = xud_shader_close(&victim->presentFragmentShader, device, loader);
+        if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
+            first = closedModule;
+        }
+    }
+    if (victim->presentVertexShader != NULL) {
+        closedModule = xud_shader_close(&victim->presentVertexShader, device, loader);
         if ((closedModule != XUD_OK) && (closedModule != XUD_ALREADY)) {
             first = closedModule;
         }

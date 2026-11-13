@@ -133,19 +133,22 @@ static_assert(
    recording, which is the whole reason the design is per-slot sets rather than one array: vkCmd
    BindDescriptorSets cannot point a bound set at a different element, and updating a set a
    command buffer has already bound is exactly the write-after-bind the header states is refused
-   (its per-binding flag needs the pNext chain the repo does not take). 16 is the ceiling on
-   live textures for the same reason it always was - growing it is a layout and pipeline-layout
-   recreate, which the "created once at init" rule forbids at runtime.
+   (its per-binding flag needs the pNext chain the repo does not take). 17 is the ceiling because
+   the axis now carries TWO permanent residents - slot 0, the white default, and the renderer's
+   scratch image's slot, claimed at the renderer's bring-up and never handed out - plus the
+   XUD_MAX_TEXTURES entries the free list hands to textures; growing it further is a layout and
+   pipeline-layout recreate, which the "created once at init" rule forbids at runtime.
  */
-#define XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE 16u
+#define XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE 17u
 
 static_assert(
     XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE > 0u, "a slot axis of zero slots allocates no sampler sets, which is a layout 1 no draw can bind");
 static_assert(XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE <= 32u,
     "the free list is one uint32_t of bits, so a slot axis past 32 would need two masks rather than a wider constant");
-static_assert(XUD_MAX_TEXTURES == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - 1u,
-    "the public ceiling of live textures is the slot axis minus slot 0, the white default's own - the two constants must not drift "
-    "apart, because the free list enforces this rung's number while a caller reads xud.h's");
+static_assert(XUD_MAX_TEXTURES == XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - 2u,
+    "the public ceiling of live textures is the slot axis minus its two permanent residents - slot 0, the white default's own, and "
+    "the renderer scratch image's slot, claimed before any texture exists - the two constants must not drift apart, because the free "
+    "list enforces this rung's number while a caller reads xud.h's");
 
 /* The number of descriptor sets this rung allocates: the one per-frame set of layout 0 plus one
    set per slot of layout 1. The pool's maxSets is this number and the sets array below is sized

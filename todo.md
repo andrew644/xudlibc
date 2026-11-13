@@ -4,9 +4,6 @@ Renderer roadmap: each item only depends on items above it.
 
 ## Stage 2 - how the picture is built
 
-- **S2.1** Draw into a high-precision scratch image, then convert it to the screen at the
-  end. Do this before lighting, because it changes what brightness values look right;
-  tuning lights twice is wasted work.
 - **S2.2** Real lights: point, spotlight, sun. Until now the shader just fakes one fixed
   light.
 - **S2.3** Fix depth precision so nearby and distant objects both sort correctly. Do this

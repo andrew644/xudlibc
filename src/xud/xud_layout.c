@@ -8,14 +8,16 @@
  * bits scaled to the table. Probing is linear because the table is small and entries are read
  * once per barrier: cache beats cleverness at this size.
  *
- *   Growth rehashes by re-feeding every live key through the same index row, so no delete-
- * marker or tombstone exists anywhere in this file: forget clears a slot to the sentinel and
- * decrements the count, and the one invariant that makes that safe without tombstones is that
- * a probe walk for a LIVE key never crosses a slot that was ever cleared out from under it - the
- * load factor (three quarters) bounds the clusters, and every insert happens through the same
- * index row. The consequence the callers feel: forget of a key that is not there is refused
- * rather than ignored, because the only way to get there is a rung that forgot twice or forgot
- * the wrong handle, and both are bugs this rung surfaces rather than absorbs.
+ *   Growth rehashes every live key through the same index row, and forget leaves a delete
+ * marker - XUD_LAYOUT_TOMBSTONE, a handle value no driver ever returns - in the cleared slot.
+ * A probe walks OVER markers and stops only at a never-used slot, so retiring an image in the
+ * middle of a cluster (a swapchain recreate and a render-pass recreate do exactly that, in the
+ * middle of a live table) never orphans the keys behind it; a plain clear would. An insert
+ * takes the first marker on its walk and growth drops every marker, so the table cannot fill
+ * with corpses while the live count stays small - which is why the load factor counts markers
+ * beside live entries. The consequence the callers feel: forget of a key that is not there is
+ * refused rather than ignored, because the only way to get there is a rung that forgot twice or
+ * forgot the wrong handle, and both are bugs this rung surfaces rather than absorbs.
  *
  *   No driver object is created, bound or destroyed here. vkCmdPipelineBarrier is the one driver
  * row named below, gated on xud_loader_device_bound() before it is called through, the same
@@ -52,23 +54,29 @@ static uint32_t xud_layout_index(const XudLayoutTracker* tracker, VkImage image)
     return (uint32_t)(key >> 32) % tracker->slotCount;
 }
 
-/* The slot that HOLDS image, or the first free slot on its probe walk when nothing holds it - the
-   pair of answers an insert (take the holder, else take the free slot) and a lookup (take the
-   holder, else refuse) both want from the one walk. Returns a slot index; *outFound answers
-   which of the two it is. A walk is guaranteed to stop at a free slot because the load factor
-   keeps the table non-full, which is the third thing the growth rule is for.
+/* The slot that HOLDS image, or the first slot an insert may take on its walk when nothing
+   holds it - a tombstoned slot or a never-used one, whichever comes first - the pair of answers
+   an insert (take the holder, else take the reusable slot) and a lookup (take the holder, else
+   refuse) both want from the one walk. Returns a slot index; *outFound answers which of the two
+   it is. A walk is guaranteed to stop at a reusable slot because the load factor, counted over
+   live entries AND tombstones, keeps the table non-full, which is the third thing the growth
+   rule is for.
 */
 static uint32_t xud_layout_probe(const XudLayoutTracker* tracker, VkImage image, bool* outFound) {
     uint32_t index = xud_layout_index(tracker, image);
+    uint32_t firstTombstone = tracker->slotCount;
     uint32_t step = 0u;
 
     *outFound = false;
     for (step = 0u; step < tracker->slotCount; step++) {
         const XudImageSlot* slot = &tracker->slots[index];
-        if (slot->image == VK_NULL_HANDLE) {
-            return index;
-        }
-        if (slot->image == image) {
+        if (slot->image == XUD_LAYOUT_TOMBSTONE) {
+            if (firstTombstone == tracker->slotCount) {
+                firstTombstone = index;
+            }
+        } else if (slot->image == VK_NULL_HANDLE) {
+            return (firstTombstone != tracker->slotCount) ? firstTombstone : index;
+        } else if (slot->image == image) {
             *outFound = true;
             return index;
         }
@@ -77,8 +85,9 @@ static uint32_t xud_layout_probe(const XudLayoutTracker* tracker, VkImage image,
             index = 0u;
         }
     }
-    return tracker->slotCount; /* unreachable while the load factor holds; the caller turns it
-                                  into XUD_INTERNAL_ERROR rather than reading slot [count] */
+    return firstTombstone; /* no never-used slot on the walk: only a marker can still carry the
+                              insert, and slot [count] - which the caller turns into
+                              XUD_INTERNAL_ERROR - answers a table with neither to spare */
 }
 
 /* Re-key every live entry into a fresh array of the given size. calloc answers NULL at OOM, and
@@ -102,7 +111,7 @@ static XudResult xud_layout_grow(XudLayoutTracker* tracker, uint32_t newSlotCoun
     fresh.usedCount = 0u;
 
     for (index = 0u; index < oldSlotCount; index++) {
-        if (oldSlots[index].image == VK_NULL_HANDLE) {
+        if ((oldSlots[index].image == VK_NULL_HANDLE) || (oldSlots[index].image == XUD_LAYOUT_TOMBSTONE)) {
             continue;
         }
         freshIndex = xud_layout_probe(&fresh, oldSlots[index].image, &found);
@@ -118,6 +127,7 @@ static XudResult xud_layout_grow(XudLayoutTracker* tracker, uint32_t newSlotCoun
     free(oldSlots);
     tracker->slots = fresh.slots;
     tracker->slotCount = newSlotCount;
+    tracker->tombCount = 0u;
     return XUD_OK;
 }
 
@@ -188,7 +198,7 @@ XudResult xud_layout_track(XudLayoutTracker* tracker, VkImage image, VkImageLayo
     if (found == true) {
         return XUD_INTERNAL_ERROR;
     }
-    if ((tracker->usedCount + 1u) * XUD_LAYOUT_LOAD_DENOMINATOR > tracker->slotCount * XUD_LAYOUT_LOAD_NUMERATOR) {
+    if (((tracker->usedCount + tracker->tombCount + 1u) * XUD_LAYOUT_LOAD_DENOMINATOR) > (tracker->slotCount * XUD_LAYOUT_LOAD_NUMERATOR)) {
         XudResult result = xud_layout_grow(tracker, tracker->slotCount * 2u);
         if (result != XUD_OK) {
             return result;
@@ -199,6 +209,9 @@ XudResult xud_layout_track(XudLayoutTracker* tracker, VkImage image, VkImageLayo
         }
     }
 
+    if (tracker->slots[index].image == XUD_LAYOUT_TOMBSTONE) {
+        tracker->tombCount = tracker->tombCount - 1u;
+    }
     tracker->slots[index].image = image;
     tracker->slots[index].layout = initialLayout;
     tracker->usedCount = tracker->usedCount + 1u;
@@ -217,9 +230,10 @@ XudResult xud_layout_forget(XudLayoutTracker* tracker, VkImage image) {
         return XUD_NOT_FOUND;
     }
 
-    tracker->slots[index].image = VK_NULL_HANDLE;
+    tracker->slots[index].image = XUD_LAYOUT_TOMBSTONE;
     tracker->slots[index].layout = VK_IMAGE_LAYOUT_UNDEFINED;
     tracker->usedCount = tracker->usedCount - 1u;
+    tracker->tombCount = tracker->tombCount + 1u;
     return XUD_OK;
 }
 

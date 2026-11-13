@@ -437,8 +437,8 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
        loader's device table for one of the create/destroy names this rung needs, or a swapchain wit
        h no chosen format.
      */
-    result = xud_renderer_open(&context->renderer, context->loader, context->device, &context->physicalDevice->caps, context->descriptor,
-        context->allocator, context->swapchain, context->layout);
+    result = xud_renderer_open(&context->renderer, context->loader, context->device, context->physicalDevice->physicalDevice,
+        &context->physicalDevice->caps, context->descriptor, context->allocator, context->swapchain, context->layout);
     if (result != XUD_OK)
         goto fail;
 

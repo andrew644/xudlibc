@@ -374,17 +374,20 @@ XudResult xud_create_render_texture(XudHandle* outTarget, XudContext* context, u
         return XUD_INVALID_ARG;
     }
     if ((context->handleTable == NULL) || (context->loader == NULL) || (context->device == NULL) || (context->allocator == NULL)
-        || (context->descriptor == NULL) || (context->swapchain == NULL) || (context->layout == NULL)) {
+        || (context->descriptor == NULL) || (context->swapchain == NULL) || (context->layout == NULL) || (context->renderer == NULL)) {
         /* A context missing any rung this create assembles through never completed bring-up - the
            same answer every other public entry point gives for the same reason. */
         return XUD_UNSUPPORTED;
     }
 
-    /* The colour format is the swapchain's: a target that ends up drawn to the screen is drawn
-       through the same blend state the screen pass runs, and a format the screen does not use
-       would be a second format the pipelines had to be built for. */
+    /* The colour format is the renderer's scratch format, not the swapchain's: the scene pipelines
+       are bound to the scratch pass, pass compatibility is format-for-format, and a target in the
+       swapchain's 8-bit format would be a pass those pipelines are not allowed to draw into. The
+       float format also means what this rung promises: a target holds the scene's high-dynamic-
+       range values until something samples them, and the draw of a target onto the screen is the
+       copy of one linear image into another linear pass, tonemap-free. */
     return xud_rendertarget_open(outTarget, context->handleTable, context->loader, context->device, &context->physicalDevice->caps,
-        context->allocator, context->descriptor, context->layout, width, height, context->swapchain->createInfo.imageFormat);
+        context->allocator, context->descriptor, context->layout, width, height, context->renderer->hdrFormat);
 }
 
 XudResult xud_close_render_texture(XudContext* context, XudHandle target) {

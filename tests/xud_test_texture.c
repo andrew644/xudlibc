@@ -606,10 +606,11 @@ static void xud_test_texture_gpu(void) {
     xud_check(record->imageLayout == XUD_TEXTURE_SAMPLED_LAYOUT, "gpu-texture/image-layout",
         "and the record says the image ended in the sampled layout rather than the upload one, which is what makes the descriptor step's "
         "layout a fact read off the record rather than a guess about what the upload left behind");
-    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 1u), "gpu-texture/record-owns-a-slot",
-        "and the record names the entry of set 1's sampler array its view and sampler go into - the first free one, which is slot 1 "
-        "in a fresh context because slot 0 is the white default's own and never handed out");
-    xud_check(context->descriptor->samplerSlotMask == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u)),
+    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 2u), "gpu-texture/record-owns-a-slot",
+        "and the record names the entry of set 1's sampler array its view and sampler go into - the first free one, which is slot 2 "
+        "in a fresh context because slot 0 is the white default's own and slot 1 the renderer scratch image's, neither ever handed out");
+    xud_check(context->descriptor->samplerSlotMask
+            == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)),
         "gpu-texture/slot-in-the-free-list",
         "and the descriptor rung's free list says the same: the create took a slot off the free list rather than the test assuming "
         "one, beside the reserved bit of slot 0");
@@ -650,11 +651,12 @@ static void xud_test_texture_gpu(void) {
         "and what this rung wrote into");
     xud_check(record->stagingBytes < firstStagingBytes, "gpu-texture/second-smaller",
         "and its staging is smaller than the 8x8's, so the block is sized from the chain rather than from a fixed sheet size");
-    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 2u), "gpu-texture/second-owns-the-next-slot",
+    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 3u), "gpu-texture/second-owns-the-next-slot",
         "and the second create took the next free slot of set 1's array, so the free list hands out the entries rather than a fixed row "
         "per texture");
     xud_check(context->descriptor->samplerSlotMask
-            == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)),
+            == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u)),
         "gpu-texture/two-slots-in-use", "and the free list says the same: the two textures' entries beside the reserved bit of slot 0");
     xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK, "gpu-texture/live-two-query",
         "the live count answers");
@@ -675,7 +677,8 @@ static void xud_test_texture_gpu(void) {
         "and both refusals destroyed nothing, so a refused release is a no-op rather than a half-release");
 
     xud_check(xud_close_texture(context, handle) == XUD_OK, "gpu-texture/close-ok", "the first texture is released");
-    xud_check(context->descriptor->samplerSlotMask == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)),
+    xud_check(context->descriptor->samplerSlotMask
+            == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u)),
         "gpu-texture/close-freed-the-slot",
         "and the close gave the first texture's slot back to the free list before its view and sampler were destroyed, so the array's "
         "entry no longer names a destroyed pair - beside the reserved bit of slot 0, which a close never touches");
@@ -694,9 +697,10 @@ static void xud_test_texture_gpu(void) {
             == XUD_OK,
         "gpu-texture/close-all-explicit", "the rung runs and closes the one TEXTURE record a slot still names");
     xud_check(closed == 1u, "gpu-texture/close-all-count", "and the count it reports is the one record that was still reachable");
-    xud_check(context->descriptor->samplerSlotMask == XUD_DESCRIPTOR_SLOT_MASK_BIT(0u), "gpu-texture/close-all-freed-its-slot",
+    xud_check(context->descriptor->samplerSlotMask == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u)),
+        "gpu-texture/close-all-freed-its-slot",
         "and the record's slot of set 1's array went back to the free list with it, so the walk leaves no entry naming a destroyed "
-        "pair - only the reserved bit of slot 0 remains, and it is the one bit a close never clears");
+        "pair - only the reserved bit of slot 0 and the renderer scratch image's slot 1 remain, and neither is a bit a close clears");
     xud_check(xud_texture_close_all(context->handleTable, context->loader, context->device, context->allocator, context->descriptor, &live)
             == XUD_OK,
         "gpu-texture/close-all-idempotent",
@@ -745,8 +749,10 @@ static void xud_test_texture_gpu(void) {
                 result = xud_close_texture(context, ceilingHandles[c]);
                 xud_check(result == XUD_OK, "gpu-texture/ceiling-close-ok", "each of the ceiling's textures is released");
             }
-            xud_check(context->descriptor->samplerSlotMask == XUD_DESCRIPTOR_SLOT_MASK_BIT(0u), "gpu-texture/ceiling-free-list-back",
-                "and every close gave its slot back, so the free list is the reserved bit of slot 0 again");
+            xud_check(context->descriptor->samplerSlotMask == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u)),
+                "gpu-texture/ceiling-free-list-back",
+                "and every close gave its slot back, so the free list is the white default's bit, "
+                "the scratch image's bit and nothing else again");
         }
         (void)xud_close_context(&context);
     }
@@ -790,16 +796,26 @@ static void xud_test_texture_gpu(void) {
    time it runs would otherwise restart the coverage for ever. */
 #define XUD_TEST_READBACK_COVER_FRAMES_MAX 128u
 
-/* The sRGB transfer function's one step, stated in float rather than looked up: the fixed-function
-   encode the swapchain's SRGB format runs on store, byte value in, byte value out. The 12.92/0.00
-   31308 half is the linear piece the standard keeps for the darkest values, and 1/2.4 is the
-   standard's exponent. */
+/* The two steps the presented byte is stated through now that the scene renders into a float
+   scratch image: the ACES/Narkowicz curve the resolve stage runs (five constants, identical on
+   every driver, no transcendental - see shaders/present.frag), and the fixed-function encode the
+   swapchain's SRGB format runs on store, byte value in, byte value out. The 12.92/0.0031308 half
+   is the linear piece the standard keeps for the darkest values, and 1/2.4 is the standard's
+   exponent. A UNORM swapchain takes only the first step. */
+static float xud_test_aces(float c) {
+    const float t = (c * (2.51f * c + 0.03f)) / (c * (2.43f * c + 0.59f) + 0.14f);
+
+    return (t < 0.0f) ? 0.0f : ((t > 1.0f) ? 1.0f : t);
+}
+
 static uint32_t xud_test_srgb_byte(uint8_t value) {
-    const float c = (float)value / 255.0f;
+    const float c = xud_test_aces((float)value / 255.0f);
     const float e = (c <= 0.0031308f) ? (12.92f * c) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
 
     return (uint32_t)(e * 255.0f + 0.5f);
 }
+
+static uint32_t xud_test_aces_byte(uint8_t value) { return (uint32_t)(xud_test_aces((float)value / 255.0f) * 255.0f + 0.5f); }
 
 /* The frame the readback draws, one per call: the boundary pair with the quad under the material,
    every step checked. The pass is the frame's position in the run, and the first pass alone carries
@@ -1170,9 +1186,9 @@ static void xud_test_texture_readback_gpu(void) {
             const int32_t rowHi
                 = (fracY > (1.0 - XUD_TEST_READBACK_BORDER_EPS)) && (row + 1u < XUD_TEST_READBACK_SHEET) ? (int32_t)row + 1 : (int32_t)row;
             const uint32_t at = ((row * XUD_TEST_READBACK_SHEET) + col) * XUD_TEXTURE_BYTES_PER_TEXEL;
-            const uint32_t expectedR = srgb ? xud_test_srgb_byte(texels8x8[at]) : (uint32_t)texels8x8[at];
-            const uint32_t expectedG = srgb ? xud_test_srgb_byte(texels8x8[at + 1u]) : (uint32_t)texels8x8[at + 1u];
-            const uint32_t expectedB = srgb ? xud_test_srgb_byte(texels8x8[at + 2u]) : (uint32_t)texels8x8[at + 2u];
+            const uint32_t expectedR = srgb ? xud_test_srgb_byte(texels8x8[at]) : xud_test_aces_byte(texels8x8[at]);
+            const uint32_t expectedG = srgb ? xud_test_srgb_byte(texels8x8[at + 1u]) : xud_test_aces_byte(texels8x8[at + 1u]);
+            const uint32_t expectedB = srgb ? xud_test_srgb_byte(texels8x8[at + 2u]) : xud_test_aces_byte(texels8x8[at + 2u]);
             const uint32_t px = (y * width) + x;
             const uint32_t actualR = (bgra != 0) ? (uint32_t)pixels[px * 4u + 2u] : (uint32_t)pixels[px * 4u];
             const uint32_t actualG = (uint32_t)pixels[px * 4u + 1u];
@@ -1188,9 +1204,9 @@ static void xud_test_texture_readback_gpu(void) {
             for (cy = rowLo; (cy <= rowHi) && (ok == 0); cy++) {
                 for (cx = colLo; (cx <= colHi) && (ok == 0); cx++) {
                     const uint32_t atC = (((uint32_t)cy * XUD_TEST_READBACK_SHEET) + (uint32_t)cx) * XUD_TEXTURE_BYTES_PER_TEXEL;
-                    const uint32_t candR = srgb ? xud_test_srgb_byte(texels8x8[atC]) : (uint32_t)texels8x8[atC];
-                    const uint32_t candG = srgb ? xud_test_srgb_byte(texels8x8[atC + 1u]) : (uint32_t)texels8x8[atC + 1u];
-                    const uint32_t candB = srgb ? xud_test_srgb_byte(texels8x8[atC + 2u]) : (uint32_t)texels8x8[atC + 2u];
+                    const uint32_t candR = srgb ? xud_test_srgb_byte(texels8x8[atC]) : xud_test_aces_byte(texels8x8[atC]);
+                    const uint32_t candG = srgb ? xud_test_srgb_byte(texels8x8[atC + 1u]) : xud_test_aces_byte(texels8x8[atC + 1u]);
+                    const uint32_t candB = srgb ? xud_test_srgb_byte(texels8x8[atC + 2u]) : xud_test_aces_byte(texels8x8[atC + 2u]);
 
                     ok = ((actualR <= (candR + XUD_TEST_READBACK_TOLERANCE)) && ((actualR + XUD_TEST_READBACK_TOLERANCE) >= candR)
                              && (actualG <= (candG + XUD_TEST_READBACK_TOLERANCE)) && ((actualG + XUD_TEST_READBACK_TOLERANCE) >= candG)

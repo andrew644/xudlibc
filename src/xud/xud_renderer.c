@@ -86,17 +86,185 @@
 #include "xud_physical.h"
 #include "xud_pipeline.h"
 #include "xud_renderpass.h"
+#include "xud_rendertarget.h" /* Required for: xud_rendertarget_fill_color_info - the scratch image's create-info is the render target's create-info, and one row says both */
 #include "xud_swapchain.h"
+#include "xud_texture.h" /* Required for: xud_texture_fill_sampler_info - the scratch image samples with the render target's sampler shape */
 #include "xud_window.h"
 
 #include <assert.h> /* Required for: static_assert, the count that cannot disagree */
 #include <stdlib.h> /* Required for: calloc, free */
+#include <string.h> /* Required for: memset - the sampler and barrier rows the scratch bring-up fills */
 
 /* The count xud_frame_draw() is handed is the array's own count, and the field beside it is w
    hat keeps that true: the renderer records the count it opened the array for, and the array re
    cords the count it allocated. */
 static_assert(
     sizeof(((XudRenderer*)0)->framebufferCount) == sizeof(uint32_t), "the recorded count is the count type the array's own field uses");
+
+/*-----------------------------------------------------------------------------------------------
+ * The high-dynamic-range scratch image: the format choice, the bring-up, the retirement
+ *-----------------------------------------------------------------------------------------------*/
+
+static void xud_renderer_hdr_retire(
+    XudRenderer* renderer, XudLoader* loader, const XudDevice* device, XudAllocator* alloc, XudDescriptor* descriptor);
+
+/* The scratch format, asked of THIS physical device rather than assumed: a format is a colour
+   attachment only as far as the driver says it is, and the resolve pass samples the very image the
+   attachment writes, so both bits have to be answered for a candidate to be usable. The order is
+   the order of preference: half floats first (the format the tonemap curve was tuned against, and
+   the one every desktop driver since Vulkan 1.0's mandatory-support table answers), full floats
+   second, and the swapchain's own format last - the last row is not a failure but a degenerate
+   high-dynamic-range range, and the resolve still runs and still tonemaps against it, which is what
+   keeps the present path one path on every driver. */
+static VkFormat xud_renderer_pick_hdr_format(XudLoader* loader, VkPhysicalDevice physicalDevice, VkFormat fallback) {
+    static const VkFormat wanted[2] = { VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT };
+    const VkFormatFeatureFlags needed
+        = (VkFormatFeatureFlags)(VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+    uint32_t candidate = 0u;
+
+    if ((loader == NULL) || (physicalDevice == VK_NULL_HANDLE) || (loader->instanceTable.vkGetPhysicalDeviceFormatProperties == NULL)) {
+        return fallback;
+    }
+    for (candidate = 0u; candidate < (sizeof(wanted) / sizeof(wanted[0])); candidate++) {
+        VkFormatProperties properties;
+        loader->instanceTable.vkGetPhysicalDeviceFormatProperties(physicalDevice, wanted[candidate], &properties);
+        if ((properties.optimalTilingFeatures & needed) == needed) {
+            return wanted[candidate];
+        }
+    }
+    return fallback;
+}
+
+/* The scratch image, its view, its sampler, its pass and its one framebuffer row - the render
+   target rung's open order minus the batch and the handle, because the scratch pass belongs to the
+   renderer rather than to a caller's handle and has no batch of its own (the batch that draws into
+   it is the renderer's screen batch). The slot is bound LAST for the render target's reason: no
+   descriptor set may ever name a half-built pair. */
+static XudResult xud_renderer_hdr_open(XudRenderer* renderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
+    XudAllocator* alloc, XudDescriptor* descriptor, const XudSwapchain* swapchain) {
+    XudTextureData samplerData;
+    VkMemoryRequirements needs;
+    XudResult result = XUD_INVALID_ARG;
+    uint32_t width = swapchain->createInfo.imageExtent.width;
+    uint32_t height = swapchain->createInfo.imageExtent.height;
+
+    result = xud_rendertarget_fill_color_info(&renderer->hdrColorImageInfo, width, height, renderer->hdrFormat);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if (loader->deviceTable.vkCreateImage(device->device, &renderer->hdrColorImageInfo, NULL, &renderer->hdrColorImage) != VK_SUCCESS) {
+        return XUD_VULKAN_ERROR;
+    }
+    memset(&needs, 0, sizeof needs);
+    loader->deviceTable.vkGetImageMemoryRequirements(device->device, renderer->hdrColorImage, &needs);
+    if (needs.size == 0u) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return XUD_VULKAN_ERROR;
+    }
+    result = xud_allocator_acquire(&renderer->hdrColorRange, alloc, loader, device, caps, &needs);
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+    result = xud_result_from_vk(loader->deviceTable.vkBindImageMemory(
+        device->device, renderer->hdrColorImage, renderer->hdrColorRange.memory, renderer->hdrColorRange.offset));
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+    result = xud_layout_track(renderer->layout, renderer->hdrColorImage, renderer->hdrColorImageInfo.initialLayout);
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+
+    result = xud_framebuffer_fill_view_info(&renderer->hdrColorViewInfo, renderer->hdrColorImage, renderer->hdrFormat);
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+    if (loader->deviceTable.vkCreateImageView(device->device, &renderer->hdrColorViewInfo, NULL, &renderer->hdrColorView) != VK_SUCCESS) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return XUD_VULKAN_ERROR;
+    }
+
+    memset(&samplerData, 0, sizeof samplerData);
+    samplerData.filter = XUD_TEXTURE_FILTER_LINEAR;
+    samplerData.addressMode = XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE;
+    result = xud_texture_fill_sampler_info(&samplerData, &renderer->hdrSamplerInfo);
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+    if (loader->deviceTable.vkCreateSampler(device->device, &renderer->hdrSamplerInfo, NULL, &renderer->hdrSampler) != VK_SUCCESS) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return XUD_VULKAN_ERROR;
+    }
+
+    result = xud_renderpass_open_offscreen(
+        &renderer->hdrPass, loader, device, caps, alloc, renderer->hdrFormat, width, height, renderer->layout);
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+    result = xud_framebuffer_open(
+        &renderer->hdrFramebuffer, loader, device, renderer->hdrPass, renderer->hdrColorImage, renderer->hdrFormat, width, height);
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+
+    result = xud_descriptor_bind_texture_slot(descriptor, loader, device, renderer->hdrColorView, renderer->hdrSampler,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->hdrSlot);
+    if (result != XUD_OK) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
+    renderer->hdrSlotLive = 1u;
+    renderer->hdrWidth = width;
+    renderer->hdrHeight = height;
+    return XUD_OK;
+}
+
+/* Everything the scratch rows own, in the render target retire's reverse order minus the batch and
+   the handle: the slot before the pair it names, the framebuffer before the pass, the pass (its own
+   depth image included) before the sampler, the tracker forget before the view, and the view before
+   the image and the allocator's range. Every step tolerates its own absence, so the same function
+   retires a half-built scratch pair - and the resize rung runs it before a fresh hdr_open. */
+static void xud_renderer_hdr_retire(
+    XudRenderer* renderer, XudLoader* loader, const XudDevice* device, XudAllocator* alloc, XudDescriptor* descriptor) {
+    if ((renderer == NULL) || (loader == NULL) || (device == NULL)) {
+        return;
+    }
+    if ((renderer->hdrSlotLive != 0u) && (descriptor != NULL)) {
+        (void)xud_descriptor_release_texture_slot(descriptor, loader, device, renderer->hdrSlot);
+        renderer->hdrSlotLive = 0u;
+    }
+    if (renderer->hdrFramebuffer != NULL) {
+        (void)xud_framebuffer_close(&renderer->hdrFramebuffer, device, loader);
+    }
+    if (renderer->hdrPass != NULL) {
+        (void)xud_renderpass_close(&renderer->hdrPass, device, loader, alloc);
+    }
+    if ((renderer->hdrSampler != VK_NULL_HANDLE) && (loader->deviceTable.vkDestroySampler != NULL)) {
+        loader->deviceTable.vkDestroySampler(device->device, renderer->hdrSampler, NULL);
+        renderer->hdrSampler = VK_NULL_HANDLE;
+    }
+    if ((renderer->hdrColorImage != VK_NULL_HANDLE) && (renderer->layout != NULL)) {
+        (void)xud_layout_forget(renderer->layout, renderer->hdrColorImage);
+    }
+    if ((renderer->hdrColorView != VK_NULL_HANDLE) && (loader->deviceTable.vkDestroyImageView != NULL)) {
+        loader->deviceTable.vkDestroyImageView(device->device, renderer->hdrColorView, NULL);
+        renderer->hdrColorView = VK_NULL_HANDLE;
+    }
+    if ((renderer->hdrColorImage != VK_NULL_HANDLE) && (loader->deviceTable.vkDestroyImage != NULL)) {
+        loader->deviceTable.vkDestroyImage(device->device, renderer->hdrColorImage, NULL);
+        renderer->hdrColorImage = VK_NULL_HANDLE;
+    }
+    if ((renderer->hdrColorRange.memory != VK_NULL_HANDLE) && (alloc != NULL)) {
+        (void)xud_allocator_release(alloc, &renderer->hdrColorRange);
+    }
+}
 
 /*-----------------------------------------------------------------------------------------------
  * The one retirement order, shared by the teardown and by every failure path of the bring-up
@@ -125,6 +293,10 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
                                record owns - the retirement goes to the owned one, and the alias
                                is cleared so nothing reads it again */
     (void)rung;
+    xud_renderer_hdr_retire(renderer, loader, device, alloc, renderer->descriptor); /* the scratch rows
+                               go after the pipeline that names the scratch pass and before the
+                               screen pass rung below; the descriptor outlives the renderer, so the
+                               slot it releases is still a live slot here */
     rung = xud_renderpass_close(&renderer->renderPass, device, loader, alloc);
     (void)rung;
 }
@@ -133,8 +305,8 @@ static void xud_renderer_retire(XudRenderer* renderer, const XudDevice* device, 
  * The bring-up - the five rungs, in the one order that is correct
  *-----------------------------------------------------------------------------------------------*/
 
-XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
-    XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout) {
+XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const XudDevice* device, VkPhysicalDevice physicalDevice,
+    const XudDeviceCaps* caps, XudDescriptor* descriptor, XudAllocator* alloc, const XudSwapchain* swapchain, XudLayoutTracker* layout) {
     XudRenderer* renderer = NULL;
     XudResult result = XUD_INVALID_ARG;
 
@@ -162,6 +334,9 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
     if (device->device == VK_NULL_HANDLE) {
         return XUD_INVALID_ARG;
     }
+    if (physicalDevice == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG; /* the scratch format is a question about THIS physical device */
+    }
     if ((swapchain->swapchain == VK_NULL_HANDLE) || (swapchain->imageCount == 0u) || (swapchain->images == NULL)) {
         return XUD_INVALID_ARG;
     }
@@ -180,6 +355,10 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
         return XUD_OUT_OF_MEMORY;
     }
     renderer->layout = layout;
+    renderer->descriptor = descriptor; /* the ONE record of the rungs above this one that this rung
+                                          holds a pointer to rather than owns - set first, because
+                                          every retirement path below reaches it: the scratch slot
+                                          the bring-up binds is a row of THIS record */
 
     /* The default background, quantized to the byte grid the public XudColor lives on: the
        render pass's own default clear colour, each channel times 255 and rounded to the nearest
@@ -205,6 +384,21 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
         return result;
     }
 
+    /* 1b. the high-dynamic-range scratch: the format this physical device answers for colour
+       attachment AND sampling, then the image, view, sampler, pass and one framebuffer row at the
+       swapchain's extent, then the sampler-array slot - the render target's assembly with no handle
+       and no batch, because the scratch belongs to the renderer. It sits HERE rather than beside the
+       pipeline because the pipeline's scene rows are BOUND to this pass: pass compatibility is
+       format-for-format, so the same eight pipelines cannot serve a float attachment and an 8-bit
+       one, and the split is the one this step makes. */
+    renderer->hdrFormat = xud_renderer_pick_hdr_format(loader, physicalDevice, swapchain->createInfo.imageFormat);
+    result = xud_renderer_hdr_open(renderer, loader, device, caps, alloc, descriptor, swapchain);
+    if (result != XUD_OK) {
+        (void)xud_renderpass_close(&renderer->renderPass, device, loader, alloc);
+        free(renderer);
+        return result;
+    }
+
     /* 2. the batch rung, below the pipeline in the ladder and above the allocator: its five
        buffers are carved out of the allocator's memory, which is already in hand from the pass
        above, and its vertex-input state is gated on the caps' vertex-input limits. It is handed
@@ -219,6 +413,10 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
                                                 scope closes; `batch` is the ACTIVE one and may be
                                                 a target's for the length of a scope */
     if (result != XUD_OK) {
+        xud_renderer_retire(renderer, device, loader, alloc); /* the pass and the scratch rows above
+                                                                  this rung are retired too - every
+                                                                  step of the retirement tolerates
+                                                                  the absence of what was never made */
         free(renderer);
         return result;
     }
@@ -234,7 +432,8 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
        bove the allocator and below this rung, and closes it after this rung's teardown has retired
        the pipeline that names those handles.
      */
-    result = xud_pipeline_open(&renderer->pipeline, loader, device, descriptor, renderer->batch, renderer->renderPass->renderPass);
+    result = xud_pipeline_open(
+        &renderer->pipeline, loader, device, descriptor, renderer->batch, renderer->hdrPass->renderPass, renderer->renderPass->renderPass);
     if (result != XUD_OK) {
         xud_renderer_retire(renderer, device, loader, alloc);
         free(renderer);
@@ -263,14 +462,8 @@ XudResult xud_renderer_open(XudRenderer** outRenderer, XudLoader* loader, const 
     }
 
     renderer->framebufferCount = swapchain->imageCount;
-    /* The descriptor is the ONE record of the rungs above this one that this rung holds a pointer
-       to rather than owns: the pipeline built above was created against THIS record's two set lay
-       outs, and the frame loop binds THIS record's set 0 every frame, so a renderer that forgot it
-       would be a renderer whose draw had no set to bind. The owner of the record is the context be
-       low, which closes it after this rung's teardown has released the range - the same outlive ru
-       le the batch's note in the header gives.
-    */
-    renderer->descriptor = descriptor;
+    /* (the descriptor pointer the retirement paths read was recorded at the top of this rung,
+       beside the layout pointer, for the reason given there.) */
 
     *outRenderer = renderer;
     return XUD_OK;
@@ -289,8 +482,8 @@ XudResult xud_renderer_draw(
     if ((renderer == NULL) || (outImageIndex == NULL)) {
         return XUD_INVALID_ARG;
     }
-    if ((renderer->pipeline == NULL) || (renderer->renderPass == NULL) || (renderer->framebuffers == NULL) || (renderer->frame == NULL)
-        || (renderer->descriptor == NULL)) {
+    if ((renderer->pipeline == NULL) || (renderer->renderPass == NULL) || (renderer->hdrPass == NULL) || (renderer->hdrFramebuffer == NULL)
+        || (renderer->framebuffers == NULL) || (renderer->frame == NULL) || (renderer->descriptor == NULL)) {
         return XUD_INVALID_ARG;
     }
 
@@ -341,6 +534,14 @@ XudResult xud_renderer_draw(
         return XUD_INVALID_ARG;
     }
 
+    /* The scratch pass carries the same background: it is the pass whose clear the caller sees,
+       the screen pass's own clear being replaced pixel-for-pixel by the resolve triangle. */
+    if (xud_renderpass_set_clear_color(renderer->hdrPass, (float)renderer->background.r / 255.0f, (float)renderer->background.g / 255.0f,
+            (float)renderer->background.b / 255.0f, (float)renderer->background.a / 255.0f)
+        != XUD_OK) {
+        return XUD_INVALID_ARG;
+    }
+
     /* The same background clears the off-screen passes: a target whose first frame drew nothing
        shows this frame's background rather than whatever its allocation handed over. */
     for (scope = 0u; scope < renderer->scopeCount; scope++) {
@@ -352,7 +553,8 @@ XudResult xud_renderer_draw(
     }
 
     return xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
-        renderer->framebufferCount, renderer->scopes, renderer->scopeCount, renderer->screenBatch, renderer->descriptor, outImageIndex);
+        renderer->framebufferCount, renderer->hdrPass, renderer->hdrFramebuffer, renderer->hdrSlot, renderer->scopes, renderer->scopeCount,
+        renderer->screenBatch, renderer->descriptor, outImageIndex);
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -400,7 +602,7 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
         return XUD_INVALID_ARG;
     }
     if ((renderer->frame == NULL) || (renderer->framebuffers == NULL) || (renderer->renderPass == NULL) || (renderer->pipeline == NULL)
-        || (renderer->batch == NULL)) {
+        || (renderer->hdrPass == NULL) || (renderer->hdrFramebuffer == NULL) || (renderer->batch == NULL)) {
         /* A renderer missing any rung this rebuilds is a renderer that was never brought up whole,
            and xud_renderer_open() is the call for that - a rebuild would otherwise have nothing to
            rebuild. */
@@ -469,6 +671,82 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
     if ((result != XUD_OK) && (result != XUD_ALREADY)) {
         return result;
     }
+
+    /* The scratch image at the new extent, and the same rule the screen pass follows keeps its
+       handle: the PASS is not recreated - the scene pipelines are bound to it, and a new handle
+       would orphan them - while image, view, depth row and framebuffer row all follow the extent.
+       The slot releases first (its descriptor set names the OLD view), the pass's depth goes next
+       (the rung runs its own device wait-idle guard, and that is what bounds any submission that
+       still reads the colour image below), and the pair is re-bound into a slot of its own after
+       the new view exists. */
+    (void)xud_framebuffer_close(&renderer->hdrFramebuffer, device, loader);
+    if (renderer->hdrSlotLive != 0u) {
+        (void)xud_descriptor_release_texture_slot(renderer->descriptor, loader, device, renderer->hdrSlot);
+        renderer->hdrSlotLive = 0u;
+    }
+    result = xud_renderpass_recreate_depth(&renderer->hdrPass, loader, device, caps, alloc, swapchain);
+    if ((result != XUD_OK) && (result != XUD_ALREADY)) {
+        return result;
+    }
+    if ((renderer->hdrColorImage != VK_NULL_HANDLE) && (renderer->layout != NULL)) {
+        (void)xud_layout_forget(renderer->layout, renderer->hdrColorImage);
+    }
+    if ((renderer->hdrColorView != VK_NULL_HANDLE) && (loader->deviceTable.vkDestroyImageView != NULL)) {
+        loader->deviceTable.vkDestroyImageView(device->device, renderer->hdrColorView, NULL);
+        renderer->hdrColorView = VK_NULL_HANDLE;
+    }
+    if ((renderer->hdrColorImage != VK_NULL_HANDLE) && (loader->deviceTable.vkDestroyImage != NULL)) {
+        loader->deviceTable.vkDestroyImage(device->device, renderer->hdrColorImage, NULL);
+        renderer->hdrColorImage = VK_NULL_HANDLE;
+    }
+    if ((renderer->hdrColorRange.memory != VK_NULL_HANDLE) && (alloc != NULL)) {
+        (void)xud_allocator_release(alloc, &renderer->hdrColorRange);
+    }
+    renderer->hdrWidth = swapchain->createInfo.imageExtent.width;
+    renderer->hdrHeight = swapchain->createInfo.imageExtent.height;
+    result = xud_rendertarget_fill_color_info(&renderer->hdrColorImageInfo, renderer->hdrWidth, renderer->hdrHeight, renderer->hdrFormat);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if (loader->deviceTable.vkCreateImage(device->device, &renderer->hdrColorImageInfo, NULL, &renderer->hdrColorImage) != VK_SUCCESS) {
+        return XUD_VULKAN_ERROR;
+    }
+    {
+        VkMemoryRequirements needs;
+        memset(&needs, 0, sizeof needs);
+        loader->deviceTable.vkGetImageMemoryRequirements(device->device, renderer->hdrColorImage, &needs);
+        result = xud_allocator_acquire(&renderer->hdrColorRange, alloc, loader, device, caps, &needs);
+        if (result != XUD_OK) {
+            return result;
+        }
+    }
+    result = xud_result_from_vk(loader->deviceTable.vkBindImageMemory(
+        device->device, renderer->hdrColorImage, renderer->hdrColorRange.memory, renderer->hdrColorRange.offset));
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_layout_track(renderer->layout, renderer->hdrColorImage, renderer->hdrColorImageInfo.initialLayout);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_framebuffer_fill_view_info(&renderer->hdrColorViewInfo, renderer->hdrColorImage, renderer->hdrFormat);
+    if (result != XUD_OK) {
+        return result;
+    }
+    if (loader->deviceTable.vkCreateImageView(device->device, &renderer->hdrColorViewInfo, NULL, &renderer->hdrColorView) != VK_SUCCESS) {
+        return XUD_VULKAN_ERROR;
+    }
+    result = xud_framebuffer_open(&renderer->hdrFramebuffer, loader, device, renderer->hdrPass, renderer->hdrColorImage,
+        renderer->hdrFormat, renderer->hdrWidth, renderer->hdrHeight);
+    if (result != XUD_OK) {
+        return result;
+    }
+    result = xud_descriptor_bind_texture_slot(renderer->descriptor, loader, device, renderer->hdrColorView, renderer->hdrSampler,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->hdrSlot);
+    if (result != XUD_OK) {
+        return result;
+    }
+    renderer->hdrSlotLive = 1u;
 
     /* And back up: the rows first (they are created FOR the pass, and their views name the NEW imag
        es), then the frame (its fences are one per image, so its count comes from the new swapchain

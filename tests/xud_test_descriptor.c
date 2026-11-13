@@ -796,22 +796,26 @@ static void xud_test_gpu_descriptor(void) {
 
     /* The allocator below this rung is no longer storage-only: the descriptor's buffer made one blo
        ck and one live range, its white default made a second block and a second live range, the rend
-       er pass's depth image made a third of each, and the batch rung below the renderer made a fourt
-       h block and six more live ranges - its arena and its five data buffers are six requests small
+       er pass's depth image made a third of each, the renderer's scratch image and the scratch pass's
+       own depth image made a fourth and fifth - two more IMAGE requirements, each alignment too large
+       for a hole in a block someone else holds - and the batch rung below the renderer made a sixt
+       h block and six more live ranges: its arena and its five data buffers are six requests small
        enough to share blocks, which is the suballocation half of the repo's "allocate once, suballoca
-       te always" rule seen from the other side of the ladder. Every number below is therefore read a
-       s a delta on this baseline rather than as a constant.
-     */
+       te always" rule seen from the other side of the ladder. The two host-visible arenas - this
+       rung's staging arena and the batch's - are blocks of their own besides it. Every number below
+       is therefore read as a delta on this baseline rather than as a constant.
+    */
     xud_check(
         xud_allocator_stats(context->allocator, &blockCount, &liveCount, &bytes, &cursor) == XUD_OK, "gpu-desc/stats-answers", "answers");
-    xud_check(blockCount == 5u, "gpu-desc/five-blocks",
-        "five VkDeviceMemory: the descriptor's uniform buffer, the render pass's depth image, the white default's own image (the second "
+    xud_check(blockCount == 7u, "gpu-desc/five-blocks",
+        "seven VkDeviceMemory: the descriptor's uniform buffer, the render pass's depth image, the white default's own image (the second "
         "thing in this tree that asked for an IMAGE's requirements, and its alignment does not fit a hole in the depth image's block "
-        "either) and the two host-visible arenas, this rung's staging arena and the batch's, which are blocks of their own because a "
-        "mapping is per-VkDeviceMemory rather than per-range");
-    xud_check(liveCount == 10u, "gpu-desc/ten-live-ranges",
-        "ten live ranges over them: the uniform buffer's carve, the white default's, the depth image's, the two arenas each of which is a "
-        "whole block, and the batch's four streams plus its index buffer, which is what a completed context owns now");
+        "either), the renderer's scratch image and the scratch pass's own depth image, and the two host-visible arenas, this rung's "
+        "staging arena and the batch's, which are blocks of their own because a mapping is per-VkDeviceMemory rather than per-range");
+    xud_check(liveCount == 12u, "gpu-desc/ten-live-ranges",
+        "twelve live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, the "
+        "scratch pass's depth, the two arenas each of which is a whole block, and the batch's four streams plus its index buffer, which "
+        "is what a completed context owns now");
     {
         uint32_t stream = 0u;
         VkDeviceSize batchCarves = 0u;
@@ -822,7 +826,8 @@ static void xud_test_gpu_descriptor(void) {
         batchCarves += context->renderer->batch->indexRange.size;
         xud_check(bytes
                 == (context->descriptor->uniformRange.size + context->descriptor->uniformStagingRange.size
-                    + context->descriptor->whiteRange.size + context->renderer->renderPass->depthRange.size + batchCarves),
+                    + context->descriptor->whiteRange.size + context->renderer->renderPass->depthRange.size
+                    + context->renderer->hdrColorRange.size + context->renderer->hdrPass->depthRange.size + batchCarves),
             "gpu-desc/bytes-are-every-carve",
             "the reserved bytes are exactly every carve added up, which is what makes the counter a fa"
             "ct rather than an estimate - and the batch's six are in that sum, so the rung below this o"

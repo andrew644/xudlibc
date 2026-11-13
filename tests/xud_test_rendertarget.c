@@ -220,12 +220,24 @@ static void xud_test_rendertarget_gpu(void) {
    scope's draws went to the wrong batch, one of the two probes is the wrong colour. */
 #define XUD_TEST_RT_TOLERANCE 2u
 
+/* The curve the resolve stage runs between the scratch image and the screen (ACES, Narkowicz's
+   rational form - see shaders/present.frag), and the sRGB encode the SRGB swapchain formats run
+   on top of it. The probes sit at 0 and 255, where the curve is not identity: 255 arrives as the
+   curve's value at 1.0 (~232 after the encode), and that shift is the point of the pipeline. */
+static float xud_test_rt_aces(float c) {
+    const float t = (c * (2.51f * c + 0.03f)) / (c * (2.43f * c + 0.59f) + 0.14f);
+
+    return (t < 0.0f) ? 0.0f : ((t > 1.0f) ? 1.0f : t);
+}
+
 static uint32_t xud_test_rt_srgb_byte(uint8_t value) {
-    const float c = (float)value / 255.0f;
+    const float c = xud_test_rt_aces((float)value / 255.0f);
     const float e = (c <= 0.0031308f) ? (12.92f * c) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
 
     return (uint32_t)(e * 255.0f + 0.5f);
 }
+
+static uint32_t xud_test_rt_aces_byte(uint8_t value) { return (uint32_t)(xud_test_rt_aces((float)value / 255.0f) * 255.0f + 0.5f); }
 
 static void xud_test_rendertarget_readback(void) {
     XudContext* context = NULL;
@@ -241,8 +253,8 @@ static void xud_test_rendertarget_readback(void) {
     uint8_t* pixels = NULL;
     uint32_t acquired = 0u;
     uint32_t frame = 0u;
-    uint32_t blueByte = xud_test_rt_srgb_byte(255u);
-    uint32_t zeroByte = xud_test_rt_srgb_byte(0u);
+    uint32_t blueByte = 0u;
+    uint32_t zeroByte = 0u;
 
     result = xud_init_context(&context, XUD_TEST_RT_WINDOW, XUD_TEST_RT_WINDOW, "xud_test");
     xud_check(result == XUD_OK, "rt-readback/bringup", "the readback context completes");
@@ -251,6 +263,11 @@ static void xud_test_rendertarget_readback(void) {
     }
     result = xud_create_render_texture(&target, context, XUD_TEST_RT_TARGET, XUD_TEST_RT_TARGET);
     xud_check(result == XUD_OK, "rt-readback/create", "the 64x64 target is created");
+    blueByte = ((context->swapchain->createInfo.imageFormat == VK_FORMAT_R8G8B8A8_SRGB)
+                   || (context->swapchain->createInfo.imageFormat == VK_FORMAT_B8G8R8A8_SRGB))
+        ? xud_test_rt_srgb_byte(255u)
+        : xud_test_rt_aces_byte(255u);
+    zeroByte = xud_test_rt_aces_byte(0u);
 
     /* One frame per swapchain image plus one: every presentable image ends up holding the picture,
        so whichever one the acquire below returns carries the same bytes. */

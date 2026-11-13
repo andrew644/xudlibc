@@ -56,9 +56,14 @@
     64u /* the smallest table, sized for a swapchain's images, the depth
                                     image, the white image and the first textures without a grow */
 
+#define XUD_LAYOUT_TOMBSTONE                                                                                                               \
+    ((VkImage)(~0ull)) /* the delete marker forget leaves behind: a handle value no driver
+                          ever returns, so a slot carrying it is neither an entry nor free */
+
 typedef struct {
-    VkImage image; /* the key; VK_NULL_HANDLE is the free-slot sentinel, and every entry point
-                      refuses a barrier or a track about VK_NULL_HANDLE for that reason */
+    VkImage image; /* the key; VK_NULL_HANDLE is the never-used sentinel, XUD_LAYOUT_TOMBSTONE
+                      the deleted one, and every entry point refuses a barrier or a track about
+                      VK_NULL_HANDLE for that reason */
     VkImageLayout layout; /* the layout the image is in as of the last record this rung saw */
 } XudImageSlot;
 
@@ -66,6 +71,8 @@ typedef struct XudLayoutTracker {
     XudImageSlot* slots; /* the one host allocation, calloc'd at open and re-calloc'd by every grow */
     uint32_t slotCount;  /* the size of the array above; a slot whose image is VK_NULL_HANDLE is free */
     uint32_t usedCount;  /* the live entries, checked against the load factor before every insert */
+    uint32_t tombCount; /* the markers forget left behind; they hold no entry but still carry a
+                           probe, so the load factor counts them beside the live entries */
 } XudLayoutTracker;
 
 /*-----------------------------------------------------------------------------------------------

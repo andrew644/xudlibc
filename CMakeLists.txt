@@ -130,19 +130,35 @@ add_custom_command(
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/solid_textured.frag"
     VERBATIM)
 add_custom_command(
+    OUTPUT "${XUD_GEN_DIR}/present_vert.spv"
+    COMMAND "${GLSLANG_VALIDATOR}" -V -o "${XUD_GEN_DIR}/present_vert.spv" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/present.vert"
+    COMMAND "${XUD_SPIRV_VAL}" "${XUD_GEN_DIR}/present_vert.spv"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/present.vert"
+    VERBATIM)
+add_custom_command(
+    OUTPUT "${XUD_GEN_DIR}/present_frag.spv"
+    COMMAND "${GLSLANG_VALIDATOR}" -V -o "${XUD_GEN_DIR}/present_frag.spv" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/present.frag"
+    COMMAND "${XUD_SPIRV_VAL}" "${XUD_GEN_DIR}/present_frag.spv"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/present.frag"
+    VERBATIM)
+add_custom_command(
     OUTPUT "${XUD_GEN_DIR}/xud_solid_spv.h"
     COMMAND "${CMAKE_COMMAND}"
         -DSPV_OUT_HEADER=${XUD_GEN_DIR}/xud_solid_spv.h
         -DSPV_GUARD=XUD_SOLID_SPV_H_
-        -DSPV_COUNT=3
+        -DSPV_COUNT=5
         -DSPV_ARRAY_0=xudSolidVertSpv
         -DSPV_ARRAY_1=xudSolidFragSpv
         -DSPV_ARRAY_2=xudSolidFragTexturedSpv
+        -DSPV_ARRAY_3=xudPresentVertSpv
+        -DSPV_ARRAY_4=xudPresentFragSpv
         -DSPV_INPUT_0=${XUD_GEN_DIR}/solid_vert.spv
         -DSPV_INPUT_1=${XUD_GEN_DIR}/solid_frag.spv
         -DSPV_INPUT_2=${XUD_GEN_DIR}/solid_textured_frag.spv
+        -DSPV_INPUT_3=${XUD_GEN_DIR}/present_vert.spv
+        -DSPV_INPUT_4=${XUD_GEN_DIR}/present_frag.spv
         -P "${CMAKE_CURRENT_SOURCE_DIR}/scripts/spv_to_header.cmake"
-    DEPENDS "${XUD_GEN_DIR}/solid_vert.spv" "${XUD_GEN_DIR}/solid_frag.spv" "${XUD_GEN_DIR}/solid_textured_frag.spv"
+    DEPENDS "${XUD_GEN_DIR}/solid_vert.spv" "${XUD_GEN_DIR}/solid_frag.spv" "${XUD_GEN_DIR}/solid_textured_frag.spv" "${XUD_GEN_DIR}/present_vert.spv" "${XUD_GEN_DIR}/present_frag.spv"
     VERBATIM)
 set(XUD_GENERATED_HEADERS "${XUD_GEN_DIR}/xud_solid_spv.h")
 
