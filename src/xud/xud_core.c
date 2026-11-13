@@ -405,21 +405,21 @@ XudResult xud_init_context(XudContext** outContext, uint32_t width, uint32_t hei
     if (result != XUD_OK)
         goto fail;
 
-    /* The descriptor rung, above the allocator and below the renderer: the two set layouts of the
-       plan's descriptor table (set 0 per-frame, set 1 per-material), the pool sized for both, set 0
-       itself, the uniform buffer that holds the per-frame block and the write that binds it into t
-       he set. It sits here because of what it needs and what needs it: the allocator below for the
-       memory the buffer is carved out of, the caps for the limits the layouts and the push range a
-       re gated on, and the renderer above for the pipeline layout that names them. It is opened eag
-       erly rather than on the first draw for the same reason the allocator and the handle table are
-       : the layouts and the pipeline layout are created ONCE at init (the repo's rule), so a set la
-       yout created per object would be a layout recreated per frame, and the sampler array's bound
-       is a ceiling that cannot grow without recreating the pipeline. What is live after this rung i
-       s set 0 and its buffer, and the slot sets, one per texture slot, each holding one sampler -
-       every one of them naming the white default until a texture created above takes a slot off th
-       e rung's free list. A refusal
-        here is a driver refusal (a nil row, a
-       refused create) or the caps gate above refusing a layout this machine's limits cannot have.
+    /* The descriptor rung, above the allocator and below the renderer: the ONE set layout of the
+       bindless design (the per-frame block, the shadow sampler and the 512-deep sampler array), th
+       e pool sized for its single set, set 0 itself, the uniform buffer that holds the per-frame b
+       lock and the write that binds it into the set. It sits here because of what it needs and wha
+       t needs it: the allocator below for the memory the buffer is carved out of, the caps for the
+       limits the layout and the push range are gated on, and the renderer above for the pipeline l
+       ayout that names them. It is opened eagerly rather than on the first draw for the same reaso
+       n the allocator and the handle table are: the layout and the pipeline layout are created ONC
+       E at init (the repo's rule), so a layout created per object would be a layout recreated per
+       frame, and the sampler array's bound is a ceiling that cannot grow without recreating the pi
+       peline. What is live after this rung is set 0 and its buffer, and one sampler-array entry pe
+       r live texture, each naming one view-and-sampler pair - every one of them naming the white d
+       efault until a texture created above takes an entry off the rung's free list. A refusal here
+       is a driver refusal (a nil row, a refused create) or the caps gate above refusing a layout t
+       his machine's limits cannot have.
      */
     result = xud_descriptor_open(
         &context->descriptor, context->loader, context->device, &context->physicalDevice->caps, context->allocator, context->layout);

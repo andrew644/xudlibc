@@ -120,9 +120,12 @@ static_assert(XUD_ALLOCATOR_SPLIT_MIN > 0u, "xud_allocator.h: a split must leave
 /* The two bounds of this layer's own host-side arrays, in the doubling shape the rest of the tree
    uses (xud_instance.c, xud_physical.c, xud_swapchain.c's image query, xud_handle.c's slot
    arrays). A block count at MAX and a range count at MAX are refusals reported, not cut arrays: a
-   cut block array is a VkDeviceMemory that is no longer reachable and therefore never freed. */
+   cut block array is a VkDeviceMemory that is no longer reachable and therefore never freed.
+   The block ceiling sits at 1024 because a full 512-entry sampler array of small textures, two
+   aligned carves to a 128 KiB block, plus the renderer's resident rows is the deepest live pic
+   ture this layer's own public ceiling can ask for. */
 #define XUD_ALLOCATOR_BLOCK_MIN_CAPACITY 4u
-#define XUD_ALLOCATOR_BLOCK_MAX_CAPACITY 256u
+#define XUD_ALLOCATOR_BLOCK_MAX_CAPACITY 1024u
 #define XUD_ALLOCATOR_RANGE_MIN_CAPACITY 16u
 #define XUD_ALLOCATOR_RANGE_MAX_CAPACITY 4096u
 

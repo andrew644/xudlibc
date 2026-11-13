@@ -499,13 +499,13 @@ static void xud_test_gpu_allocator(void) {
      */
     xud_check(xud_allocator_stats(context->allocator, &baseBlocks, &baseLive, &baseBytes, &cursorBefore) == XUD_OK,
         "gpu-alloc/baseline-stats", "answers at the context's own state");
-    xud_check(baseBlocks == 8u, "gpu-alloc/baseline-eight-blocks",
-        "eight blocks: the descriptor rung's uniform buffer, the render pass's depth image (the first thing that ever asked for an "
-        "IMAGE's requirements rather than a buffer's, and an image's alignment is not a buffer's), the white default every entry of "
-        "set 1's sampler array names (a second image, whose alignment does not fit a hole in the depth image's block either), the "
-        "renderer's scratch image, the scratch pass's own depth image and the shadow map - three more images, three more alignments - "
-        "and the two host-visible arenas - the batch's and the descriptor's staging arena - which are blocks of their own because "
-        "vkMapMemory maps a VkDeviceMemory rather than a range");
+    xud_check(baseBlocks == 6u, "gpu-alloc/baseline-six-blocks",
+        "six blocks: the descriptor rung's uniform buffer, the render pass's depth image (the first thing that ever asked for an "
+        "IMAGE's requirements rather than a buffer's - and its block, sized for size plus alignment, is big enough that the white "
+        "default every entry of set 0's sampler array names is a carve in its hole, not a block), the renderer's scratch image (whose "
+        "block the scratch pass's own depth image shares for the same reason) and the shadow map - three images, three blocks, the map "
+        "too big for the other two's holes - and the two host-visible arenas - the batch's and the descriptor's staging arena - which "
+        "are blocks of their own because vkMapMemory maps a VkDeviceMemory rather than a range");
     xud_check(baseLive == 17u, "gpu-alloc/baseline-seventeen-live", "and seventeen live ranges, those seventeen carves");
     xud_check(baseBytes > 0u, "gpu-alloc/baseline-bytes", "and reserved bytes, so the rungs below this one really did ask the allocator");
     xud_check(cursorBefore == 0u, "gpu-alloc/baseline-cursor",

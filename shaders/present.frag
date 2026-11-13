@@ -28,16 +28,32 @@
    from - and the luminance that steers it is the tonemapped luminance, so the edge metric sees
    what the eye will see while the blended colour stays physically mixed.
 
-   The scratch sampler is the slot set the frame loop binds for this pass - set 1 binding 0, the
-   exact shape of set 1's layout - and the bloom chain is set 0 binding 2, the per-frame array.
-   There is no push-constant block here; the layout's push range belongs to the batch's draw rows. */
+   Every sampler this stage reads - the scratch sample and the four chain levels alike - is one
+   entry of the bindless sampler array at set 0 binding 2: the scratch is the entry the frame loop
+   PUSHES before this pass's one draw (the push row below, the same 96 bytes the batch draws push),
+   and the levels are the constant entries XUD_DESCRIPTOR_ENTRY_BLOOM + level, resident from
+   bring-up. The push-indexed fetch needs the non-uniform qualifier - the value is the same for
+   every invocation of the draw, but a push constant is not a compile-time constant, and
+   shaderSampledImageArrayNonUniformIndexing is core since Vulkan 1.2, under this library's 1.3 floo
+   r. */
+
+#extension GL_EXT_nonuniform_qualifier : require
 
 layout(location = 0) in vec2 inUv;
 layout(location = 0) out vec4 outColor;
 
-layout(set = 1, binding = 0) uniform sampler2D xudSampler;
-layout(set = 0, binding = 2) uniform sampler2D xudBloom[4];
+layout(push_constant) uniform XudPushRow {
+    mat4 modelMatrix;    // 0  - unread here: the resolve's triangle has no model
+    uint materialIndex;  // 64 - unread
+    uint textureIndex;   // 68 - the scratch entry this pass resolves
+    uint flags;          // 72 - unread
+    uint reserved;       // 76
+    vec4 tint;           // 80 - unread
+} xudPush;
 
+layout(set = 0, binding = 2) uniform sampler2D xudSampler[512];  // XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE, restated for GLSL
+
+const uint xudBloomEntry = 2u;  // XUD_DESCRIPTOR_ENTRY_BLOOM (xud_descriptor.h), restated here
 const vec3 xudLumaWeights = vec3(0.2126, 0.7152, 0.0722);
 
 vec3 xudTonemapAces(vec3 linear)
@@ -53,17 +69,17 @@ vec3 xudTonemapAces(vec3 linear)
 vec3 xudSceneColour(vec2 uv)
 {
     vec3 bloom = vec3(0.0);
-    bloom += textureLod(xudBloom[0], uv, 0.0).rgb * 0.60;
-    bloom += textureLod(xudBloom[1], uv, 0.0).rgb * 0.40;
-    bloom += textureLod(xudBloom[2], uv, 0.0).rgb * 0.25;
-    bloom += textureLod(xudBloom[3], uv, 0.0).rgb * 0.15;
-    vec3 sampled = texture(xudSampler, uv).rgb;
+    bloom += textureLod(xudSampler[xudBloomEntry + 0u], uv, 0.0).rgb * 0.60;
+    bloom += textureLod(xudSampler[xudBloomEntry + 1u], uv, 0.0).rgb * 0.40;
+    bloom += textureLod(xudSampler[xudBloomEntry + 2u], uv, 0.0).rgb * 0.25;
+    bloom += textureLod(xudSampler[xudBloomEntry + 3u], uv, 0.0).rgb * 0.15;
+    vec3 sampled = texture(xudSampler[nonuniformEXT(xudPush.textureIndex)], uv).rgb;
     return xudTonemapAces(sampled + bloom);
 }
 
 void main()
 {
-    vec2 texel = 1.0 / vec2(textureSize(xudSampler, 0));
+    vec2 texel = 1.0 / vec2(textureSize(xudSampler[nonuniformEXT(xudPush.textureIndex)], 0));
     vec3 centre = xudSceneColour(inUv);
     float centreLuma = dot(centre, xudLumaWeights);
 
@@ -79,7 +95,7 @@ void main()
     float lumaLow = min(centreLuma, min(min(lumaNorthWest, lumaNorthEast), min(lumaSouthWest, lumaSouthEast)));
     float lumaHigh = max(centreLuma, max(max(lumaNorthWest, lumaNorthEast), max(lumaSouthWest, lumaSouthEast)));
     if ((lumaHigh - lumaLow) < max(0.125 * centreLuma, 0.05)) {
-        outColor = vec4(centre, texture(xudSampler, inUv).a);
+        outColor = vec4(centre, texture(xudSampler[nonuniformEXT(xudPush.textureIndex)], inUv).a);
         return;
     }
 
@@ -93,5 +109,5 @@ void main()
     vec3 blendWide = 0.5 * blendNear + 0.25 * (xudSceneColour(inUv - dirWalk * 0.5) + xudSceneColour(inUv + dirWalk * 0.5));
     float blendWideLuma = dot(blendWide, xudLumaWeights);
     vec3 blended = ((blendWideLuma < lumaLow) || (blendWideLuma > lumaHigh)) ? blendNear : blendWide;
-    outColor = vec4(mix(centre, blended, 0.75), texture(xudSampler, inUv).a);
+    outColor = vec4(mix(centre, blended, 0.75), texture(xudSampler[nonuniformEXT(xudPush.textureIndex)], inUv).a);
 }

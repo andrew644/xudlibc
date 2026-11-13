@@ -202,7 +202,7 @@ static void xud_test_material_pure(void) {
         xud_material_resolve_variant(&variant, XUD_BLEND_OPAQUE, 1u) == XUD_OK, "material/resolve-mapped", "a mapped material answers");
     xud_check(variant == XUD_BATCH_VARIANT_TEXTURED, "material/resolve-mapped-row",
         "and the map moves the OPAQUE material to the textured row, because a map cannot be sampled b"
-        "y the row whose frag module never reads set 1");
+        "y the row whose frag module never reads the sampler array");
     xud_material_resolve_variant(&variant, XUD_BLEND_TRANSPARENT, 1u);
     xud_check(variant == XUD_BATCH_VARIANT_TEXTURED, "material/resolve-mapped-overrides-transparent",
         "and it moves the transparent one there too, which is the whole of the override: the textured"
@@ -233,7 +233,7 @@ static void xud_test_material_pure(void) {
         "a TEXTURE slot of THIS table, allocated through the handle layer - the whole of what a map ha"
         "s to be to the material rung, which validates a handle and reads no image");
     /* The slot's record, filled with the one member the begin's resolver reads: a map that occupies
-       an entry of set 1's sampler array is a map the begin can put in the drawing state, and the
+       an entry of set 0's sampler array is a map the begin can put in the drawing state, and the
        slot number is what the state move hands to the batch's texture channel. */
     mapRecord = calloc(1u, sizeof(*mapRecord));
     xud_check(mapRecord != NULL, "material/map-record-alloc", "the record allocates on the host");
@@ -586,7 +586,7 @@ static void xud_test_material_gpu(void) {
     xud_check(xud_material_get(context->handleTable, mapped, &record) == XUD_OK, "gpu-material/get-mapped-ok", "and its record reads back");
     xud_check(record->variant == XUD_BATCH_VARIANT_TEXTURED, "gpu-material/mapped-variant",
         "and the record's row is the textured one, which against a real device is the row whose frag m"
-        "odule is solid_textured.frag and samples set 1");
+        "odule is solid_textured.frag and samples the sampler array");
     xud_check((record->diffuseMap.kind == XUD_HANDLE_KIND_TEXTURE) && (record->diffuseMap.index == map.index),
         "gpu-material/mapped-names-the-map", "and the record names the texture that was handed to it");
     xud_check(
@@ -616,7 +616,7 @@ static void xud_test_material_gpu(void) {
     xud_check(row.variant == XUD_BATCH_VARIANT_TEXTURED, "gpu-material/recorded-row-is-the-textured-row",
         "and the row the frame loop binds for the mapped draws names the textured variant, which is th"
         "e one fact a pixel would otherwise be standing in for: the pipeline those vertices ran under i"
-        "s the one that samples set 1");
+        "s the one that samples the sampler array");
     xud_check(row.materialIndex == mapped.index, "gpu-material/recorded-row-names-the-mapped-material",
         "and the row names the mapped material's slot, so the row and the record agree about which mat"
         "erial the draws were made under");

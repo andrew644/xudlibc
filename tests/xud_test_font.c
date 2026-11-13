@@ -1336,7 +1336,7 @@ static void xud_test_font_gpu(void) {
     xud_check(record->atlasWidth >= XUD_FONT_ATLAS_MIN_DIM, "gpu-atlas-attempt",
         "and it is at least this rung's floor, so the attempt loop below settled on a real extent rather than on zero");
 
-    /* The atlas's entry of set 1's sampler array: the whole reason the public pair hands the atlas down to the
+    /* The atlas's entry of set 0's sampler array: the whole reason the public pair hands the atlas down to the
        texture rung is so the walk can draw through it, and the texture rung hands it an entry of the array the
        same way xud_create_texture() and the model rung do for a map. A record whose atlas holds no entry is one
        the walk's resolve answers with the no-map sentinel, and the walk then samples slot 0's white default rather
@@ -1348,7 +1348,7 @@ static void xud_test_font_gpu(void) {
         xud_check(xud_texture_get(context->handleTable, record->atlas, &atlas) == XUD_OK, "gpu-atlas-get",
             "the atlas's own record is readable, which is what the slot below is read off");
         xud_check((atlas != NULL) && (atlas->samplerSlotLive != 0u), "gpu-atlas-slot-live",
-            "and the atlas holds a live entry of set 1's sampler array, so the walk's resolve answers a slot rather than "
+            "and the atlas holds a live entry of set 0's sampler array, so the walk's resolve answers a slot rather than "
             "the no-map sentinel");
         xud_check((atlas == NULL) || (atlas->samplerSlot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE), "gpu-atlas-slot-bounded",
             "and that entry is inside the array, which is the bound the walk's own textureIndex check refuses past");

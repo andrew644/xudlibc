@@ -145,6 +145,12 @@ typedef struct XudDeviceCaps {
                                                sparseProperties */
     VkPhysicalDeviceFeatures2 features; /* the driver's answer, verbatim; the wanted ∩ this is what
                                            S6 enables, derived, not stored */
+    VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexing; /* the same query's second answer: the
+                                                                      bindless knobs the descriptor rung's
+                                                                      sampler array asks for, chained to the
+                                                                      Features2 query as this layer's own
+                                                                      struct and copied out whole; the
+                                                                      wanted ∩ this is derived, not stored */
     VkPhysicalDeviceMemoryProperties2 memoryProperties; /* the allocator's input: memoryTypeCount +
                                                            memoryTypes[VK_MAX_MEMORY_TYPES] + memoryHeapCount +
                                                            memoryHeaps[VK_MAX_MEMORY_HEAPS] */
@@ -239,6 +245,16 @@ XudResult xud_physical_select(
 /// them on every call.
 /// XUD_INVALID_ARG on a NULL out-struct or NULL caps.
 XudResult xud_physical_record_features(VkPhysicalDeviceFeatures* outEnabledFeatures, const XudDeviceCaps* caps);
+
+/// Pure: the VkPhysicalDeviceDescriptorIndexingFeatures S6 chains into vkCreateDevice's pNext - the
+/// four bindless knobs the sampler array asks for (a runtime-sized array, non-uniform index sampling,
+/// partially-bound array entries, and updates that may land while a recorded command buffer still
+/// names the set) intersected with what the driver reported. The knobs are all-or-nothing for the
+/// array, so a driver missing any one answers FALSE for it and the device layer refuses the whole
+/// array. Every field xudlibc does not ask for stays VkFalseString, the same rule
+/// xud_physical_record_features() follows. XUD_INVALID_ARG on a NULL out-struct or NULL caps.
+XudResult xud_physical_record_descriptor_indexing(
+    VkPhysicalDeviceDescriptorIndexingFeatures* outEnabledFeatures, const XudDeviceCaps* caps);
 
 /// Pure: choose the queue family the draws go through - the family S6 rows first and S7 presents
 /// on; the answer is recorded in the caps and S6/S7 never query again. The rule is a family whose

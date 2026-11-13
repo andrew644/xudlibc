@@ -64,7 +64,7 @@ XudResult xud_material_resolve_variant(uint32_t* outVariant, uint32_t blendMode,
     /* The one branch the whole "mapped materials are textured" rule lives in. The textured row is
        chosen rather than combined with the blend mode because the variant axis is the pipeline lis
        t's variant axis and there is one row per entry of it: a material cannot draw through two ro
-       ws at once, and the row that samples a map is the only one whose frag module reads set 1. Th
+       ws at once, and the row that samples a map is the only one whose frag module reads the sampler array. Th
        e blend mode it replaces is not lost in any other sense - xud_pipeline.c gives the textured r
        ow the same SRC_ALPHA/ONE_MINUS_SRC_ALPHA pair as the transparent one - so what the override
        costs a caller is the name of its blend mode and nothing of its blending.
@@ -117,7 +117,7 @@ XudResult xud_material_resolve_texture(const XudHandleTable* table, const XudMat
         return XUD_INVALID_ARG;
     }
     if (texture->samplerSlot == XUD_TEXTURE_SAMPLER_SLOT_NONE) {
-        /* A live map that occupies no entry of set 1's array - a texture opened below the context
+        /* A live map that occupies no entry of set 0's array - a texture opened below the context
            level, whose image lives nowhere the array can name - is answered with the no-texture
            sentinel rather than an index that names nothing: the textured row its variant binds
            samples slot 0, the white default, and a map that cannot be sampled at all drawing white

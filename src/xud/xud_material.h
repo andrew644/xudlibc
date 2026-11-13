@@ -36,7 +36,7 @@
  *
  *   What the record holds, and why that is the whole of it today: the pipeline variant every
  *   draw of this material uses, which is live the moment a material is, and the diffuse map its draws
- *   sample, which is a handle and not an image. The set-1 half the record names through the map's own
+ *   sample, which is a handle and not an image. The sampler-entry half the record names through the map's own
  *   samplerSlot is the one per-material set the descriptor-layout rung allocates
  *   (XUD_DESCRIPTOR_SET_MATERIAL), and the texture step is what writes a map's view into its entry of that
  *   set's sampler array - which is what makes a map's slot the record's to give back at the close rather
@@ -44,16 +44,16 @@
  *   draw state: raylib's Material is { shader, maps[], params[] } (reference/raylib/raylib.h 388-3
  *   92) and none of those three is a blend mode - raylib's blend mode is a global its BeginBlendMo
  *   de()/EndBlendMode() pair scopes - and the two things a material owns in this library are theref
- *   ore the pipeline row its draws bind and the set-1 bindings its draws name. The shader half of r
- *   aylib's Material is not a member here at all: this tree has one shader pair (shaders/solid.vert
- *   + solid.frag, landed S16) and no second pipeline to name, so a per-material shader choice is a
- *   n open ask, not a field. The maps half is the handle below rather than raylib's ten-row array,
- *   because one map has a pipeline row that reads it (XUD_BATCH_VARIANT_TEXTURED's frag module samp
- *   les set 1) and nine do not; naming a map moves the variant to that row, which is what makes "a
- *   material with a map draws textured" a fact of the record rather than a rule every draw call ha
- *   s to remember. The set-1 field is still VK_NULL_HANDLE: naming a map is not binding one, and t
- *   he write of a mapped texture into set 1 is the step after this one - the same "placeholder with
- *   a named owner" shape the descriptor rung states for the block members no shader reads.
+ *   ore the pipeline row its draws bind and the sampler-array entry its draws name. The shader hal
+ *   f of raylib's Material is not a member here at all: this tree has one shader pair (shaders/soli
+ *   d.vert + solid.frag, landed S16) and no second pipeline to name, so a per-material shader choi
+ *   ce is an open ask, not a field. The maps half is the handle below rather than raylib's ten-row
+ *   array, because one map has a pipeline row that reads the sampler array and nine do not; naming
+ *   a map moves the variant to that row, which is what makes "a material with a map draws textured"
+ *   a fact of the record rather than a rule every draw call has to remember. The entry a mapped dr
+ *   aw samples is written by the texture rung the map's own create claims it from, not by this run
+ *   g - the same "placeholder with a named owner" shape the descriptor rung states for the block me
+ *   mbers no shader reads.
  *
  *   Why the map is a handle the material names rather than an object the material owns: a texture
  *   is one image a dozen materials can sample, and an image with two owners is an image closed twi
@@ -75,7 +75,7 @@
 #include "xud.h" /* Required for: XudResult, XudHandle, XudMaterial, XUD_BLEND_* and XUD_HANDLE_KIND_MATERIAL - the public surface this rung is the half of */
 #include "xud_batch.h" /* Required for: XUD_BATCH_VARIANT_*, XUD_BATCH_NO_MATERIAL - the batch's variant axis, which is what a material selects */
 #include "xud_handle.h" /* Required for: XudHandleTable, XudHandleSlot, xud_handle_validate/alloc/free - the slot this rung's record lives in */
-#include <vulkan/vulkan.h> /* Required for: VkDescriptorSet, VK_NULL_HANDLE - the set-1 half of the record, declared and not yet allocated */
+#include <vulkan/vulkan.h> /* Required for: VkDescriptorSet, VK_NULL_HANDLE - the sampler-entry half of the record, declared and not yet allocated */
 
 #include <assert.h> /* Required for: static_assert, the mirror of the public tokens against the batch's axis */
 #include <stdint.h>
@@ -114,7 +114,7 @@ static_assert(XUD_BLEND_COUNT == (XUD_BATCH_VARIANT_TEXTURED + 1u),
    fill and the field their teardown rung has to close before the slot goes free", and this
    file is that teardown rung. Freeing a record is host-only: nothing in it has been created
    through a driver, the map it names belongs to the texture rung's slot and not to this one, and t
-   he set-1 half that eventually will have is VK_NULL_HANDLE until the step that writes a mapped te
+   he sampler-entry half that eventually will have is VK_NULL_HANDLE until the step that writes a mapped te
    xture into a set lands, so xud_material_close() frees memory and calls nothing.
 
    The three members, in the order the two rungs above fill them: the row, the map that decides th
@@ -136,7 +136,7 @@ typedef struct XudMaterialRecord {
 
 /// Pure: the row of the pipeline list a material draws through, which is the one place the rule "a
 /// material with a map draws textured" lives. The map's row is not a flag beside the blend mode's
-/// row - the variant axis IS the pipeline list's variant axis, and the row that samples set 1 is a
+/// row - the variant axis IS the pipeline list's variant axis, and the row that samples the sampler array is a
 /// different frag module - so the rule has to be applied once, at the record, rather than at every
 /// draw that reads it. A mapped material keeps nothing of its blend mode but its name: the textured
 /// row's blend attachment state is the transparent row's (xud_pipeline.c's two rows are the same f
@@ -155,9 +155,9 @@ XudResult xud_material_resolve_variant(uint32_t* outVariant, uint32_t blendMode,
 /// t does not name a live TEXTURE slot; XUD_OK on the no-map handle and on a live map.
 XudResult xud_material_check_map(const XudHandleTable* table, XudHandle diffuseMap);
 
-/// Pure: the set-1 slot a material's draws sample through - the map's own record member rather
-/// than a choice at the draw: XUD_BATCH_NO_TEXTURE when the record names no map (the slot 0 the
-/// frame loop's per-frame bind leaves set 1 at, the white default), the map's samplerSlot when it
+/// Pure: the sampler-array entry a material's draws sample through - the map's own record member r
+/// ather than a choice at the draw: XUD_BATCH_NO_TEXTURE when the record names no map (entry 0, the
+/// white default the descriptor rung wrote at bring-up), the map's samplerSlot when it
 /// names one. The map is read through the texture rung's accessor against the SAME table the
 /// material's own slot lives in, which is the begin call's re-validation from the texture's side:
 /// a map closed after the material was created refuses here rather than leaving a textured row

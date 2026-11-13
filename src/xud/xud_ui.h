@@ -4,7 +4,7 @@
  *              fold of a nuklear frame's converted vertices into the batch
  *
  *   Owns : XudUi - a nuklear nk_context, the nk_font_atlas that bakes the caller's font file into
- *          one RGBA32 image, that image as the context's one TEXTURE (and the set-1 sampler slot
+ *          one RGBA32 image, that image as the context's one TEXTURE (and the sampler-array entry
  *          it occupies), the null texture nk_font_atlas_end() fills with the atlas's own white
  *          pixel, and the two host staging arrays nk_convert() writes a frame's vertices and
  *          elements into. The pure halves - the one vertex mapper, the draw-list -> batch fold and
@@ -16,7 +16,7 @@
  *
  *   Why the fold is into the shared batch rather than a buffer of the ui's own: the batch's arena
  *          is where every per-frame geometry lives, and the ui is per-frame geometry. One texture
- *          carries the whole frame - nk_font_atlas_end() names the atlas's set-1 slot as the
+ *          carries the whole frame - nk_font_atlas_end() names the atlas's sampler-array entry as the
  *          font's texture AND points config.tex_null at the atlas's white pixel, so glyph and
  *          plain-fill commands both draw through the textured column with that one slot, which is
  *          what lets the fold be one draw row, the same shape the font walk records.
@@ -72,7 +72,7 @@ struct XudUi {
     struct nk_draw_null_texture texNull; /* the atlas's white pixel, what shape drawing samples */
     struct nk_font* font; /* the one font the context draws with, the atlas's first */
     XudHandle atlasTexture; /* the TEXTURE handle the atlas's image was opened as */
-    uint32_t atlasSlot; /* the entry of set 1's sampler array the record's view and sampler occupy */
+    uint32_t atlasSlot; /* the entry of set 0's sampler array the record's view and sampler occupy */
     uint32_t fbWidth; /* the framebuffer extent the last map used, pixels */
     uint32_t fbHeight; /* ditto, the vertical half */
     XudUiVertex* vertexStaging; /* XUD_UI_VERTEX_STAGING vertices, nk_convert's vertex target */
@@ -115,13 +115,13 @@ XudResult xud_ui_feed_input(struct nk_context* context, const XudInput* input);
 
 /// Driver: bring the rung up above a live context - bake the caller's font file (or the built-in
 /// default when font is NULL) into the atlas, open that image as the context's one TEXTURE and
-/// bind it into set 1, name the atlas's texture and white pixel, and open the immediate-mode
+/// claim it a sampler-array entry, name the atlas's texture and white pixel, and open the immediate-mode
 /// context on the atlas's font. XUD_INVALID_ARG on a NULL out-param or context; XUD_UNSUPPORTED on
 /// a context that has not completed bring-up (no handle table, texture, descriptor or device).
 XudResult xud_ui_open(XudUi** outUi, XudContext* context, const XudFontData* font);
 
 /// Driver: the reverse of open - close the atlas's TEXTURE through the context's own close (which
-/// gives its set-1 slot back and retires the image, the view and the sampler), free the nuklear
+/// gives its sampler-array entry back and retires the image, the view and the sampler), free the nuklear
 /// context, clear the atlas and free the rung. XUD_INVALID_ARG on a NULL out-param; XUD_ALREADY on
 /// a NULL rung, which is what a context that never opened the ui answers.
 XudResult xud_ui_destroy(XudUi** ioUi, XudContext* context);

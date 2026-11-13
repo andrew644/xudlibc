@@ -352,7 +352,7 @@ XudResult xud_renderpass_fill_depth_info(VkImageCreateInfo* outCreateInfo, uint3
     outCreateInfo->tiling = VK_IMAGE_TILING_OPTIMAL;
 
     /* The one usage bit this image has: it is attached and nothing else. It is never sampled (no
-       descriptor in xud_descriptor.c's set-1 layout names a depth image), never copied and never
+       descriptor in xud_descriptor.c's sampler-array binding names a depth image), never copied and never
        mapped, and a usage mask that names more than the one use is a mask that asks the driver for
        a layout it does not need - and vkCreateImage's answer for an unsupported (format, tiling,
        usage) tuple is exactly what this bit is a fact about. */

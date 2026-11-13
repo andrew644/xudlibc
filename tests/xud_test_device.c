@@ -133,6 +133,8 @@ static void xud_test_device_pure(void) {
     xud_check(device->queueRows[0].pQueuePriorities == device->queuePriorities, "device/own-row-priorities",
         "and it points at the struct's own array");
     device->queueRowCount = 1u;
+    device->enabledDescriptorIndexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+    device->enabledDescriptorIndexing.pNext = NULL;
 
     xud_check(xud_name_copy(&advertised[0].extensionName[0], VK_MAX_EXTENSION_NAME_SIZE, "VK_NOT_A_REAL_NAME") == XUD_OK,
         "device/advertised-first-name", "a name the library does not want");
@@ -169,7 +171,8 @@ static void xud_test_device_pure(void) {
     result = xud_device_fill_create_info(&createInfo, nameSlots, device);
     xud_check(result == XUD_OK, "device/create-info-ok", "a struct this layer filled assembles");
     xud_check(createInfo.sType == VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO, "device/create-info-stamp", "the create-info is stamped");
-    xud_check(createInfo.pNext == NULL, "device/create-info-p-next", "and nothing is chained onto it");
+    xud_check(createInfo.pNext == &device->enabledDescriptorIndexing, "device/create-info-p-next",
+        "the one chained row is the struct's own descriptor-indexing features: the bindless knobs ride the pNext into vkCreateDevice");
     xud_check(createInfo.flags == 0, "device/create-info-flags", "no device-level flag is set today");
     xud_check(createInfo.queueCreateInfoCount == 1u, "device/create-info-one-row",
         "one row while the transfer family shares the graphics "
@@ -252,6 +255,10 @@ static void xud_test_device_pure(void) {
         "a null name array must be rejected");
     xud_check(xud_device_fill_create_info(&createInfo, nameSlots, NULL) == XUD_INVALID_ARG, "device/create-info-null-device",
         "a null device must be rejected");
+    device->enabledDescriptorIndexing.sType = VK_STRUCTURE_TYPE_MAX_ENUM;
+    xud_check(xud_device_fill_create_info(&createInfo, nameSlots, device) == XUD_UNSUPPORTED, "device/create-info-unstamped-di-row",
+        "a struct whose chained bindless row is not the stamped one is a state this layer refuses rather than a device it creates");
+    device->enabledDescriptorIndexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
 
     /* ---- the queue lookup, on a struct that stands in for one open produced ---- */
     device->graphicsQueue.queue = fakeQueueHandles[0];

@@ -606,13 +606,14 @@ static void xud_test_texture_gpu(void) {
     xud_check(record->imageLayout == XUD_TEXTURE_SAMPLED_LAYOUT, "gpu-texture/image-layout",
         "and the record says the image ended in the sampled layout rather than the upload one, which is what makes the descriptor step's "
         "layout a fact read off the record rather than a guess about what the upload left behind");
-    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 5u), "gpu-texture/record-owns-a-slot",
-        "and the record names the entry of set 1's sampler array its view and sampler go into - the first free one, which is slot 5 "
-        "in a fresh context because slot 0 is the white default's own, slot 1 the renderer scratch image's and slots 2, 3 and 4 the "
-        "bloom chain's three source slots, none ever handed out");
-    xud_check(context->descriptor->samplerSlotMask
+    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 6u), "gpu-texture/record-owns-a-slot",
+        "and the record names the entry of set 0's sampler array its view and sampler go into - the first free one, which is slot 6 "
+        "in a fresh context because slot 0 is the white default's own, slot 1 the renderer scratch image's and slots 2 through 5 the "
+        "bloom chain's four entries, none ever handed out");
+    xud_check(context->descriptor->samplerSlotMask[0u]
             == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
-                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(5u)),
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(5u)
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(6u)),
         "gpu-texture/slot-in-the-free-list",
         "and the descriptor rung's free list says the same: the create took a slot off the free list rather than the test assuming "
         "one, beside the renderer's five permanent bits");
@@ -653,14 +654,14 @@ static void xud_test_texture_gpu(void) {
         "and what this rung wrote into");
     xud_check(record->stagingBytes < firstStagingBytes, "gpu-texture/second-smaller",
         "and its staging is smaller than the 8x8's, so the block is sized from the chain rather than from a fixed sheet size");
-    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 6u), "gpu-texture/second-owns-the-next-slot",
-        "and the second create took the next free slot of set 1's array, so the free list hands out the entries rather than a fixed row "
+    xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot == 7u), "gpu-texture/second-owns-the-next-slot",
+        "and the second create took the next free slot of set 0's array, so the free list hands out the entries rather than a fixed row "
         "per texture");
-    xud_check(context->descriptor->samplerSlotMask
+    xud_check(context->descriptor->samplerSlotMask[0u]
             == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
                 | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(5u)
-                | XUD_DESCRIPTOR_SLOT_MASK_BIT(6u)),
-        "gpu-texture/two-slots-in-use", "and the free list says the same: the two textures' entries beside the renderer's five bits");
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(6u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(7u)),
+        "gpu-texture/two-slots-in-use", "and the free list says the same: the two textures' entries beside the renderer's six bits");
     xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK, "gpu-texture/live-two-query",
         "the live count answers");
     xud_check(live == 2u, "gpu-texture/live-two", "and two TEXTURE slots are live");
@@ -680,12 +681,13 @@ static void xud_test_texture_gpu(void) {
         "and both refusals destroyed nothing, so a refused release is a no-op rather than a half-release");
 
     xud_check(xud_close_texture(context, handle) == XUD_OK, "gpu-texture/close-ok", "the first texture is released");
-    xud_check(context->descriptor->samplerSlotMask
+    xud_check(context->descriptor->samplerSlotMask[0u]
             == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
-                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(6u)),
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(5u)
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(7u)),
         "gpu-texture/close-freed-the-slot",
         "and the close gave the first texture's slot back to the free list before its view and sampler were destroyed, so the array's "
-        "entry no longer names a destroyed pair - beside the renderer's five permanent bits, which a close never touches");
+        "entry no longer names a destroyed pair - beside the renderer's six permanent bits, which a close never touches");
     xud_check(xud_texture_get(context->handleTable, handle, &record) == XUD_INVALID_ARG, "gpu-texture/close-freed-the-slot",
         "and the handle no longer names a live slot, so a texture kept past its close is refused rather than dangling");
     xud_check(xud_handle_table_live_count(context->handleTable, XUD_HANDLE_KIND_TEXTURE, &live) == XUD_OK,
@@ -701,12 +703,12 @@ static void xud_test_texture_gpu(void) {
             == XUD_OK,
         "gpu-texture/close-all-explicit", "the rung runs and closes the one TEXTURE record a slot still names");
     xud_check(closed == 1u, "gpu-texture/close-all-count", "and the count it reports is the one record that was still reachable");
-    xud_check(context->descriptor->samplerSlotMask
+    xud_check(context->descriptor->samplerSlotMask[0u]
             == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
-                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u)),
+                | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(5u)),
         "gpu-texture/close-all-freed-its-slot",
-        "and the record's slot of set 1's array went back to the free list with it, so the walk leaves no entry naming a destroyed "
-        "pair - only the white default's bit, the renderer scratch image's slot and the bloom chain's three source slots remain, and "
+        "and the record's slot of set 0's array went back to the free list with it, so the walk leaves no entry naming a destroyed "
+        "pair - only the white default's bit, the renderer scratch image's slot and the bloom chain's four entries remain, and "
         "none is a bit a close clears");
     xud_check(xud_texture_close_all(context->handleTable, context->loader, context->device, context->allocator, context->descriptor, &live)
             == XUD_OK,
@@ -756,12 +758,13 @@ static void xud_test_texture_gpu(void) {
                 result = xud_close_texture(context, ceilingHandles[c]);
                 xud_check(result == XUD_OK, "gpu-texture/ceiling-close-ok", "each of the ceiling's textures is released");
             }
-            xud_check(context->descriptor->samplerSlotMask
-                    == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
-                        | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u)),
+            xud_check((context->descriptor->samplerSlotMask[0u]
+                          == (XUD_DESCRIPTOR_SLOT_MASK_BIT(0u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(1u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(2u)
+                              | XUD_DESCRIPTOR_SLOT_MASK_BIT(3u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(4u) | XUD_DESCRIPTOR_SLOT_MASK_BIT(5u)))
+                    && (context->descriptor->samplerSlotMask[1u] == 0ull),
                 "gpu-texture/ceiling-free-list-back",
                 "and every close gave its slot back, so the free list is the white default's bit, the scratch image's bit, the chain's "
-                "three source bits and nothing else again");
+                "four entry bits and nothing else again - the 506 ceiling fills the 512-entry array exactly, words 1 through 7 alike");
         }
         (void)xud_close_context(&context);
     }
@@ -946,7 +949,7 @@ static void xud_test_texture_readback_gpu(void) {
     /* The material's blend mode says OPAQUE and its map says a texture, and the create's own
        resolution is the check that the pair means the textured row: a material that names a map
        draws through XUD_BLEND_TEXTURED whatever its blendMode said, which is the row whose fragment
-       stage samples set 1 rather than shading a fixed light. */
+       stage samples the sampler array rather than shading a fixed light. */
     result = xud_create_material(&material, context, (XudMaterial) { .blendMode = XUD_BLEND_OPAQUE, .diffuseMap = texture });
     xud_check(result == XUD_OK, "gpu-texture/readback-material-created", "a material that names the sheet is created");
     xud_check(xud_material_get(context->handleTable, material, &materialRecord) == XUD_OK, "gpu-texture/readback-material-record",

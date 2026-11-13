@@ -139,8 +139,10 @@ static void xud_test_rendertarget_gpu(void) {
         "rt-gpu/objects", "every object the record owns is live");
     xud_check((record->samplerSlotLive == 1u) && (record->samplerSlot != 0u), "rt-gpu/slot-bound",
         "the record's sampler-array entry is bound, and slot 0 - the reserved white default - is not it");
-    xud_check((context->descriptor->samplerSlotMask & (1u << record->samplerSlot)) != 0u, "rt-gpu/slot-mask",
-        "and the descriptor's free list holds the slot as taken");
+    xud_check((context->descriptor->samplerSlotMask[XUD_DESCRIPTOR_SLOT_MASK_WORD(record->samplerSlot)]
+                  & XUD_DESCRIPTOR_SLOT_MASK_BIT(record->samplerSlot))
+            != 0u,
+        "rt-gpu/slot-mask", "and the descriptor's free list holds the slot as taken");
     xud_check(xud_layout_get(&layout, context->layout, record->colorImage) == XUD_OK, "rt-gpu/tracked",
         "the layout tracker knows the colour image");
     xud_check(layout == VK_IMAGE_LAYOUT_UNDEFINED, "rt-gpu/tracked-initial",
@@ -202,8 +204,9 @@ static void xud_test_rendertarget_gpu(void) {
         "and a completed frame ended by resetting the SCREEN's batch too - both batches replay from empty next frame");
 
     xud_check(xud_close_render_texture(context, target) == XUD_OK, "rt-gpu/close", "the target closes after its last frame");
-    xud_check((context->descriptor->samplerSlotMask & (1u << savedSlot)) == 0u, "rt-gpu/slot-released",
-        "and its sampler-array slot - saved before the close - is back on the free list");
+    xud_check(
+        (context->descriptor->samplerSlotMask[XUD_DESCRIPTOR_SLOT_MASK_WORD(savedSlot)] & XUD_DESCRIPTOR_SLOT_MASK_BIT(savedSlot)) == 0u,
+        "rt-gpu/slot-released", "and its sampler-array slot - saved before the close - is back on the free list");
     xud_check(xud_layout_get(&layout, context->layout, savedImage) != XUD_OK, "rt-gpu/tracked-forgotten",
         "and the tracker forgot the image with it");
 

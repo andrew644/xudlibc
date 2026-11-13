@@ -35,12 +35,12 @@
  *   ler's back - a sort would move a caller's rows relative to the array it handed, and a caller th
  *   at kept its own index into that array would then be reading the wrong glyph.
  *
- *   What this rung owns of the sampler's half, and why: the entry of set 1's sampler array the atlas
+ *   What this rung owns of the sampler's half, and why: the entry of set 0's sampler array the atlas
  *   occupies. The open calls for it (xud_descriptor_bind_texture_slot, the same pair the model rung
  *   uses for a map) and the close gives it back before it destroys the view and sampler the entry
  *   names - an entry naming a destroyed view is undefined behaviour, and the release is what keeps
  *   the slot's rule from being broken at the close. The walk draws through the textured column of
- *   the pipeline list (shaders/solid_textured.frag and set 1's sampler array), and the slot it draws
+ *   the pipeline list (shaders/solid_textured.frag and set 0's sampler array), and the slot it draws
  *   with is the atlas's own entry of that array, resolved through the texture record the atlas is -
  *   the walk takes the slot as an argument and the public pair hands it down, so a record whose atlas
  *   occupies no entry of the array draws through slot 0's white default rather than through a refusal. Also absent for the reason the model rung states for its own omissions:
@@ -355,11 +355,11 @@ static_assert(XUD_FONT_ATLAS_MAX_DIM <= 16777216u,
 /// Pure in the shapes rung's sense: append one string's glyph quads into the batch, walking the pen
 /// from the caller's position by each row's own advance plus the caller's tracking, and texturing
 /// each quad with that row's own atlas box divided by the record's own extent. The walk draws its
-/// quads through XUD_BATCH_VARIANT_TEXTURED with the set-1 slot textureIndex names, moving the
+/// quads through XUD_BATCH_VARIANT_TEXTURED with the sampler-array entry textureIndex names, moving the
 /// batch's material state to that row for the walk and back to the row it read it from when the
 /// walk is done, so the glyphs flush as one textured draw row of their own and the shapes a caller
 /// appends beside them draw with the state the walk found. A textureIndex of XUD_BATCH_NO_TEXTURE
-/// is the no-map form: the row then samples slot 0 of set 1's array, the white default.
+/// is the no-map form: the row then samples slot 0 of set 0's array, the white default.
 /// The walk skips the append for a codepoint whose box is empty (a space) while still moving the
 /// pen, and it refuses a requested em height that is not a positive number rather than scaling by
 /// zero or by a NaN into a degenerate box the shapes rung would refuse anyway. A live record with
@@ -369,7 +369,7 @@ static_assert(XUD_FONT_ATLAS_MAX_DIM <= 16777216u,
 /// XUD_INVALID_ARG on a NULL batch, record or text array, a textCount of zero, a pixelSize that is
 /// not strictly positive (which refuses zero, a negative height and a NaN in one comparison, the
 /// reason the sphere's note gives for a NaN radius), or a textureIndex that is not the sentinel and
-/// not an entry of set 1's sampler array; the shapes rung's own codes for each quad it appends;
+/// not an entry of set 0's sampler array; the shapes rung's own codes for each quad it appends;
 /// XUD_OUT_OF_MEMORY when one glyph quad does not fit the batch, with the glyphs before it already
 /// appended; XUD_INTERNAL_ERROR on a record whose own numbers are the sentinels; XUD_OK only when
 /// every quad that was attempted completed.
@@ -395,7 +395,7 @@ XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, uin
 /// no-map form the 3D walk names.
 ///
 /// XUD_INVALID_ARG on a NULL batch, record or text array, a textCount of zero, a pixelSize that is
-/// not strictly positive, a textureIndex that is not the sentinel and not an entry of set 1's
+/// not strictly positive, a textureIndex that is not the sentinel and not an entry of the sampler array
 /// sampler array, or a zero extent; the shapes rung's own codes for each quad it appends; XUD_
 /// OUT_OF_MEMORY when one glyph quad does not fit the batch, with the glyphs before it already
 /// appended; XUD_INTERNAL_ERROR on a record whose own numbers are the sentinels; XUD_OK only when
@@ -428,7 +428,7 @@ XudResult xud_font_get(const XudHandleTable* table, XudHandle handle, const XudF
 /// h the atlas's extent, the converted texels and this rung's two sampling tokens (LINEAR rather than NEAREST, becaus
 /// e a glyph's coverage is a gradient and a nearest filter turns every edge into a stair, and CLAMP rather than REPEA
 /// T because an atlas is not a tileable surface and a repeat would bleed the glyph at the far edge into the glyph at t
-/// his edge), then xud_texture_open() above it, then the atlas's entry of set 1's sampler array written through the
+/// his edge), then xud_texture_open() above it, then the atlas's entry of set 0's sampler array written through the
 /// descriptor rung's free list (the same two steps xud_create_texture() and the model rung run for a map - a texture
 /// that holds no entry of the array is one the walk's resolve answers with the no-map sentinel and the walk then
 /// samples slot 0's white default rather than the atlas), then the record written into the slot through the handle
@@ -439,7 +439,7 @@ XudResult xud_font_get(const XudHandleTable* table, XudHandle handle, const XudF
 /// whose rows this rung needs are not there, on a device that is not this loader's, on a description the check refused,
 /// on a buffer that is not a font this rung can read, on a set that does not fit this rung's atlas, or on a device
 /// whose maxImageDimension2D is below the atlas's extent; XUD_OUT_OF_RESOURCES at the handle layer's slot bound, when
-/// the atlas's block cannot be carved, or when set 1's array holds no free entry; XUD_OUT_OF_MEMORY when the record,
+/// the atlas's block cannot be carved, or when set 0's array holds no free entry; XUD_OUT_OF_MEMORY when the record,
 /// the rows or the atlas cannot be allocated; XUD_VULKAN_ERROR or XUD_LOST when the driver refuses for its own reason.
 XudResult xud_font_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,
     XudDescriptor* descriptor, XudAllocator* alloc, const XudFontData* data, XudLayoutTracker* layout);
@@ -447,7 +447,7 @@ XudResult xud_font_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* 
 /// Driver: release one live FONT slot and retire everything its record owns, in the reverse of the order above: the
 /// wait-idle guard runs inside the texture rung's own close rather than here, because this rung owns no driver object
 /// of its own and the guard that belongs to the atlas is the texture rung's. Order: the FONT handle validated, the at
-/// las's entry of set 1's sampler array given back to the descriptor's free list (a refusal is a close that does not
+/// las's entry of set 0's sampler array given back to the descriptor's free list (a refusal is a close that does not
 /// run rather than an object retired over a descriptor still naming it, the public close's stated rule), the at
 /// las closed through the TEXTURE rung (which runs the guard, destroys the sampler, the view and the image and release
 /// s the block), the slot's record field cleared BEFORE the record is freed (the handle layer's own rule, and the reas

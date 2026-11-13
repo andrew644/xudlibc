@@ -74,9 +74,9 @@ static_assert((XUD_SHADER_SPIRV_HEADER_WORDS * sizeof(uint32_t)) <= sizeof(xudSo
    mapping is one more column of the same table shape the blend tables below are - the row of the
    list is a pair of batch indices and which frag module it names is a fact about the column, not a
    branch in the create loop. The opaque and transparent columns share the solid module because the
-   two differ only in blend state; the textured and ui columns name the one that reads set 1, which
+   two differ only in blend state; the textured and ui columns name the one that reads the sampler array, which
    is the only reason a second frag module exists at all - the ui column samples the atlas through
-   the same set-1 slot the textured column uses, so the two share the module rather than compiling
+   the same sampler-array entry the textured column uses, so the two share the module rather than compiling
    the same bytes a third time. Growing the variant axis is a row here. */
 static const uint32_t xudPipelineFragModule[XUD_BATCH_VARIANT_COUNT]
     = { XUD_PIPELINE_FRAG_SOLID, XUD_PIPELINE_FRAG_SOLID, XUD_PIPELINE_FRAG_TEXTURED, XUD_PIPELINE_FRAG_TEXTURED };
@@ -459,14 +459,13 @@ XudResult xud_pipeline_fill_layout_info(const XudDescriptor* descriptor, VkPipel
     if ((outCreateInfo == NULL) || (descriptor == NULL)) {
         return XUD_INVALID_ARG;
     }
-    /* The three handles the layout is built from must be live: the set layouts are the two the po
-       ol allocated set 0 from, and the uniform buffer is what makes the per-frame data have a sour
+    /* The two handles the layout is built from must be live: the set layout is the one the pool
+       allocated set 0 from, and the uniform buffer is what makes the per-frame data have a sour
        ce. A record that cannot name them is a bad state of the rung below, reported as a bad argu
        ment here - the rule xud_pipeline_fill_create_info() applies to a record that owns no layout
        and no render pass, one row up.
      */
-    if ((descriptor->setLayouts[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE)
-        || (descriptor->setLayouts[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE) || (descriptor->uniformBuffer == VK_NULL_HANDLE)) {
+    if ((descriptor->setLayouts[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) || (descriptor->uniformBuffer == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
 
@@ -475,7 +474,7 @@ XudResult xud_pipeline_fill_layout_info(const XudDescriptor* descriptor, VkPipel
     outCreateInfo->flags = 0u;
     outCreateInfo->setLayoutCount = XUD_DESCRIPTOR_SET_COUNT;
     outCreateInfo->pSetLayouts = descriptor->setLayouts; /* the descriptor rung's own array,
-                        not a copy: the pool allocated set 0 from these same two handles, so
+                        not a copy: the pool allocated set 0 from this same handle, so
                         the layout and the set cannot disagree by construction */
     outCreateInfo->pushConstantRangeCount = 1u;
     outCreateInfo->pPushConstantRanges = &descriptor->pushRange; /* the one range the one

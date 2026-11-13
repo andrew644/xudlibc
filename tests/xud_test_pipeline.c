@@ -328,10 +328,6 @@ static void xud_test_pipeline_pure(void) {
         "the pool allocated, so a record that cannot name one is not a layout this function can a"
         "ssemble");
     desc.setLayouts[XUD_DESCRIPTOR_SET_PER_FRAME] = (VkDescriptorSetLayout)0x4100u;
-    xud_check(xud_pipeline_fill_layout_info(&desc, &layout) == XUD_INVALID_ARG, "pipeline/layout-no-set-1-handle",
-        "set 1's layout handle is required too: the layout declares both sets, so a record that de"
-        "clares a set whose layout was never created is a record that cannot be assembled");
-    desc.setLayouts[XUD_DESCRIPTOR_SET_MATERIAL] = (VkDescriptorSetLayout)0x4200u;
     xud_check(xud_pipeline_fill_layout_info(&desc, &layout) == XUD_INVALID_ARG, "pipeline/layout-no-buffer",
         "and the uniform buffer is required as well: a layout that declares set 0 with no buffer b"
         "ound into it is a layout whose per-frame data has nowhere to come from");
@@ -340,8 +336,8 @@ static void xud_test_pipeline_pure(void) {
         "the layout is assembled from the descriptor record below this rung");
     xud_check(layout.sType == VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, "pipeline/layout-stamped", "stamped");
     xud_check((layout.pNext == NULL) && (layout.flags == 0u), "pipeline/layout-chain-clear", "nothing is chained into it");
-    xud_check(layout.setLayoutCount == XUD_DESCRIPTOR_SET_COUNT, "pipeline/layout-two-sets",
-        "two descriptor sets, the plan's set 0 per-frame and set 1 per-material");
+    xud_check(layout.setLayoutCount == XUD_DESCRIPTOR_SET_COUNT, "pipeline/layout-one-set",
+        "the one descriptor set of the bindless layout, whose sampler array every draw indexes by push");
     xud_check(layout.pSetLayouts == desc.setLayouts, "pipeline/layout-set-array-is-the-record's",
         "the row points at the descriptor rung's OWN array rather than a copy of it, which is wha"
         "t makes the pipeline layout and the set the pool allocated from those same handles agree "
@@ -491,7 +487,7 @@ static void xud_test_pipeline_pure(void) {
         "xud_pipeline_open does for every row of the list");
     xud_check(texturedInfo.pStages[XUD_PIPELINE_FRAGMENT_STAGE].module == fragTexturedModule, "pipeline/create-textured-frag-module",
         "and the textured row's fragment stage names the textured module, which is the whole reason a "
-        "second fragment module exists at all: it is the module that reads set 1");
+        "second fragment module exists at all: it is the module that reads the sampler array");
     xud_check(texturedInfo.pStages[XUD_PIPELINE_VERTEX_STAGE].module == vertModule, "pipeline/create-textured-vertex-module-shared",
         "but the SAME vertex module, so the eight rows of the list are two modules of vertex state and "
         "two of fragment state rather than six pairs of bytes");

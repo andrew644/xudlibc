@@ -252,8 +252,17 @@ XudResult xud_device_fill_create_info(
     if (device->enabledExtensionCount > XUD_DEVICE_MAX_DEVICE_EXTENSIONS)
         return XUD_INVALID_ARG; /* the count does not fit the storage it came from */
 
+    if ((device->enabledDescriptorIndexing.sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES)
+        || (device->enabledDescriptorIndexing.pNext != NULL)) {
+        return XUD_UNSUPPORTED; /* the chained row is not the one xud_physical_record_descriptor_indexing
+                                   stamps, or it carries a chain this layer cannot model */
+    }
+
     outCreateInfo->sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    outCreateInfo->pNext = NULL;
+    outCreateInfo->pNext = &device->enabledDescriptorIndexing; /* the one chained row: the core-promoted
+                                                                  bindless knobs, which ride the pNext
+                                                                  without an extension name and share no
+                                                                  field with pEnabledFeatures below */
     outCreateInfo->flags = 0;
     outCreateInfo->queueCreateInfoCount = device->queueRowCount;
     outCreateInfo->pQueueCreateInfos = device->queueRows;
@@ -424,6 +433,22 @@ XudResult xud_device_open(XudDevice** outDevice, XudLoader* loader, const XudPhy
     result = xud_physical_record_features(&device->enabledFeatures, &physical->caps);
     if (result != XUD_OK)
         goto fail;
+
+    /* The bindless knobs, same one-owner rule: the intersection the physical layer derived, and
+       then the gate - the descriptor rung's sampler array needs all four, so a driver missing any
+       one is refused here rather than half-supported, and the refusal says so at this rung where
+       the caps are still in hand. */
+    result = xud_physical_record_descriptor_indexing(&device->enabledDescriptorIndexing, &physical->caps);
+    if (result != XUD_OK)
+        goto fail;
+    if ((device->enabledDescriptorIndexing.runtimeDescriptorArray != VK_TRUE)
+        || (device->enabledDescriptorIndexing.shaderSampledImageArrayNonUniformIndexing != VK_TRUE)
+        || (device->enabledDescriptorIndexing.descriptorBindingPartiallyBound != VK_TRUE)
+        || (device->enabledDescriptorIndexing.descriptorBindingSampledImageUpdateAfterBind != VK_TRUE)) {
+        result = XUD_UNSUPPORTED; /* no bindless sampler array on this device, and every context
+                                      shape above the descriptor rung is a bindless context */
+        goto fail;
+    }
 
     result = xud_device_fill_queue_create_info(&device->queueRows[0], device->queuePriorities, &physical->caps);
     if (result != XUD_OK)

@@ -155,10 +155,9 @@
 
 #define XUD_FRAME_SET_COUNT                                                                                                                \
     1u /* vkCmdBindDescriptorSets' descriptorCount of the per-frame bind, which is a SET count starting                              \
-          at firstSet: only set 0, the per-frame block, is bound once per frame here. The slot sets (set 1) are bound                   \
-          per draw by xud_frame_draw() rather than in this call, because the set a draw samples depends on that draw's                 \
-          texture, and binding the right slot set per draw is what keeps every descriptor written before its set is                    \
-          bound - the slot a draw samples moves by a rebind, not by a host-side update of an already-bound set */
+          at firstSet: the ONE set of the bindless layout, bound once per recorded pass. Nothing                 \
+          binds per draw any more: a draw's texture is the push row's textureIndex naming an entry of            \
+          this set's sampler array, so the count is the whole layout */
 
 #define XUD_FRAME_UNIFORM_READ_STAGES                                                                                                      \
     (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT                                                                                                   \
@@ -185,8 +184,7 @@ static_assert(XUD_FRAME_VERTEX_READ_ACCESS == VK_ACCESS_VERTEX_ATTRIBUTE_READ_BI
 static_assert(XUD_FRAME_INDEX_TYPE == VK_INDEX_TYPE_UINT32, "the batch's indices are uint32_t entries");
 static_assert(XUD_FRAME_FIRST_SET == 0u, "set 0 is the per-frame set and it is the first set bound");
 static_assert(XUD_FRAME_SET_COUNT == 1u,
-    "the per-frame bind names set 0 alone, which is the one set whose contents do not depend on a draw's texture; the slot sets are "
-    "bound per draw for the reason stated beside XUD_FRAME_SET_COUNT");
+    "the per-frame bind names set 0 alone, which is the only set the bindless layout has and the only bind the recorder makes");
 static_assert(XUD_FRAME_UNIFORM_READ_ACCESS == VK_ACCESS_UNIFORM_READ_BIT, "the block is read as a uniform buffer");
 static_assert(XUD_FRAME_WAIT_STAGE == VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, "the first stage that reads the image");
 static_assert(XUD_FRAME_NO_TIMEOUT == (~0ull), "the all-ones value is the no-timeout answer");
@@ -308,12 +306,11 @@ typedef struct XudFrameBloomRow {
                                   levels differ in extent, and extent is not compatibility */
     const XudFramebuffer* framebuffer; /* this level's one framebuffer row; its `image` is what
                                           the level's barriers name */
-    uint32_t sourceSlot; /* the descriptor slot whose set this level's draw binds as its
-                            sampler: level 0's is the scratch image's own slot, and level k>0's
-                            is the slot that carries level k-1's view - the chain reads a level
-                            through a slot-set for the reason the descriptor header gives: a
-                            draw that statically touched the present row's whole array would be
-                            a layout check against every level, including the one in pass */
+    uint32_t sourceIndex; /* the sampler-array entry this level's draw pushes as its
+                            sampler: level 0's is the scratch image's entry, and level k>0's
+                            is the entry that carries level k-1's view - the chain reads the
+                            same bindless array the resolve does, and the pass that is writing
+                            a level never samples that level's own entry */
 } XudFrameBloomRow;
 
 /*-----------------------------------------------------------------------------------------------
@@ -431,20 +428,19 @@ XudResult xud_frame_open(
 /// s what updates set 0. It writes the block's bytes into the descriptor's mapped arena, uploads them
 /// with the descriptor rung's ONE vkCmdCopyBuffer call, and binds set 0 with one vkCmdBindDescriptorS
 /// ets call against the pipeline's own layout - so the block the shader reads is a block that holds s
-/// omething rather than a block that was never written. The push row of the same layout is pushed BE
-/// SIDE every draw this loop records (xud_frame_fill_push_row builds it from the batch's draw row and
-/// the driver half pushes it against the layout's own recorded range) and, when the row's texture channel names a slot other than the one set 1 was left
-/// at, the loop rebinds set 1 to that slot's OWN descriptor set - one set per texture slot, each
-/// holding the one view-and-sampler pair the textured column's fragment stage samples. The rebind is
-/// a bind, not a write: every slot set was written before it is bound (white at open, a texture's own
-/// pair at its bind, white again at its release), so no update lands on a set this buffer has already
+/// the driver half pushes it against the layout's own recorded range) and NOTHING binds per draw: t
+/// he row's texture channel is the sampler-array ENTRY the textured column's fragment stage indexes
+/// inside the pass's one bound set, so a draw changes its texture by pushing, not by rebinding. Eve
+/// ry entry of that array carries a written view-and-sampler pair from bring-up (the white default)
+/// through an entry's whole live life and back to the default at its release, so no push can name a
+/// n unwritten entry, and no descriptor update ever lands on a set this command buffer has already
 /// recorded. so the vertex is placed by thi
 /// s frame's viewProj times this draw's model matrix - the per-draw channel and the per-frame set are
 /// both live, and what is still identity in both is the matrices themselves, because a non-identity m
 /// atrix is a transform the step above this one has to choose.
 /* The sentinel a recorded pass carries when it is NOT the resolve pass: any value at or past the
-   sampler-array size names no slot, so a real slot (0 .. size-1) says "this pass ends by drawing the
-   full-screen triangle from that slot's image" - see xud_frame_record_pass in xud_frame.c. */
+   sampler-array size names no entry, so a real entry (0 .. size-1) says "this pass ends by drawing
+   the full-screen triangle from that array entry's image" - see xud_frame_record_pass in xud_frame.c. */
 #define XUD_FRAME_NO_RESOLVE 0xFFFFFFFFu
 /* The `depthOnly` value that names the SHADOW pass inside the frame's recording: 0 is a shaded
    pass and 1 the depth pre-pass (S2.4); 2 draws only the batch's caster rows through the
@@ -466,9 +462,9 @@ XudResult xud_frame_open(
 /// the tracker says so before the next frame's clear asks for it.
 /// The fourth optional row is the BLOOM CHAIN (S2.6): `bloomRows` - `bloomCount` of them, in
 /// DESCENDING size, the first half the scratch extent - recorded between the scratch pass and the
-/// screen pass. Level 0 binds set 1 to the scratch image's own slot and runs the pipeline's bright
-/// row; every later level samples the level above through the descriptor's bloom array and runs the
-/// pipeline's blur row for it. ALL OR NOTHING: `bloomCount` 0 with NULL rows is the bloom-off
+/// screen pass. Level 0 pushes the scratch image's own entry and runs the pipeline's bright row;
+/// every later level pushes the entry of the level above and runs the pipeline's blur row for it.
+/// ALL OR NOTHING: `bloomCount` 0 with NULL rows is the bloom-off
 /// configuration and the frame runs exactly as it did before this row existed; a row whose pass,
 /// framebuffer or pipeline handle is not live is refused, as is a count above the levels the
 /// descriptor's array and the pipeline's blur rows were built for.
@@ -476,7 +472,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
     const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, const XudRenderPass* prepassPass,
     const XudFramebuffer* prepassFramebuffer, const XudRenderPass* shadowPass, const XudFramebuffer* shadowFramebuffer,
-    const XudFrameBloomRow* bloomRows, uint32_t bloomCount, uint32_t hdrSlot, const XudFramePassScope* scopes, uint32_t scopeCount,
+    const XudFrameBloomRow* bloomRows, uint32_t bloomCount, uint32_t hdrEntry, const XudFramePassScope* scopes, uint32_t scopeCount,
     XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex);
 
 /// Driver: retire everything this rung owns, in the one order that is correct - vkWaitForFences on

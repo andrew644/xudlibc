@@ -32,10 +32,10 @@
  *   batch for exactly that reason: the row points at the BATCH's own arrays, and the renderer's
  *   open/close order opens the batch before this rung and closes it after, which is what makes
  *   that pointer legal for the pipeline whole life rather than a dangling read. The layout is
- *   one layout for the whole list, and the frame loop binds all three of its channels - set 0,
- *   set 1 and the push range - so the shader reads the frame block, the push row and the sampler
- *   array, which is what the textured column's frag module needs and what makes the two solid
- *   columns' shaders that never touch set 1 and the one that does agree on one layout.
+ *   one layout for the whole list, and every pass binds its one set and pushes its row - so a
+ *   shader reads the frame block, the push row and the sampler array, which is what the textu
+ *   red column's frag module needs and what makes the two solid columns' shaders that never
+ *   touch the sampler array and the one that does agree on one layout.
  ***********************************************************************************************/
 
 #ifndef XUD_PIPELINE_H_
@@ -63,7 +63,7 @@
 /* The frag modules this rung builds, and the axis the variant axis is mapped ONTO: the variant axis
    is the batch's and the pipeline list's, and this is the axis of the built-in SPIR-V set. Two
    modules for three variants, because the opaque and transparent columns compile from one source
-   and only the textured column reads set 1. The mapping itself is a table in the .c beside the
+   and only the textured column reads the sampler array. The mapping itself is a table in the .c beside the
    blend tables, in the same shape as they are: the row of the list is a pair of batch indices and
    which frag module it names is one more column of that table, so growing the variant axis is a
    row there and not a branch in the create loop. */
@@ -132,7 +132,7 @@ struct XudPipeline {
     XudShader* fragmentShader[XUD_PIPELINE_FRAG_MODULE_COUNT]; /* owned, one per FRAG MODULE rather
                             than one per row of the list: the variant axis names which module a row's
                             fragment stage is built from, so the opaque and transparent columns share
-                            the solid module and the textured column names the one that reads set 1.
+                            the solid module and the textured column names the one that reads the sampler array.
                             Indexing by module rather than by variant is what makes two variants that
                             compile from one source own one VkShaderModule rather than two copies of
                             the same bytes */
@@ -174,8 +174,8 @@ struct XudPipeline {
 
     /* --- the resolve pass's own pipeline: the one that turns the high-dynamic-range scratch image
          into the window's picture. It joins the rung rather than becoming a second rung because it
-         shares the ONE layout (its set 1 binding is the slot set the frame binds, exactly as a
-         textured batch draw's is) and every fixed-state row it needs is one this struct already
+         shares the ONE layout (its sampler is one entry of the array a textured batch
+         draw indexes, named by push rather than by a set of its own) and every fixed-state row it needs is one this struct already
          carries - triangle input assembly, dynamic viewport and scissor, blend-disabled attachment -
          and because the two passes it binds to are both arguments of the one open below --- */
     VkPipeline resolvePipeline; /* owned: the full-screen-triangle pipeline, created against the
@@ -262,8 +262,8 @@ struct XudPipeline {
          is the resolve's triangle at a smaller viewport), the SAME zero vertex-input row, no
          depth, blend disabled - bound to the ONE bloom render pass all four levels share. One
          blur pipeline serves the three tail levels because the level it reads is not a
-         pipeline decision at all: it is the slot set the frame loop binds as the pass's set 1,
-         the same way the resolve's source is a bind rather than a compile-time row. All rows
+         pipeline decision at all: it is the sampler-array entry the frame loop pushes for
+         the level, the same way the resolve's source is a push rather than a compile-time row. All rows
          stay VK_NULL_HANDLE when open was handed no bloom pass, which is the bloom-off answer
          the frame loop reads. --- */
     VkPipeline brightPipeline; /* owned: created against the bloom render pass below */
@@ -344,7 +344,7 @@ static_assert(
 static_assert(XUD_PIPELINE_FRAG_MODULE_COUNT <= XUD_BATCH_VARIANT_COUNT,
     "fewer frag modules than variants, which is the point of the mapping axis: the opaque and"
     " transparent columns share the solid module, the textured and ui columns share the one that reads"
-    " set 1, and a module-per-variant shape would be the same bytes compiled twice");
+    " the sampler array, and a module-per-variant shape would be the same bytes compiled twice");
 static_assert(XUD_BATCH_VARIANT_COUNT >= 2u, "the variant axis has both the opaque and the transparent column");
 static_assert(sizeof(((XudPipeline*)0)->pipeline) / sizeof(VkPipeline) == XUD_PIPELINE_ROW_COUNT,
     "one pipeline per row of the (topology x variant) list, which is what makes the batch's draw row"
@@ -472,9 +472,9 @@ XudResult xud_pipeline_fill_shader_stages(
 /// cannot be bound to: the per-frame uniform buffer lives in set 0 and the model matrix the
 /// batch step above writes is a push constant, so a pipeline built against a layout that decl
 /// ares neither is a pipeline that will never see its own camera. XUD_INVALID_ARG on a NULL
-/// out-create-info or a NULL descriptor, or one whose set 0 layout, set 1 layout or uniform buffer
-/// handle is not live - BOTH sets are allocated now (the descriptor rung allocates set 1 beside set
-/// 0), so both layouts are required to be a handle here.
+/// out-create-info or a NULL descriptor, or one whose set 0 layout or uniform buffer
+/// handle is not live - the bindless layout has ONE set, and its one layout is required to be
+/// a live handle here.
 XudResult xud_pipeline_fill_layout_info(const XudDescriptor* descriptor, VkPipelineLayoutCreateInfo* outCreateInfo);
 
 /// Pure: the VkGraphicsPipelineCreateInfo the pipeline will be created with, assembled

@@ -150,6 +150,17 @@ static_assert(VK_API_VERSION_1_0 <= VK_API_VERSION_1_4, "the apiVersion encoding
 static const VkPhysicalDeviceFeatures XUD_PHYSICAL_WANTED_FEATURES
     = { .robustBufferAccess = VK_TRUE, .samplerAnisotropy = VK_TRUE, .wideLines = VK_TRUE };
 
+/* The bindless knobs the descriptor rung's sampler array asks for, and nothing else: a binding may
+   be a runtime-sized array, a shader may index that array with a value only the push constants
+   know, the entries the free list has not handed out may stay unbound, and an entry may be written
+   while a recorded command buffer still names the set - the texture that appears between two
+   draws. Four knobs, all four needed or the array is not this shape; xud_descriptor.h states what
+   breaks without each one. */
+static const VkPhysicalDeviceDescriptorIndexingFeatures XUD_PHYSICAL_WANTED_DESCRIPTOR_INDEXING = { .runtimeDescriptorArray = VK_TRUE,
+    .shaderSampledImageArrayNonUniformIndexing = VK_TRUE,
+    .descriptorBindingPartiallyBound = VK_TRUE,
+    .descriptorBindingSampledImageUpdateAfterBind = VK_TRUE };
+
 /* One field of the intersection: on only when the driver has it and this layer wants it, and the
    result is normalized to VK_TRUE/VK_FALSE so that no third value can reach vkCreateDevice. */
 static VkBool32 xud_physical_and_feature(VkBool32 driverHasIt, VkBool32 layerWantsIt) {
@@ -243,6 +254,37 @@ XudResult xud_physical_record_features(VkPhysicalDeviceFeatures* outEnabledFeatu
     out->sparseResidencyAliased = xud_physical_and_feature(has->sparseResidencyAliased, wants->sparseResidencyAliased);
     out->variableMultisampleRate = xud_physical_and_feature(has->variableMultisampleRate, wants->variableMultisampleRate);
     out->inheritedQueries = xud_physical_and_feature(has->inheritedQueries, wants->inheritedQueries);
+
+    return XUD_OK;
+}
+
+/// See xud_physical.h for the contract. The four rows are the whole intersection - the struct's
+/// other knobs stay off, the same not-forced-on rule the table above and the record next to it
+/// follow.
+XudResult xud_physical_record_descriptor_indexing(
+    VkPhysicalDeviceDescriptorIndexingFeatures* outEnabledFeatures, const XudDeviceCaps* caps) {
+    const VkPhysicalDeviceDescriptorIndexingFeatures* has;
+    const VkPhysicalDeviceDescriptorIndexingFeatures* wants;
+    VkPhysicalDeviceDescriptorIndexingFeatures* out;
+
+    if ((outEnabledFeatures == NULL) || (caps == NULL)) {
+        return XUD_INVALID_ARG;
+    }
+
+    has = &caps->descriptorIndexing; /* the driver's verbatim answer, chained out of the same query */
+    wants = &XUD_PHYSICAL_WANTED_DESCRIPTOR_INDEXING; /* this layer's decision, one owner above */
+    out = outEnabledFeatures;
+
+    memset(out, 0, sizeof *out);
+    out->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+    out->pNext = NULL;
+    out->runtimeDescriptorArray = xud_physical_and_feature(has->runtimeDescriptorArray, wants->runtimeDescriptorArray);
+    out->shaderSampledImageArrayNonUniformIndexing
+        = xud_physical_and_feature(has->shaderSampledImageArrayNonUniformIndexing, wants->shaderSampledImageArrayNonUniformIndexing);
+    out->descriptorBindingPartiallyBound
+        = xud_physical_and_feature(has->descriptorBindingPartiallyBound, wants->descriptorBindingPartiallyBound);
+    out->descriptorBindingSampledImageUpdateAfterBind
+        = xud_physical_and_feature(has->descriptorBindingSampledImageUpdateAfterBind, wants->descriptorBindingSampledImageUpdateAfterBind);
 
     return XUD_OK;
 }
@@ -701,18 +743,33 @@ XudResult xud_physical_open(XudPhysicalDevice** outPhysicalDevice, XudLoader* lo
                           a VkPhysicalDevice needs no release */
 
     caps->features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    caps->features.pNext = NULL;
-    loader->instanceTable.vkGetPhysicalDeviceFeatures2(physicalDevice->physicalDevice, &caps->features);
+    /* The bindless knobs ride the same query as one chained struct this layer owns: the driver
+       fills what it was chained, the row is copied into the caps beside the answer above, and
+       pNext is detached again before the chain guard below reads it - what the guard then still
+       refuses is a driver that chained something this layer did not ask for. */
+    {
+        VkPhysicalDeviceDescriptorIndexingFeatures indexing;
+
+        memset(&indexing, 0, sizeof indexing);
+        indexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+        indexing.pNext = NULL;
+        caps->features.pNext = &indexing;
+        loader->instanceTable.vkGetPhysicalDeviceFeatures2(physicalDevice->physicalDevice, &caps->features);
+        caps->features.pNext = NULL;
+        caps->descriptorIndexing = indexing;
+        caps->descriptorIndexing.pNext = NULL;
+    }
 
     caps->memoryProperties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
     caps->memoryProperties.pNext = NULL;
     loader->instanceTable.vkGetPhysicalDeviceMemoryProperties2(physicalDevice->physicalDevice, &caps->memoryProperties);
 
-    /* The chain rule, checked not assumed: this layer provided no chained struct for any of the
-       three *2 queries, so a driver that wrote one into pNext is a driver whose caps this layer
-       cannot hand on - the caps' pNext is never walked by xud_physical_close(), and a struct the
-       layer does not own is not something a later layer may read. Probed here (lavvk): NULL in,
-       NULL out for all three. */
+    /* The chain rule, checked not assumed: every struct the layer chained has been detached by the
+       time this runs - the features query chained exactly one owned row and cleared it again - so a
+       non-NULL pNext here is a driver that chained something this layer did not ask for, and that
+       is caps this layer cannot hand on: the caps' pNext is never walked by xud_physical_close(),
+       and a struct the layer does not own is not something a later layer may read. Probed here
+       (lavvk): NULL in, NULL out. */
     if ((caps->properties.pNext != NULL) || (caps->features.pNext != NULL) || (caps->memoryProperties.pNext != NULL)) {
         result = XUD_VULKAN_ERROR;
         goto fail;

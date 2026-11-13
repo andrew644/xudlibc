@@ -317,20 +317,20 @@ static void xud_test_gpu_context(void) {
         "and the descriptor-layout rung above it, so the pipeline layout the renderer built names re"
         "al sets and a real push row");
     xud_check(context->descriptor->pool != VK_NULL_HANDLE, "context/descriptor-pool-live",
-        "the pool is live, and so are the two set layouts and set 0 allocated from it");
-    xud_check(context->descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] != VK_NULL_HANDLE, "context/descriptor-set-1-allocated",
-        "and set 1 is allocated too, from the same pool against the same layout: an allocated sampler array whose entries were never "
-        "written is an invalid descriptor, so the set and the white default behind every entry of it are this rung's, and the texture step "
-        "is what puts a different view into a different row of it");
+        "the pool is live, and so is the one set layout and set 0 allocated from it");
+    xud_check(context->descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] != VK_NULL_HANDLE, "context/descriptor-set-allocated",
+        "and the ONE set is allocated, from the same pool against the same layout - the bindless design has no other set to allocate. "
+        "Its sampler array is legal before any texture exists because the white default sits at entry 0 and PARTIALLY_BOUND excuses "
+        "the rest; the texture step is what puts a different view into a different entry of it");
     xud_check(context->descriptor->whiteImageView != VK_NULL_HANDLE, "context/white-default-live",
-        "and the one view behind all 17 rows of that array is live, which is what makes the array a slot axis and not a texture axis");
+        "and the one view behind entry 0 of that array is live, which is what makes the array a slot axis and not a texture axis");
     xud_check(context->descriptor->uniformBuffer != VK_NULL_HANDLE, "context/descriptor-buffer-live",
         "the per-frame uniform buffer is live and bound to the allocator's memory");
     xud_check(context->allocator->blockCount == 8u, "context/allocator-eight-blocks-now",
         "and the allocator owns eight VkDeviceMemory now: the descriptor rung's uniform buffer, the render pass's depth image - the "
         "image is the first thing above the allocator that asked for an IMAGE's requirements, and its alignment (65536 on this driver) "
         "does not fit a hole in the buffer's block, so it is a second block rather than a suballocation - the white default every "
-        "entry of set 1's sampler array names, a second image whose alignment does not fit a hole in the depth image's block either, "
+        "entry of set 0's sampler array names, a second image whose alignment does not fit a hole in the depth image's block either, "
         "the renderer's scratch image, the scratch pass's own depth image and the shadow map - three more images, three more "
         "alignments - and the two host-visible arenas, the batch's and the descriptor's staging arena, which are blocks of their own "
         "because vkMapMemory maps a VkDeviceMemory rather than a range. The batch's five data buffers are the carves that do share a "

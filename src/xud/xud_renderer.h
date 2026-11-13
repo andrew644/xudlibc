@@ -182,11 +182,11 @@ struct XudRenderer {
     VkImageViewCreateInfo hdrColorViewInfo;
     VkSamplerCreateInfo hdrSamplerInfo;
     XudMemoryRange hdrColorRange; /* BORROWED from the allocator, released before the allocator closes */
-    uint32_t hdrSlot; /* the descriptor sampler-array slot the scratch pair occupies - the frame
-                         loop binds it as the resolve pass's set 1, and it is one slot of the same
-                         pool the textures take (the ceiling holds XUD_MAX_TEXTURES textures plus
-                         this one row) */
-    uint32_t hdrSlotLive; /* 1 once the slot is bound, the guard the retire reads */
+    uint32_t hdrEntry; /* the descriptor sampler-array entry the scratch pair occupies - the frame
+                         loop pushes it before the resolve pass's one draw, and it is one entry of
+                         the same free list the textures take (the public ceiling holds
+                         XUD_MAX_TEXTURES textures plus this row and the four chain rows) */
+    uint32_t hdrEntryLive; /* 1 once the slot is bound, the guard the retire reads */
     uint32_t hdrWidth; /* the scratch extent, kept because the resize ask compares against it */
     uint32_t hdrHeight;
     VkFormat hdrFormat; /* the chosen float format (or the swapchain's, on a driver that offers no
@@ -221,19 +221,19 @@ struct XudRenderer {
                                                                 frame loop, filled when the chain
                                                                 is live and read as bloom-off
                                                                 while it is not */
-    uint32_t bloomSourceSlot[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* the slot carrying bloomView[level]
-                                                              as a set 1 sampler, for every level
-                                                              but the last: the blur of level
-                                                              L+1 samples level L through this,
-                                                              never through the present row's
-                                                              array - index 0 of the row is the
-                                                              chain's own first source and NOT
-                                                              the scratch slot, which the frame
-                                                              reads straight from hdrSlot */
-    uint32_t bloomSourceLive[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* 1 per slot this rung claimed, the
-                                                              guard the retire reads - the last
-                                                              level binds nothing, its image is
-                                                              never a source */
+    uint32_t bloomSourceIndex[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* the entry carrying bloomView[level]
+                                                              in the sampler array: the blur of lev
+                                                              el L+1 samples level L by pushing thi
+                                                              s number, and the present row names t
+                                                              he same entries by the constant XUD_D
+                                                              ESRIPTOR_ENTRY_BLOOM + level. Index 0
+                                                              is the chain's own first source and N
+                                                              OT the scratch entry, which the frame
+                                                              reads straight from hdrEntry */
+    uint32_t bloomSourceLive[XUD_DESCRIPTOR_BLOOM_LEVELS]; /* 1 per entry this rung claimed, the
+                                                              guard the retire reads - every level
+                                                              is somebody's source, the last by th
+                                                              e present row's constant indices */
     uint32_t bloomLive; /* 1 once the whole chain is up - the guard draw, resize and retire read */
     XudFrame* frame; /* owned: the command pool, the command buffer, the acquire semaphore and
                         the per-image fences */
@@ -276,7 +276,7 @@ struct XudRenderer {
                                  frame opening moves is a PAIR, and this rung cannot reach the tabl
                                  e it would read it from (the table is the last rung xud_init_context
                                  opens, so it does not exist yet when this one is created). */
-    uint32_t materialTexture; /* the set-1 slot that material's map occupies, resolved off the
+    uint32_t materialTexture; /* the sampler-array entry that material's map occupies, resolved off the
                                  texture record at the begin call: the texture half of the triple
                                  the frame opening moves, XUD_BATCH_NO_TEXTURE while the material
                                  names no map */

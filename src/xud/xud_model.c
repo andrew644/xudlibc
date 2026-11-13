@@ -39,7 +39,7 @@
 
 #include "stb_image.h" /* Required for: stbi_load, stbi_load_from_memory - the image decode behind the texture a map names */
 #include "xud_core.h" /* Required for: struct XudContext, the one bundle the public pair and the two public queries take */
-#include "xud_descriptor.h" /* Required for: xud_descriptor_bind/release_texture_slot - set 1's sampler entry a map's texture holds */
+#include "xud_descriptor.h" /* Required for: xud_descriptor_bind/release_texture_slot - set 0's sampler entry a map's texture holds */
 #include "xud_device.h" /* Required for: XudDevice, the handle this rung checks exists */
 #include "xud_handle.h" /* Required for: xud_handle_validate/alloc/free, xud_handle_record_get/set */
 #include "xud_loader.h" /* Required for: xud_loader_is_open, xud_loader_device_bound */
@@ -886,7 +886,7 @@ XudResult xud_model_get(const XudHandleTable* table, XudHandle handle, const Xud
  *
  * The order is the order that leaves nothing reachable and unfilled: the gate first, so no slot is
  *   spent for a document that will be refused; then the distinct base-color images, decoded and
- *   opened as TEXTURE slots holding entries of set 1's sampler array, because a decode that
+ *   opened as TEXTURE slots holding entries of set 0's sampler array, because a decode that
  *   refuses cannot be the step that spent the MODEL slot and the textures must exist before the
  *   materials that name them; then the MODEL slot; then the record and its one handle block; then
  *   the MATERIAL slots, because a mesh's record names the material it draws with and the material
@@ -919,7 +919,7 @@ static void xud_model_retire_texture(
 }
 
 /* The one texture's half of the bring-up: the open through the texture rung below, then the entry
-   of set 1's sampler array the record's view and sampler go into - the same two steps
+   of set 0's sampler array the record's view and sampler go into - the same two steps
    xud_create_texture() runs above the context, run here because the model's textures are the
    model's to own rather than the caller's. A texture that holds no entry of the array is a
    texture xud_material_resolve_texture() would refuse to sample, so the bind is part of the
@@ -1028,7 +1028,7 @@ XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader*
 
     /* The distinct base-color images, before the MODEL slot is spent: each document material that
        names a map resolves to the image behind it, two materials naming one image decode it once,
-       and a document whose distinct images outnumber set 1's sampler array is refused here rather
+       and a document whose distinct images outnumber set 0's sampler array is refused here rather
        than after the last bind refused. */
     for (m = 0u; m < (uint32_t)data->materials_count; m++) {
         uint32_t imageIndex = XUD_MODEL_NO_IMAGE;
@@ -1046,7 +1046,7 @@ XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader*
         }
         if (t == textureCount) {
             if (textureCount >= XUD_MODEL_MAX_TEXTURES) {
-                return XUD_UNSUPPORTED; /* more distinct images than set 1's sampler array can hold */
+                return XUD_UNSUPPORTED; /* more distinct images than set 0's sampler array can hold */
             }
             textureImage[textureCount] = imageIndex;
             /* The sampler the material's texture names, folded onto the rung's tokens: two materials

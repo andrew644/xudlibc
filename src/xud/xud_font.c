@@ -37,7 +37,7 @@
 #include <stdlib.h> /* Required for: calloc, free - the record, the rows, the atlas and the default set */
 
 #include "xud_core.h" /* Required for: struct XudContext, whose handleTable/loader/device/physicalDevice/allocator the public pair reaches */
-#include "xud_descriptor.h" /* Required for: XudDescriptor, xud_descriptor_bind/release_texture_slot - the atlas's entry of set 1's sampler array */
+#include "xud_descriptor.h" /* Required for: XudDescriptor, xud_descriptor_bind/release_texture_slot - the atlas's entry of set 0's sampler array */
 #include "xud_device.h" /* Required for: XudDevice, the handle every guard below checks exists */
 #include "xud_handle.h" /* Required for: xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
 #include "xud_loader.h" /* Required for: xud_loader_is_open, xud_loader_device_bound - the two guards every driver half runs */
@@ -444,7 +444,7 @@ XudResult xud_font_append_text(XudBatch* batch, const XudFontRecord* record, uin
     penX = position.x;
 
     /* The state move, before a byte is written: the glyphs draw through the textured row with the
-       atlas's own set-1 slot, and the batch's state is what a draw row is flushed under, so the row
+       atlas's own sampler-array entry, and the batch's state is what a draw row is flushed under, so the row
        the glyphs flush with is the state they are appended under. The move the caller's state was
        read at first: a text draw is not a material change the caller asked for, so the state the
        shapes a caller appends after the walk draw with is the one the walk found, and the flush at
@@ -639,10 +639,10 @@ XudResult xud_font_append_text_screen(XudBatch* batch, const XudFontRecord* reco
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The atlas's own set-1 slot - the sampler's half of the draw
+ * The atlas's own sampler-array entry - the sampler's half of the draw
  *-----------------------------------------------------------------------------------------------*/
 
-/* The slot a draw through this record's atlas samples with: the entry of set 1's sampler array the
+/* The slot a draw through this record's atlas samples with: the entry of set 0's sampler array the
    texture rung wrote the atlas's own view and sampler into when the context-level open ran. A
    record whose atlas is the sentinel or occupies no entry of the array answers the no-texture
    sentinel rather than an index, and the row then samples slot 0's white default - the same
@@ -829,7 +829,7 @@ XudResult xud_font_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* 
     record->atlasWidth = dim;
     record->atlasHeight = dim;
 
-    /* The atlas's entry of set 1's sampler array: the same two steps the model rung runs for its maps and
+    /* The atlas's entry of set 0's sampler array: the same two steps the model rung runs for its maps and
        xud_create_texture() runs above the context - a texture that holds no entry of the array is one the
        walk's resolve answers with the no-map sentinel, and the walk then samples slot 0's white default
        rather than the atlas. The entry is the atlas's to give back at the close, and the record's own
@@ -915,7 +915,7 @@ XudResult xud_font_close(
     if (atlasHandle.kind == XUD_HANDLE_KIND_TEXTURE) {
         XudTextureRecord* atlasRecord = NULL;
 
-        /* The entry of set 1's array goes back to the free list BEFORE the close below destroys the view
+        /* The entry of set 0's array goes back to the free list BEFORE the close below destroys the view
            and sampler the entry names: a bound set whose entry still named a destroyed view and sampler
            is the state xud_descriptor_release_texture_slot exists to leave behind. A refusal is a close
            that does not run rather than an object retired over a descriptor still naming it, the public

@@ -189,6 +189,11 @@ struct XudDevice {
     VkPhysicalDeviceFeatures enabledFeatures; /* what was enabled: the physical layer's wanted-intersection, copied here
                                                  so the record says what the device was created with, not what the caps
                                                  say the driver can do */
+    VkPhysicalDeviceDescriptorIndexingFeatures enabledDescriptorIndexing; /* the bindless knobs, stamped and
+                                                             detached: the physical layer's intersection
+                                                             for the sampler array, chained into the
+                                                             create-info's pNext below and recorded here
+                                                             so the record says what was created with */
     uint32_t enabledExtensionCount; /* how many rows of enabledExtensionNameStorage are live */
     char enabledExtensionNameStorage[XUD_DEVICE_MAX_DEVICE_EXTENSIONS][VK_MAX_EXTENSION_NAME_SIZE]; /* the names, copied into fixed
                                                                                                        buffers, the instance layer's
@@ -250,10 +255,12 @@ XudResult xud_device_fill_transfer_queue_create_info(
 XudResult xud_device_select_extensions(XudDevice* outDevice, const VkExtensionProperties* advertised, uint32_t advertisedCount);
 
 /// Pure: the VkDeviceCreateInfo the device will be created with, assembled from the device's own
-/// record - stamped, pNext NULL (this layer chains nothing into the device's pNext: the caps' thre
-/// e *2 chains came back empty on this driver, probed 2026-10-18, so there is nothing to carry and
-/// a driver that chained a struct xud_physical.c could not model was refused at the caps there), one
-/// or two queue rows (queueCreateInfoCount is the device's own queueRowCount - 1 when the transfer
+/// record - stamped, and its pNext chains exactly one struct: the device's own
+/// enabledDescriptorIndexing row, the bindless knobs xud_physical_record_descriptor_indexing derived
+/// (the struct is core-promoted, so it rides the pNext without naming an extension, and
+/// pEnabledFeatures stays legal beside it because the two structs share no field). A row that is
+/// unstamped or still chained on something else is a refusal. Then one or two queue rows
+/// (queueCreateInfoCount is the device's own queueRowCount - 1 when the transfer
 /// family shares the graphics family, 2 when the driver rowed a dedicated one - and pQueueCreateInfos
 /// points at the device's own queueRows array, which is why the rows are an array and not two fields),
 /// the extension names through `nameSlots` (a caller-provided array of XUD_DEVICE_MAX_DEVICE_EXTENSIONS

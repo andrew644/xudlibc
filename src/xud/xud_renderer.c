@@ -230,12 +230,19 @@ static XudResult xud_renderer_hdr_open(XudRenderer* renderer, XudLoader* loader,
     }
 
     result = xud_descriptor_bind_texture_slot(descriptor, loader, device, renderer->hdrColorView, renderer->hdrSampler,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->hdrSlot);
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->hdrEntry);
     if (result != XUD_OK) {
         xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
         return result;
     }
-    renderer->hdrSlotLive = 1u;
+    renderer->hdrEntryLive = 1u;
+    if (renderer->hdrEntry != XUD_DESCRIPTOR_ENTRY_HDR) {
+        xud_renderer_hdr_retire(renderer, loader, device, alloc, descriptor);
+        return XUD_INTERNAL_ERROR; /* present.frag samples the resolve source at XUD_DESCRIPTOR_ENTRY_HDR
+                                      by literal constant; the claim order at bring-up (this claim before
+                                      the chain's) is what makes the constant true, and a reorder is a bug
+                                      to fail on, not a layout to sample wrong */
+    }
     renderer->hdrWidth = width;
     renderer->hdrHeight = height;
     return XUD_OK;
@@ -251,9 +258,9 @@ static void xud_renderer_hdr_retire(
     if ((renderer == NULL) || (loader == NULL) || (device == NULL)) {
         return;
     }
-    if ((renderer->hdrSlotLive != 0u) && (descriptor != NULL)) {
-        (void)xud_descriptor_release_texture_slot(descriptor, loader, device, renderer->hdrSlot);
-        renderer->hdrSlotLive = 0u;
+    if ((renderer->hdrEntryLive != 0u) && (descriptor != NULL)) {
+        (void)xud_descriptor_release_texture_slot(descriptor, loader, device, renderer->hdrEntry);
+        renderer->hdrEntryLive = 0u;
     }
     if (renderer->hdrPrepassFramebuffer != NULL) {
         (void)xud_framebuffer_close(&renderer->hdrPrepassFramebuffer, device, loader);
@@ -378,9 +385,9 @@ static void xud_renderer_bloom_images_retire(
     }
     for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
         if ((renderer->bloomSourceLive[level] != 0u) && (descriptor != NULL)) {
-            (void)xud_descriptor_release_texture_slot(descriptor, loader, device, renderer->bloomSourceSlot[level]);
+            (void)xud_descriptor_release_texture_slot(descriptor, loader, device, renderer->bloomSourceIndex[level]);
             renderer->bloomSourceLive[level] = 0u;
-            renderer->bloomSourceSlot[level] = 0u;
+            renderer->bloomSourceIndex[level] = 0u;
         }
         renderer->bloomRows[level].pass = NULL;
         renderer->bloomRows[level].framebuffer = NULL;
@@ -486,24 +493,35 @@ static XudResult xud_renderer_bloom_images_open(XudRenderer* renderer, XudLoader
         height = (height + 1u) / 2u;
     }
 
-    result = xud_descriptor_set_bloom_textures(descriptor, loader, device, renderer->bloomView, renderer->hdrSampler);
-    if (result != XUD_OK) {
-        xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
-        return result;
-    }
-    for (level = 0u; level + 1u < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
+    for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
         result = xud_descriptor_bind_texture_slot(descriptor, loader, device, renderer->bloomView[level], renderer->hdrSampler,
-            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->bloomSourceSlot[level]);
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->bloomSourceIndex[level]);
         if (result != XUD_OK) {
             xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
             return result;
         }
         renderer->bloomSourceLive[level] = 1u;
     }
+    if ((renderer->bloomSourceIndex[0u] != XUD_DESCRIPTOR_ENTRY_BLOOM)
+        || (renderer->bloomSourceIndex[XUD_DESCRIPTOR_BLOOM_LEVELS - 1u]
+            != XUD_DESCRIPTOR_ENTRY_BLOOM + XUD_DESCRIPTOR_BLOOM_LEVELS - 1u)) {
+        xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+        return XUD_INTERNAL_ERROR; /* present.frag names the chain at BLOOM + level by literal constant and
+                                      the array write below is one count-LEVELS run from entry 0: a free
+                                      list that hands out a different or non-consecutive block means the
+                                      residency order at bring-up changed and the constants did not
+                                      follow - fail here rather than sample the wrong image forever */
+    }
+    result = xud_descriptor_set_bloom_textures(
+        descriptor, loader, device, renderer->bloomView, renderer->hdrSampler, renderer->bloomSourceIndex[0u]);
+    if (result != XUD_OK) {
+        xud_renderer_bloom_images_retire(renderer, loader, device, alloc, descriptor);
+        return result;
+    }
     for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
         renderer->bloomRows[level].pass = renderer->bloomPass;
         renderer->bloomRows[level].framebuffer = renderer->bloomFramebuffer[level];
-        renderer->bloomRows[level].sourceSlot = (level == 0u) ? renderer->hdrSlot : renderer->bloomSourceSlot[level - 1u];
+        renderer->bloomRows[level].sourceIndex = (level == 0u) ? renderer->hdrEntry : renderer->bloomSourceIndex[level - 1u];
     }
     renderer->bloomLive = 1u;
     return XUD_OK;
@@ -882,7 +900,7 @@ XudResult xud_renderer_draw(
     result = xud_frame_draw(renderer->frame, loader, device, swapchain, renderer->pipeline, renderer->renderPass, renderer->framebuffers,
         renderer->framebufferCount, renderer->hdrPass, renderer->hdrFramebuffer, renderer->prepassPass, renderer->hdrPrepassFramebuffer,
         renderer->shadowPass, renderer->shadowFramebuffer, (renderer->bloomLive != 0u) ? renderer->bloomRows : NULL,
-        (renderer->bloomLive != 0u) ? XUD_DESCRIPTOR_BLOOM_LEVELS : 0u, renderer->hdrSlot, renderer->scopes, renderer->scopeCount,
+        (renderer->bloomLive != 0u) ? XUD_DESCRIPTOR_BLOOM_LEVELS : 0u, renderer->hdrEntry, renderer->scopes, renderer->scopeCount,
         renderer->screenBatch, renderer->descriptor, outImageIndex);
     if (result == XUD_OK) {
         renderer->drawCount++;
@@ -1017,9 +1035,9 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
     (void)xud_framebuffer_close(&renderer->hdrPrepassFramebuffer, device, loader); /* its depth
                                        attachment view is the OLD depth view from the row below,
                                        and both rows die before that view does */
-    if (renderer->hdrSlotLive != 0u) {
-        (void)xud_descriptor_release_texture_slot(renderer->descriptor, loader, device, renderer->hdrSlot);
-        renderer->hdrSlotLive = 0u;
+    if (renderer->hdrEntryLive != 0u) {
+        (void)xud_descriptor_release_texture_slot(renderer->descriptor, loader, device, renderer->hdrEntry);
+        renderer->hdrEntryLive = 0u;
     }
     result = xud_renderpass_recreate_depth(&renderer->hdrPass, loader, device, caps, alloc, swapchain);
     if ((result != XUD_OK) && (result != XUD_ALREADY)) {
@@ -1090,11 +1108,15 @@ XudResult xud_renderer_resize(XudRenderer** ioRenderer, XudLoader* loader, const
         return result;
     }
     result = xud_descriptor_bind_texture_slot(renderer->descriptor, loader, device, renderer->hdrColorView, renderer->hdrSampler,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->hdrSlot);
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, &renderer->hdrEntry);
     if (result != XUD_OK) {
         return result;
     }
-    renderer->hdrSlotLive = 1u;
+    renderer->hdrEntryLive = 1u;
+    if (renderer->hdrEntry != XUD_DESCRIPTOR_ENTRY_HDR) {
+        return XUD_INTERNAL_ERROR; /* the constant present.frag names, re-checked on the way back up
+                                      from a resize exactly as at bring-up */
+    }
 
     /* The bloom chain follows the scratch pair down and back up exactly as it did at bring-up:
        the rows (which name the OLD views), the tracker's forgets, the views, images and ranges

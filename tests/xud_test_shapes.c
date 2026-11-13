@@ -635,7 +635,7 @@ static void xud_test_shapes_pure(void) {
             "the caller's four bytes, in the caller's order, at all 24 vertices - the batch's COLOR stream is per-vertex and a box has one "
             "colour");
         xud_check(zeroUvRows == XUD_SHAPES_CUBE_VERTEX_COUNT, "shapes/cube-zero-uv-at-every-vertex",
-            "the header's zero uv at all 24: a box has no texture to unwrap yet, and set 1 is still unallocated");
+            "the header's zero uv at all 24: a box has no texture to unwrap yet, and the sampler array is still unallocated");
         xud_check(unitAxisNormals == XUD_SHAPES_CUBE_VERTEX_COUNT, "shapes/cube-normals-are-unit-axes",
             "every vertex's normal is a unit vector down one axis, which is the shape's own attribute row rather than the flat +Z "
             "constant");
@@ -1099,7 +1099,7 @@ static void xud_test_shapes_pure(void) {
             "one "
             "colour");
         xud_check(zeroUv == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-zero-uv-at-every-vertex",
-            "the header's zero uv at all 17: a sphere has no texture to unwrap yet, and set 1 is still unallocated");
+            "the header's zero uv at all 17: a sphere has no texture to unwrap yet, and the sampler array is still unallocated");
         xud_check(onSphere == XUD_SHAPES_SPHERE_VERTEX_COUNT, "shapes/sphere-vertices-at-the-radius",
             "every position is one radius from the centre, which is the caller's radius rather than one the shape invented - and it is "
             "read as a squared distance against a tolerance, because a sphere's positions come from sinf/cosf");

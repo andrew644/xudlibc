@@ -21,7 +21,7 @@
 // block's member order and widths are the C layout of XudPushRow read against std140: mat4 at 0 (64 B),
 // uint at 64, 68, 72 and 76, vec4 at 80 - 96 B, byte-for-byte the struct in xud_descriptor.h and the
 // assert beside XUD_DESCRIPTOR_PUSH_SIZE is the same number from the other side. The materialIndex and
-// textureIndex members are unread: set 1's array is chosen by the frame loop's rebind beside the
+// textureIndex members are unread: set 0's array is chosen by the frame loop's rebind beside the
 // draw, not by a read in this stage. The flags member IS read now: it carries the batch's variant
 // the draw was flushed under, and the UI column (XUD_BATCH_VARIANT_UI, xud_batch.h) is the one whose
 // position is clip space already - the ui rung's mapper emits it there and the column's pipeline row
@@ -44,7 +44,7 @@ layout(binding = 0, std140) uniform XudFrameBlock {
 layout(push_constant) uniform XudPushRow {
     mat4 modelMatrix;    // 0  - the draw's own model matrix, column-major
     uint materialIndex;  // 64 - which material slot this draw uses (unread today)
-    uint textureIndex;   // 68 - which entry of set 1's sampler array (unread today, set 1 unbound)
+    uint textureIndex;   // 68 - which entry of set 0's sampler array (unread by the solid column, which samples no texture)
     uint flags;          // 72 - the variant this draw was flushed under (the UI column skips viewProj)
     uint reserved;       // 76 - keeps the row 16-aligned with no hole
     vec4 tint;           // 80 - the draw's own tint: the fragment stage multiplies it in, this stage only carries it

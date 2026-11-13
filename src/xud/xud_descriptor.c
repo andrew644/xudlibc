@@ -176,8 +176,7 @@ static void xud_descriptor_retire(XudDescriptor* descriptor, const XudDevice* de
        riptor that was retired read as nothing rather than as a handle the driver no longer knows.
      */
     descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] = VK_NULL_HANDLE;
-    descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] = VK_NULL_HANDLE;
-    descriptor->samplerSlotMask = 0u;
+    memset(descriptor->samplerSlotMask, 0, sizeof(descriptor->samplerSlotMask));
 }
 
 /*-----------------------------------------------------------------------------------------------
@@ -215,15 +214,17 @@ XudResult xud_descriptor_caps_support(const XudDeviceCaps* caps) {
         return XUD_UNSUPPORTED;
     }
 
-    /* set 1's sampler array against the same pair for the COMBINED_IMAGE_SAMPLER type. This is the
-       one place in this rung where the caps can refuse the layout as designed rather than refuse a
-       smaller one, and it is the reason XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE is a constant a rung abov
-       e cannot raise: a device that serves fewer samplers per set than this layout declares is a d
-       evice this library's material model does not fit, and the answer above is XUD_UNSUPPORTED, n
-       ot a silently-smaller array.
+    /* The sampler array plus the shadow sampler against the same pair for the COMBINED_IMAGE_
+       SAMPLER type - both live in the ONE set now, so the set total is the array's ceiling plus
+       one. This is the one place in this rung where the caps can refuse the layout as designed
+       rather than refuse a smaller one, and it is the reason XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE i
+       s a constant a rung above cannot raise: a device that serves fewer samplers per set than t
+       his layout declares is a device this library's material model does not fit - a spec-floor
+       device with 64 is such a device, and it is refused honestly, since the same device answer
+       s FALSE to the bindless knobs the device gate checks.
      */
-    if ((limits->maxPerStageDescriptorSamplers < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)
-        || (limits->maxDescriptorSetSamplers < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
+    if ((limits->maxPerStageDescriptorSamplers < (XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u))
+        || (limits->maxDescriptorSetSamplers < (XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u))) {
         return XUD_UNSUPPORTED;
     }
 
@@ -246,7 +247,7 @@ XudResult xud_descriptor_caps_support(const XudDeviceCaps* caps) {
         return XUD_UNSUPPORTED;
     }
 
-    /* The white default every entry of set 1 names against the implementation's image bound. maxIma
+    /* The white default every array entry names against the implementation's image bound. maxIma
       geDimension2D is guaranteed 8192 and the default is 1x1, so this check is the repo's "check bef
       ore you use" rule applied to the one image this rung creates rather than a check that can fire
       on a conforming driver.
@@ -259,7 +260,7 @@ XudResult xud_descriptor_caps_support(const XudDeviceCaps* caps) {
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The two set layouts and the binding rows they point at - pure
+ * The one set layout and the binding rows it points at - pure
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_descriptor_fill_set_layouts(XudDescriptor* descriptor) {
@@ -267,38 +268,33 @@ XudResult xud_descriptor_fill_set_layouts(XudDescriptor* descriptor) {
         return XUD_INVALID_ARG;
     }
 
-    /* The create-infos are stamped and their pNext cleared before anything reads them, the rule the
-       physical layer states for the *2 getters: a calloc-ed row is not a substitute for stamping,
-       and the validation layer reports an unstamped create-info as a hard error rather than forgiv
-       ing it.
+    /* The create-info is stamped before anything reads it, the rule the physical layer states for
+       the *2 getters: a calloc-ed row is not a substitute for stamping, and the validation layer
+       reports an unstamped create-info as a hard error rather than forgiving it. The flags carry
+       UPDATE_AFTER_BIND_POOL: a layout whose binding carries the update-after-bind per-binding f
+       lag must say so, the create-info's rule, and the binding flags row chained below is where
+       that binding says it.
      */
+    descriptor->samplerBindingFlags[0u] = 0u;
+    descriptor->samplerBindingFlags[XUD_DESCRIPTOR_SHADOW_BINDING] = 0u;
+    descriptor->samplerBindingFlags[XUD_DESCRIPTOR_SAMPLER_BINDING] = XUD_DESCRIPTOR_SAMPLER_BINDING_FLAGS;
+    descriptor->samplerBindingFlagsInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    descriptor->samplerBindingFlagsInfo.pNext = NULL;
+    descriptor->samplerBindingFlagsInfo.bindingCount = XUD_DESCRIPTOR_BINDINGS_PER_FRAME;
+    descriptor->samplerBindingFlagsInfo.pBindingFlags = descriptor->samplerBindingFlags;
+
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].pNext = NULL;
-    /* The layout flags are the extension-gated VkDescriptorSetLayoutCreateFlags bits and this rung
-       writes none: with one set per slot nothing is ever updated after its set is bound, so the
-       UPDATE_AFTER_BIND_POOL bit the mid-recording write once needed is no longer one, and the per-
-       frame block's contents move by a vkCmdCopyBuffer of the buffer's bytes rather than by a write
-       of the descriptor that names the buffer. */
-    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].flags = 0u;
+    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].pNext = &descriptor->samplerBindingFlagsInfo;
+    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].bindingCount = XUD_DESCRIPTOR_BINDINGS_PER_FRAME;
     descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_PER_FRAME].pBindings = descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME];
 
-    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].pNext = NULL;
-    /* The same: no layout flags. Every slot set is written before it is bound and the frame rebinds
-       the slot it samples rather than rewriting a bound one, so no update-after-bind is needed. */
-    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].flags = 0u;
-    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].bindingCount = XUD_DESCRIPTOR_BINDINGS_PER_SET;
-    descriptor->layoutCreateInfos[XUD_DESCRIPTOR_SET_MATERIAL].pBindings = descriptor->bindings[XUD_DESCRIPTOR_SET_MATERIAL];
-
-    /* set 0: the per-frame block at binding 0, the shadow map at binding 1 and the bloom chain at
-       binding 2. The block row is the buffer the whole scene reads, the shadow row the depth the
-       fragment stages sample, the bloom rows the four glow levels the resolve samples - all
-       COMBINED_IMAGE_SAMPLER with the FRAGMENT-only stage the sampler already uses for textures.
-       The shadow row counts one because the casting sun is the FIRST sun in the table and there
-       is exactly one of it per frame; the bloom row counts XUD_DESCRIPTOR_BLOOM_LEVELS because
-       the chain is one array the resolve reads whole. All rows sit in the contiguous list
-       starting at 0 the create-info's own rule asks for.
+    /* The one set: the per-frame block at binding 0, the shadow map at binding 1 and the sampler
+       array at binding 2. The block row is the buffer the whole scene reads; the shadow row the
+       depth the fragment stages sample; the array is the textures - descriptorCount is the axis's
+       ceiling, the budget the driver may hold fewer than, and the entry a draw samples is the pu
+       sh row's textureIndex rather than a second bind. All rows sit in the contiguous list start
+       ing at 0 the create-info's own rule asks for.
      */
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].binding = XUD_DESCRIPTOR_BINDING;
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][0u].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -311,23 +307,12 @@ XudResult xud_descriptor_fill_set_layouts(XudDescriptor* descriptor) {
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].descriptorCount = 1u;
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].stageFlags = XUD_DESCRIPTOR_SHADOW_STAGE;
     descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SHADOW_BINDING].pImmutableSamplers = NULL;
-    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].binding = XUD_DESCRIPTOR_BLOOM_BINDING;
-    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].descriptorType
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SAMPLER_BINDING].binding = XUD_DESCRIPTOR_SAMPLER_BINDING;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SAMPLER_BINDING].descriptorType
         = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].descriptorCount = XUD_DESCRIPTOR_BLOOM_LEVELS;
-    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].stageFlags = XUD_DESCRIPTOR_BLOOM_STAGE;
-    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_BLOOM_BINDING].pImmutableSamplers = NULL;
-
-    /* set 1: the one sampler of a slot set. descriptorCount is 1 because each slot owns its own set
-       holding one view-and-sampler pair - the per-slot-set design the header states in place of a
-       16-deep array - and the binding is numbered XUD_DESCRIPTOR_BINDING so the binding list is the
-       contiguous list starting at 0 the create-info's own rule asks for.
-     */
-    descriptor->bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].binding = XUD_DESCRIPTOR_BINDING;
-    descriptor->bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptor->bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].descriptorCount = 1u;
-    descriptor->bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].stageFlags = XUD_DESCRIPTOR_SAMPLER_STAGES;
-    descriptor->bindings[XUD_DESCRIPTOR_SET_MATERIAL][0u].pImmutableSamplers = NULL;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SAMPLER_BINDING].descriptorCount = XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SAMPLER_BINDING].stageFlags = XUD_DESCRIPTOR_SAMPLER_STAGES;
+    descriptor->bindings[XUD_DESCRIPTOR_SET_PER_FRAME][XUD_DESCRIPTOR_SAMPLER_BINDING].pImmutableSamplers = NULL;
 
     return XUD_OK;
 }
@@ -368,23 +353,19 @@ XudResult xud_descriptor_fill_pool_info(XudDescriptor* descriptor) {
     descriptor->poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     descriptor->poolInfo.pNext = NULL;
     descriptor->poolInfo.flags = XUD_DESCRIPTOR_POOL_FLAGS;
-    descriptor->poolInfo.maxSets = XUD_DESCRIPTOR_SLOT_SET_COUNT;
+    descriptor->poolInfo.maxSets = XUD_DESCRIPTOR_SET_COUNT;
     descriptor->poolInfo.poolSizeCount = XUD_DESCRIPTOR_POOL_SIZE_COUNT;
     descriptor->poolInfo.pPoolSizes = descriptor->poolSizes;
 
-    /* One row per descriptor TYPE the sets allocated from this pool will be updated with, not one
-       row per set - the rule the create-info states for pPoolSizes. The counts are the ceiling of h
-       ow many of each type the pool's sets may hold in total, which is why the sampler row is the
-       array's size rather than 1: the texture step allocates set 1 from this same pool and its one
-       binding is XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE descriptors.
+    /* One row per descriptor TYPE the set is updated with, not one row per set - the rule the cr
+       eate-info states for pPoolSizes. The counts are the ceiling of how many of each type the p
+       ool's sets may hold in total, which is why the sampler row is the array's ceiling plus the
+       shadow map's pair: the pool is budgeted so the axis can ever be fully written.
      */
     descriptor->poolSizes[0u].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     descriptor->poolSizes[0u].descriptorCount = 1u;
     descriptor->poolSizes[1u].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    descriptor->poolSizes[1u].descriptorCount
-        = XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u + XUD_DESCRIPTOR_BLOOM_LEVELS; /* +1: the shadow map's pair in set 0's binding 1;
-                                                                                   +LEVELS: the chain's rows in binding 2 - both
-                                                                                   allocate from this same pool */
+    descriptor->poolSizes[1u].descriptorCount = XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE + 1u;
 
     return XUD_OK;
 }
@@ -400,19 +381,17 @@ XudResult xud_descriptor_fill_set_allocate_info(XudDescriptor* descriptor, uint3
         return XUD_INVALID_ARG;
     }
 
-    /* The set index is bounded by this rung's own allocated-set count rather than by a caller's idea
-       of one: set 0 is the per-frame set and sets 1..N are the slot sets, so an index past the last
-       slot set is an index into nothing.
+    /* The set index is bounded by this rung's own set count - the one bindless set - so any
+       index above 0 is an index into nothing.
      */
-    if (setIndex >= XUD_DESCRIPTOR_SLOT_SET_COUNT) {
+    if (setIndex >= XUD_DESCRIPTOR_SET_COUNT) {
         return XUD_INVALID_ARG;
     }
 
-    /* Two layouts, XUD_DESCRIPTOR_SET_COUNT of them, but XUD_DESCRIPTOR_SLOT_SET_COUNT sets: set 0
-       takes layout 0 and every slot set takes layout 1, so the layout a set allocates against is a
-       fold of its set number rather than the number itself.
+    /* One layout and one set: the set allocates against layout 0, and the fold the per-slot
+       design needed is gone.
      */
-    layoutIndex = (setIndex == XUD_DESCRIPTOR_SET_PER_FRAME) ? XUD_DESCRIPTOR_SET_PER_FRAME : XUD_DESCRIPTOR_SET_MATERIAL;
+    layoutIndex = XUD_DESCRIPTOR_SET_PER_FRAME;
 
     /* An allocate-info that names no pool is a bad state of THIS layer's own record rather than a
        bad argument from a caller - the rule xud_pipeline_fill_create_info() applies to a pipeline t
@@ -494,7 +473,7 @@ XudResult xud_descriptor_fill_write_info(XudDescriptor* descriptor) {
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The white default every entry of set 1 names, and the write that bound it - pure
+ * The white default every array entry names, and the write that bound it - pure
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_descriptor_fill_white_infos(XudDescriptor* descriptor) {
@@ -617,64 +596,65 @@ XudResult xud_descriptor_fill_white_transitions(XudDescriptor* descriptor) {
     return XUD_OK;
 }
 
-XudResult xud_descriptor_fill_slot_write_infos(XudDescriptor* descriptor) {
-    uint32_t slot = 0u;
-
+XudResult xud_descriptor_fill_white_write_info(XudDescriptor* descriptor) {
     if (descriptor == NULL) {
         return XUD_INVALID_ARG;
     }
-
-    for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
-        if (descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(slot)] == VK_NULL_HANDLE) {
-            return XUD_INVALID_ARG;
-        }
+    if (descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) {
+        return XUD_INVALID_ARG;
     }
     if ((descriptor->whiteImageView == VK_NULL_HANDLE) || (descriptor->whiteSampler == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
 
-    /* Every slot set names the same view and the same sampler at bring-up, and that is the point of
-       the default: each set is a SLOT and the texture step is what puts a different view into one o
-       f them. Writing all XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE sets is what makes the bring-up legal a
-       t all, because a bound set whose descriptor was never written is a violation rather than som
-       ething the driver forgives - and the frame binds a slot set before it draws, so every one of
-       them must already name a real pair.
+    /* Entry 0 is the one entry the open writes: the rest of the axis may stay unbound because the
+       binding is PARTIALLY_BOUND, and entry 0 is the one every untextured draw names, so the run
+       g writes the pair it owns rather than trusting what an unbound entry samples. The release b
+       elow writes this same pair back over a texture's entry; this row is what both reads.
      */
-    for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
-        descriptor->samplerRows[slot].imageView = descriptor->whiteImageView;
-        descriptor->samplerRows[slot].sampler = descriptor->whiteSampler;
-        descriptor->samplerRows[slot].imageLayout = XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT;
+    descriptor->whiteImageRow.imageView = descriptor->whiteImageView;
+    descriptor->whiteImageRow.sampler = descriptor->whiteSampler;
+    descriptor->whiteImageRow.imageLayout = XUD_DESCRIPTOR_WHITE_SAMPLED_LAYOUT;
 
-        descriptor->slotWriteInfos[slot].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        descriptor->slotWriteInfos[slot].pNext = NULL;
-        descriptor->slotWriteInfos[slot].dstSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(slot)];
-        descriptor->slotWriteInfos[slot].dstBinding = XUD_DESCRIPTOR_BINDING;
-        descriptor->slotWriteInfos[slot].dstArrayElement = 0u;
-        descriptor->slotWriteInfos[slot].descriptorCount = 1u;
-        descriptor->slotWriteInfos[slot].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        descriptor->slotWriteInfos[slot].pImageInfo = &descriptor->samplerRows[slot];
-        descriptor->slotWriteInfos[slot].pBufferInfo = NULL;
-        descriptor->slotWriteInfos[slot].pTexelBufferView = NULL;
-    }
+    descriptor->whiteWriteInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptor->whiteWriteInfo.pNext = NULL;
+    descriptor->whiteWriteInfo.dstSet = descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME];
+    descriptor->whiteWriteInfo.dstBinding = XUD_DESCRIPTOR_SAMPLER_BINDING;
+    descriptor->whiteWriteInfo.dstArrayElement = XUD_DESCRIPTOR_ENTRY_WHITE;
+    descriptor->whiteWriteInfo.descriptorCount = 1u;
+    descriptor->whiteWriteInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    descriptor->whiteWriteInfo.pImageInfo = &descriptor->whiteImageRow;
+    descriptor->whiteWriteInfo.pBufferInfo = NULL;
+    descriptor->whiteWriteInfo.pTexelBufferView = NULL;
 
     return XUD_OK;
 }
 
 /*-----------------------------------------------------------------------------------------------
- * The free list of set 1's sampler array - the pure half and the two driver writes around it
+ * The free list of the sampler array - the pure half and the driver writes around it
  *-----------------------------------------------------------------------------------------------*/
 
 XudResult xud_descriptor_pick_free_slot(const XudDescriptor* descriptor, uint32_t* outSlot) {
-    uint32_t slot = 0u;
+    uint32_t word = 0u;
+    uint32_t bit = 0u;
 
     if ((descriptor == NULL) || (outSlot == NULL)) {
         return XUD_INVALID_ARG;
     }
 
-    for (slot = 0u; slot < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; slot++) {
-        if ((descriptor->samplerSlotMask & XUD_DESCRIPTOR_SLOT_MASK_BIT(slot)) == 0u) {
-            *outSlot = slot;
-            return XUD_OK;
+    for (word = 0u; word < XUD_DESCRIPTOR_SAMPLER_MASK_WORDS; word++) {
+        if (descriptor->samplerSlotMask[word] == UINT64_MAX) {
+            continue;
+        }
+        for (bit = 0u; bit < 64u; bit++) {
+            uint32_t entry = (word * 64u) + bit;
+            if (entry >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
+                break;
+            }
+            if ((descriptor->samplerSlotMask[word] & XUD_DESCRIPTOR_SLOT_MASK_BIT(entry)) == 0ull) {
+                *outSlot = entry;
+                return XUD_OK;
+            }
         }
     }
 
@@ -689,8 +669,7 @@ XudResult xud_descriptor_fill_texture_slot_write(
     if (slot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
         return XUD_INVALID_ARG;
     }
-    if ((descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(slot)] == VK_NULL_HANDLE) || (view == VK_NULL_HANDLE)
-        || (sampler == VK_NULL_HANDLE)) {
+    if ((descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) || (view == VK_NULL_HANDLE) || (sampler == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
 
@@ -700,9 +679,9 @@ XudResult xud_descriptor_fill_texture_slot_write(
 
     descriptor->textureSlotWriteInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptor->textureSlotWriteInfo.pNext = NULL;
-    descriptor->textureSlotWriteInfo.dstSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(slot)];
-    descriptor->textureSlotWriteInfo.dstBinding = XUD_DESCRIPTOR_BINDING;
-    descriptor->textureSlotWriteInfo.dstArrayElement = 0u;
+    descriptor->textureSlotWriteInfo.dstSet = descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME];
+    descriptor->textureSlotWriteInfo.dstBinding = XUD_DESCRIPTOR_SAMPLER_BINDING;
+    descriptor->textureSlotWriteInfo.dstArrayElement = slot;
     descriptor->textureSlotWriteInfo.descriptorCount = 1u;
     descriptor->textureSlotWriteInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     descriptor->textureSlotWriteInfo.pImageInfo = &descriptor->textureSlotRow;
@@ -734,7 +713,7 @@ XudResult xud_descriptor_bind_texture_slot(XudDescriptor* descriptor, XudLoader*
     if (!xud_loader_device_bound(loader, device->device)) {
         return XUD_UNSUPPORTED;
     }
-    if (descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE) {
+    if (descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) {
         return XUD_INVALID_ARG;
     }
     if (loader->deviceTable.vkUpdateDescriptorSets == NULL) {
@@ -756,8 +735,7 @@ XudResult xud_descriptor_bind_texture_slot(XudDescriptor* descriptor, XudLoader*
     }
 
     loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->textureSlotWriteInfo, 0u, NULL);
-    descriptor->samplerSlotMask |= XUD_DESCRIPTOR_SLOT_MASK_BIT(slot);
-    descriptor->slotViews[slot] = descriptor->textureSlotRow;
+    descriptor->samplerSlotMask[XUD_DESCRIPTOR_SLOT_MASK_WORD(slot)] |= XUD_DESCRIPTOR_SLOT_MASK_BIT(slot);
     *outSlot = slot;
 
     return XUD_OK;
@@ -770,7 +748,7 @@ XudResult xud_descriptor_release_texture_slot(XudDescriptor* descriptor, XudLoad
     if (slot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
         return XUD_INVALID_ARG;
     }
-    if ((descriptor->samplerSlotMask & XUD_DESCRIPTOR_SLOT_MASK_BIT(slot)) == 0u) {
+    if ((descriptor->samplerSlotMask[XUD_DESCRIPTOR_SLOT_MASK_WORD(slot)] & XUD_DESCRIPTOR_SLOT_MASK_BIT(slot)) == 0ull) {
         return XUD_ALREADY;
     }
     if (!loader->open) {
@@ -782,7 +760,7 @@ XudResult xud_descriptor_release_texture_slot(XudDescriptor* descriptor, XudLoad
     if (!xud_loader_device_bound(loader, device->device)) {
         return XUD_UNSUPPORTED;
     }
-    if ((descriptor->sets[XUD_DESCRIPTOR_SET_MATERIAL] == VK_NULL_HANDLE) || (descriptor->whiteImageView == VK_NULL_HANDLE)
+    if ((descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) || (descriptor->whiteImageView == VK_NULL_HANDLE)
         || (descriptor->whiteSampler == VK_NULL_HANDLE)) {
         return XUD_INVALID_ARG;
     }
@@ -804,8 +782,7 @@ XudResult xud_descriptor_release_texture_slot(XudDescriptor* descriptor, XudLoad
 
     loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->textureSlotWriteInfo, 0u, NULL);
 
-    descriptor->samplerSlotMask &= ~XUD_DESCRIPTOR_SLOT_MASK_BIT(slot);
-    descriptor->slotViews[slot] = (VkDescriptorImageInfo) { 0 };
+    descriptor->samplerSlotMask[XUD_DESCRIPTOR_SLOT_MASK_WORD(slot)] &= ~XUD_DESCRIPTOR_SLOT_MASK_BIT(slot);
 
     return XUD_OK;
 }
@@ -818,7 +795,7 @@ XudResult xud_descriptor_update_texture_slot(XudDescriptor* descriptor, XudLoade
     if (slot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
         return XUD_INVALID_ARG;
     }
-    if ((descriptor->samplerSlotMask & XUD_DESCRIPTOR_SLOT_MASK_BIT(slot)) == 0u) {
+    if ((descriptor->samplerSlotMask[XUD_DESCRIPTOR_SLOT_MASK_WORD(slot)] & XUD_DESCRIPTOR_SLOT_MASK_BIT(slot)) == 0ull) {
         return XUD_ALREADY;
     }
     if (view == VK_NULL_HANDLE) {
@@ -836,7 +813,7 @@ XudResult xud_descriptor_update_texture_slot(XudDescriptor* descriptor, XudLoade
     if (!xud_loader_device_bound(loader, device->device)) {
         return XUD_UNSUPPORTED;
     }
-    if (descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(slot)] == VK_NULL_HANDLE) {
+    if (descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] == VK_NULL_HANDLE) {
         return XUD_INVALID_ARG;
     }
     if (loader->deviceTable.vkUpdateDescriptorSets == NULL) {
@@ -854,7 +831,6 @@ XudResult xud_descriptor_update_texture_slot(XudDescriptor* descriptor, XudLoade
     }
 
     loader->deviceTable.vkUpdateDescriptorSets(device->device, 1u, &descriptor->textureSlotWriteInfo, 0u, NULL);
-    descriptor->slotViews[slot] = descriptor->textureSlotRow;
 
     return XUD_OK;
 }
@@ -1031,12 +1007,15 @@ XudResult xud_descriptor_set_shadow_texture(
     return XUD_OK;
 }
 
-XudResult xud_descriptor_set_bloom_textures(
-    XudDescriptor* descriptor, const XudLoader* loader, const XudDevice* device, const VkImageView* views, VkSampler sampler) {
+XudResult xud_descriptor_set_bloom_textures(XudDescriptor* descriptor, const XudLoader* loader, const XudDevice* device,
+    const VkImageView* views, VkSampler sampler, uint32_t firstEntry) {
     uint32_t level = 0u;
 
     if ((descriptor == NULL) || (loader == NULL) || (device == NULL) || (views == NULL)) {
         return XUD_INVALID_ARG;
+    }
+    if ((firstEntry + XUD_DESCRIPTOR_BLOOM_LEVELS) > XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
+        return XUD_INVALID_ARG; /* the chain's block must sit inside the axis it is written to */
     }
     for (level = 0u; level < XUD_DESCRIPTOR_BLOOM_LEVELS; level++) {
         if (views[level] == VK_NULL_HANDLE) {
@@ -1080,8 +1059,8 @@ XudResult xud_descriptor_set_bloom_textures(
     descriptor->bloomWriteInfo.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     descriptor->bloomWriteInfo.pNext = NULL;
     descriptor->bloomWriteInfo.dstSet = descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME];
-    descriptor->bloomWriteInfo.dstBinding = XUD_DESCRIPTOR_BLOOM_BINDING;
-    descriptor->bloomWriteInfo.dstArrayElement = 0u;
+    descriptor->bloomWriteInfo.dstBinding = XUD_DESCRIPTOR_SAMPLER_BINDING;
+    descriptor->bloomWriteInfo.dstArrayElement = firstEntry;
     descriptor->bloomWriteInfo.descriptorCount = XUD_DESCRIPTOR_BLOOM_LEVELS;
     descriptor->bloomWriteInfo.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
     descriptor->bloomWriteInfo.pImageInfo = descriptor->bloomImageRows;
@@ -1337,8 +1316,8 @@ XudResult xud_descriptor_open(XudDescriptor** outDescriptor, XudLoader* loader, 
         return XUD_UNSUPPORTED;
     }
 
-    /* 1. the two set layouts, in set order. The order is load-bearing rather than tidy: the pipeli
-       ne layout above names them in array order, and that array IS the set numbering.
+    /* 1. the one set layout. The order is load-bearing rather than tidy: the pipeline layout abo
+       ve names the rows in array order, and that array IS the set numbering.
      */
     for (row = 0u; row < XUD_DESCRIPTOR_SET_COUNT; row++) {
         VkDescriptorSetLayout layout = VK_NULL_HANDLE;
@@ -1418,12 +1397,13 @@ XudResult xud_descriptor_open(XudDescriptor** outDescriptor, XudLoader* loader, 
         return result;
     }
 
-    /* 4. the sets, allocated from the pool above against the layout above them. Set 0 is the per-frame
-       block and the rest are the slot sets, one per texture slot, all against layout 1. Every one is
-       allocated here, and that is the point of the white default below: a slot set is only legal once
-       its descriptor names a real view and sampler, which is what the white write below provides.
+    /* 4. the one set, allocated from the pool above against the layout above it: the per-frame
+       block, the shadow sampler and the sampler array. The array is allocated UNWRITTEN beyond e
+       ntry 0, and that is the point of the white default below: entry 0 is written before anythi
+       ng binds the set, and PARTIALLY_BOUND excuses every entry the free list has not handed out
+       .
      */
-    for (row = 0u; row < XUD_DESCRIPTOR_SLOT_SET_COUNT; row++) {
+    for (row = 0u; row < XUD_DESCRIPTOR_SET_COUNT; row++) {
         result = xud_descriptor_fill_set_allocate_info(descriptor, row);
         if (result != XUD_OK) {
             xud_descriptor_retire(descriptor, device, loader, alloc);
@@ -1440,7 +1420,7 @@ XudResult xud_descriptor_open(XudDescriptor** outDescriptor, XudLoader* loader, 
         }
     }
 
-    /* 5. the white default every entry of set 1's sampler array names, in the order sampler-then-ima
+    /* 5. the white default every entry of set 0's sampler array names, in the order sampler-then-ima
        ge-then-view: the sampler and the image's create-infos are filled before either is handed to a
        driver so a failed image create leaves nothing behind, and the view comes last because it is t
        he only one of the three that reads a handle created above it. The sampler is created first of
@@ -1530,11 +1510,10 @@ XudResult xud_descriptor_open(XudDescriptor** outDescriptor, XudLoader* loader, 
         return result;
     }
 
-    /* 6. the writes that bound every set, one call carrying them all because vkUpdateDescriptorSets
-       takes an ARRAY of writes: set 0's buffer and each slot set's white pair are written in the same
-       call, which is the point of the array rather than a saving - the driver reads them all before it
-       returns, and every slot set is left naming a real pair before the frame's first bind of any of
-       them.
+    /* 6. the two writes that bound the one set, one call carrying them both because vkUpdateDesc
+       riptorSets takes an ARRAY of writes: the block's buffer and the array's white entry are wri
+       tten in the same call, and the set is left naming real pairs for both before the frame's f
+       irst bind.
      */
     result = xud_descriptor_fill_write_info(descriptor);
     if (result != XUD_OK) {
@@ -1543,7 +1522,7 @@ XudResult xud_descriptor_open(XudDescriptor** outDescriptor, XudLoader* loader, 
         return result;
     }
 
-    result = xud_descriptor_fill_slot_write_infos(descriptor);
+    result = xud_descriptor_fill_white_write_info(descriptor);
     if (result != XUD_OK) {
         xud_descriptor_retire(descriptor, device, loader, alloc);
         free(descriptor);
@@ -1551,21 +1530,21 @@ XudResult xud_descriptor_open(XudDescriptor** outDescriptor, XudLoader* loader, 
     }
 
     {
-        VkWriteDescriptorSet allWrites[XUD_DESCRIPTOR_SLOT_SET_COUNT];
+        VkWriteDescriptorSet allWrites[2u];
 
         allWrites[0u] = descriptor->writeInfo;
-        for (row = 0u; row < XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE; row++) {
-            allWrites[XUD_DESCRIPTOR_SLOT_SET_INDEX(row)] = descriptor->slotWriteInfos[row];
-        }
-        loader->deviceTable.vkUpdateDescriptorSets(device->device, XUD_DESCRIPTOR_SLOT_SET_COUNT, allWrites, 0u, NULL);
+        allWrites[1u] = descriptor->whiteWriteInfo;
+        loader->deviceTable.vkUpdateDescriptorSets(device->device, 2u, allWrites, 0u, NULL);
     }
 
-    /* Slot 0 of the slot axis is the white default's own and is never handed to a texture: the frame's
-       push rows turn a row that names no texture into slot 0, so a texture that took it would be the
-       texel every untextured draw samples. The bit is set here at open rather than in the pick, so
-       the free list - and with it the context's ceiling of XUD_MAX_TEXTURES live textures, the slot
-       axis minus this slot - is a fact the pick reads rather than one every caller remembers. */
-    descriptor->samplerSlotMask = XUD_DESCRIPTOR_SLOT_MASK_BIT(0u);
+    /* Entry 0 of the sampler axis is the white default's own and is never handed to a texture: t
+       he frame's push rows turn a row that names no texture into entry 0, so a texture that took
+       it would be the texel every untextured draw samples. The bit is set here at open rather th
+       an in the pick, so the free list - and with it the context's ceiling of XUD_MAX_TEXTURES l
+       ive textures, the axis minus this entry and the residents the renderer claims next - is a
+       fact the pick reads rather than one every caller remembers. */
+    descriptor->samplerSlotMask[XUD_DESCRIPTOR_SLOT_MASK_WORD(XUD_DESCRIPTOR_ENTRY_WHITE)]
+        = XUD_DESCRIPTOR_SLOT_MASK_BIT(XUD_DESCRIPTOR_ENTRY_WHITE);
 
     /* 6. the staging arena of set 0's block, LAST of the six because it is the only object of them
        that nothing else in this rung names - and putting it last is what makes the teardown below i

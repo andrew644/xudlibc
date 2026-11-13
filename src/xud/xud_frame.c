@@ -66,6 +66,7 @@
 
 #include <assert.h> /* Required for: static_assert, the row and array-size checks */
 #include <stdlib.h> /* Required for: calloc, free */
+#include <string.h> /* Required for: memset, the resolve and bloom rows' zeroed push rows */
 
 /* The rows this layer calls through must be pointer-sized, the same rule xud_loader.h checks for
    the table pair as a whole. */
@@ -297,11 +298,11 @@ XudResult xud_frame_fill_push_row(XudPushRow* outRow, const XudBatchDraw* drawRo
     */
     outRow->materialIndex = (drawRow->materialIndex == XUD_BATCH_NO_MATERIAL) ? 0u : drawRow->materialIndex;
 
-    /* The same sentinel mapping one channel over: a draw with no map names slot 0 of set 1's
-       sampler array - the white default the descriptor rung wrote at its bring-up - and the push
-       row's member is an index a read could use, so the sentinel that indexes nothing is mapped to
-       the slot every no-map draw samples through. A real slot passes through unchanged: it is the
-       number the frame loop's slot-set rebind names beside this draw.
+    /* The same sentinel mapping one channel over: a draw with no map names entry 0 of the sampler
+       array - the white default the descriptor rung wrote at its bring-up - and the push row's mem
+       ber is an index a read could use, so the sentinel that indexes nothing is mapped to the entr
+       y every no-map draw samples through. A real entry passes through unchanged: it is the number
+       the push row carries beside this draw and the fragment stage indexes the array with.
     */
     outRow->textureIndex = (drawRow->textureIndex == XUD_BATCH_NO_TEXTURE) ? 0u : drawRow->textureIndex;
 
@@ -548,7 +549,7 @@ static XudResult xud_frame_flush_batch(XudBatch* batch, uint32_t* outHasContent)
 */
 static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const XudDevice* device, const XudPipeline* pipeline,
     const XudRenderPass* pass, const XudFramebuffer* row, XudBatch* batch, XudDescriptor* descriptor, uint32_t hasContent,
-    uint32_t sampledAfter, uint32_t resolveSlot, uint32_t depthOnly) {
+    uint32_t sampledAfter, uint32_t resolveIndex, uint32_t depthOnly) {
     XudBatchDraw drawRow;
     XudBatchGeometry geometryRow;
     XudPushRow pushRow;
@@ -566,7 +567,6 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
     VkDeviceSize stagingBytes = 0u;
     uint32_t draw = 0u;
     uint32_t boundGeometry = XUD_BATCH_GEOMETRY_NONE;
-    uint32_t boundTexture = XUD_BATCH_NO_TEXTURE;
 
     result = xud_frame_fill_recording(&begin, &viewport, &scissor, row->createInfo.width, row->createInfo.height);
     if (result != XUD_OK) {
@@ -685,32 +685,35 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
        the block drew nothing, and the same bytes read back intact from the buffer - probed on this
        machine 2026-11-13. One bind per pass, not one per frame, because each recorded pass is its
        own state scope: an off-screen scope and the screen pass both read the block and neither may
-       inherit a bind recorded outside it. The slot sets (set 1) stay a per-draw bind below: the set
-       a draw samples depends on that draw's texture, and binding the right one per draw is what
-       keeps every descriptor written before its set is bound.
+       inherit a bind recorded outside it. NOTHING binds after this row: a draw's texture is the pu
+       sh row's textureIndex naming an entry of the set's own sampler array, which is the whole poin
+       t of the bindless axis.
     */
     {
         const VkDescriptorSet setRows[XUD_FRAME_SET_COUNT] = { descriptor->sets[XUD_DESCRIPTOR_SET_PER_FRAME] };
         loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
             XUD_FRAME_FIRST_SET, XUD_FRAME_SET_COUNT, setRows, 0u, NULL);
     }
-    if (resolveSlot != XUD_FRAME_NO_RESOLVE) {
-        /* The resolve pass's own recording: the scratch image's slot set takes set 1 exactly the
-           way a textured batch draw's slot set does - one set per slot, this pass's slot chosen at
-           the renderer's bring-up - and the resolve pipeline draws the three vertices the command
-           buffer itself invents. No vertex buffers are bound and none may be: the pipeline has zero
-           vertex bindings, and the batch's streams bound above belong to the scratch pass that came
-           BEFORE this one, not to a pass that records no batch rows at all. */
-        const VkDescriptorSet slotSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(resolveSlot)];
-        loader->deviceTable.vkCmdBindDescriptorSets(
-            frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, XUD_DESCRIPTOR_SET_MATERIAL, 1u, &slotSet, 0u, NULL);
+    if (resolveIndex != XUD_FRAME_NO_RESOLVE) {
+        /* The resolve pass's own recording: the HDR scratch is array entry `resolveIndex` - the ar
+           gument the renderer passes is its claimed entry, not a set - and the push row the fragme
+           nt stage indexes the array with is a row of its own: zeroed but for that one member. The
+           resolve pipeline draws the three vertices the command buffer itself invents. No vertex b
+           uffers are bound and none may be: the pipeline has zero vertex bindings, and the batch's
+           streams bound above belong to the scratch pass that came BEFORE this one, not to a pass
+           that records no batch rows at all. */
+        XudPushRow resolvePush;
+        memset(&resolvePush, 0, sizeof resolvePush);
+        resolvePush.textureIndex = resolveIndex;
+        loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
+            descriptor->pushRange.offset, descriptor->pushRange.size, &resolvePush);
         loader->deviceTable.vkCmdBindPipeline(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->resolvePipeline);
         loader->deviceTable.vkCmdDraw(frame->commandBuffer, 3u, 1u, 0u, 0u);
     }
     /* The second half of the condition is the batch rows' gate: a resolve pass records no draws,
        the triangle above is its whole content, and the stats row read above still counts the scene
        batch's rows - they belong to the pass that ran BEFORE this one. */
-    for (draw = 0u; (draw < drawCount) && (resolveSlot == XUD_FRAME_NO_RESOLVE); draw++) {
+    for (draw = 0u; (draw < drawCount) && (resolveIndex == XUD_FRAME_NO_RESOLVE); draw++) {
         if (xud_batch_draw_get(batch, draw, &drawRow) != XUD_OK) {
             break;
         }
@@ -747,13 +750,7 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
             break;
         }
         if (pushRow.textureIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) {
-            break;
-        }
-        if ((depthOnly == 0u) && (pushRow.textureIndex != boundTexture)) {
-            const VkDescriptorSet slotSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(pushRow.textureIndex)];
-            loader->deviceTable.vkCmdBindDescriptorSets(frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout,
-                XUD_DESCRIPTOR_SET_MATERIAL, 1u, &slotSet, 0u, NULL);
-            boundTexture = pushRow.textureIndex;
+            break; /* an index the shader's array cannot name is a draw that samples nothing */
         }
         loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
             descriptor->pushRange.offset, descriptor->pushRange.size, &pushRow);
@@ -780,17 +777,17 @@ static XudResult xud_frame_record_pass(XudFrame* frame, XudLoader* loader, const
 
 /* One bloom-chain level, end to end inside an ALREADY BEGUN command buffer: the level's opening
    barrier out of the tracker, the pass's begin (its own clear, which the renderer filled black -
-   the chain's background is black regardless of the window's), set 0 as always, set 1 ALWAYS -
-   the level's source slot, the scratch image's own for level 0 and the level-below's for every
-   blur row - the bright pipeline for level 0 and the one blur row after it, three vertices the
-   command buffer invents, and the sampled-sync barrier that lets the level BELOW this one (or
-   the present row, for the last) read what this pass wrote. The chain binds slot-sets rather
-   than sampling the present row's descriptor array because a shader that statically touches an
-   array is checked against EVERY member of it - and the level in pass right now is one of
-   them, in the attachment layout no sampler may read. The recording is xud_frame_record_pass()'s
-   one-attachment branch with the batch rows, the depth row and the draw loop removed: the
-   chain's fullscreen triangle is the resolve's triangle, and the level's input is a texture,
-   not geometry. */
+   the chain's background is black regardless of the window's), set 0 as always, a push row carr
+   ying the level's source ENTRY - the scratch image's for level 0 and the level-below's for eve
+   ry blur row - the bright pipeline for level 0 and the one blur row after it, three vertices t
+   he command buffer invents, and the sampled-sync barrier that lets the level BELOW this one (o
+   r the present row, for the last) read what this pass wrote. The chain pushes the same bindles
+   s array the present row reads: the level in pass right now IS an entry of that array, but a p
+   ass may not sample the image it is writing and does not - every entry this pass samples is o
+   ne whose pass ended and whose barrier landed before this one began. The recording is xud_fram
+   e_record_pass()'s one-attachment branch with the batch rows, the depth row and the draw loop
+   removed: the chain's fullscreen triangle is the resolve's triangle, and the level's input is
+   a texture, not geometry. */
 static XudResult xud_frame_record_bloom(XudFrame* frame, XudLoader* loader, const XudPipeline* pipeline, const XudFrameBloomRow* row,
     uint32_t level, XudDescriptor* descriptor) {
     XudResult result;
@@ -844,13 +841,16 @@ static XudResult xud_frame_record_bloom(XudFrame* frame, XudLoader* loader, cons
             XUD_FRAME_FIRST_SET, XUD_FRAME_SET_COUNT, setRows, 0u, NULL);
     }
     {
-        /* The level's source as a slot-set - the same binding-the-set-by-number shape the
-           textured batch rows use, and for the same reason: the input differs per draw, and
-           one bind per draw is the only per-draw input the batch's one push range cannot be.
-           Level 0's slot carries the scratch image; level k's carries level k-1's view. */
-        const VkDescriptorSet slotSet = descriptor->sets[XUD_DESCRIPTOR_SLOT_SET_INDEX(row->sourceSlot)];
-        loader->deviceTable.vkCmdBindDescriptorSets(
-            frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->layout, XUD_DESCRIPTOR_SET_MATERIAL, 1u, &slotSet, 0u, NULL);
+        /* The level's source as an array entry: the push row the fragment stage indexes the sam
+           pler array with, zeroed but for that one member - level 0's entry carries the scratch
+           image and level k's carries level k-1's view, both claimed at the renderer's bring-up
+           . This replaces the per-level set bind the per-slot design made necessary; the same r
+           eason the resolve row above pushes rather than binds applies one entry over. */
+        XudPushRow bloomPush;
+        memset(&bloomPush, 0, sizeof bloomPush);
+        bloomPush.textureIndex = row->sourceIndex;
+        loader->deviceTable.vkCmdPushConstants(frame->commandBuffer, pipeline->layout, descriptor->pushRange.stageFlags,
+            descriptor->pushRange.offset, descriptor->pushRange.size, &bloomPush);
     }
     loader->deviceTable.vkCmdBindPipeline(
         frame->commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, (level == 0u) ? pipeline->brightPipeline : pipeline->bloomBlurPipeline);
@@ -882,7 +882,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     const XudPipeline* pipeline, const XudRenderPass* pass, const XudFramebufferArray* framebuffers, uint32_t framebufferCount,
     const XudRenderPass* hdrPass, const XudFramebuffer* hdrFramebuffer, const XudRenderPass* prepassPass,
     const XudFramebuffer* prepassFramebuffer, const XudRenderPass* shadowPass, const XudFramebuffer* shadowFramebuffer,
-    const XudFrameBloomRow* bloomRows, uint32_t bloomCount, uint32_t hdrSlot, const XudFramePassScope* scopes, uint32_t scopeCount,
+    const XudFrameBloomRow* bloomRows, uint32_t bloomCount, uint32_t hdrEntry, const XudFramePassScope* scopes, uint32_t scopeCount,
     XudBatch* batch, XudDescriptor* descriptor, uint32_t* outImageIndex) {
     XudQueue graphicsQueue;
     XudQueue presentQueue;
@@ -931,7 +931,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
         || (hdrFramebuffer->framebuffer == VK_NULL_HANDLE) || (pipeline->resolvePipeline == VK_NULL_HANDLE) || (prepassPass == NULL)
         || (prepassPass->renderPass == VK_NULL_HANDLE) || (prepassFramebuffer == NULL)
         || (prepassFramebuffer->framebuffer == VK_NULL_HANDLE) || (pipeline->prepassPipeline == VK_NULL_HANDLE)
-        || (hdrSlot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
+        || (hdrEntry >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)) {
         /* The scratch pass, its framebuffer and its slot are as load-bearing as the screen pass's
            own three: the frame draws the scene into them BEFORE the screen pass exists to show it,
            and the resolve triangle names the slot by number. The pre-pass pair and the pre-pass
@@ -974,7 +974,7 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
             if ((bloomRows[bloom].pass == NULL) || (bloomRows[bloom].pass->renderPass == VK_NULL_HANDLE)
                 || (bloomRows[bloom].framebuffer == NULL) || (bloomRows[bloom].framebuffer->framebuffer == VK_NULL_HANDLE)
                 || (bloomRows[bloom].framebuffer->view == VK_NULL_HANDLE)
-                || (bloomRows[bloom].sourceSlot >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)
+                || (bloomRows[bloom].sourceIndex >= XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)
                 || ((bloom > 0u) && (pipeline->bloomBlurPipeline == VK_NULL_HANDLE))) {
                 return XUD_INVALID_ARG;
             }
@@ -1330,10 +1330,10 @@ XudResult xud_frame_draw(XudFrame* frame, XudLoader* loader, const XudDevice* de
     }
 
     /* --- 5f. the screen pass, the same recording through the same helper, with the resolve
-       triangle as its only content: it names the scratch image's slot, so set 1 is bound to the
-       scratch pair rather than to a batch draw's, and no batch row is replayed here - the scene is
-       already drawn, into the scratch image, two passes ago. */
-    result = xud_frame_record_pass(frame, loader, device, pipeline, pass, row, batch, descriptor, 0u, 0u, hdrSlot, 0u);
+       triangle as its only content: the pushed entry is the scratch image's, so the one fetch the
+       resolve makes reads the scratch pair rather than a batch draw's texture, and no batch row is
+       replayed here - the scene is already drawn, into the scratch image, two passes ago. */
+    result = xud_frame_record_pass(frame, loader, device, pipeline, pass, row, batch, descriptor, 0u, 0u, hdrEntry, 0u);
     if (result != XUD_OK) {
         return result;
     }

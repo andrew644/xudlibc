@@ -654,15 +654,15 @@ static void xud_test_renderpass_gpu(void) {
         "e-derived guess");
     xud_check(xud_allocator_stats(context->allocator, &blocks, &live, &bytes, &cursor) == XUD_OK, "gpu-renderpass/stats-answers",
         "the counters answer");
-    xud_check(blocks == 8u, "gpu-renderpass/eight-blocks",
-        "EIGHT blocks now rather than the descriptor rung's one: the depth image's requirements (alignment 65536 on this driver) do not "
+    xud_check(blocks == 6u, "gpu-renderpass/six-blocks",
+        "SIX blocks now rather than the descriptor rung's one: the depth image's requirements (alignment 65536 on this driver) do not "
         "fit the block the uniform buffer was carved out of, so the image's block is a second VkDeviceMemory rather than a "
-        "suballocation, and the white default every entry of set 1's sampler array names is a third because its own alignment does not "
-        "fit a hole in the depth image's block either, and the renderer's scratch image, the scratch pass's own depth image and the "
-        "shadow map are a fourth, fifth and sixth for the same alignment reason, and the two host-visible arenas - the batch's and "
-        "the descriptor's staging arena - are two more, because vkMapMemory maps a VkDeviceMemory rather than a range and a carve "
-        "inside a block someone else already mapped cannot be mapped at all. The batch's five data buffers are the carves that do "
-        "share a block, which is the suballocation half of the repo's allocate-once rule seen from above");
+        "suballocation - but a block is now sized for size PLUS alignment, so its trailing hole hosts the white default every entry of "
+        "set 0's sampler array names, and the scratch image's own block likewise hosts the scratch pass's depth; the shadow map is too "
+        "big for those holes and stands third among the images. The two host-visible arenas - the batch's and the descriptor's staging "
+        "arena - are two more, because vkMapMemory maps a VkDeviceMemory rather than a range and a carve inside a block someone else "
+        "already mapped cannot be mapped at all. The batch's five data buffers are the carves that do share a block, which is the "
+        "suballocation half of the repo's allocate-once rule seen from above");
     xud_check(live == 17u, "gpu-renderpass/seventeen-live-ranges",
         "seventeen live ranges over them: the uniform buffer's carve, the white default's, the screen pass's depth, the scratch colour, "
         "the scratch pass's depth, the shadow map, the four bloom-chain levels, the two arenas each of which is a whole block, and the "

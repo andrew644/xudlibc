@@ -77,9 +77,10 @@
 
 /* The uv every shape HERE THAT HAS NO SURFACE carries: (0, 0). The solid column of the pipeline
    list does not read it - solid.frag reads the colour at location 1 and the normal at location 2,
-   and neither is this one - and the textured column that does read it addresses set 1's sampler
-   array through a slot the texture step wrote, so a uv a shape here writes names no texel a caller
-   named. The value is a corner of a texture that does not exist, which is what a stream whose uv no
+   and neither is this one - and the textured column that does read it addresses the sampler
+   array through an entry the texture step claimed, so a uv a shape here writes names no texel a
+   caller named. The value is a corner of a texture that does not exist, which is what a stream who
+   se uv no
    caller names has to be filled with. The glyph quad below is the one shape in this rung this
    constant does NOT fill, and it is the reason the stream exists at all: a box, a sphere and a line
    have no texels a caller names, so their uv has no value to be, and a glyph's texels are named,
@@ -278,7 +279,7 @@ static_assert(XUD_SHAPES_CIRCLE_INDEX_COUNT > XUD_BATCH_INDEX_CAPACITY(XUD_BATCH
    ICE vertices to say what two vertices say. So the vertex count is 2 + (rings-1)*slices rather
    than the (rings+1)*(slices+1) grid a seam-duplicated row would give, and there is no seam column
    either: the seam exists to make a UV wrap around the longitude, and the UV is the zero constant
-   this header states for every shape here (set 1 is still unallocated and no sampler's array can
+   this header states for every shape here (the sampler array is still unallocated and no sampler's array can
    be addressed), so there is nothing to wrap. A sphere that grows to want a texture will want the
    seam column back, and that is the texture step's to notice, not one invented here.
 
@@ -402,7 +403,7 @@ static_assert((XUD_SHAPES_WIRE_SPHERE_VERTEX_COUNT == XUD_SHAPES_SPHERE_VERTEX_C
    an atlas box in texels and an extent, because the shapes rung has no idea what an atlas is; the
    divide by the extent happens where the extent is in sight, which is the draw above this rung. The
    sampler's half the quad draws through is the font rung's: the walk appends these quads through
-   the textured column with the set-1 slot it resolved from the atlas, and a quad appended with the
+   the textured column with the sampler-array entry it resolved from the atlas, and a quad appended with the
    no-map sentinel samples slot 0 of the array, the white default the descriptor rung stamped there
    at its bring-up, and draws as a tinted rectangle rather than a letter. */
 #define XUD_SHAPES_GLYPH_VERTEX_COUNT 4u
@@ -556,7 +557,7 @@ XudResult xud_shapes_append_plane(XudBatch* batch, XudVector3 center, XudVector2
 /// constant above, and two triangles per face, wound counter-clockwise seen from OUTSIDE, which is
 /// the same winding raylib's DrawTriangle3D documents and the pipeline's XUD_PIPELINE_FRONT_FACE
 /// names. The uv is the zero constant above for every vertex, for the reason stated beside it: a
-/// box has no texture to unwrap yet, and set 1 is still unallocated. The colour is the caller's at
+/// box has no texture to unwrap yet, and the sampler array is still unallocated. The colour is the caller's at
 /// all 24 vertices, because the batch's COLOR stream is per-vertex and a box has one colour.
 ///
 /// The append is ATOMIC in the same shape as the triangle's: both of the batch's bounds are read

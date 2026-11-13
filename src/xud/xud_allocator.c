@@ -513,8 +513,15 @@ XudResult xud_allocator_acquire(XudMemoryRange* outRange, XudAllocator* alloc, X
         return typeRule;
     }
 
-    if (xud_alloc_block_size(requirements->size, &blockWanted) == false) {
-        return XUD_OUT_OF_RESOURCES;
+    if (xud_alloc_block_size((VkDeviceSize)(requirements->size + requirements->alignment), &blockWanted) == false) {
+        if (xud_alloc_block_size(requirements->size, &blockWanted) == false) {
+            return XUD_OUT_OF_RESOURCES;
+        }
+        /* The aligned ladder overflowed the ceiling: the request is a dedicated MAX block, and of
+           fset 0 of a fresh block is aligned for every alignment, so the size alone is the block.
+           The aligned ladder applies to everything below the ceiling: a block that could host ex
+           actly one aligned object would be one vkAllocateMemory per object, which is the churn t
+           he suballocation rule exists to stop. */
     }
 
     /* The free-list scan first, so a reused range costs no driver call at all - which is the whole

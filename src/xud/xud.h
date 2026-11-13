@@ -117,13 +117,13 @@ extern "C" {
    above the smaller of the two as XUD_UNSUPPORTED. */
 #define XUD_MAX_WINDOW_EXTENT 16384u
 
-/* The ceiling of live textures one context can hold: the material set's sampler array has 16
-   slots and slot 0 is the white default every untextured draw samples, so 15 of them are
-   textures'. The array's width is frozen into the pipeline layout, so the number is fixed per
-   context: a scene that loads a 16th distinct texture gets XUD_OUT_OF_RESOURCES out of
-   xud_create_texture, and font atlases, UI atlases and model maps all count against the same
-   ceiling. */
-#define XUD_MAX_TEXTURES 15u
+/* The ceiling of live textures one context can hold: the sampler array is 512 entries and six
+   of them are permanent residents - the white default, the HDR scratch and the four bloom-chain
+   levels, all claimed at bring-up - so 506 of them are textures'. The array's width is frozen
+   into the pipeline layout, so the number is fixed per context: a scene that loads a 507th dis
+   tinct texture gets XUD_OUT_OF_RESOURCES out of xud_create_texture, and font atlases, UI atla
+   ses and model maps all count against the same ceiling. */
+#define XUD_MAX_TEXTURES 506u
 
 /* The ceiling of lights one context can shade by: the frame's uniform block carries a fixed table
    of XUD_MAX_LIGHTS rows (xud_descriptor.h's XudLightRow) and the pipeline layout freezes that
@@ -320,7 +320,7 @@ typedef struct XudHandle {
 #define XUD_HANDLE_KIND_TEXTURE 1u /* a texture: an image + its sampler variant, once the allocator and the renderer rungs land */
 #define XUD_HANDLE_KIND_FONT 2u /* a font: the glyph atlas and its metrics, once the text step lands */
 #define XUD_HANDLE_KIND_MESH 3u /* a mesh: the attribute streams and the index buffer, once the batch lands */
-#define XUD_HANDLE_KIND_MATERIAL 4u /* a material: a pipeline variant and its set-1 bindings, once the pipelines land */
+#define XUD_HANDLE_KIND_MATERIAL 4u /* a material: a pipeline variant and its sampler-array entry, once the pipelines land */
 #define XUD_HANDLE_KIND_MODEL 5u /* a model: the meshes and materials a load produced, once model loading lands */
 #define XUD_HANDLE_KIND_AUDIOSTREAM 6u /* an audio stream: the decoded frames and their format, once the audio rung lands */
 #define XUD_HANDLE_KIND_RENDERTEXTURE                                                                                                      \
@@ -418,7 +418,7 @@ typedef struct XudTextureData {
  * The maps half is ONE member here rather than raylib's ten-row array, and the one map is the dif
  * fuse map (raylib's MATERIAL_MAP_DIFFUSE, the alias of MATERIAL_MAP_ALBEDO at raylib.h 771/784, w
  * hich SetMaterialTexture names - raylib.h 1657) because it is the only map this tree has a pipeli
- * ne row that reads: the textured variant's frag module samples set 1 and no other row samples any
+ * ne row that reads: the textured variant's frag module reads the sampler array and no other row samples any
  * thing. So a material that names a map draws through XUD_BLEND_TEXTURED whatever its blendMode sa
  * ys - the mapped surface is a different pipeline row, not a flag beside the row - and the other n
  * ine of raylib's maps (metalness, normal, roughness, occlusion, emission, height, the three cube
@@ -1511,7 +1511,7 @@ XudResult xud_close_texture(XudContext* context, XudHandle handle);
 /// (magnify and minify) at once, the one token raylib names for both. The token is the sampler's own
 /// - XUD_TEXTURE_FILTER_NEAREST or XUD_TEXTURE_FILTER_LINEAR - and the change is a recreate: the
 /// texture's own sampler is destroyed and a new one created with the new filter, then the entry of
-/// set 1's sampler array that names the texture is rewritten to hold the new sampler, which is what
+/// set 0's sampler array that names the texture is rewritten to hold the new sampler, which is what
 /// makes the change live for every draw that samples the texture from this call on, the 3D ones and
 /// the screen-space one alike. The change takes no upload: the texels, the image, the view and the
 /// mip chain are untouched, and a draw in the frame this call runs in samples the new filter,
@@ -1530,7 +1530,7 @@ XudResult xud_set_texture_filter(XudContext* context, XudHandle handle, uint32_t
 /// XUD_TEXTURE_ADDRESS_REPEAT, XUD_TEXTURE_ADDRESS_MIRRORED_REPEAT or
 /// XUD_TEXTURE_ADDRESS_CLAMP_TO_EDGE - and the change is the same recreate the filter setter makes:
 /// the texture's own sampler is destroyed and a new one created with the new wrap, then the entry of
-/// set 1's sampler array that names the texture is rewritten to hold the new sampler, which is what
+/// set 0's sampler array that names the texture is rewritten to hold the new sampler, which is what
 /// makes the change live for every draw that samples the texture from this call on. The W axis of
 /// the sampler stays the rung's own mip clamp, because it is the axis of a 2D texture's chain rather
 /// than a wrap the caller can choose. A token the sampler already names is a no-op that answers
@@ -1544,7 +1544,7 @@ XudResult xud_set_texture_wrap(XudContext* context, XudHandle handle, uint32_t a
 /// Create an off-screen draw target: raylib's LoadRenderTexture, whose image is the caller's extent.
 /// The target owns a colour image (drawable AND sampleable), a depth image of the same extent, the
 /// render pass and framebuffer that draw into them, a batch of its own for the geometry appended
-/// while its scope is open, and one entry of set 1's sampler array so xud_draw_texture() can sample
+/// while its scope is open, and one entry of set 0's sampler array so xud_draw_texture() can sample
 /// the result by this same handle. The colour format is the swapchain's; depth always exists. On
 /// XUD_OK *outTarget names a live RENDERTEXTURE slot of THIS context's table. XUD_INVALID_ARG on a
 /// NULL out-handle or context, or a zero extent; XUD_UNSUPPORTED on a context that never completed
@@ -1690,7 +1690,7 @@ XudResult xud_draw_model_ex(XudContext* context, XudHandle handle, const float* 
 /// scaled form is a later step's), and the caller's colour is the quad's own vertex colour: the row
 /// it records into carries the white push tint the plain record stamps, and the fragment stage's
 /// product is the sampled texel times the vertex colour times that white, the tinted texture. The
-/// texture draws through its own set-1 slot, a record that
+/// texture draws through its own sampler-array entry, a record that
 /// holds none drawing through the sentinel the frame loop maps to slot 0's default. XUD_INVALID_ARG
 /// on a NULL context, a texture handle the table does not name, a zero framebuffer extent, or a quad
 /// the batch does not fit; XUD_UNSUPPORTED on a context with no batch to append into; XUD_OUT_OF_MEMORY
@@ -1829,7 +1829,7 @@ XudResult xud_draw_ellipse(XudContext* context, int32_t centerX, int32_t centerY
  *   so a caller names a context and a font FILE and never an atlas, a sampler or a VkImage.
  *
  * What the text pair draws through, and what is still NOT here: the glyphs draw through the textured
- *   variant of the pipeline list, and the set-1 slot they sample with is the atlas's own entry of the
+ *   variant of the pipeline list, and the sampler-array entry they sample with is the atlas's own entry of the
  *   sampler array, resolved from the texture record the atlas is - a record whose atlas occupies no
  *   entry of the array draws through slot 0's white default rather than through a refusal, the same
  *   answer the material rung gives a map it cannot sample. Absent for the reason the font rung's own

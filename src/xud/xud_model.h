@@ -51,7 +51,7 @@
 #include "xud.h" /* Required for: XudResult, XudHandle, XudVector3, XudMeshData, XUD_HANDLE_KIND_MODEL - the public surface this rung is the half of */
 #include "xud_allocator.h" /* Required for: XudAllocator, handed down to the mesh rung's block */
 #include "xud_batch.h" /* Required for: XUD_BATCH_STREAM_*, XUD_BATCH_VERTEX_SIZE, XUD_BATCH_INDEX_SIZE - the four streams a primitive's accessors are read into */
-#include "xud_descriptor.h" /* Required for: XudDescriptor, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - set 1's sampler array a model's map occupies one entry of */
+#include "xud_descriptor.h" /* Required for: XudDescriptor, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE - set 0's sampler array a model's map occupies one entry of */
 #include "xud_device.h" /* Required for: XudDevice, the VkDevice every mesh this rung uploads belongs to */
 #include "xud_handle.h" /* Required for: XudHandleTable, xud_handle_validate/alloc/free, xud_handle_record_get/set - the slot this record lives in */
 #include "xud_loader.h" /* Required for: XudLoader, handed down to the mesh rung */
@@ -120,7 +120,7 @@ static_assert(XUD_BATCH_VERTEX_SIZE
 #define XUD_MODEL_MAX_MESHES 512u /* primitives per model, the MESH slots one load spends */
 #define XUD_MODEL_MAX_MATERIALS 1024u /* one MATERIAL slot per document material plus the default every untextured primitive draws with */
 #define XUD_MODEL_MAX_TEXTURES                                                                                                             \
-    XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE /* one TEXTURE slot per distinct base-color image a material names, and each one holds an entry of set 1's sampler array, which is the real ceiling */
+    XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE /* one TEXTURE slot per distinct base-color image a material names, and each one holds an entry of set 0's sampler array, which is the real ceiling */
 #define XUD_MODEL_PATH_MAX 1024u /* the longest model path xud_load_model() takes, and the longest directory prefix it derives */
 
 #define XUD_MODEL_NO_IMAGE 0xFFFFFFFFu /* the image index a material that names no base-color image answers, past any document's count */
@@ -305,7 +305,7 @@ XudResult xud_model_get(const XudHandleTable* table, XudHandle handle, const Xud
 
 /// Driver: bring one model up, in the order that leaves nothing reachable and unfilled: the gate
 /// first (so no slot is spent for a document that will be refused), then the distinct base-color
-/// images decoded and opened as TEXTURE slots holding entries of set 1's sampler array (so a
+/// images decoded and opened as TEXTURE slots holding entries of set 0's sampler array (so a
 /// map's decode cannot be the step that spends the MODEL slot), then the MODEL slot, then the
 /// record, then the MATERIAL slots (one per document material plus the default, each naming the
 /// texture its base-color image decoded to), then per primitive its stage block, its read, its
@@ -313,12 +313,12 @@ XudResult xud_model_get(const XudHandleTable* table, XudHandle handle, const Xud
 /// steps above created, in the reverse order - the sampler-array entries given back before the
 /// textures they name are destroyed - so a model that refused part-way leaves no live mesh,
 /// material or texture behind. `dir` is the model path's directory prefix, the prefix a URI
-/// image resolves against, and `descriptor` is set 1's sampler array the map's entry is bound
+/// image resolves against, and `descriptor` is set 0's sampler array the map's entry is bound
 /// into. On XUD_OK *outHandle names a live MODEL slot whose record is no longer the sentinel and
 /// whose meshCount is the primitive total. XUD_INVALID_ARG on a NULL out-handle, table, loader,
 /// device, caps, descriptor, allocator or document, or on a device handle that does not exist;
 /// XUD_UNSUPPORTED on a loader that is closed, on a device that is not this loader's, on a
-/// document this rung does not read or that names more distinct images than set 1's sampler array
+/// document this rung does not read or that names more distinct images than set 0's sampler array
 /// can hold, or on a URI image whose path does not fit; XUD_MALFORMED when a decode refuses the
 /// bytes; the mesh, texture, descriptor and handle layers' own codes on the rows they run.
 XudResult xud_model_open(XudHandle* outHandle, XudHandleTable* table, XudLoader* loader, const XudDevice* device, const XudDeviceCaps* caps,

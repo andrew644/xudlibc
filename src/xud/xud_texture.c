@@ -1323,7 +1323,7 @@ XudResult xud_texture_close_all(XudHandleTable* table, XudLoader* loader, const 
             return XUD_INVALID_ARG;
         }
         if (((XudTextureRecord*)record)->samplerSlotLive != 0u) {
-            /* The slot of set 1's array goes back to the free list BEFORE the view and sampler the
+            /* The slot of set 0's array goes back to the free list BEFORE the view and sampler the
                entry names are destroyed below: a bound set whose entry still named a destroyed view
                and sampler would be the state the release above exists to leave behind.
             */
@@ -1463,7 +1463,7 @@ XudResult xud_close_texture(XudContext* context, XudHandle handle) {
 
     if (xud_texture_get(context->handleTable, handle, &record) == XUD_OK) {
         if ((record != NULL) && (record->samplerSlotLive != 0u)) {
-            /* The slot of set 1's array is given back before xud_texture_close() destroys the view an
+            /* The slot of set 0's array is given back before xud_texture_close() destroys the view an
                d sampler the entry names, and a refusal here is a close that does not run rather than a
                n object retired over a descriptor still naming it.
             */
@@ -1571,7 +1571,7 @@ XudResult xud_set_texture_wrap(XudContext* context, XudHandle handle, uint32_t a
    from the framebuffer's top-left, and the quad is the texture's own extent at its own size -
    raylib's DrawTexture draws the texture at the size it is, and the scaled form is a later step's.
    The state move is the 2D surface's own: read the batch's state, move the material state to the
-   UI row at the texture's own set-1 slot for the one quad, and move it back on the way out, the
+   UI row at the texture's own sampler-array entry for the one quad, and move it back on the way out, the
    move back closing the quad's run into a row of the UI column rather than an empty row. A
    texture whose record holds no live slot of the
    array draws through the sentinel, which the frame loop maps to slot 0's white default - the
@@ -1611,7 +1611,7 @@ XudResult xud_draw_texture(XudContext* context, XudHandle handle, int32_t posX, 
 
     result = xud_texture_get(context->handleTable, handle, &record);
     if (result != XUD_OK) {
-        /* A handle naming a live RENDERTEXTURE slot draws the same way: set 1's sampler array does
+        /* A handle naming a live RENDERTEXTURE slot draws the same way: set 0's sampler array does
            not distinguish where the (view, sampler) pair it names came from, and the target's
            record carries its own slot, width and height beside the image. */
         const XudRenderTargetRecord* target = NULL;

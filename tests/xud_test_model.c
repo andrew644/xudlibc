@@ -974,7 +974,7 @@ static void xud_test_model_gpu(void) {
     xud_check(textureRecord != NULL && textureRecord->width == 4u && textureRecord->height == 4u, "gpu-model/texture-extent",
         "and it is the 4x4 the decode answered, so the PNG's extent reached the image rather than being dropped at the load");
     xud_check(textureRecord != NULL && textureRecord->samplerSlotLive == 1u, "gpu-model/texture-sampler-slot",
-        "and it holds an entry of set 1's sampler array, which is the row the textured material's draw binds the map through");
+        "and it holds an entry of set 0's sampler array, which is the row the textured material's draw binds the map through");
     xud_check(textureRecord != NULL && textureRecord->samplerInfo.magFilter == XUD_TEXTURE_FILTER_NEAREST
             && textureRecord->samplerInfo.minFilter == XUD_TEXTURE_FILTER_NEAREST
             && textureRecord->samplerInfo.addressModeU == XUD_TEXTURE_ADDRESS_REPEAT

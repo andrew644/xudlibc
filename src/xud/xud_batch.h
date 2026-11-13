@@ -205,7 +205,7 @@ static_assert((XUD_BATCH_MAX_VERTICES * XUD_BATCH_VERTEX_SIZE + XUD_BATCH_INDEX_
     2u /* the third column of the variant axis: the row a glyph                                                                            \
 atlas and any other mapped surface is drawn on. It is a COLUMN of the same axis rather than a                                              \
 flag on the draw row because the variant axis IS the pipeline list's variant axis and a pipeline                                           \
-is where the frag module that reads set 1 lives - a flag would be a second axis the list would                                             \
+is where the frag module that reads the sampler array lives - a flag would be a second axis the list would                                             \
 have to be the cross product of, and the textured row is alpha-blended, which is what a glyph                                              \
 atlas needs against a cleared background */
 #define XUD_BATCH_VARIANT_UI                                                                                                               \
@@ -254,7 +254,7 @@ static_assert(XUD_BATCH_VARIANT_COUNT == (XUD_BATCH_VARIANT_UI + 1u), "the varia
 static_assert(XUD_BATCH_TOPOLOGY_COUNT == (XUD_BATCH_TOPOLOGY_LINES + 1u), "the two topologies are contiguous from triangles up");
 static_assert(XUD_BATCH_NO_MATERIAL > 0u, "the sentinel is not a material slot any live row can name");
 
-/* "no texture slot", the same sentinel shape: a draw with no map samples slot 0 of set 1's array - the white default the
+/* "no texture slot", the same sentinel shape: a draw with no map samples slot 0 of set 0's array - the white default the
    descriptor rung writes at its bring-up - and the frame loop maps this sentinel to that slot rather than carrying an index
    nothing owns. */
 #define XUD_BATCH_NO_TEXTURE 0xFFFFFFFFu
@@ -335,7 +335,7 @@ struct XudBatchDraw {
                             rlgl.h 3116 */
     uint32_t variant; /* which of the plan's two pipeline variants this draw uses */
     uint32_t materialIndex; /* which material slot, XUD_BATCH_NO_MATERIAL while no material exists */
-    uint32_t textureIndex; /* which entry of set 1's sampler array this draw samples, XUD_BATCH_NO_TEXTURE while no map does */
+    uint32_t textureIndex; /* which entry of set 0's sampler array this draw samples, XUD_BATCH_NO_TEXTURE while no map does */
     uint32_t geometryIndex; /* which entry of the batch's geometry list this draw binds its buffers
                                 from - XUD_BATCH_GEOMETRY_OWN for the batch's own arena, which is
                                 what every shape's append accumulates under and the only value a
@@ -421,7 +421,7 @@ struct XudBatch {
                                     live - the slot index of the handle layer's MATERIAL kind, so
                                     the number in a recorded row is the number xud_frame_fill_push_row
                                     maps into the push row's material channel */
-    uint32_t currentTexture; /* the set-1 slot the pending draws sample, XUD_BATCH_NO_TEXTURE while no map does - the
+    uint32_t currentTexture; /* the sampler-array entry the pending draws sample, XUD_BATCH_NO_TEXTURE while no map does - the
                                   texture half of the pair set_material moves, the number a recorded row hands to the
                                   push row's texture channel */
     uint32_t pendingFirstIndex; /* where the pending draws' indices start */
@@ -633,7 +633,7 @@ XudResult xud_batch_set_topology(XudBatch* batch, uint32_t topology);
 /// calls would be two splits, and the second would close a run that has no content in it. The
 /// material index is not validated here against a slot array - the batch cannot name the handle
 /// layer, and the public pair above validates the handle before it moves anything in. The texture
-/// slot is validated only against set 1's array size, the one bound this rung knows. XUD_INVALID_ARG
+/// slot is validated only against set 0's array size, the one bound this rung knows. XUD_INVALID_ARG
 /// on a NULL batch or a variant at or past the variant list.
 XudResult xud_batch_set_material(XudBatch* batch, uint32_t materialIndex, uint32_t variant, uint32_t textureIndex);
 

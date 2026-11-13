@@ -77,7 +77,7 @@ layout(set = 0, binding = 1) uniform sampler2DShadow xudShadowMap;
 layout(push_constant) uniform XudPushRow {
     mat4 modelMatrix;    // 0  - the draw's own model matrix, column-major
     uint materialIndex;  // 64 - which material slot this draw uses (unread today)
-    uint textureIndex;   // 68 - which entry of set 1's sampler array (unread today)
+    uint textureIndex;   // 68 - which entry of set 0's sampler array (unread today)
     uint flags;          // 72 - the variant this draw was flushed under
     uint reserved;       // 76 - keeps the row 16-aligned with no hole
     vec4 tint;           // 80 - the draw's own tint, 0..1 per channel

@@ -4,13 +4,13 @@
    of the same axis the opaque and transparent columns are the first two of.
 
    It differs from solid.frag in three things, and each is why a second fragment module exists
-   at all: it reads set 1, it multiplies the interpolated colour by the sampled texel, and it
-   takes NO light. Glyph atlases, UI atlases and model maps are authored as the final colour - a
-   glyph that darkens when it turns away from a lamp is a bug report, not a lighting effect - so
-   this stage shades by nothing and the shade sum, the kinds and the ambient of solid.frag all
+   at all: it reads the sampler array, it multiplies the interpolated colour by the sampled texel,
+   and it takes NO light. Glyph atlases, UI atlases and model maps are authored as the final colour
+   - a glyph that darkens when it turns away from a lamp is a bug report, not a lighting effect - s
+   o this stage shades by nothing and the shade sum, the kinds and the ambient of solid.frag all
    stay over there. The vertex stage, the attribute locations and the push row are shared
-   unchanged - which is what lets the whole list stay ONE pipeline layout and every
-   vkCmdBindDescriptorSets name one layout.
+   unchanged - which is what lets the whole list stay ONE pipeline layout and every pass make
+   exactly one descriptor bind.
 
    The tint is the interpolated vertex colour rather than a member of the push row: the push row
    XudPushRow has no colour in it (mat4 + four uints, the C layout of XudPushRow in xud_descriptor.h
@@ -19,23 +19,15 @@
    itself and its alpha is the glyph's coverage, which is why the multiply below keeps alpha
    (unlike solid.frag, which keeps the vertex alpha and replaces the rgb with a lit shade).
 
-   The sampler is declared as ONE sampler, and the slot is chosen by the frame loop binding set 1
-   to the slot set that holds that draw's texture - one descriptor set per texture slot, each set
-   holding one view-and-sampler pair - rather than by an index in this stage. That is the whole
-   shape of this stage and it is deliberate: a non-constant index into a descriptor array is the
-   SPIR-V SampledImageArrayNonUniformIndexing capability, which is the core feature
-   shaderSampledImageArrayNonUniformIndexing, which xud_physical.c's wanted-feature list
-   DELIBERATELY does not ask for (the "shader*DynamicIndexing quartet" paragraph there). Asking
-   for it would be asking for a feature the library has no other use for; and the alternative that
-   needs no feature at all - binding a slice of one set - is not a shape the bind call has, because
-   vkCmdBindDescriptorSets names sets and their count, with no argument that says which element of
-   an array binding the set starts at. So the design is many sets of one sampler each rather than
-   one set of a 16-deep array: the pipeline layout's set 1 binding is one descriptor (xud_descrip
-   tor.h), XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE slot sets are allocated against that one layout, and
-   the frame binds the set of the slot a draw samples, one bind per texture change rather than per
-   draw. A stage that declares one sampler at a binding whose layout is one descriptor wide is the
-   exact match, and every slot set is written before it is bound, so no update ever lands on a set
-   the command buffer has already recorded.
+   The sampler is one entry of the bindless array at set 0 binding 2, named by the push row's
+   textureIndex - the frame loop pushes the row beside every draw, so the texture a draw samples
+   travels with the draw and nothing binds between the pass's one set-0 bind and the last draw.
+   The non-constant index is the SPIR-V SampledImageArrayNonUniformIndexing capability, spelled by
+   GL_EXT_nonuniform_qualifier's nonuniformEXT(): the feature shaderSampledImageArrayNonUniformInd
+   exing is core since Vulkan 1.2, under this library's 1.3 floor, so it needs no host-side enable
+   - only the capability the extension line below emits. Every entry of the array carries a sampler
+   and a written view from bring-up (entry 0 is the white default an untextured draw's zeroed inde
+   x lands on), so no draw can index an unwritten slot.
 
    The two input locations name the vertex stage's outputs: location 0 is outUv and location 1 is
    outColor in shaders/solid.vert, and a frag input whose location names nothing the vertex stage
@@ -43,10 +35,12 @@
    convention (solid.frag reads location 1 for the colour and location 2 for the normal, which are
    the same two outputs). */
 
+#extension GL_EXT_nonuniform_qualifier : require
+
 layout(push_constant) uniform XudPushRow {
     mat4 modelMatrix;    // 0  - the draw's own model matrix, column-major
     uint materialIndex;  // 64 - which material slot this draw uses (unread today)
-    uint textureIndex;   // 68 - which entry of set 1's sampler array (unread today)
+    uint textureIndex;   // 68 - which entry of set 0's sampler array this draw samples
     uint flags;          // 72 - the variant this draw was flushed under
     uint reserved;       // 76 - keeps the row 16-aligned with no hole
     vec4 tint;           // 80 - the draw's own tint, 0..1 per channel
@@ -56,6 +50,9 @@ layout(location = 0) in vec2 inUv;
 layout(location = 1) in vec4 inColor;
 layout(location = 0) out vec4 outColor;
 
-layout(set = 1, binding = 0) uniform sampler2D xudSampler;
+layout(set = 0, binding = 2) uniform sampler2D xudSampler[512];  // XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE, restated for GLSL
 
-void main() { outColor = inColor * texture(xudSampler, inUv) * xudPush.tint; }
+void main()
+{
+    outColor = inColor * texture(xudSampler[nonuniformEXT(xudPush.textureIndex)], inUv) * xudPush.tint;
+}

@@ -368,7 +368,7 @@ XudResult xud_ui_destroy(XudUi** ioUi, XudContext* context) {
     }
 
     /* The reverse of open: the atlas's TEXTURE through the context's own close (which gives its
-       set-1 slot back and retires the image, the view and the sampler), the nuklear context, the
+       sampler-array entry back and retires the image, the view and the sampler), the nuklear context, the
        atlas, the command buffer and the staging, and the rung itself. */
     if ((context != NULL) && (!xud_handle_equal(ui->atlasTexture, XUD_HANDLE_NONE))) {
         (void)xud_close_texture(context, ui->atlasTexture);

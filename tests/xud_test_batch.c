@@ -351,7 +351,7 @@ static void xud_test_batch_pure(void) {
                   &b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_MATERIAL, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE)
             == XUD_INVALID_ARG,
         "batch/draw-bad-texture",
-        "and a slot at the array's size names no entry of set 1's sampler array, so the row is refused "
+        "and a slot at the array's size names no entry of set 0's sampler array, so the row is refused "
         "rather than recording a slot the frame loop's slice rebind cannot bind");
     xud_check(xud_batch_record_draw(&b, XUD_BATCH_TOPOLOGY_TRIANGLES, XUD_BATCH_VARIANT_OPAQUE, XUD_BATCH_NO_TEXTURE, XUD_BATCH_NO_MATERIAL)
             == XUD_OK,
@@ -370,7 +370,7 @@ static void xud_test_batch_pure(void) {
         "is what keeps a recreated pipeline from making a stale row");
     xud_check(b.draws[0u].textureIndex == XUD_BATCH_NO_TEXTURE, "batch/draw-texture-sentinel",
         "and the texture channel is the sentinel for a run accumulated with no map, which the frame loop "
-        "maps to slot 0 of set 1's array - the white default - in the push row");
+        "maps to slot 0 of set 0's array - the white default - in the push row");
     xud_check((b.pendingFirstIndex == b.indexCount) && (b.pendingIndexCount == 0u), "batch/draw-pending-reset",
         "recording a row moves the pending pair to start after it, which is what makes the next row's range the next window of the index "
         "buffer");
@@ -443,7 +443,7 @@ static void xud_test_batch_pure(void) {
     xud_check(
         xud_batch_set_material(&b, XUD_BATCH_NO_MATERIAL, XUD_BATCH_VARIANT_OPAQUE, XUD_DESCRIPTOR_SAMPLER_ARRAY_SIZE) == XUD_INVALID_ARG,
         "batch/material-past-texture",
-        "a slot at the array's size names no entry of set 1's sampler array, so the record call and the state "
+        "a slot at the array's size names no entry of set 0's sampler array, so the record call and the state "
         "call refuse it with the same rule");
     xud_check((b.currentMaterial == XUD_BATCH_NO_MATERIAL) && (b.currentVariant == XUD_BATCH_VARIANT_OPAQUE)
             && (b.currentTexture == XUD_BATCH_NO_TEXTURE),
